@@ -44,7 +44,9 @@ def _curses_select(
         f"{label} - {desc}" if desc else label
         for label, desc in items
     ]
-    return curses_radiolist(title, display_items, selected=default, cancel_returns=cancel_returns)
+    result = curses_radiolist(title, display_items, selected=default, cancel_returns=cancel_returns)
+    _clear_interactive_transition()
+    return result
 
 
 def _print_cancelled_setup() -> None:
@@ -228,6 +230,8 @@ def cmd_setup_provider(provider_name: str) -> None:
         return
 
     name, _, provider = match
+
+    _clear_interactive_transition()
 
     _install_dependencies(name)
 
@@ -439,43 +443,53 @@ def cmd_status(args) -> None:
     print(f"  Built-in:  always active")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
+    providers = _get_available_providers()
+    provider = None
+    for pname, _, candidate in providers:
+        if pname == provider_name:
+            provider = candidate
+            break
+
     if provider_name:
         provider_config = mem_config.get(provider_name, {})
-        if provider_config:
+        display_config = provider_config
+        if provider and hasattr(provider, "get_status_config"):
+            try:
+                display_config = provider.get_status_config(provider_config)
+            except Exception as e:
+                display_config = dict(provider_config) if isinstance(provider_config, dict) else provider_config
+                if isinstance(display_config, dict):
+                    display_config["status_config_error"] = str(e)
+
+        if display_config:
             print(f"\n  {provider_name} config:")
-            for key, val in provider_config.items():
+            for key, val in display_config.items():
                 print(f"    {key}: {val}")
 
-        providers = _get_available_providers()
-        found = any(name == provider_name for name, _, _ in providers)
-        if found:
+        if provider:
             print(f"\n  Plugin:    installed ✓")
-            for pname, _, p in providers:
-                if pname == provider_name:
-                    if p.is_available():
-                        print(f"  Status:    available ✓")
-                    else:
-                        print(f"  Status:    not available ✗")
-                        schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        # Check all fields that have env_var (both secret and non-secret)
-                        required_fields = [f for f in schema if f.get("env_var")]
-                        if required_fields:
-                            print(f"  Missing:")
-                            for f in required_fields:
-                                env_var = f.get("env_var", "")
-                                url = f.get("url", "")
-                                is_set = bool(os.environ.get(env_var))
-                                mark = "✓" if is_set else "✗"
-                                line = f"    {mark} {env_var}"
-                                if url and not is_set:
-                                    line += f"  → {url}"
-                                print(line)
-                    break
+            if provider.is_available():
+                print(f"  Status:    available ✓")
+            else:
+                print(f"  Status:    not available ✗")
+                schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+                # Check all fields that have env_var (both secret and non-secret)
+                required_fields = [f for f in schema if f.get("env_var")]
+                if required_fields:
+                    print(f"  Missing:")
+                    for f in required_fields:
+                        env_var = f.get("env_var", "")
+                        url = f.get("url", "")
+                        is_set = bool(os.environ.get(env_var))
+                        mark = "✓" if is_set else "✗"
+                        line = f"    {mark} {env_var}"
+                        if url and not is_set:
+                            line += f"  → {url}"
+                        print(line)
         else:
             print(f"\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
-    providers = _get_available_providers()
     if providers:
         print(f"\n  Installed plugins:")
         for pname, desc, _ in providers:

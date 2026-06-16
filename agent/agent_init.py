@@ -326,6 +326,12 @@ def init_agent(
     elif (provider_name is None) and agent._base_url_hostname == "api.x.ai":
         agent.api_mode = "codex_responses"
         agent.provider = "xai"
+    elif agent.provider == "claude-code":
+        # Inference is delegated to the official `claude` CLI on a personal
+        # subscription (see agent/claude_code_client.py). We reuse the
+        # Anthropic Messages dispatch + normalization, but the client is a
+        # subprocess shim rather than the Anthropic SDK.
+        agent.api_mode = "anthropic_messages"
     elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
         agent.api_mode = "anthropic_messages"
         agent.provider = "anthropic"
@@ -616,7 +622,30 @@ def init_agent(
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
-    if agent.api_mode == "anthropic_messages":
+    if agent.api_mode == "anthropic_messages" and agent.provider == "claude-code":
+        # Personal Claude Max/Pro subscription, routed through the OFFICIAL
+        # Claude Code client (`claude -p`). No subscription token is sent to
+        # api.anthropic.com and no claude-cli user-agent is spoofed — the CLI
+        # *is* the client. The shim mimics anthropic.Anthropic so the rest of
+        # the anthropic_messages dispatch + normalization is unchanged.
+        from agent.claude_code_client import build_claude_code_client
+
+        agent._anthropic_client = build_claude_code_client(model=agent.model)
+        agent._anthropic_api_key = "claude-code"  # sentinel — never sent anywhere
+        agent._anthropic_base_url = ""
+        agent._is_anthropic_oauth = False
+        agent.api_key = "claude-code"
+        agent.client = None
+        agent._client_kwargs = {}
+        # `claude -p` returns a complete turn; deliver it as one buffered
+        # response instead of token-by-token deltas (documented limitation).
+        agent._disable_streaming = True
+        if not agent.quiet_mode:
+            print(
+                f"🤖 AI Agent initialized with model: {agent.model} "
+                "(Claude Max subscription via official `claude` CLI)"
+            )
+    elif agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).

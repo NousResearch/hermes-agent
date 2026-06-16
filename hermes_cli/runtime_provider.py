@@ -1305,6 +1305,24 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    # Claude (Max subscription) via the official `claude` CLI. Resolve before
+    # the generic provider/pool paths: the CLI owns auth, so we must NOT let an
+    # ambient ANTHROPIC_API_KEY / Claude Code OAuth token redirect this to the
+    # direct-API `anthropic` provider. No credentials are resolved here; the
+    # non-empty api_key is a sentinel only and is never sent anywhere. See
+    # agent/claude_code_client.py and docs/claude-code-provider.md.
+    if requested_provider == "claude-code":
+        from agent.claude_code_client import resolve_claude_command
+        return {
+            "provider": "claude-code",
+            "api_mode": "anthropic_messages",
+            "base_url": "",
+            "api_key": "claude-code",
+            "command": resolve_claude_command() or "claude",
+            "source": "process",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,

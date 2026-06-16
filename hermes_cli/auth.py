@@ -314,6 +314,18 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
         base_url_env_var="ANTHROPIC_BASE_URL",
     ),
+    # Personal Claude Max/Pro subscription via the official `claude` CLI.
+    # No API key: auth is owned by the CLI (`claude /login` / `claude
+    # setup-token`). Inference is delegated to `claude -p` (see
+    # agent/claude_code_client.py), so no token is sent to api.anthropic.com.
+    "claude-code": ProviderConfig(
+        id="claude-code",
+        name="Claude (Max subscription)",
+        auth_type="external_process",
+        inference_base_url="",
+        api_key_env_vars=(),
+        base_url_env_var="",
+    ),
     "alibaba": ProviderConfig(
         id="alibaba",
         name="Qwen Cloud",
@@ -1513,7 +1525,8 @@ def resolve_provider(
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
-        "claude": "anthropic", "claude-code": "anthropic",
+        "claude": "anthropic",
+        "claude-max": "claude-code", "claude-subscription": "claude-code",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",

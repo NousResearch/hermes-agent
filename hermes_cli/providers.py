@@ -102,6 +102,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="anthropic_messages",
         extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     ),
+    # Personal Claude Max/Pro subscription, routed through the OFFICIAL
+    # `claude` CLI (no API key, no token sent to api.anthropic.com). Auth is
+    # owned by the CLI (`claude /login` / `claude setup-token`).
+    "claude-code": HermesOverlay(
+        transport="anthropic_messages",
+        auth_type="external_process",
+    ),
     "zai": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
@@ -278,7 +285,10 @@ ALIASES: Dict[str, str] = {
 
     # anthropic
     "claude": "anthropic",
-    "claude-code": "anthropic",
+    # NOTE: "claude-code" is now a distinct provider (personal subscription via
+    # the official `claude` CLI), no longer an alias of "anthropic".
+    "claude-max": "claude-code",
+    "claude-subscription": "claude-code",
 
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
@@ -373,6 +383,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "gmi": "GMI Cloud",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
+    "claude-code": "Claude (Max subscription)",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",

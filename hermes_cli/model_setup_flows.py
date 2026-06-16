@@ -1797,6 +1797,79 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
+
+def _model_flow_claude_code(config, current_model=""):
+    """Claude (Max subscription) via the official `claude` CLI.
+
+    Inference is delegated to `claude -p`, which uses the CLI's own
+    subscription credentials. Hermes never sends a token to api.anthropic.com
+    and never spoofs a claude-cli user-agent (the CLI *is* the client). See
+    docs/claude-code-provider.md.
+    """
+    import os
+
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config
+    from agent.claude_code_client import resolve_claude_command
+
+    del config
+
+    provider_id = "claude-code"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    claude_bin = resolve_claude_command()
+    print("  Claude (Max subscription) delegates each Hermes turn to the")
+    print("  official `claude` CLI on your personal subscription.")
+    print("  No API key is used; no token is sent to api.anthropic.com.")
+    print()
+    if not claude_bin:
+        print("  ⚠ The `claude` CLI was not found on PATH.")
+        print("    Install Claude Code, then run `claude /login` (or")
+        print("    `claude setup-token`). You can also set")
+        print("    HERMES_CLAUDE_CODE_COMMAND / CLAUDE_CODE_CLI_PATH.")
+        return
+    print(f"  Command: {claude_bin}")
+    creds_present = os.path.exists(os.path.expanduser("~/.claude/.credentials.json"))
+    if not creds_present and not os.path.exists(os.path.expanduser("~/.claude.json")):
+        print("  ⚠ No Claude Code login detected. Run `claude /login` or")
+        print("    `claude setup-token` before using this provider.")
+    print()
+
+    # The `claude --model` flag accepts these aliases (and full model ids).
+    model_list = ["sonnet", "opus", "haiku"]
+    selected = _prompt_model_selection(
+        model_list,
+        current_model=current_model,
+        confirm_provider=provider_id,
+        confirm_base_url="(official claude CLI)",
+        confirm_api_key="(subscription — no key)",
+    )
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = ""
+    model["api_mode"] = "anthropic_messages"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 

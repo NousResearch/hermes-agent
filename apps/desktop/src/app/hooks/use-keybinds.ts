@@ -37,6 +37,7 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { openNewSessionInNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus } from '../chat/composer/focus'
@@ -132,6 +133,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
+    'session.newWindow': () => void openNewSessionInNewWindow(),
     'session.next': () => stepSession(1),
     'session.prev': () => stepSession(-1),
     ...sessionSlotHandlers,

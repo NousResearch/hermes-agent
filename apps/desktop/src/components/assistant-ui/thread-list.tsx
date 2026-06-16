@@ -1,5 +1,6 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import {
+  type CSSProperties,
   type ComponentProps,
   type FC,
   memo,
@@ -21,6 +22,7 @@ import {
   resetThreadScroll,
   setThreadAtBottom
 } from '@/store/thread-scroll'
+import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from './message-render-boundary'
 
@@ -132,6 +134,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const hiddenCount = firstVisible
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
   const restoreFromBottomRef = useRef<number | null>(null)
+  const newSessionWindow = isNewSessionWindow()
+  const newSessionTitlebarGap = 'calc(var(--titlebar-height)+0.75rem)'
+  const threadContentTopPad = newSessionWindow
+    ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
+    : isSecondaryWindow()
+      ? 'pt-6'
+      : 'pt-[calc(var(--titlebar-height)+1.5rem)]'
 
   useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
   useEffect(() => () => resetThreadScroll(), [])
@@ -235,7 +244,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   return (
     <div
       className="relative min-h-0 max-w-full overflow-hidden contain-[layout_paint]"
-      style={{ height: clampToComposer ? 'var(--thread-viewport-height)' : '100%' }}
+      style={
+        {
+          height: clampToComposer ? 'var(--thread-viewport-height)' : '100%',
+          ...(newSessionWindow ? { '--sticky-human-top': newSessionTitlebarGap } : {})
+        } as CSSProperties
+      }
     >
       <div
         className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
@@ -252,9 +266,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           </div>
         ) : (
           <div
-            className={cn(
-              'mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6 pt-[calc(var(--titlebar-height)+1.5rem)]'
-            )}
+            className={cn('mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6', threadContentTopPad)}
             data-slot="aui_thread-content"
             ref={contentRef as React.RefCallback<HTMLDivElement>}
           >

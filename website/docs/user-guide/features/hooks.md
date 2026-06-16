@@ -385,6 +385,7 @@ def register(ctx):
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
+| [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
@@ -806,6 +807,77 @@ def my_callback(session_id: str, platform: str, **kwargs):
 ---
 
 See the **[Build a Plugin guide](/guides/build-a-hermes-plugin)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+
+---
+
+### `subagent_start`
+
+Fires **once per child agent** after `delegate_task` has constructed the child `AIAgent` and before that child is run. Whether you delegate a single task or a batch of three, this hook fires once for each child.
+
+This hook is specific to delegation/subagent lifecycle. It is not a universal "before any agent invocation" gate for gateway, CLI, cron, batch, MoA, or other runner-originated agent executions.
+
+**Callback signature:**
+
+```python
+def my_callback(parent_session_id: str | None,
+                parent_turn_id: str,
+                parent_subagent_id: str | None,
+                child_session_id: str | None,
+                child_subagent_id: str,
+                child_role: str,
+                child_goal: str,
+                **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `parent_session_id` | `str \| None` | Session ID of the delegating parent agent. |
+| `parent_turn_id` | `str` | Turn ID of the parent agent turn that requested delegation, if available. |
+| `parent_subagent_id` | `str \| None` | Parent subagent ID when this child was spawned by another subagent; `None` for top-level parent agents. |
+| `child_session_id` | `str \| None` | Session ID allocated for the child agent. |
+| `child_subagent_id` | `str` | Stable subagent ID used by delegation observability and controls. |
+| `child_role` | `str` | Effective child role after delegation policy is applied, for example `"leaf"` or `"orchestrator"`. |
+| `child_goal` | `str` | Delegated goal/prompt that the child agent will execute. |
+
+**Fires:** In `tools/delegate_tool.py`, inside `_build_child_agent()`, after the child `AIAgent` has been constructed and annotated with subagent identity metadata, and before `_run_single_child()` runs the child.
+
+**Return value:** Ignored. This is an observer hook only; returning a value does not block or mutate the child agent run.
+
+**Use cases:** Logging subagent creation, mapping parent/child session relationships, tracking nested delegation trees, emitting pre-run audit records, pre-allocating per-child observability resources.
+
+**Example — log subagent creation:**
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+def log_subagent_start(
+    parent_session_id,
+    parent_turn_id,
+    child_session_id,
+    child_subagent_id,
+    child_role,
+    child_goal,
+    **kwargs,
+):
+    logger.info(
+        "SUBAGENT_START parent=%s turn=%s child_session=%s child=%s role=%s goal=%r",
+        parent_session_id,
+        parent_turn_id,
+        child_session_id,
+        child_subagent_id,
+        child_role,
+        child_goal[:200],
+    )
+
+def register(ctx):
+    ctx.register_hook("subagent_start", log_subagent_start)
+```
+
+:::info
+`subagent_start` is useful for delegation observability, but it is not a blocking policy hook. To block delegation before a child is built, use [`pre_tool_call`](#pre_tool_call) to block the `delegate_task` tool call.
+:::
 
 ---
 

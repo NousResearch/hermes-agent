@@ -1135,8 +1135,28 @@ clone_repo() {
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
 
+            # If a previous run left a recovery marker (#46791), surface it
+            # before touching the tree again -- otherwise the user can hit
+            # an unrecoverable state without realising the prior run
+            # already failed. Marker lives inside .git/ so it's invisible
+            # to `git status` and never gets stashed with user content.
+            local recovery_marker="$INSTALL_DIR/.git/hermes-install-recovery.json"
+            if [ -f "$recovery_marker" ]; then
+                log_warn "A previous hermes install/update left a recovery marker:"
+                log_warn "  $recovery_marker"
+                log_warn "Inspect: cat $recovery_marker && git stash list"
+            fi
+
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
+                # Snapshot to recovery marker BEFORE the `git reset` below
+                # drops the index state. Best-effort: a write failure must
+                # not abort the install (#46791).
+                {
+                    printf '{"version":1,"timestamp":"%s","note":"pre-update snapshot"}\n' \
+                        "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                } > "$recovery_marker" 2>/dev/null || true
+
                 # A previously interrupted update can leave the index with
                 # unmerged entries. In that state `git stash` aborts with
                 # "could not write index" and the later `git checkout` aborts
@@ -1153,8 +1173,20 @@ clone_repo() {
                 local stash_name
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."
-                git stash push --include-untracked -m "$stash_name"
-                autostash_ref="stash@{0}"
+                # Previously the exit code of `git stash push` was ignored,
+                # leaving $autostash_ref pointing at a stale or non-existent
+                # stash if the push failed. The subsequent `git stash apply`
+                # would then silently target the wrong ref (#46791). Check
+                # the exit code explicitly and bail before the checkout if
+                # the push failed.
+                if git stash push --include-untracked -m "$stash_name"; then
+                    autostash_ref="stash@{0}"
+                else
+                    log_error "git stash push failed; aborting before checkout to protect local changes."
+                    log_info "Resolve manually: cd $INSTALL_DIR && git status && git stash list"
+                    log_info "Recovery marker: $recovery_marker"
+                    exit 1
+                fi
             fi
 
             # Fetch only the target branch. A bare `git fetch origin` pulls
@@ -1166,7 +1198,37 @@ clone_repo() {
             git checkout "$BRANCH"
             git pull --ff-only origin "$BRANCH"
 
+            # After pull, the post-checkout phase (or a leftover hook) may
+            # have dirtied generated files (package-lock.json, .pyc, etc.).
+            # Capture that dirt in a SEPARATE stash so the user's autostash
+            # can be applied on a clean tree. Without this step the post-pull
+            # dirt either re-conflicts with the autostash (looping on every
+            # run) or gets clobbered by it (#46791).
+            local post_pull_dirt_ref=""
+            if [ -n "$autostash_ref" ] && [ -n "$(git status --porcelain)" ]; then
+                local ppd_stash_name
+                ppd_stash_name="hermes-install-post-pull-dirt-$(date -u +%Y%m%d-%H%M%S)"
+                log_info "Capturing post-pull generated-file dirt into $ppd_stash_name..."
+                if git stash push --include-untracked -m "$ppd_stash_name" 2>/dev/null; then
+                    post_pull_dirt_ref="stash@{0}"
+                    # User stash was at stash@{0}; this push bumped it to
+                    # stash@{1}, so update the autostash ref accordingly.
+                    autostash_ref="stash@{1}"
+                fi
+            fi
+
             if [ -n "$autostash_ref" ]; then
+                # Verify the autostash ref still resolves before applying.
+                # If the stash list shifted (e.g., user ran `git stash drop`
+                # between updates) the apply would silently target the
+                # wrong ref (#46791).
+                if ! git rev-parse --verify "$autostash_ref" >/dev/null 2>&1; then
+                    log_error "Autostash ref $autostash_ref no longer exists in the stash list."
+                    log_info "Local changes may be in a different stash; inspect: git stash list"
+                    log_info "Recovery marker: $recovery_marker"
+                    exit 1
+                fi
+
                 local restore_now="yes"
                 if [ -t 0 ] && [ -t 1 ]; then
                     echo
@@ -1184,11 +1246,28 @@ clone_repo() {
                     log_info "Restoring local changes..."
                     if git stash apply "$autostash_ref"; then
                         git stash drop "$autostash_ref" >/dev/null
+                        # Now restore the post-pull dirt (if any) on top.
+                        if [ -n "$post_pull_dirt_ref" ] && \
+                           git rev-parse --verify "$post_pull_dirt_ref" >/dev/null 2>&1; then
+                            if git stash apply "$post_pull_dirt_ref" 2>/dev/null; then
+                                git stash drop "$post_pull_dirt_ref" >/dev/null
+                                log_warn "Re-applied generated-file dirt captured after pull."
+                            else
+                                log_warn "Post-pull dirt could not be re-applied automatically; preserved in stash as $post_pull_dirt_ref"
+                            fi
+                        fi
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
                         log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
                         log_info "Resolve manually with: git stash apply $autostash_ref"
+                        # Persist recovery info for the next run (#46791).
+                        # Best-effort: a failed marker write must not block
+                        # the existing exit 1 behaviour.
+                        {
+                            printf '{"version":1,"timestamp":"%s","stash_ref":"%s","post_pull_dirt_ref":"%s","note":"stash apply failed; manual recovery required"}\n' \
+                                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$autostash_ref" "$post_pull_dirt_ref"
+                        } > "$recovery_marker" 2>/dev/null || true
                         exit 1
                     fi
                 else
@@ -1197,6 +1276,10 @@ clone_repo() {
                     log_info "Restore manually with: git stash apply $autostash_ref"
                 fi
             fi
+            # Successful run: drop the recovery marker (no failure occurred
+            # this time, and any prior stash was applied or skipped under
+            # user control).
+            rm -f "$recovery_marker" 2>/dev/null || true
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"
             log_info "Remove it or choose a different directory with --dir"

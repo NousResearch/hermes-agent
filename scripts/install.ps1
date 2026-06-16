@@ -1151,6 +1151,18 @@ function Install-Repository {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             $autostashRef = ""
+            $postPullDirtRef = ""
+            # If a previous run left a recovery marker (#46791), surface it
+            # before touching the tree again -- otherwise the user can hit
+            # an unrecoverable state without realising the prior run already
+            # failed. Marker lives inside .git/ so it's invisible to
+            # `git status` and never gets stashed with user content.
+            $recoveryMarker = Join-Path (Join-Path $InstallDir ".git") "hermes-install-recovery.json"
+            if (Test-Path $recoveryMarker) {
+                Write-Warn "A previous hermes install/update left a recovery marker:"
+                Write-Warn "  $recoveryMarker"
+                Write-Warn "Inspect: Get-Content $recoveryMarker ; git stash list"
+            }
             try {
                 # This is a MANAGED checkout, not a repo the user edits. Git for
                 # Windows defaults to core.autocrlf=true, which renormalizes the
@@ -1171,6 +1183,13 @@ function Install-Repository {
                 # agent-created dirs (e.g. tinker-atropos/) survive too.
                 $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
                 if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
+                    # Snapshot to recovery marker BEFORE the `git reset` below
+                    # drops the index state. Best-effort: a write failure must
+                    # not abort the install (#46791).
+                    $markerPayload = '{"version":1,"timestamp":"' + (Get-Date -Format "o") + '","note":"pre-update snapshot"}'
+                    try {
+                        Set-Content -Path $recoveryMarker -Value $markerPayload -Encoding UTF8 -ErrorAction SilentlyContinue
+                    } catch { }
                     # A previously interrupted update can leave the index with
                     # unmerged entries. In that state `git stash` aborts with
                     # "could not write index" and the following `git checkout`
@@ -1187,6 +1206,10 @@ function Install-Repository {
                     }
                     $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
                     Write-Info "Local changes detected, stashing before update..."
+                    # The existing $LASTEXITCODE check protects against a
+                    # failed push, but a ref-shift between push and the
+                    # later apply can still target the wrong stash (#46791).
+                    # The verify below handles that case.
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
                     if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
                 }
@@ -1212,13 +1235,45 @@ function Install-Repository {
                     if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
                 }
 
+                # After pull/checkout, the post-checkout phase (or a leftover
+                # hook) may have dirtied generated files (package-lock.json,
+                # .pyc, etc.). Capture that dirt in a SEPARATE stash so the
+                # user's autostash can be applied on a clean tree. Without
+                # this step the post-pull dirt either re-conflicts with the
+                # autostash (looping on every run) or gets clobbered by it
+                # (#46791).
+                $postPullStatus = git -c windows.appendAtomically=false status --porcelain 2>$null
+                if ($autostashRef -and -not [string]::IsNullOrWhiteSpace(($postPullStatus -join "`n"))) {
+                    $ppdStashName = "hermes-install-post-pull-dirt-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+                    Write-Info "Capturing post-pull generated-file dirt into $ppdStashName..."
+                    git -c windows.appendAtomically=false stash push --include-untracked -m "$ppdStashName" 2>$null
+                    if ($LASTEXITCODE -eq 0) {
+                        $postPullDirtRef = "stash@{0}"
+                        # User stash was at stash@{0}; this push bumped it
+                        # to stash@{1}, so update the autostash ref.
+                        $autostashRef = "stash@{1}"
+                    }
+                }
+
                 if ($autostashRef) {
+                    # Verify the autostash ref still resolves before applying.
+                    # If the stash list shifted (e.g., user ran `git stash
+                    # drop` between updates) the apply would silently target
+                    # the wrong ref (#46791).
+                    git -c windows.appendAtomically=false rev-parse --verify $autostashRef 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Err "Autostash ref $autostashRef no longer exists in the stash list."
+                        Write-Info "Local changes may be in a different stash; inspect: git stash list"
+                        Write-Info "Recovery marker: $recoveryMarker"
+                        throw "autostash ref missing"
+                    }
+
                     # Default to restoring so work is never silently dropped.
                     # Only prompt when we're certain a human can answer: an
                     # interactive session AND a real, non-redirected console on
                     # both stdin and stdout. The desktop "Update" button and
-                    # bootstrap run the installer without a usable console -- in
-                    # those cases Read-Host would hang or return empty, so we
+                    # bootstrap run the installer without a usable console --
+                    # in those cases Read-Host would hang or return empty, so we
                     # skip the prompt and just restore (the safe default).
                     $restoreNow = $true
                     $hasConsole = $false
@@ -1242,11 +1297,31 @@ function Install-Repository {
                         git -c windows.appendAtomically=false stash apply $autostashRef
                         if ($LASTEXITCODE -eq 0) {
                             git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
+                            # Now restore the post-pull dirt (if any) on top.
+                            if ($postPullDirtRef) {
+                                git -c windows.appendAtomically=false rev-parse --verify $postPullDirtRef 2>$null
+                                if ($LASTEXITCODE -eq 0) {
+                                    git -c windows.appendAtomically=false stash apply $postPullDirtRef 2>$null
+                                    if ($LASTEXITCODE -eq 0) {
+                                        git -c windows.appendAtomically=false stash drop $postPullDirtRef 2>$null
+                                        Write-Warn "Re-applied generated-file dirt captured after pull."
+                                    } else {
+                                        Write-Warn "Post-pull dirt could not be re-applied automatically; preserved in stash as $postPullDirtRef"
+                                    }
+                                }
+                            }
                             Write-Warn "Local changes were restored on top of the updated codebase."
                             Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
                         } else {
                             Write-Err "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
                             Write-Info "Resolve manually with: git stash apply $autostashRef"
+                            # Persist recovery info for the next run (#46791).
+                            # Best-effort: a failed marker write must not
+                            # mask the existing throw below.
+                            $recoveryPayload = '{"version":1,"timestamp":"' + (Get-Date -Format "o") + '","stash_ref":"' + $autostashRef + '","post_pull_dirt_ref":"' + $postPullDirtRef + '","note":"stash apply failed; manual recovery required"}'
+                            try {
+                                Set-Content -Path $recoveryMarker -Value $recoveryPayload -Encoding UTF8 -ErrorAction SilentlyContinue
+                            } catch { }
                             throw "git stash apply failed after update"
                         }
                     } else {
@@ -1256,6 +1331,12 @@ function Install-Repository {
                     }
                     $autostashRef = ""
                 }
+                # Successful run: drop the recovery marker (no failure
+                # occurred this time, and any prior stash was applied or
+                # skipped under user control).
+                try {
+                    Remove-Item -Path $recoveryMarker -ErrorAction SilentlyContinue
+                } catch { }
             } finally {
                 if ($autostashRef) {
                     # We stashed but never reached the restore block (a fetch/

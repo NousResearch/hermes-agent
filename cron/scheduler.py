@@ -30,7 +30,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -656,6 +656,27 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _confirm_adapter_delivery(send_result: Any) -> bool:
+    """Return True only if ``send_result`` unambiguously confirms delivery.
+
+    A live adapter that returns ``None`` (e.g. swallowed exception, busy
+    platform, or a code path that returns early on whitespace-only text
+    without producing a ``SendResult``) must NOT be treated as success —
+    doing so causes the cron scheduler to log ``"delivered to <chat> via
+    live adapter"`` while the gateway never sees the message (#47056).
+
+    Likewise, an object missing a ``success`` attribute (e.g. a bare
+    ``dict`` or a partial mock) is a contract violation: it does not
+    actually tell us whether the send succeeded.  We require an explicit
+    ``success`` attribute set to a truthy value to count as confirmed.
+    """
+    if send_result is None:
+        return False
+    if not hasattr(send_result, "success"):
+        return False
+    return bool(getattr(send_result, "success"))
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -776,11 +797,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         except TimeoutError:
                             future.cancel()
                             raise
-                        if send_result and not getattr(send_result, "success", True):
-                            err = getattr(send_result, "error", "unknown")
+                        # Confirm the live adapter actually delivered.  A
+                        # ``None`` return (adapter swallowed an exception or
+                        # the platform is busy — see #47056) or a result
+                        # object missing a ``success`` attribute is NOT a
+                        # confirmed delivery: the gateway log would show
+                        # nothing while the scheduler logs ``"delivered"``.
+                        # Only ``SendResult(success=True, ...)`` counts as
+                        # confirmed.
+                        if not _confirm_adapter_delivery(send_result):
+                            err = getattr(send_result, "error", None) if send_result is not None else "no result"
+                            shape = type(send_result).__name__ if send_result is not None else "None"
                             logger.warning(
-                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                                job["id"], platform_name, chat_id, err,
+                                "Job '%s': live adapter send to %s:%s returned unconfirmed result "
+                                "(%s, error=%s), falling back to standalone",
+                                job["id"], platform_name, chat_id, shape, err,
                             )
                             adapter_ok = False  # fall through to standalone path
                         elif (

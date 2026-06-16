@@ -2600,6 +2600,230 @@ class TestDeliverResultTimeoutCancelsFuture:
         )
 
 
+class TestDeliverResultLiveAdapterSilentFailure:
+    """Regression for #47056.
+
+    When a live adapter's ``send()`` returns ``None`` (or a non-SendResult
+    object without an explicit ``success`` attribute), the cron scheduler
+    must NOT log ``"delivered to ... via live adapter"`` and silently drop
+    the message.  The original implementation short-circuited on
+    ``if send_result and not getattr(send_result, "success", True):`` —
+    ``None`` skipped the failure branch entirely, and missing ``success``
+    defaulted to ``True`` (success).
+
+    Both silent-failure shapes must fall through to the standalone
+    delivery path so the message is actually delivered.
+    """
+
+    def _build_env(self, platform, adapter):
+        """Common scaffolding: a live adapter on a real running loop, with
+        the standalone fallback also patched so we can detect whether the
+        fallback fired."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {platform: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        return mock_cfg, loop
+
+    def test_live_adapter_returning_none_falls_through_to_standalone(self):
+        """``send()`` returning ``None`` (e.g. adapter swallowed an exception
+        or the platform is busy) must not be treated as a successful live
+        delivery.  The standalone path must run and successfully deliver.
+        """
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = None  # type: ignore[assignment]
+
+        mock_cfg, loop = self._build_env(Platform.TELEGRAM, adapter)
+
+        completed_future = Future()
+        completed_future.set_result(None)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "silent-none-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Here is the cron output",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        # The live adapter returned None — that is NOT a confirmed delivery.
+        # The standalone fallback MUST have been called, and the function
+        # must have returned None (no error) because the standalone path
+        # succeeded.
+        assert result is None, (
+            f"expected standalone fallback to deliver successfully, got {result!r}"
+        )
+        standalone_send.assert_awaited_once()
+
+    def test_live_adapter_returning_dict_without_success_falls_through(self):
+        """``send()`` returning a plain ``dict`` (no ``success`` attribute)
+        must not be silently treated as success via the
+        ``getattr(..., True)`` default.  Such a shape is a contract
+        violation and must fall through to the standalone path.
+        """
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = {"ok": True, "message_id": "42"}  # no `success` attr
+
+        mock_cfg, loop = self._build_env(Platform.TELEGRAM, adapter)
+
+        completed_future = Future()
+        completed_future.set_result({"ok": True, "message_id": "42"})
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "silent-dict-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Here is the cron output",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        standalone_send.assert_awaited_once()
+
+    def test_live_adapter_returning_sendresult_success_is_accepted(self):
+        """Sanity: a properly-shaped ``SendResult(success=True, ...)``
+        must still be treated as a successful live delivery (no
+        regression on the happy path)."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="42")
+        adapter = AsyncMock()
+        adapter.send.return_value = send_result
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        completed_future = Future()
+        completed_future.set_result(send_result)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "happy-path-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        # The standalone path must NOT have been called when the live
+        # adapter confirmed success.
+        standalone_send.assert_not_awaited()
+
+    def test_live_adapter_returning_sendresult_failure_falls_through(self):
+        """``SendResult(success=False, ...)`` must still fall through to
+        the standalone path (this was the pre-existing behavior; the fix
+        must not regress it)."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=False, error="rate_limited", retryable=True)
+        adapter = AsyncMock()
+        adapter.send.return_value = send_result
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        completed_future = Future()
+        completed_future.set_result(send_result)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "explicit-failure-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None
+        standalone_send.assert_awaited_once()
+
+
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's
     future.result(timeout=30) call. If this times out mid-batch, the

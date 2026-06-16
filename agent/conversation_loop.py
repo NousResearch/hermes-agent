@@ -49,6 +49,7 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
+    is_local_endpoint,
     get_context_length_from_provider_error,
     parse_available_output_tokens_from_error,
     save_context_length,
@@ -76,14 +77,18 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     if not getattr(agent, "tools", None):
         return None
 
+    base_url = getattr(agent, "base_url", "") or ""
+    if not base_url or not is_local_endpoint(base_url):
+        return None
+
     runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
     if not isinstance(runtime_ctx, int) or runtime_ctx <= 0:
         return None
-    if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
+    minimum_context_length = getattr(agent, "_minimum_context_length", MINIMUM_CONTEXT_LENGTH)
+    if runtime_ctx >= minimum_context_length:
         return None
 
     model = getattr(agent, "model", "") or "the selected model"
-    base_url = getattr(agent, "base_url", "") or "unknown base URL"
     provider = getattr(agent, "provider", "") or "unknown"
     tool_count = len(getattr(agent, "tools", None) or [])
 
@@ -96,7 +101,7 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
         provider,
         base_url,
         runtime_ctx,
-        MINIMUM_CONTEXT_LENGTH,
+        minimum_context_length,
         request_tokens,
         tool_count,
         getattr(agent, "session_id", None) or "none",
@@ -104,13 +109,14 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
 
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        f"context, but Hermes needs at least {minimum_context_length:,} tokens "
         "for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the "
         "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
-        "(and `model.context_length: 65536` if you also override the displayed "
-        "model context). If you manage the model through an Ollama Modelfile, "
+        "tokens for the default Hermes profile. In Hermes config, set "
+        "`model.ollama_num_ctx: 65536` and `model.context_length: 65536`, "
+        "or set both values to match your configured minimum context. "
+        "If you manage the model through an Ollama Modelfile, "
         "set `PARAMETER num_ctx 65536` there instead."
     )
 

@@ -1210,6 +1210,15 @@ model:
   context_length: 131072  # tokens
 ```
 
+Hermes also enforces a startup safety floor for tool-using sessions. The default is 64,000 tokens. For a deliberately small local profile where you accept reduced tool-use headroom, set `model.minimum_context_length` to the minimum Hermes should enforce:
+
+```yaml
+model:
+  context_length: 8192
+  ollama_num_ctx: 8192
+  minimum_context_length: 7000
+```
+
 For custom endpoints, you can also set context length per model:
 
 ```yaml

@@ -1369,6 +1369,31 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
+    # Read optional minimum context override from model config. The default
+    # remains the Hermes 64K floor, but deliberately small local profiles can
+    # set a lower value when the operator accepts reduced tool-use headroom.
+    _config_minimum_context_length = MINIMUM_CONTEXT_LENGTH
+    if isinstance(_model_cfg, dict):
+        _configured_minimum_context_length = _model_cfg.get("minimum_context_length")
+    else:
+        _configured_minimum_context_length = None
+    if _configured_minimum_context_length is not None:
+        try:
+            if isinstance(_configured_minimum_context_length, bool):
+                raise ValueError
+            _parsed_minimum_context_length = int(_configured_minimum_context_length)
+            if _parsed_minimum_context_length <= 0:
+                raise ValueError
+            _config_minimum_context_length = _parsed_minimum_context_length
+        except (TypeError, ValueError):
+            _ra().logger.warning(
+                "Invalid model.minimum_context_length in config.yaml: %r - "
+                "must be a positive integer. Falling back to %d.",
+                _configured_minimum_context_length,
+                MINIMUM_CONTEXT_LENGTH,
+            )
+    agent._minimum_context_length = _config_minimum_context_length
+
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):
         _config_context_length = _model_cfg.get("context_length")
@@ -1542,16 +1567,17 @@ def init_agent(
         )
     agent.compression_enabled = compression_enabled
 
-    # Reject models whose context window is below the minimum required
-    # for reliable tool-calling workflows (64K tokens).
+    # Reject models whose context window is below the configured minimum.
+    # Defaults to the Hermes 64K floor unless model.minimum_context_length is set.
     _ctx = getattr(agent.context_compressor, "context_length", 0)
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
+    _minimum_context_length = getattr(agent, "_minimum_context_length", MINIMUM_CONTEXT_LENGTH)
+    if _ctx and _ctx < _minimum_context_length:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
-            f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+            f"which is below the minimum {_minimum_context_length:,} required "
             f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-            f"model.context_length in config.yaml to override."
+            f"{_minimum_context_length // 1000}K context, or set "
+            f"model.context_length or model.minimum_context_length in config.yaml to override."
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).

@@ -734,6 +734,63 @@ class TestMaskApiKey:
 # ===================================================================
 
 
+class TestMinimumContextLength:
+    def test_init_uses_configured_minimum_context_length(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "model": {
+                        "context_length": 8192,
+                        "minimum_context_length": 7000,
+                        "ollama_num_ctx": 8192,
+                    }
+                },
+            ),
+        ):
+            agent = AIAgent(
+                api_key="ollama-local",
+                base_url="http://127.0.0.1:11434/v1",
+                model="qwen3-homefast:8b",
+                provider="custom",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent._minimum_context_length == 7000
+
+    def test_init_rejects_context_below_configured_minimum_context_length(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "model": {
+                        "context_length": 4096,
+                        "minimum_context_length": 7000,
+                        "ollama_num_ctx": 4096,
+                    }
+                },
+            ),
+        ):
+            with pytest.raises(ValueError, match="minimum 7,000"):
+                AIAgent(
+                    api_key="ollama-local",
+                    base_url="http://127.0.0.1:11434/v1",
+                    model="llama3.2:3b",
+                    provider="custom",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+
+
 class TestInit:
     def test_anthropic_base_url_accepted(self):
         """Anthropic base URLs should route to native Anthropic client."""
@@ -3410,6 +3467,41 @@ class TestRunConversation:
         assert not agent.client.chat.completions.create.called
         assert "Ollama runtime context too small for Hermes tool use" in caplog.text
         assert "runtime_context=4096" in caplog.text
+
+    def test_ollama_small_runtime_context_honors_configured_minimum(self, agent):
+        from agent.conversation_loop import _ollama_context_limit_error
+
+        agent.model = "llama3.2:3b"
+        agent.provider = "custom"
+        agent.base_url = "http://127.0.0.1:11434/v1"
+        agent._ollama_num_ctx = 4096
+        agent._minimum_context_length = 3500
+
+        assert _ollama_context_limit_error(agent, 1024) is None
+
+    def test_ollama_runtime_context_check_skips_cloud_provider(self, agent):
+        from agent.conversation_loop import _ollama_context_limit_error
+
+        agent.model = "gpt-5.5"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._ollama_num_ctx = 4096
+        agent._minimum_context_length = 64000
+
+        assert _ollama_context_limit_error(agent, 1024) is None
+
+    def test_ollama_runtime_context_message_uses_configured_minimum(self, agent):
+        from agent.conversation_loop import _ollama_context_limit_error
+
+        agent.model = "llama3.2:3b"
+        agent.provider = "custom"
+        agent.base_url = "http://127.0.0.1:11434/v1"
+        agent._ollama_num_ctx = 4096
+        agent._minimum_context_length = 7000
+
+        error = _ollama_context_limit_error(agent, 1024)
+        assert error is not None
+        assert "at least 7,000 tokens" in error
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

@@ -150,3 +150,17 @@ def test_live_mode_requires_phase_two_minimum_sample_size() -> None:
         harness.validate_run_config(mode="live", n=int("179"))
 
     harness.validate_run_config(mode="live", n=int("180"))
+
+
+def test_default_gate_thresholds_match_prd6_spec():
+    """PRD-6: N=180, point recall >=0.95, Wilson 95% lower bound >=0.90 (binding),
+    judge precision/recall >=0.95. Lock the spec numbers as the shipped defaults so a
+    future edit can't silently re-tighten Wilson to 0.95 (unreachable at N=180) or
+    loosen the point/judge gates."""
+    gt = harness.GateThresholds()
+    assert gt.min_trials == 180
+    assert gt.recall_point_min == pytest.approx(0.95)
+    assert gt.wilson_lower_min == pytest.approx(0.90)
+    assert gt.judge_precision_min == pytest.approx(0.95)
+    assert gt.judge_recall_min == pytest.approx(0.95)
+    assert gt.require_tool_call_evidence is True

@@ -2175,7 +2175,6 @@ def _git_path(path: str) -> str:
 class GitPathBody(BaseModel):
     path: str
 
-
 class GitFileBody(BaseModel):
     path: str
     file: Optional[str] = None
@@ -3914,6 +3913,7 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                compact_rows=True,
             )
             total = db.session_count(
                 source=source or None,
@@ -4032,6 +4032,7 @@ def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                compact_rows=True,
             )
             profile_total = db.session_count(
                 source=source_filter,

@@ -1534,6 +1534,25 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+def _load_profile_config(profile_name: str) -> dict:
+    """Load a specific Hermes profile config.yaml.
+
+    Returns the parsed config dict or {} on error.  Used by
+    topic-to-profile routing to load the target profile model,
+    tools, and skills during agent creation.
+    """
+    profile_home = get_hermes_home().parent / profile_name
+    config_path = profile_home / "config.yaml"
+    try:
+        if config_path.exists():
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        logger.debug("Could not load profile config from %s", config_path)
+    return {}
+
+
 def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
 
@@ -16654,6 +16673,11 @@ class GatewayRunner:
             return self._is_session_run_current(session_key, run_generation)
         
         user_config = _load_gateway_config()
+        # Topic-to-profile routing: override config with target profile
+        if getattr(source, "routing_profile", None):
+            profile_cfg = _load_profile_config(source.routing_profile)
+            if profile_cfg:
+                user_config = profile_cfg
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools

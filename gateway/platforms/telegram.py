@@ -491,6 +491,23 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Topic-to-profile routing: dispatch messages from specific forum
+        # topics to a different Hermes profile (model, skills, memory, SOUL).
+        # Config: telegram.topic_profiles:
+        #   - match: {chat_id: "-100...", thread_id: "2460"}
+        #     profile: "fitness"
+        self._topic_profiles: Dict[tuple, str] = {}
+        _tp_cfg = self.config.extra.get("topic_profiles")
+        if isinstance(_tp_cfg, list):
+            for entry in _tp_cfg:
+                if not isinstance(entry, dict):
+                    continue
+                match = entry.get("match", {}) or {}
+                chat_id = str(match.get("chat_id", ""))
+                thread_id = str(match.get("thread_id", ""))
+                profile = str(entry.get("profile", "")).strip()
+                if chat_id and profile:
+                    self._topic_profiles[(chat_id, thread_id)] = profile
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -506,6 +523,41 @@ class TelegramAdapter(BasePlatformAdapter):
         if (metadata or {}).get("notify"):
             return {}
         return {"disable_notification": True}
+
+    def _resolve_topic_profile(self, msg):
+        """Resolve target profile for a message based on topic_profiles routing.
+
+        Checks the message's chat_id + message_thread_id against the
+        configured topic_profiles routing table.  Returns the target
+        profile name on match, or None to use the default profile.
+        """
+        if not self._topic_profiles or not msg:
+            return None
+        chat_id = str(getattr(getattr(msg, "chat", None), "id", "") or "")
+        thread_id = str(
+            getattr(msg, "message_thread_id", None) or ""
+        )
+        # Exact match first: chat_id + thread_id
+        profile = self._topic_profiles.get((chat_id, thread_id))
+        if profile:
+            return profile
+        # Fallback: chat_id + empty thread_id (messages without thread_id)
+        if thread_id:
+            profile = self._topic_profiles.get((chat_id, ""))
+            if profile:
+                return profile
+        return None
+
+    def _apply_topic_profile_routing(self, event, msg):
+        """Apply topic-to-profile routing to a MessageEvent.
+
+        Calls _resolve_topic_profile and attaches the target profile to
+        the event.  The gateway runner detects this attribute and loads
+        the target profile config for the session.
+        """
+        profile = self._resolve_topic_profile(msg)
+        if profile:
+            event.source.routing_profile = profile
 
     def _is_callback_user_authorized(
         self,
@@ -5093,6 +5145,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
+        self._apply_topic_profile_routing(event, msg)
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5133,6 +5186,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
+        self._apply_topic_profile_routing(event, msg)
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
@@ -5334,6 +5388,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Apply observe attribution after caption is set; sticker is handled above
         # because _handle_sticker overwrites event.text with its vision description.
         event = self._apply_telegram_group_observe_attribution(event)
+        self._apply_topic_profile_routing(event, msg)
 
         # Download photo to local image cache so the vision tool can access it
         # even after Telegram's ephemeral file URLs expire (~1 hour).

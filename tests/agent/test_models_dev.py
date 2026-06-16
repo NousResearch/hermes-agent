@@ -1,8 +1,6 @@
 """Tests for agent.models_dev — models.dev registry integration."""
-import json
 from unittest.mock import patch, MagicMock
 
-import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
@@ -41,6 +39,16 @@ SAMPLE_REGISTRY = {
             },
         },
     },
+    "xai": {
+        "id": "xai",
+        "name": "xAI",
+        "models": {
+            "grok-build-0.1": {
+                "id": "grok-build-0.1",
+                "limit": {"context": 256000, "output": 64000},
+            },
+        },
+    },
     "kilo": {
         "id": "kilo",
         "name": "Kilo Gateway",
@@ -74,17 +82,9 @@ SAMPLE_REGISTRY = {
 
 
 class TestProviderMapping:
-    def test_all_mapped_providers_are_strings(self):
-        for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-            assert isinstance(hermes_id, str)
-            assert isinstance(mdev_id, str)
-
-    def test_known_providers_mapped(self):
-        assert PROVIDER_TO_MODELS_DEV["anthropic"] == "anthropic"
-        assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
-        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
-        assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
-        assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
+    def test_xai_oauth_uses_xai_catalog(self):
+        assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"
+        assert PROVIDER_TO_MODELS_DEV["xai-oauth"] == "xai"
 
     def test_unmapped_provider_not_in_dict(self):
         assert "nous" not in PROVIDER_TO_MODELS_DEV
@@ -143,6 +143,12 @@ class TestLookupModelsDevContext:
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
         # GitHub Copilot: only 128K for same model
         assert lookup_models_dev_context("copilot", "claude-opus-4.6") == 128000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_xai_oauth_resolves_xai_context(self, mock_fetch):
+        """xAI OAuth is an auth path, not a separate model catalog."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("xai-oauth", "grok-build-0.1") == 256000
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):

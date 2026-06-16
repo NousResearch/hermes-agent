@@ -77,25 +77,49 @@ def test_show_status_reports_nous_auth_error(monkeypatch, capsys, tmp_path):
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
-    assert "Nous Portal   ✗ not logged in (run: hermes auth add nous --type oauth)" in output
+    assert "Nous Portal   ✗ not logged in (run: hermes portal)" in output
     assert "Error:      Refresh session has been revoked" in output
     assert "Access exp:" in output
     assert "Key exp:" in output
 
 
-def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_path):
+def test_show_status_reports_nous_inference_key_without_portal_login(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
+    from hermes_cli.nous_account import NousPortalAccountInfo
     import hermes_cli.auth as auth_mod
     import hermes_cli.gateway as gateway_mod
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
-    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
-    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
-    monkeypatch.setattr(status_mod.importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
-    monkeypatch.setattr(status_mod, "load_config", lambda: {"terminal": {"backend": "vercel_sandbox"}}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(
+        auth_mod,
+        "get_nous_auth_status",
+        lambda: {
+            "logged_in": False,
+            "inference_credential_present": True,
+            "credential_source": "pool:manual opaque key",
+            "inference_base_url": "https://inference.example.com/v1",
+            "agent_key_expires_at": "2099-01-01T00:00:00+00:00",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        status_mod,
+        "get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+            logged_in=False,
+            source="inference_key",
+            fresh=False,
+            inference_credential_present=True,
+            inference_base_url="https://inference.example.com/v1",
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(status_mod, "managed_nous_tools_enabled", lambda: False, raising=False)
     monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
@@ -104,14 +128,9 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
-    assert "Backend:      vercel_sandbox" in output
-    assert "Runtime:      python3.13" in output
-    assert "Auth:" in output and "OIDC token via VERCEL_OIDC_TOKEN" in output
-    assert "Auth detail:  mode: OIDC" in output
-    assert "Auth detail:  active env: VERCEL_OIDC_TOKEN" in output
-    assert "oidc-token" not in output
-    assert "snapshot filesystem" in output
-    assert "live processes do not survive" in output
+    assert "Nous Portal   ✗ not logged in (Nous inference key configured)" in output
+    assert "Inference:  https://inference.example.com/v1" in output
+    assert "Nous inference credentials are configured" in output
 
 
 # ---------------------------------------------------------------------------

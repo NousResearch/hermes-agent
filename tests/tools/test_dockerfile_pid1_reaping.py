@@ -5,11 +5,17 @@ they deliberately avoid snapshotting specific package versions, line numbers,
 or exact flag choices.  What they DO assert is that the Dockerfile maintains
 the properties required for correct production behaviour:
 
-- A PID-1 init (tini) is installed and wraps the entrypoint, so that orphaned
+- A PID-1 init is installed and wraps the entrypoint, so that orphaned
   subprocesses (MCP stdio servers, git, bun, browser daemons) get reaped
   instead of accumulating as zombies (#15012).
 - Signal forwarding runs through the init so ``docker stop`` triggers
   hermes's own graceful-shutdown path.
+
+The init can be any reaper-capable PID-1: the historical lineage was
+``tini``; the current image uses s6-overlay's ``/init`` (which execs
+``s6-svscan`` as PID 1, with the same SIGCHLD-reaping property). The
+checks below accept either family — the contract is behavioural, not
+nominal.
 """
 
 from __future__ import annotations
@@ -22,6 +28,21 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+
+
+# Init-process families this repo accepts as PID 1. ``tini`` /
+# ``dumb-init`` / ``catatonit`` are classic minimal reapers; s6-overlay
+# ships ``/init`` which execs ``s6-svscan`` as PID 1 (same reaper
+# contract, plus supervision of declared services). Either family
+# satisfies the zombie-reaping invariant — see issue #15012.
+_KNOWN_INIT_TOKENS: tuple[str, ...] = (
+    "tini",
+    "dumb-init",
+    "catatonit",
+    "s6-overlay",
+    "s6-svscan",
+    "/init",
+)
 
 
 @pytest.fixture(scope="module")
@@ -57,8 +78,17 @@ def _run_steps(dockerfile_text: str) -> list[str]:
     ]
 
 
+def _instruction_text(dockerfile_text: str) -> str:
+    """Join every non-comment Dockerfile instruction into one searchable
+    string. Crucially excludes comments — otherwise the historical
+    explanation of "we used to use tini" would silently satisfy a
+    substring check long after tini was removed from the build.
+    """
+    return "\n".join(_dockerfile_instructions(dockerfile_text))
+
+
 def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
-    """Some init (tini, dumb-init, catatonit) must be installed.
+    """Some init (tini, dumb-init, catatonit, s6-overlay) must be installed.
 
     Without a PID-1 init that handles SIGCHLD, hermes accumulates zombie
     processes from MCP stdio subprocesses, git operations, browser
@@ -67,12 +97,17 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
     """
     # Accept any of the common reapers.  The contract is behavioural:
     # something must be installed that reaps orphans.
-    known_inits = ("tini", "dumb-init", "catatonit")
-    installed = any(name in dockerfile_text for name in known_inits)
+    #
+    # Scan instructions only (no comments) so a stale historical mention
+    # in a comment can't masquerade as a current install. Without this,
+    # removing tini from the actual build but leaving the word in a
+    # comment would silently keep the test green.
+    instructions = _instruction_text(dockerfile_text)
+    installed = any(name in instructions for name in _KNOWN_INIT_TOKENS)
     assert installed, (
-        "No PID-1 init detected in Dockerfile (looked for: "
-        f"{', '.join(known_inits)}). Without an init process to reap "
-        "orphaned subprocesses, hermes accumulates zombies in Docker "
+        "No PID-1 init detected in Dockerfile instructions (looked for: "
+        f"{', '.join(_KNOWN_INIT_TOKENS)}). Without an init process to "
+        "reap orphaned subprocesses, hermes accumulates zombies in Docker "
         "deployments. See issue #15012."
     )
 
@@ -80,8 +115,8 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
 def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
     """The ENTRYPOINT must invoke the init, not the entrypoint script directly.
 
-    Installing tini is only half the fix — the container must actually run
-    with tini as PID 1.  If the ENTRYPOINT executes the shell script
+    Installing the init is only half the fix — the container must actually
+    run with it as PID 1.  If the ENTRYPOINT executes the shell script
     directly, the shell becomes PID 1 and will ``exec`` into hermes,
     which then runs as PID 1 without any zombie reaping.
     """
@@ -96,12 +131,12 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
     assert entrypoint_line is not None, "Dockerfile is missing an ENTRYPOINT directive"
 
-    known_inits = ("tini", "dumb-init", "catatonit")
-    routes_through_init = any(name in entrypoint_line for name in known_inits)
+    routes_through_init = any(name in entrypoint_line for name in _KNOWN_INIT_TOKENS)
     assert routes_through_init, (
-        f"ENTRYPOINT does not route through an init: {entrypoint_line!r}. "
-        "If tini is only installed but not wired into ENTRYPOINT, hermes "
-        "still runs as PID 1 and zombies will accumulate (#15012)."
+        f"ENTRYPOINT does not route through a PID-1 init: {entrypoint_line!r}. "
+        f"Expected one of {_KNOWN_INIT_TOKENS}. If the init is installed but "
+        "not wired into ENTRYPOINT, hermes still runs as PID 1 and zombies "
+        "will accumulate (#15012)."
     )
 
 
@@ -112,11 +147,13 @@ def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     # because it's referenced as a ``file:`` workspace dependency from
     # ``ui-tui/package.json`` — copying the tree avoids npm stopping at a
     # bare ``package.json`` shell.
+    # With a single workspace root lockfile, only the root package-lock.json
+    # is copied; per-workspace lockfiles no longer exist.
     assert "ui-tui/package.json" in dockerfile_text
-    assert "ui-tui/package-lock.json" in dockerfile_text
     assert "ui-tui/packages/hermes-ink/" in dockerfile_text
+    assert "package-lock.json" in dockerfile_text
     assert any(
-        "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
+        "npm" in step and (" install" in step or " ci" in step)
         for step in _run_steps(dockerfile_text)
     )
 
@@ -132,6 +169,48 @@ def test_dockerfile_preinstalls_gateway_messaging_dependencies(dockerfile_text):
         "Published Docker images must preload the [messaging] extra so "
         "Telegram/Discord gateway adapters do not depend on first-boot "
         "lazy installation (#24698)."
+    )
+
+
+def test_dockerfile_preinstalls_matrix_dependencies(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra matrix" in step for step in sync_steps), (
+        "Published Docker images must preload the [matrix] extra so the "
+        "Matrix gateway has mautrix[encryption]/python-olm available at "
+        "runtime instead of relying on first-boot lazy installation into "
+        "the container venv (#30399)."
+    )
+
+
+def test_dockerfile_installs_matrix_native_build_dependencies(dockerfile_text):
+    instructions = _instruction_text(dockerfile_text)
+
+    for package in ("libolm-dev", "cmake", "g++", "make"):
+        assert package in instructions, (
+            "Docker image must include native build dependencies needed by "
+            f"python-olm when preinstalling the [matrix] extra (#30399): {package}"
+        )
+
+
+def test_dockerfile_preinstalls_hindsight_memory_dependency(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra hindsight" in step for step in sync_steps), (
+        "Published Docker images must preload the [hindsight] extra so the "
+        "native Hindsight memory provider's client (hindsight-client) is baked "
+        "into /opt/hermes/.venv. It lazy-installs into the image layer (not the "
+        "mounted /opt/data volume), so without baking it in recall/retain fails "
+        "with `ModuleNotFoundError: No module named 'hindsight_client'` after "
+        "every container recreate / image update (#38128)."
     )
 
 

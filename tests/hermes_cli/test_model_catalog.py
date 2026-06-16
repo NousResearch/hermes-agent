@@ -172,6 +172,90 @@ class TestFetchFailure:
         assert result == manifest
 
 
+class TestFallbackChain:
+    """``_fetch_manifest_with_fallback`` walks ``DEFAULT_CATALOG_FALLBACK_URLS``
+    when the primary URL fails. Regression: the Docusaurus site behind Vercel
+    occasionally returns HTTP 403 + x-vercel-mitigated: challenge for urllib;
+    without a fallback URL the user's disk cache freezes and new model
+    releases (opus 4.8, etc.) never reach the picker.
+    """
+
+    PRIMARY = "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json"
+    FALLBACK = (
+        "https://raw.githubusercontent.com/NousResearch/hermes-agent"
+        "/main/website/static/api/model-catalog.json"
+    )
+
+    def test_uses_primary_when_it_succeeds(self, isolated_home):
+        from hermes_cli import model_catalog
+        calls: list[str] = []
+
+        def fake_fetch(url, timeout):
+            calls.append(url)
+            return _valid_manifest()
+
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch):
+            result = model_catalog._fetch_manifest_with_fallback(self.PRIMARY, 5.0)
+
+        assert result is not None
+        assert calls == [self.PRIMARY], "fallback URLs must not be touched on primary success"
+
+    def test_falls_through_to_raw_github_on_primary_failure(self, isolated_home):
+        from hermes_cli import model_catalog
+        calls: list[str] = []
+
+        def fake_fetch(url, timeout):
+            calls.append(url)
+            if url == self.PRIMARY:
+                return None  # simulate Vercel 403
+            return _valid_manifest()
+
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch):
+            result = model_catalog._fetch_manifest_with_fallback(self.PRIMARY, 5.0)
+
+        assert result is not None
+        assert calls == [self.PRIMARY, self.FALLBACK]
+
+    def test_returns_none_when_all_urls_fail(self, isolated_home):
+        from hermes_cli import model_catalog
+
+        with patch.object(model_catalog, "_fetch_manifest", return_value=None) as fetch:
+            result = model_catalog._fetch_manifest_with_fallback(self.PRIMARY, 5.0)
+
+        assert result is None
+        # Primary + every fallback URL was attempted exactly once.
+        assert fetch.call_count == 1 + len(model_catalog.DEFAULT_CATALOG_FALLBACK_URLS)
+
+    def test_dedupes_when_primary_equals_fallback(self, isolated_home):
+        """Operator who configured ``model_catalog.url`` to the raw GitHub URL
+        should not get a duplicate fetch from the fallback list."""
+        from hermes_cli import model_catalog
+
+        with patch.object(model_catalog, "_fetch_manifest", return_value=None) as fetch:
+            model_catalog._fetch_manifest_with_fallback(self.FALLBACK, 5.0)
+
+        assert fetch.call_count == 1, f"expected 1 call, got {fetch.call_count}"
+
+    def test_get_catalog_uses_fallback_chain(self, isolated_home):
+        """End-to-end: ``get_catalog`` routes through the fallback helper so
+        a primary URL failure transparently produces a working catalog."""
+        from hermes_cli import model_catalog
+        manifest = _valid_manifest()
+        calls: list[str] = []
+
+        def fake_fetch(url, timeout):
+            calls.append(url)
+            if url == self.PRIMARY:
+                return None
+            return manifest
+
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch):
+            result = model_catalog.get_catalog(force_refresh=True)
+
+        assert result == manifest
+        assert self.FALLBACK in calls
+
+
 class TestCuratedAccessors:
     def test_openrouter_returns_tuples(self, isolated_home):
         from hermes_cli import model_catalog
@@ -284,12 +368,12 @@ class TestIntegrationWithModelsModule:
 
         assert result == ["anthropic/claude-opus-4.7", "moonshotai/kimi-k2.6"]
 
-    def test_picker_nous_row_uses_manifest(self, tmp_path, monkeypatch):
-        """The /model picker must surface the manifest's nous list, not the
-        in-repo _PROVIDER_MODELS["nous"] snapshot. Regression: before this
-        fix, list_authenticated_providers() built the curated dict from
-        _PROVIDER_MODELS only — so newly-added Portal models never reached
-        the slash-command picker until the next Hermes release.
+    def test_picker_nous_row_uses_curated_list(self, tmp_path, monkeypatch):
+        """The /model picker surfaces the curated ``_PROVIDER_MODELS["nous"]``
+        list in curated order — matching the ``hermes model`` CLI — not the live
+        ``/v1/models`` catalog or the manifest. Portal free/paid recommendations
+        are unioned in when reachable; offline (as here, with the Portal calls
+        stubbed out) it's exactly the curated list.
         """
         # We deliberately do NOT use the ``isolated_home`` fixture here:
         # that fixture monkeypatches ``Path.home`` to ``tmp_path``, which
@@ -299,6 +383,7 @@ class TestIntegrationWithModelsModule:
         # ``_hermetic_environment`` HERMES_HOME directly instead.
         import importlib
         from hermes_cli import model_catalog
+        from hermes_cli.models import get_curated_nous_model_ids
         importlib.reload(model_catalog)
         try:
             from hermes_cli.model_switch import list_picker_providers
@@ -313,9 +398,21 @@ class TestIntegrationWithModelsModule:
                 )
             )
 
+            # Stub the Portal recommendation union so the row is deterministic
+            # (the curated list alone) and never touches the network. ``expected``
+            # is computed from the same source the picker uses internally
+            # (``curated["nous"] = get_curated_nous_model_ids()``), so the test
+            # stays an invariant — it can't rot as the curated/manifest list grows.
             with patch.object(
                 model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+            ), patch("hermes_cli.models.check_nous_free_tier", return_value=False), patch(
+                "hermes_cli.models.union_with_portal_free_recommendations",
+                side_effect=lambda ids, *a, **k: (ids, {}),
+            ), patch(
+                "hermes_cli.models.union_with_portal_paid_recommendations",
+                side_effect=lambda ids, *a, **k: (ids, {}),
             ):
+                expected = get_curated_nous_model_ids()
                 picker = list_picker_providers(
                     current_provider="nous", max_models=99
                 )
@@ -324,10 +421,7 @@ class TestIntegrationWithModelsModule:
 
         nous_row = next((r for r in picker if r["slug"] == "nous"), None)
         assert nous_row is not None, "nous row must appear when authed"
-        assert nous_row["models"] == [
-            "anthropic/claude-opus-4.7",
-            "moonshotai/kimi-k2.6",
-        ]
+        assert nous_row["models"] == expected
 
 
 # -----------------------------------------------------------------------------

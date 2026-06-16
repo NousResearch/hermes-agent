@@ -150,6 +150,18 @@ def test_strip_mode_preserves_table_structure_while_cleaning_cell_markdown():
     )
 
 
+def test_strip_mode_preserves_cron_asterisks_in_plain_text():
+    renderable = _render_final_assistant_content("* * * * *", mode="strip")
+
+    output = _render_to_text(renderable)
+    assert "* * * * *" in output
+
+    # Still treat the canonical 3-asterisk Markdown horizontal rule as decoration.
+    renderable = _render_final_assistant_content("* * *", mode="strip")
+    output = _render_to_text(renderable)
+    assert "* * *" not in output
+
+
 def test_final_assistant_content_can_leave_markdown_raw():
     renderable = _render_final_assistant_content("***Bold italic***", mode="raw")
 

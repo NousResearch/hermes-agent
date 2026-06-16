@@ -430,6 +430,12 @@ Brief intro.
 ## When to Use
 Trigger conditions — when should the agent load this skill?
 
+## Prerequisites
+Env vars, install steps, MCP setup, API key sourcing.
+
+## How to Run
+Canonical invocation through the `terminal` tool.
+
 ## Quick Reference
 Table of common commands or API calls.
 

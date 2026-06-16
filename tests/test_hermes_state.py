@@ -5362,3 +5362,63 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+# =========================================================================
+# compact_rows — lightweight column projection (issue #47414)
+# =========================================================================
+
+class TestCompactRows:
+    """list_sessions_rich and _get_session_rich_row with compact_rows=True
+    must omit system_prompt but return all other metadata fields."""
+
+    def _create(self, db, sid, *, system_prompt="big blob " * 500):
+        db.create_session(session_id=sid, source="cli", model="m")
+        db.update_system_prompt(sid, system_prompt)
+        return sid
+
+    def test_compact_rows_omits_system_prompt(self, db):
+        self._create(db, "s1")
+        rows = db.list_sessions_rich(compact_rows=True)
+        assert len(rows) == 1
+        assert "system_prompt" not in rows[0]
+
+    def test_full_rows_include_system_prompt(self, db):
+        self._create(db, "s1", system_prompt="keep me")
+        rows = db.list_sessions_rich(compact_rows=False)
+        assert rows[0]["system_prompt"] == "keep me"
+
+    def test_compact_rows_preserves_metadata_fields(self, db):
+        self._create(db, "s1")
+        rows = db.list_sessions_rich(compact_rows=True)
+        row = rows[0]
+        for field in ("id", "source", "model", "started_at", "message_count",
+                      "input_tokens", "output_tokens", "title", "cwd",
+                      "archived", "preview", "last_active"):
+            assert field in row, f"missing field: {field}"
+
+    def test_compact_rows_order_by_last_active(self, db):
+        """compact_rows=True also works with the CTE / order_by_last_active path."""
+        self._create(db, "s1")
+        self._create(db, "s2")
+        rows = db.list_sessions_rich(compact_rows=True, order_by_last_active=True)
+        assert len(rows) == 2
+        assert all("system_prompt" not in r for r in rows)
+
+    def test_get_session_rich_row_compact_omits_system_prompt(self, db):
+        self._create(db, "s1", system_prompt="should be gone")
+        row = db._get_session_rich_row("s1", compact_rows=True)
+        assert row is not None
+        assert "system_prompt" not in row
+        assert row["id"] == "s1"
+
+    def test_get_session_rich_row_full_includes_system_prompt(self, db):
+        self._create(db, "s1", system_prompt="stay")
+        row = db._get_session_rich_row("s1", compact_rows=False)
+        assert row["system_prompt"] == "stay"
+
+    def test_compact_rows_default_is_false(self, db):
+        """Default behaviour (compact_rows not passed) is unchanged — full rows."""
+        self._create(db, "s1", system_prompt="present")
+        rows = db.list_sessions_rich()
+        assert "system_prompt" in rows[0]

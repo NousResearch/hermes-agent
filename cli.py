@@ -7947,6 +7947,59 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if msg:
             _cprint(f"  {msg}")
 
+        # Notify home channel on messaging platforms when goal completes.
+        if decision.get("verdict") == "done" and msg:
+            try:
+                import asyncio
+                from pathlib import Path
+                from gateway.config import load_gateway_config, Platform
+                from tools.send_message_tool import _send_to_platform
+                from cron.scheduler import _iter_home_target_platforms, _get_home_target_chat_id, _get_home_target_thread_id
+
+                # Load .env so platform tokens and home channels are available
+                # to the CLI process (same env vars the gateway loads at startup).
+                env_path = Path.home() / ".hermes" / ".env"
+                if env_path.exists():
+                    for line in env_path.read_text().splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, _, v = line.partition("=")
+                            os.environ.setdefault(k.strip(), v.strip())
+
+                config = load_gateway_config()
+                platform_name = None
+                chat_id = None
+                thread_id = None
+                for name in _iter_home_target_platforms():
+                    try:
+                        Platform(name)
+                    except (ValueError, KeyError):
+                        continue
+                    pconfig = config.platforms.get(Platform(name))
+                    if not pconfig or not pconfig.enabled:
+                        continue
+                    cid = _get_home_target_chat_id(name)
+                    if not cid:
+                        continue
+                    platform_name = name
+                    chat_id = cid
+                    thread_id = _get_home_target_thread_id(name)
+                    break
+
+                if not platform_name or not chat_id:
+                    logging.debug("goal notify: no home channel configured")
+                    return
+
+                platform = Platform(platform_name)
+                pconfig = config.platforms.get(platform)
+                logging.debug("goal notify: resolved target platform=%s chat_id=%s thread_id=%s", platform_name, chat_id, thread_id)
+                asyncio.run(_send_to_platform(
+                    platform, pconfig, str(chat_id), msg,
+                    thread_id=str(thread_id) if thread_id else None,
+                ))
+            except Exception as exc:
+                logging.debug("goal notify: %s", exc)
+
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")
             if prompt:

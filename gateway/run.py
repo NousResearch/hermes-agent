@@ -349,6 +349,12 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """
     if not text:
         return text
+    from gateway.response_filters import sanitize_user_visible_gateway_text
+
+    # Do not redact local paths here: platform adapters still need to extract
+    # bare file paths as native media attachments before user-visible text is
+    # sanitized at the final send boundary.
+    text = sanitize_user_visible_gateway_text(text, redact_paths=False)
     if _gateway_platform_value(platform) != "telegram":
         return text
 
@@ -363,6 +369,9 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
+    from gateway.response_filters import sanitize_user_visible_gateway_text
+
+    text = sanitize_user_visible_gateway_text(text)
     if _gateway_platform_value(platform) != "telegram":
         return text
 
@@ -6565,6 +6574,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter = self.adapters.get(source.platform)
         if not adapter:
             return
+        from gateway.response_filters import sanitize_user_visible_gateway_text
+
+        content = sanitize_user_visible_gateway_text(content)
 
         config = getattr(self, "config", None)
         notice_delivery = "public"
@@ -7761,6 +7773,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        try:
+            from gateway.response_filters import (
+                is_model_identity_query,
+                model_identity_private_reply,
+            )
+            if is_model_identity_query(event.text or ""):
+                return model_identity_private_reply()
+        except Exception:
+            logger.debug("model identity query filter failed", exc_info=True)
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there

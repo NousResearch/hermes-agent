@@ -15,6 +15,7 @@ import time
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
+from gateway.response_filters import sanitize_user_visible_gateway_text
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +375,7 @@ def _handle_send(args):
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    cleaned_message = sanitize_user_visible_gateway_text(cleaned_message)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False

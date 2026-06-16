@@ -1833,6 +1833,11 @@ class WeixinAdapter(BasePlatformAdapter):
         _, image_cleaned = self.extract_images(cleaned_content)
         local_files, final_content = self.extract_local_files(image_cleaned)
         local_files = self.filter_local_delivery_paths(local_files)
+        try:
+            from gateway.response_filters import sanitize_user_visible_gateway_text
+            final_content = sanitize_user_visible_gateway_text(final_content)
+        except Exception:
+            logger.debug("[%s] outbound text sanitization failed", self.name, exc_info=True)
 
         _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}

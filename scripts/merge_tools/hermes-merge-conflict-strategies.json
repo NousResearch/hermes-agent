@@ -99,7 +99,16 @@
       "note": "Harness CLI launcher."
     },
     {
-      "pattern": "tools/environments/local.py",
+      "pattern": "plugins/web/parallel/provider.py",
+      "action": "preserve_custom",
+      "note": "Fork keyless Parallel MCP default (search.parallel.ai/mcp without API key)."
+    },
+    {
+      "pattern": "tools/web_tools.py",
+      "action": "official_with_overlay",
+      "note": "Take upstream web plugin dispatch; overlay keyless Parallel backend selection.",
+      "context": "overlap_only"
+    },
       "action": "official_with_overlay",
       "note": "Take upstream env-security fixes; overlay Windows-native shell compatibility.",
       "context": "overlap_only"

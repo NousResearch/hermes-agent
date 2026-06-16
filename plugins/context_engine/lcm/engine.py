@@ -73,6 +73,7 @@ from .message_content import (
     text_content_for_pattern_matching,
 )
 from .store import MessageStore
+from .storage_security import plaintext_path_policy, retention_status
 from .tokens import count_message_tokens, count_messages_tokens, count_tokens
 from . import tools as lcm_tools
 
@@ -447,7 +448,7 @@ class LCMEngine(ContextEngine):
             ingest_protection_config=self._config,
             hermes_home=hermes_home,
         )
-        self._dag = SummaryDAG(db_path)
+        self._dag = SummaryDAG(db_path, ingest_protection_config=self._config)
         self._lifecycle = LifecycleStateStore(db_path)
 
     def _close_storage(self) -> None:
@@ -2738,6 +2739,15 @@ class LCMEngine(ContextEngine):
             status["last_rotate_at"] = None
             status["rotate_backup_size"] = 0
             status["rotate_backup_error"] = str(exc)
+        try:
+            status["storage_retention"] = retention_status(
+                self._store._conn,
+                self._store.db_path,
+                ttl_days=self._config.retention_ttl_days,
+                max_bytes=self._config.retention_max_bytes,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            status["storage_retention"] = {"error": str(exc)}
         if session_id:
             status["store_messages"] = self._store.get_session_count(session_id)
             status["dag_nodes"] = len(self._dag.get_session_nodes(session_id))

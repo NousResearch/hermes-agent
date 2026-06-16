@@ -1642,6 +1642,7 @@ def lcm_status(args: Dict[str, Any], **kwargs) -> str:
             ),
         },
         "source_lineage": source_lineage,
+        "storage_retention": full_status.get("storage_retention", {}),
         "ingest_protection": full_status.get("ingest_protection", sensitive_pattern_status(engine._config)),
         "preset_suggestion": preset_status_payload(engine),
         "ingest_reconciliation": ingest_reconciliation,
@@ -1920,6 +1921,29 @@ def lcm_doctor(args: Dict[str, Any], **kwargs) -> str:
             "check": "context_pressure",
             "status": "pass" if usage_pct < threshold_pct else "warn",
             "detail": f"{usage_pct}% used, compaction triggers at {threshold_pct}%",
+        })
+
+    # 8. Retention policy (TTL + max bytes)
+    try:
+        retention = engine.get_status().get("storage_retention", {})
+        if "error" in retention:
+            checks.append({
+                "check": "retention_policy",
+                "status": "fail",
+                "detail": retention,
+            })
+        else:
+            exceeded = retention.get("ttl_exceeded") or retention.get("max_bytes_exceeded")
+            checks.append({
+                "check": "retention_policy",
+                "status": "warn" if exceeded else "pass",
+                "detail": retention,
+            })
+    except Exception as e:
+        checks.append({
+            "check": "retention_policy",
+            "status": "fail",
+            "detail": str(e),
         })
 
     overall = "healthy"

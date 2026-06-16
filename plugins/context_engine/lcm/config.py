@@ -312,6 +312,13 @@ class LCMConfig:
 
     # -- Storage ---
     database_path: str = ""       # empty = HERMES_HOME/lcm.db; LCM_DATABASE_PATH may override
+    # Optional per-row AEAD for raw message columns. When enabled, cryptography
+    # must be installed and the profile-local key file is created with 0600.
+    encryption_enabled: bool = False
+    encryption_key_path: str = ""  # empty = HERMES_HOME/lcm-row.key
+    # Retention policy reported by status/doctor. Cleanup remains explicit.
+    retention_ttl_days: int = 14
+    retention_max_bytes: int = 1024 * 1024 * 1024
 
     # -- Session carry-over ---
     # Depth retained after /new (-1 = all, 0 = nothing, 2 = keep d2+)
@@ -426,6 +433,13 @@ class LCMConfig:
         )
         c.expansion_timeout_ms = _int("LCM_EXPANSION_TIMEOUT_MS", c.expansion_timeout_ms)
         c.database_path = _str("LCM_DATABASE_PATH", c.database_path)
+        c.encryption_enabled = _parse_bool_env(
+            "LCM_ENCRYPTION_ENABLED",
+            c.encryption_enabled,
+        )
+        c.encryption_key_path = _str("LCM_ENCRYPTION_KEY_PATH", c.encryption_key_path) or ""
+        c.retention_ttl_days = _int("LCM_RETENTION_TTL_DAYS", c.retention_ttl_days)
+        c.retention_max_bytes = _int("LCM_RETENTION_MAX_BYTES", c.retention_max_bytes)
         c.new_session_retain_depth = _int("LCM_NEW_SESSION_RETAIN_DEPTH", c.new_session_retain_depth)
         c.doctor_clean_apply_enabled = _parse_bool_env(
             "LCM_DOCTOR_CLEAN_APPLY_ENABLED",

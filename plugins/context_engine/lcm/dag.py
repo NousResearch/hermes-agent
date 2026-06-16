@@ -43,6 +43,9 @@ from .search_query import (
     should_apply_directness_rank_adjustment,
 )
 from .store import _normalize_source_value, _UNKNOWN_SOURCE, _legacy_blank_source_clause
+from .config import LCMConfig
+from .ingest_protection import redact_sensitive_value
+from .storage_security import ensure_lcm_file_permissions
 
 
 logger = logging.getLogger(__name__)
@@ -152,8 +155,11 @@ class SummaryNode:
 class SummaryDAG:
     """SQLite-backed DAG of summary nodes."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, ingest_protection_config=None):
         self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_lcm_file_permissions(self.db_path)
+        self._ingest_protection_config = ingest_protection_config or LCMConfig(database_path=str(self.db_path))
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
@@ -190,6 +196,7 @@ class SummaryDAG:
         run_versioned_migrations(self._conn)
         self._ensure_source_window_columns()
         self._conn.commit()
+        ensure_lcm_file_permissions(self.db_path)
 
     def _ensure_source_window_columns(self) -> None:
         columns = {
@@ -207,6 +214,8 @@ class SummaryDAG:
 
     def add_node(self, node: SummaryNode) -> int:
         """Insert a summary node and return its node_id."""
+        summary = str(redact_sensitive_value(node.summary, self._ingest_protection_config) or "")
+        expand_hint = str(redact_sensitive_value(node.expand_hint, self._ingest_protection_config) or "")
         cur = self._conn.execute(
             """INSERT INTO summary_nodes
                (session_id, depth, summary, token_count, source_token_count,
@@ -215,7 +224,7 @@ class SummaryDAG:
             (
                 node.session_id,
                 node.depth,
-                node.summary,
+                summary,
                 node.token_count,
                 node.source_token_count,
                 json.dumps(node.source_ids),
@@ -223,10 +232,13 @@ class SummaryDAG:
                 node.created_at or time.time(),
                 node.earliest_at,
                 node.latest_at,
-                node.expand_hint,
+                expand_hint,
             ),
         )
         self._conn.commit()
+        ensure_lcm_file_permissions(self.db_path)
+        node.summary = summary
+        node.expand_hint = expand_hint
         node.node_id = cur.lastrowid
         return node.node_id
 

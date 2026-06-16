@@ -125,6 +125,24 @@ _SENSITIVE_PATTERN_CATALOG: dict[str, re.Pattern[str]] = {
         r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
         re.IGNORECASE | re.DOTALL,
     ),
+    "onepassword_ref": re.compile(
+        r"op://[^\s\"'<>]+",
+        re.IGNORECASE,
+    ),
+    "cookie": re.compile(
+        r"(?P<prefix>(?:\b(?:Cookie|Set-Cookie)\s*:\s*)?\b(?:sessionid|session|csrftoken|csrf|token)\s*=)"
+        r"(?P<secret>[^;\s,]{8,})",
+        re.IGNORECASE,
+    ),
+    "aws_access_key": re.compile(
+        r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])"
+    ),
+    "github_token": re.compile(
+        r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_])"
+    ),
+    "openai_key": re.compile(
+        r"(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"
+    ),
 }
 
 

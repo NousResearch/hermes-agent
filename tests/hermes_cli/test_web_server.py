@@ -250,11 +250,20 @@ class TestWebServerEndpoints:
     def test_get_status_hides_update_capability_in_hosted_mode(self, monkeypatch):
         import hermes_cli.web_server as web_server
 
-        monkeypatch.setattr(web_server, "_dashboard_hosted_agent_mode", lambda: True)
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: True)
 
         resp = self.client.get("/api/status")
         assert resp.status_code == 200
         assert resp.json()["can_update_hermes"] is False
+
+    def test_dashboard_update_capability_detects_generic_container(self, monkeypatch):
+        import hermes_constants
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_default_hermes_root_is_opt_data", lambda: False)
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+
+        assert web_server._dashboard_local_update_managed_externally() is True
 
     # ── GET /api/media (remote image display) ───────────────────────────
 
@@ -938,7 +947,7 @@ class TestWebServerEndpoints:
             detected = True
             raise AssertionError("hosted update guard should not detect install method")
 
-        monkeypatch.setattr(web_server, "_dashboard_hosted_agent_mode", lambda: True)
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: True)
         monkeypatch.setattr(web_server, "detect_install_method", fail_detect)
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
@@ -951,8 +960,8 @@ class TestWebServerEndpoints:
         assert data["ok"] is False
         assert data["name"] == "hermes-update"
         assert data["pid"] is None
-        assert data["error"] == "hosted_update_managed"
-        assert "hosted agent service" in data["message"]
+        assert data["error"] == "dashboard_update_managed_externally"
+        assert "managed outside this dashboard" in data["message"]
         assert spawned is False
         assert detected is False
 
@@ -962,7 +971,7 @@ class TestWebServerEndpoints:
         assert status_data["running"] is False
         assert status_data["exit_code"] == 1
         assert status_data["pid"] is None
-        assert any("hosted agent service" in line for line in status_data["lines"])
+        assert any("managed outside this dashboard" in line for line in status_data["lines"])
 
     def test_update_hermes_spawns_on_non_docker_install(self, monkeypatch):
         import hermes_cli.web_server as web_server

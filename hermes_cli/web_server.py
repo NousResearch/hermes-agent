@@ -1224,15 +1224,24 @@ def _default_hermes_root_is_opt_data() -> bool:
     return root == _HOSTED_MANAGED_FILES_ROOT
 
 
-def _dashboard_hosted_agent_mode() -> bool:
-    """Return true for the hosted/container dashboard layout.
+def _dashboard_local_update_managed_externally() -> bool:
+    """Return true when the dashboard should not offer ``hermes update``.
 
-    Hosted agent dashboards run with the Hermes root at ``/opt/data``.  This is
-    the same signal the Files page uses to lock browsing to the managed data
-    directory, and it keeps local remote-auth dashboards from being mistaken for
-    hosted service instances.
+    Hosted agent dashboards run with the Hermes root at ``/opt/data``.  Generic
+    containerized dashboards may not use that exact root, but their lifecycle is
+    still owned by the outer launcher/image, not by an in-browser local update
+    action.  Keep this dashboard capability separate from install-method
+    detection: manual git/pip installs inside containers can still behave like
+    their actual install method in the CLI.
     """
-    return _default_hermes_root_is_opt_data()
+    if _default_hermes_root_is_opt_data():
+        return True
+    try:
+        from hermes_constants import is_container
+
+        return is_container()
+    except Exception:
+        return False
 
 
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
@@ -1665,7 +1674,7 @@ async def get_status():
         "release_date": __release_date__,
         "config_version": current_ver,
         "latest_config_version": latest_ver,
-        "can_update_hermes": not _dashboard_hosted_agent_mode(),
+        "can_update_hermes": not _dashboard_local_update_managed_externally(),
         "gateway_running": gateway_running,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
@@ -2177,19 +2186,20 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
-    if _dashboard_hosted_agent_mode():
+    if _dashboard_local_update_managed_externally():
         message = (
-            "Hermes updates are managed by the hosted agent service for this "
-            "dashboard. The built-in local updater is disabled here."
+            "Hermes updates are managed outside this dashboard for hosted or "
+            "containerized environments. The built-in local updater is "
+            "disabled here."
         )
         _record_completed_action("hermes-update", message, exit_code=1)
         return {
             "ok": False,
             "pid": None,
             "name": "hermes-update",
-            "error": "hosted_update_managed",
+            "error": "dashboard_update_managed_externally",
             "message": message,
-            "update_command": "managed by hosted agent service",
+            "update_command": "managed outside dashboard",
         }
 
     install_method = detect_install_method(PROJECT_ROOT)
@@ -2291,15 +2301,18 @@ async def check_hermes_update(force: bool = False):
                  desktop's remote update overlay renders this as "what's
                  changed". Additive: existing consumers ignore it.
     """
-    if _dashboard_hosted_agent_mode():
+    if _dashboard_local_update_managed_externally():
         return {
-            "install_method": "hosted",
+            "install_method": "managed-runtime",
             "current_version": __version__,
             "behind": None,
             "update_available": False,
             "can_apply": False,
-            "update_command": "managed by hosted agent service",
-            "message": "Hermes updates are managed by the hosted agent service.",
+            "update_command": "managed outside dashboard",
+            "message": (
+                "Hermes updates are managed outside this dashboard for hosted "
+                "or containerized environments."
+            ),
         }
 
     install_method = detect_install_method(PROJECT_ROOT)

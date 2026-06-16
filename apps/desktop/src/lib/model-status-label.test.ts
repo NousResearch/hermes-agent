@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { displayModelName, formatModelStatusLabel, reasoningEffortLabel } from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelStatusLabel, reasoningEffortLabel } from './model-status-label'
 
 describe('model-status-label', () => {
   it('formats display names consistently', () => {
@@ -34,5 +34,26 @@ describe('model-status-label', () => {
 
   it('returns just the placeholder name when there is no model', () => {
     expect(formatModelStatusLabel('')).toBe('No model')
+  })
+
+  describe('currentPickerSelection', () => {
+    const store = { model: 'opus', provider: 'anthropic' }
+    const options = { model: 'hermes-4', provider: 'nous' }
+
+    it('prefers the sticky composer pick over the profile default pre-session', () => {
+      expect(currentPickerSelection(false, store, options)).toEqual(store)
+    })
+
+    it('lets the live session model.options win when a session exists', () => {
+      expect(currentPickerSelection(true, store, options)).toEqual(options)
+    })
+
+    it('falls back to options when the store is empty', () => {
+      expect(currentPickerSelection(false, { model: '', provider: '' }, options)).toEqual(options)
+    })
+
+    it('falls back to the store while options are still loading', () => {
+      expect(currentPickerSelection(true, store, undefined)).toEqual(store)
+    })
   })
 })

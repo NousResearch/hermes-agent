@@ -560,6 +560,14 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Pre-loop DB flush: persist the user message (and any prior un-flushed
+    # history) before the first API call.  If the process dies during the
+    # API request, the at least the user's message survives in state.db.
+    try:
+        agent._flush_messages_to_session_db(messages)
+    except Exception:
+        pass  # non-fatal; turn-end flush will retry
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
@@ -3942,6 +3950,16 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                # Incremental DB flush: persist messages after each tool
+                # batch so a mid-turn process kill doesn't lose everything.
+                # _flush_messages_to_session_db is idempotent (tracks
+                # already-flushed message identities), so repeated calls
+                # are safe and cheap.
+                try:
+                    agent._flush_messages_to_session_db(messages)
+                except Exception:
+                    pass  # non-fatal; turn-end flush will retry
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

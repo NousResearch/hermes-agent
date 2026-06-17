@@ -1,11 +1,13 @@
 """T1 core: per-turn token accumulator + on_session_end turn_usage enrichment.
 
-These tests assert the Blackbox core enrichment in agent/conversation_loop.py:
-the _turn_calls local sums every successful API call into the turn_usage kwarg
-passed to on_session_end, without leaking into agent global state.
+These tests assert the Blackbox core enrichment split across:
+- agent/conversation_loop.py: local _turn_calls accumulator populated per successful API call
+- agent/turn_finalizer.py: fold _turn_calls into the turn_usage kwarg passed to on_session_end
+without leaking into agent global state.
 """
 import inspect
 import agent.conversation_loop as cl
+import agent.turn_finalizer as tf
 
 
 def test_turn_calls_initialized_local_not_agent_attr():
@@ -27,7 +29,7 @@ def test_append_inside_success_block_only():
 
 
 def test_on_session_end_carries_turn_usage_kwarg():
-    src = inspect.getsource(cl.run_conversation)
+    src = inspect.getsource(tf.finalize_turn)
     assert '"on_session_end",' in src
     # turn_usage kwarg present in the fire call
     fire = src[src.index('"on_session_end",'):]
@@ -62,7 +64,7 @@ def test_turn_usage_fold_sums_calls():
 
 def test_turn_usage_includes_last_call_split_keys():
     """The fold must surface the FINAL call's cache split (window decomposition)."""
-    src = inspect.getsource(cl.run_conversation)
+    src = inspect.getsource(tf.finalize_turn)
     fire = src[src.index('"on_session_end",'):]
     # The payload assembled just above the fire carries the three last-call keys.
     block = src[:src.index('"on_session_end",')]

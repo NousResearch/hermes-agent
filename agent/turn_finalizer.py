@@ -168,13 +168,13 @@ def finalize_turn(
 
     _diag_msg = (
         "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
-        "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
+        "tool_turns=%d last_msg_role=%s response_len=%d session=%s task=%s"
     )
     _diag_args = (
         _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
         _budget_used, _budget_max,
         _turn_tool_count, _last_msg_role, _resp_len,
-        agent.session_id or "none",
+        agent.session_id or "none", effective_task_id or "none",
     )
 
     if _last_msg_role == "tool" and not interrupted:

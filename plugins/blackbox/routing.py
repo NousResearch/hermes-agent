@@ -80,7 +80,14 @@ def _send_with_notify(card_text: str, profile: str) -> None:
     if profile:
         cmd.extend(["--profile", profile])
     try:
-        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        subprocess.run(
+            cmd,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
     except Exception:
         return
 

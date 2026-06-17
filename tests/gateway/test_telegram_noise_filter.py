@@ -81,3 +81,35 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_telegram_final_response_maps_credential_resolution_errors():
+    """Credential-resolution / pool-exhaustion / unconfigured-fallback errors
+    must surface the clear auth message, not the generic 'failed after retries'.
+
+    Regression for the real fleet incident where a profile lacked its provider
+    credentials: the SDK 'Could not resolve authentication method' and the
+    'provider not configured' fallback-exhausted envelope both slipped past the
+    auth matcher and reached chat as the unhelpful generic retry message.
+    """
+    raw_envelopes = [
+        "API call failed after 3 retries: Could not resolve authentication "
+        "method. Expected either api_key or auth_token to be set.",
+        "API call failed: resolve_provider_client: openai-codex requested but "
+        "no Codex OAuth token found.",
+        "non-retryable error: Fallback to openai-codex failed: provider not "
+        "configured.",
+        "API call failed: credential pool: no available entries (all exhausted "
+        "or empty).",
+    ]
+
+    for raw in raw_envelopes:
+        sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+        assert "authentication failed" in sanitized.lower(), raw
+        assert "check the configured credentials" in sanitized.lower(), raw
+        # The unhelpful generic message must NOT be what the user sees.
+        assert "failed after retries" not in sanitized.lower(), raw
+        # No raw provider envelope leaks through.
+        assert "auth_token" not in sanitized.lower(), raw
+        assert "provider_client" not in sanitized.lower(), raw
+

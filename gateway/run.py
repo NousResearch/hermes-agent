@@ -117,7 +117,14 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
 )
 
 _GATEWAY_AUTH_ERROR_RE = re.compile(
-    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    r"(provider\s+authentication\s+failed"
+    r"|incorrect\s+api\s+key"
+    r"|invalid\s+api\s+key"
+    r"|could\s+not\s+resolve\s+authentication\s+method"
+    r"|expected\s+either\s+api_key\s+or\s+auth_token"
+    r"|no\s+(?:codex\s+oauth\s+token|available\s+entries)"
+    r"|provider\s+not\s+configured"
+    r"|\b401\b)",
     re.IGNORECASE,
 )
 

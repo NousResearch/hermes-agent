@@ -2020,6 +2020,41 @@ class FeishuAdapter(BasePlatformAdapter):
             ],
         }
 
+    async def send_interactive_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive card message to Feishu.
+
+        Args:
+            chat_id: The chat to send the card to.
+            card: The raw Feishu interactive card JSON (must contain header + elements).
+            reply_to: Optional message_id to reply to.
+            metadata: Optional metadata dict.
+
+        Returns:
+            SendResult indicating success/failure.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send_interactive_card failed")
+        except Exception as exc:
+            logger.error("[Feishu] send_interactive_card failed: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> Dict[str, Any]:
         yes = answer == "y"

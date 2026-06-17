@@ -7044,6 +7044,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
+        if canonical == "server-users":
+            return await self._handle_server_users_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
 

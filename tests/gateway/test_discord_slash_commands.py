@@ -115,6 +115,27 @@ def adapter():
 
 
 # ------------------------------------------------------------------
+# Slash event source metadata
+# ------------------------------------------------------------------
+
+
+def test_build_slash_event_preserves_guild_and_parent_channel(adapter):
+    guild = SimpleNamespace(id=123, name="VaelCorp")
+    channel = SimpleNamespace(id=456, name="athena", guild=guild, parent_id=111)
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=456,
+        guild_id=123,
+        user=SimpleNamespace(id=789, display_name="snapss"),
+    )
+
+    event = adapter._build_slash_event(interaction, "/server-users")
+
+    assert event.source.guild_id == "123"
+    assert event.source.parent_chat_id == "111"
+
+
+# ------------------------------------------------------------------
 # /thread slash command registration
 # ------------------------------------------------------------------
 
@@ -191,6 +212,12 @@ async def test_auto_registered_command_dispatches_correctly(adapter):
     adapter._run_simple_slash.reset_mock()
     await debug_cmd.callback(interaction)
     adapter._run_simple_slash.assert_awaited_once_with(interaction, "/debug")
+
+    server_users_cmd = adapter._client.tree.commands["server-users"]
+    interaction = SimpleNamespace()
+    adapter._run_simple_slash.reset_mock()
+    await server_users_cmd(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/server-users")
 
 
 @pytest.mark.asyncio

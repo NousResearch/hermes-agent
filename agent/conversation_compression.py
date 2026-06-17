@@ -702,33 +702,57 @@ def try_shrink_image_parts_in_messages(
     # actually brought under the target.
     unshrinkable_oversized = 0
 
-    def _shrink_data_url(url: str) -> Optional[str]:
-        """Return a smaller data URL, or None if shrink can't help."""
-        if not isinstance(url, str) or not url.startswith("data:"):
-            return None
+    def _shrink_data_url(url: str) -> tuple[Optional[str], bool]:
+        """Return ``(resized_url, unshrinkable)`` for a data URL.
 
-        # Check both byte size AND pixel dimensions.
+        ``unshrinkable`` is True only when the image exceeded a constraint
+        (byte-size or dimensions) and resizing failed to satisfy that same
+        constraint. This prevents a doomed retry if one dimension-oversized
+        image remains over the provider cap while a different image was
+        successfully rewritten.
+        """
+        if not isinstance(url, str) or not url.startswith("data:"):
+            return None, False
+
+        def _decode_pixels(data_url: str) -> Optional[tuple[int, int]]:
+            """Return (width, height) of a base64 data URL, or None on any failure.
+
+            Soft-depends on Pillow; returns None (caller falls back to
+            bytes-only check) if Pillow is missing or the data is corrupt.
+            """
+            try:
+                import base64 as _b64
+                import io as _io
+                header, _, data = data_url.partition(",")
+                if not data or not data_url.startswith("data:"):
+                    return None
+                from PIL import Image as _PILImage
+                with _PILImage.open(_io.BytesIO(_b64.b64decode(data))) as _img:
+                    return _img.size
+            except Exception:
+                return None
+
+        # Check both byte size AND pixel dimensions. Track which constraint
+        # triggered the shrink — the accept/reject gate must use the same
+        # constraint, not blindly compare bytes. A PNG screenshot that
+        # dimensionally shrinks from 4000x3000 to 2000x1500 can re-encode to
+        # MORE bytes (PNG compression is non-monotonic in image size for
+        # smooth regions), and rejecting those results permanently wedges
+        # sessions on the Anthropic many-image 2000px path (#48013).
         needs_shrink = len(url) > target_bytes  # over byte budget
+        triggered_by = "bytes" if needs_shrink else None
         if not needs_shrink:
             # Even if bytes are fine, check pixel dimensions against the
             # provider's reported per-side cap.  A screenshot can be tiny in
             # bytes yet too large in pixels.
-            try:
-                import base64 as _b64_dim
-                header_d, _, data_d = url.partition(",")
-                if not data_d:
-                    return None
-                raw_d = _b64_dim.b64decode(data_d)
-                from PIL import Image as _PILImage
-                import io as _io_dim
-                with _PILImage.open(_io_dim.BytesIO(raw_d)) as _img:
-                    if max(_img.size) <= max_dimension:
-                        return None  # both bytes and pixels are fine
-                needs_shrink = True  # pixels exceed limit, force shrink
-            except Exception:
-                # If we can't check dimensions (Pillow unavailable, corrupt
-                # image, etc.), fall back to byte-only check.
-                return None
+            dims = _decode_pixels(url)
+            if dims is None:
+                # Pillow missing or corrupt data — fall back to byte-only.
+                return None, False
+            if max(dims) <= max_dimension:
+                return None, False  # both bytes and pixels are fine
+            needs_shrink = True
+            triggered_by = "dimension"
 
         try:
             header, _, data = url.partition(",")
@@ -760,13 +784,33 @@ def try_shrink_image_parts_in_messages(
                     Path(tmp.name).unlink(missing_ok=True)
                 except Exception:
                     pass
-            if not resized or len(resized) >= len(url):
-                # Shrink didn't help (or made it bigger — corrupt input?).
-                return None
-            return resized
+            if not resized:
+                # Resize returned nothing — Pillow couldn't help.
+                return None, True
+            if triggered_by == "bytes":
+                # Byte budget was the binding constraint — bytes must shrink.
+                if len(resized) >= len(url):
+                    return None, True  # re-encode made it bigger
+                return resized, False
+            # triggered_by == "dimension": dimension cap is the binding
+            # constraint. The re-encode may have grown in bytes (PNG
+            # screenshots re-encode larger when smaller); accept the result
+            # if it's now within the per-side cap. If we can't check
+            # dimensions (Pillow missing or corrupt re-encode), fall back to
+            # the historical "bytes must shrink" gate to avoid regressions.
+            new_dims = _decode_pixels(resized)
+            if new_dims is not None:
+                if max(new_dims) <= max_dimension:
+                    return resized, False
+                # Still too tall/wide — re-encode didn't help.
+                return None, True
+            # Couldn't verify dimension — only accept if bytes also shrank.
+            if len(resized) >= len(url):
+                return None, True
+            return resized, False
         except Exception as exc:
             logger.warning("image-shrink recovery: re-encode failed — %s", exc)
-            return None
+            return None, triggered_by is not None
 
     for msg in api_messages:
         if not isinstance(msg, dict):
@@ -785,20 +829,18 @@ def try_shrink_image_parts_in_messages(
             # OpenAI Responses: {"image_url": "data:..."}
             if isinstance(image_value, dict):
                 url = image_value.get("url", "")
-                resized = _shrink_data_url(url)
+                resized, unshrinkable = _shrink_data_url(url)
                 if resized:
                     image_value["url"] = resized
                     changed_count += 1
-                elif isinstance(url, str) and url.startswith("data:") \
-                        and len(url) > target_bytes:
+                elif unshrinkable:
                     unshrinkable_oversized += 1
             elif isinstance(image_value, str):
-                resized = _shrink_data_url(image_value)
+                resized, unshrinkable = _shrink_data_url(image_value)
                 if resized:
                     part["image_url"] = resized
                     changed_count += 1
-                elif image_value.startswith("data:") \
-                        and len(image_value) > target_bytes:
+                elif unshrinkable:
                     unshrinkable_oversized += 1
 
     if changed_count:

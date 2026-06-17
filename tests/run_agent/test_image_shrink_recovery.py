@@ -108,11 +108,21 @@ def _big_png_data_url(size_kb: int) -> str:
     return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
 
 
-def _install_fake_pillow(monkeypatch, size: tuple[int, int]) -> None:
+def _install_fake_pillow(
+    monkeypatch,
+    size: tuple[int, int],
+    *,
+    shrunk_size: tuple[int, int] | None = None,
+    sizes: list[tuple[int, int]] | None = None,
+) -> None:
     """Install the tiny subset of Pillow used by the shrink preflight."""
+    call_count = {"n": 0}
+    target_sizes = sizes or [size, shrunk_size if shrunk_size is not None else size]
+
     class _FakeImage:
         def __init__(self):
-            self.size = size
+            self.size = target_sizes[min(call_count["n"], len(target_sizes) - 1)]
+            call_count["n"] += 1
 
         def __enter__(self):
             return self
@@ -205,7 +215,7 @@ class TestShrinkImagePartsHelper:
     def test_many_image_dimension_limit_rewritten(self, monkeypatch):
         """A 2000px many-image rejection must shrink images below 8000px."""
         agent = _make_agent()
-        _install_fake_pillow(monkeypatch, (2501, 100))
+        _install_fake_pillow(monkeypatch, (2501, 100), shrunk_size=(1500, 60))
         oversized_for_many = _big_png_data_url(100)
         shrunk = "data:image/jpeg;base64," + "M" * 1000
         seen = {}
@@ -392,3 +402,92 @@ class TestShrinkImagePartsHelper:
         assert msgs[0]["content"][0]["image_url"]["url"] == small
         # The unshrinkable one is left as-is (caller surfaces original error).
         assert msgs[0]["content"][1]["image_url"]["url"] == unshrinkable
+
+    def test_dimension_shrink_with_byte_growth_accepted(self, monkeypatch):
+        """Dimension-driven shrink may accept a byte-larger PNG re-encode."""
+        agent = _make_agent()
+        _install_fake_pillow(monkeypatch, (2501, 100), shrunk_size=(1500, 60))
+        original_url = _big_png_data_url(100)
+        dimensionally_shrunk = "data:image/png;base64," + "G" * 200 * 1024
+        seen = {}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            seen["max_dimension"] = max_dimension
+            return dimensionally_shrunk
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": original_url}},
+            ],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_dimension=2000,
+        ) is True
+        assert seen["max_dimension"] == 2000
+        assert msgs[0]["content"][0]["image_url"]["url"] == dimensionally_shrunk
+
+    def test_dimension_shrink_failure_still_blocks_retry(self, monkeypatch):
+        """A dimension-oversized image that remains oversized is unshrinkable."""
+        agent = _make_agent()
+        _install_fake_pillow(monkeypatch, (2501, 100))
+        original_url = _big_png_data_url(100)
+        still_oversized = "data:image/png;base64," + "H" * 120 * 1024
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: still_oversized,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": original_url}},
+            ],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_dimension=2000,
+        ) is False
+        assert msgs[0]["content"][0]["image_url"]["url"] == original_url
+
+    def test_mixed_dimension_failure_returns_false(self, monkeypatch):
+        """Partial dimension-path progress must not burn the one retry."""
+        agent = _make_agent()
+        _install_fake_pillow(
+            monkeypatch,
+            (2501, 100),
+            sizes=[(2501, 100), (1500, 60), (2501, 100), (2501, 100)],
+        )
+        first = _big_png_data_url(100)
+        second = _big_png_data_url(90)
+        calls = {"n": 0}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "data:image/png;base64," + "G" * 200 * 1024
+            return "data:image/png;base64," + "H" * 120 * 1024
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": first}},
+                {"type": "image_url", "image_url": {"url": second}},
+            ],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_dimension=2000,
+        ) is False

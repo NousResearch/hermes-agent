@@ -132,35 +132,60 @@ class _VikingClient:
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
-    def _headers(self) -> dict:
+    def _headers(self, *, include_tenant: bool | None = None) -> dict:
         # v0.4.1+ auth: root keys and user keys use different headers.
         # Root keys (ov-root-*) use X-OpenViking-Root-API-Key for admin ops.
-        # User keys use Authorization: Bearer for data APIs.
+        # User keys use Authorization: Bearer *** data APIs.
         # Never send X-OpenViking-Account/X-OpenViking-User with api_key mode —
         # server rejects them as "untrusted mode identity assertion".
-        h = {
-            "Content-Type": "application/json",
-            "X-OpenViking-Agent": self._agent,
-        }
-        if self._api_key:
-            if self._api_key.startswith("ov-root-"):
-                h["X-OpenViking-Root-API-Key"] = self._api_key
-            h["Authorization"] = "Bearer " + self._api_key
-        else:
-            # v0.3.x dev mode only: tenant headers required
+        # In trusted/local dev mode, the server may demand them; we retry with
+        # tenant headers when it asks (see _send_with_trusted_identity_retry).
+        if include_tenant is None:
+            include_tenant = not bool(self._api_key)
+
+        h = {"Content-Type": "application/json"}
+        if self._agent:
+            h["X-OpenViking-Actor-Peer"] = self._agent
+        if include_tenant:
             if self._account:
                 h["X-OpenViking-Account"] = self._account
             if self._user:
                 h["X-OpenViking-User"] = self._user
+        if self._api_key:
+            if self._api_key.startswith("ov-root-"):
+                h["X-OpenViking-Root-API-Key"] = self._api_key
+            h["Authorization"] = "Bearer " + self._api_key
         return h
 
     def _url(self, path: str) -> str:
         return f"{self._endpoint}{path}"
 
-    def _multipart_headers(self) -> dict:
-        headers = self._headers()
+    def _multipart_headers(self, *, include_tenant: bool | None = None) -> dict:
+        headers = self._headers(include_tenant=include_tenant)
         headers.pop("Content-Type", None)
         return headers
+
+    @staticmethod
+    def _needs_trusted_identity_retry(exc: Exception) -> bool:
+        message = str(exc)
+        return (
+            "Trusted mode requests must include X-OpenViking-Account" in message
+            or "Trusted mode requests must include X-OpenViking-User" in message
+            or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
+        )
+
+    def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:
+        try:
+            headers = self._multipart_headers() if multipart else self._headers()
+            return self._parse_response(send(headers))
+        except RuntimeError as exc:
+            if not self._api_key or not self._needs_trusted_identity_retry(exc):
+                raise
+            headers = (
+                self._multipart_headers(include_tenant=True)
+                if multipart else self._headers(include_tenant=True)
+            )
+            return self._parse_response(send(headers))
 
     def _parse_response(self, resp) -> dict:
         try:
@@ -192,28 +217,33 @@ class _VikingClient:
         return data
 
     def get(self, path: str, **kwargs) -> dict:
-        resp = self._httpx.get(
-            self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
+        return self._send_with_trusted_identity_retry(
+            lambda headers: self._httpx.get(
+                self._url(path), headers=headers, timeout=_TIMEOUT, **kwargs
+            )
         )
-        return self._parse_response(resp)
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
-        resp = self._httpx.post(
-            self._url(path), json=payload or {}, headers=self._headers(),
-            timeout=_TIMEOUT, **kwargs
+        return self._send_with_trusted_identity_retry(
+            lambda headers: self._httpx.post(
+                self._url(path), json=payload or {}, headers=headers,
+                timeout=_TIMEOUT, **kwargs
+            )
         )
-        return self._parse_response(resp)
 
     def upload_temp_file(self, file_path: Path) -> str:
         mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        with file_path.open("rb") as f:
-            resp = self._httpx.post(
-                self._url("/api/v1/resources/temp_upload"),
-                files={"file": (file_path.name, f, mime_type)},
-                headers=self._multipart_headers(),
-                timeout=_TIMEOUT,
-            )
-        data = self._parse_response(resp)
+
+        def _send(headers):
+            with file_path.open("rb") as f:
+                return self._httpx.post(
+                    self._url("/api/v1/resources/temp_upload"),
+                    files={"file": (file_path.name, f, mime_type)},
+                    headers=headers,
+                    timeout=_TIMEOUT,
+                )
+
+        data = self._send_with_trusted_identity_retry(_send, multipart=True)
         result = data.get("result", {})
         temp_file_id = result.get("temp_file_id", "")
         if not temp_file_id:

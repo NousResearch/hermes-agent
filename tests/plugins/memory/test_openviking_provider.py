@@ -343,10 +343,10 @@ def test_viking_client_upload_temp_file_uses_multipart_identity_headers_v041(tmp
     assert "files" in captured_kwargs
     assert "json" not in captured_kwargs
     headers = captured_kwargs["headers"]
-    # v0.4.1: tenant headers NOT sent in api_key mode
+    # v0.4.1: tenant headers NOT sent in api_key mode; Actor-Peer replaces Agent
     assert "X-OpenViking-Account" not in headers
     assert "X-OpenViking-User" not in headers
-    assert headers["X-OpenViking-Agent"] == "test-agent"
+    assert headers["X-OpenViking-Actor-Peer"] == "test-agent"
     assert headers["X-OpenViking-Root-API-Key"] == "ov-root-test-key"
     assert headers["Authorization"] == "Bearer ov-root-test-key"
     assert "Content-Type" not in headers
@@ -383,6 +383,9 @@ def test_viking_client_headers_include_bearer_when_api_key_set():
     headers = client._headers()
     assert "X-API-Key" not in headers
     assert headers["Authorization"] == "Bearer user-test-key"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
 
 
 def test_viking_client_headers_root_key_sends_root_header():
@@ -397,6 +400,7 @@ def test_viking_client_headers_root_key_sends_root_header():
     headers = client._headers()
     assert headers["X-OpenViking-Root-API-Key"] == "ov-root-test-key"
     assert headers["Authorization"] == "Bearer ov-root-test-key"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
     assert "X-OpenViking-Account" not in headers
     assert "X-OpenViking-User" not in headers
 
@@ -414,6 +418,7 @@ def test_viking_client_headers_no_tenant_in_api_key_mode():
     assert "X-OpenViking-Account" not in headers
     assert "X-OpenViking-User" not in headers
     assert headers["Authorization"] == "Bearer any-key"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
 
 
 def test_viking_client_headers_send_tenant_in_dev_mode():
@@ -428,6 +433,7 @@ def test_viking_client_headers_send_tenant_in_dev_mode():
     headers = client._headers()
     assert headers["X-OpenViking-Account"] == "default"
     assert headers["X-OpenViking-User"] == "default"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
     assert "Authorization" not in headers
     assert "X-API-Key" not in headers
 
@@ -444,7 +450,55 @@ def test_viking_client_headers_send_tenant_with_real_values_in_dev_mode():
     headers = client._headers()
     assert headers["X-OpenViking-Account"] == "real-account"
     assert headers["X-OpenViking-User"] == "real-user"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
     assert "Authorization" not in headers
+
+
+def test_viking_client_headers_can_include_tenant_for_trusted_retry():
+    """Trusted/local mode may demand tenant headers even with api_key."""
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="real-account",
+        user="real-user",
+        agent="hermes",
+    )
+    headers = client._headers(include_tenant=True)
+    assert headers["X-OpenViking-Account"] == "real-account"
+    assert headers["X-OpenViking-User"] == "real-user"
+    assert headers["Authorization"] == "Bearer test-key"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
+
+
+def test_viking_client_retries_with_tenant_headers_for_trusted_mode(monkeypatch):
+    """When server demands tenant in api_key mode, retry with them."""
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="usr",
+        agent="hermes",
+    )
+    captured_headers = []
+    call_count = 0
+
+    def fake_post(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        captured_headers.append(kwargs.get("headers") or {})
+        if call_count == 1:
+            raise RuntimeError("Trusted mode requests must include X-OpenViking-Account")
+        return SimpleNamespace(status_code=200, json=lambda: {"status": "ok"})
+
+    monkeypatch.setattr(client._httpx, "post", fake_post)
+    result = client.post("/api/v1/test", {"query": "x"})
+    assert result == {"status": "ok"}
+    assert call_count == 2
+    # First call: no tenant
+    assert "X-OpenViking-Account" not in captured_headers[0]
+    # Second call: with tenant
+    assert captured_headers[1]["X-OpenViking-Account"] == "acct"
+    assert captured_headers[1]["X-OpenViking-User"] == "usr"
 
 
 def test_viking_client_health_sends_auth_headers_v041(monkeypatch):
@@ -467,5 +521,6 @@ def test_viking_client_health_sends_auth_headers_v041(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer user-test-key"
+    assert captured["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
     assert "X-OpenViking-Account" not in captured["headers"]
     assert "X-OpenViking-User" not in captured["headers"]

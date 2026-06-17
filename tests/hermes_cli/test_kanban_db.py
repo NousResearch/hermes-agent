@@ -191,6 +191,232 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# task_events append-protocol columns + legacy backfill (Batch 1 / A1)
+# ---------------------------------------------------------------------------
+
+# The append-event protocol (#kanban-v1) adds eight nullable columns to
+# task_events plus four indexes. A1 only lays down the schema, backfills the
+# pre-protocol rows deterministically, and builds the indexes — it does not
+# wire up append_event, so every event-writing path still leaves the new
+# columns NULL. These tests pin the migration contract.
+
+_PROTOCOL_COLUMNS = (
+    "seq",
+    "event_id",
+    "message_id",
+    "schema_version",
+    "actor",
+    "source",
+    "transition",
+    "protocol",
+)
+
+
+def _make_legacy_events_db(db_path):
+    """Write a kanban DB whose task_events predates the protocol columns.
+
+    The ``tasks`` table is kept current (built from SCHEMA_SQL) so the
+    additive-column migration runs cleanly; only ``task_events`` is dropped
+    and recreated with the pre-protocol shape. ``id`` stays INTEGER PRIMARY
+    KEY so the row never trips the drifted-table rebuild — this isolates the
+    backfill path from the rebuild path.
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(kb.SCHEMA_SQL)
+    conn.executescript(
+        """
+        DROP TABLE task_events;
+        CREATE TABLE task_events (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id    TEXT NOT NULL,
+            run_id     INTEGER,
+            kind       TEXT NOT NULL,
+            payload    TEXT,
+            created_at INTEGER NOT NULL
+        );
+        """
+    )
+    return conn
+
+
+def test_task_events_protocol_columns_present_and_nullable(kanban_home):
+    """A fresh DB carries all eight protocol columns, every one nullable."""
+    with kb.connect() as conn:
+        info = {
+            row["name"]: row
+            for row in conn.execute("PRAGMA table_info(task_events)")
+        }
+    for col in _PROTOCOL_COLUMNS:
+        assert col in info, f"missing column {col}"
+        assert info[col]["notnull"] == 0, f"{col} must be nullable"
+
+
+def test_task_events_protocol_indexes_present(kanban_home):
+    """A fresh DB builds the four protocol indexes."""
+    with kb.connect() as conn:
+        indexes = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+    for name in (
+        "idx_events_task_seq",
+        "idx_events_task_message",
+        "idx_events_event_id",
+        "idx_events_seq_read",
+    ):
+        assert name in indexes, f"missing index {name}"
+
+
+def test_legacy_task_events_backfill_is_deterministic_per_task(tmp_path):
+    """Backfill numbers each task's events by created_at ASC, id ASC.
+
+    Events are inserted interleaved across two tasks and with created_at
+    values that deliberately disagree with insertion (id) order, plus a
+    created_at tie inside one task, so the assertions can only pass if the
+    migration orders by ``created_at ASC, id ASC`` exactly.
+    """
+    db_path = tmp_path / "legacy-events.db"
+    conn = _make_legacy_events_db(db_path)
+    # Insertion order fixes the autoincrement id. Columns: (task_id, created_at)
+    #   id=1  A  created_at=200
+    #   id=2  B  created_at=100
+    #   id=3  A  created_at=100
+    #   id=4  A  created_at=100   (tie with id=3 -> id breaks the tie)
+    #   id=5  B  created_at=50
+    rows = [
+        ("A", 200),
+        ("B", 100),
+        ("A", 100),
+        ("A", 100),
+        ("B", 50),
+    ]
+    for task_id, created_at in rows:
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'note', NULL, ?)",
+            (task_id, created_at),
+        )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        backfilled = {
+            row["id"]: row
+            for row in migrated.execute(
+                "SELECT id, task_id, seq, event_id, schema_version FROM task_events"
+            )
+        }
+
+    # Expected seq per id, derived from created_at ASC, id ASC within each task.
+    #   Task A: (100,id3)->1, (100,id4)->2, (200,id1)->3
+    #   Task B: (50,id5)->1, (100,id2)->2
+    expected_seq = {3: 1, 4: 2, 1: 3, 5: 1, 2: 2}
+    for row_id, seq in expected_seq.items():
+        assert backfilled[row_id]["seq"] == seq, (
+            f"id={row_id} got seq={backfilled[row_id]['seq']}, expected {seq}"
+        )
+        assert backfilled[row_id]["event_id"] == f"legacy:{row_id}"
+        assert backfilled[row_id]["schema_version"] == 0
+
+
+def test_legacy_backfill_sets_schema_version_zero_but_new_rows_stay_null(tmp_path):
+    """schema_version transitions NULL->0 for legacy rows only.
+
+    The migration backfills pre-protocol rows to schema_version 0 (and a
+    non-null seq/event_id). Rows written afterwards — A1 has not wired up
+    append_event, so writers still omit the protocol columns — must keep
+    schema_version, seq, and event_id NULL. This proves the backfill is a
+    one-shot legacy pass, not a coercion applied to every NULL on reconnect.
+    """
+    db_path = tmp_path / "legacy-schemaver.db"
+    conn = _make_legacy_events_db(db_path)
+    conn.execute(
+        "INSERT INTO task_events (task_id, kind, created_at) "
+        "VALUES ('A', 'note', 100)"
+    )
+    conn.commit()
+    conn.close()
+
+    # First open migrates + backfills the legacy row, then writes a new row
+    # the way current code does (protocol columns omitted -> NULL).
+    with kb.connect(db_path) as migrated:
+        legacy = migrated.execute(
+            "SELECT seq, event_id, schema_version FROM task_events WHERE id = 1"
+        ).fetchone()
+        assert legacy["schema_version"] == 0
+        assert legacy["seq"] == 1
+        assert legacy["event_id"] == "legacy:1"
+
+        migrated.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES ('A', 'note', 300)"
+        )
+        migrated.commit()
+        new_id = migrated.execute(
+            "SELECT id FROM task_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        fresh_row = migrated.execute(
+            "SELECT seq, event_id, schema_version FROM task_events WHERE id = ?",
+            (new_id,),
+        ).fetchone()
+        assert fresh_row["schema_version"] is None
+        assert fresh_row["seq"] is None
+        assert fresh_row["event_id"] is None
+
+    # Reopen: the one-shot backfill must not renumber the legacy row, nor
+    # backfill the post-migration NULL row (that would collide on seq=1).
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path) as reopened:
+        legacy = reopened.execute(
+            "SELECT seq, schema_version FROM task_events WHERE id = 1"
+        ).fetchone()
+        assert legacy["seq"] == 1
+        assert legacy["schema_version"] == 0
+        still_null = reopened.execute(
+            "SELECT seq, schema_version FROM task_events WHERE id = ?",
+            (new_id,),
+        ).fetchone()
+        assert still_null["seq"] is None
+        assert still_null["schema_version"] is None
+
+
+def test_protocol_unique_indexes_enforced(kanban_home):
+    """The (task_id, seq), (task_id, message_id), and event_id uniques bite."""
+    with kb.connect() as conn:
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at, seq, event_id, message_id) "
+            "VALUES ('A', 'note', 1, 1, 'e1', 'm1')"
+        )
+        # Duplicate (task_id, seq).
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, created_at, seq) "
+                "VALUES ('A', 'note', 2, 1)"
+            )
+        # Duplicate event_id.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, created_at, event_id) "
+                "VALUES ('A', 'note', 2, 'e1')"
+            )
+        # Duplicate (task_id, message_id).
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, created_at, message_id) "
+                "VALUES ('A', 'note', 2, 'm1')"
+            )
+        # NULLs are exempt from all three partial uniques.
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) VALUES ('A', 'note', 3)"
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) VALUES ('A', 'note', 4)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------
 

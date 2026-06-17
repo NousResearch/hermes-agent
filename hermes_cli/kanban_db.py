@@ -1060,7 +1060,25 @@ CREATE TABLE IF NOT EXISTS task_events (
     run_id     INTEGER,
     kind       TEXT NOT NULL,
     payload    TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    -- Append-event protocol metadata (Kanban v1, Batch 1 / A1). All
+    -- nullable so legacy boards migrate additively (no destructive rebuild,
+    -- no NOT NULL adds). ``append_event`` and Event hydration land in later
+    -- batches; for now writers leave these NULL and the migration only
+    -- backfills the pre-protocol rows.
+    --   seq            per-task monotonic sequence (1..n), unique per task
+    --   event_id       globally-unique event id ('legacy:<id>' for old rows)
+    --   message_id     idempotency key for the originating message, unique per task
+    --   schema_version event envelope version (0 for backfilled legacy rows)
+    --   actor/source/transition/protocol  envelope provenance fields
+    seq            INTEGER,
+    event_id       TEXT,
+    message_id     TEXT,
+    schema_version INTEGER,
+    actor          TEXT,
+    source         TEXT,
+    transition     TEXT,
+    protocol       TEXT
 );
 
 -- Historical attempt record. Each time the dispatcher claims a task, a
@@ -1722,6 +1740,79 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         "ON task_events(run_id, id)"
     )
 
+    # task_events append-event protocol columns (Kanban v1, Batch 1 / A1).
+    # All nullable, so legacy boards migrate additively — no destructive
+    # rebuild and no NOT NULL adds. Re-snapshot after the run_id migration
+    # above so this block is independent of it.
+    ev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_events)")}
+    added_seq = False
+    if "seq" not in ev_cols:
+        added_seq = _add_column_if_missing(conn, "task_events", "seq", "seq INTEGER")
+    if "event_id" not in ev_cols:
+        _add_column_if_missing(conn, "task_events", "event_id", "event_id TEXT")
+    if "message_id" not in ev_cols:
+        _add_column_if_missing(conn, "task_events", "message_id", "message_id TEXT")
+    if "schema_version" not in ev_cols:
+        _add_column_if_missing(
+            conn, "task_events", "schema_version", "schema_version INTEGER"
+        )
+    if "actor" not in ev_cols:
+        _add_column_if_missing(conn, "task_events", "actor", "actor TEXT")
+    if "source" not in ev_cols:
+        _add_column_if_missing(conn, "task_events", "source", "source TEXT")
+    if "transition" not in ev_cols:
+        _add_column_if_missing(conn, "task_events", "transition", "transition TEXT")
+    if "protocol" not in ev_cols:
+        _add_column_if_missing(conn, "task_events", "protocol", "protocol TEXT")
+
+    if added_seq:
+        # One-shot legacy backfill, gated on the ``seq`` column having just
+        # been added so it runs exactly once per board. Pre-protocol rows are
+        # numbered deterministically per task by ``created_at ASC, id ASC``
+        # (seq = 1..n), tagged with a synthetic ``legacy:<id>`` event_id, and
+        # stamped schema_version 0. Gating on the column add (not on
+        # ``seq IS NULL``) is essential: A1 has not wired up append_event, so
+        # current writers keep inserting NULL-seq rows — re-running the
+        # backfill on reconnect would renumber those and collide on the
+        # (task_id, seq) unique index below.
+        conn.execute(
+            """
+            WITH ordered AS (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY task_id
+                           ORDER BY created_at ASC, id ASC
+                       ) AS rn
+                FROM task_events
+            )
+            UPDATE task_events
+            SET seq = (SELECT rn FROM ordered WHERE ordered.id = task_events.id),
+                event_id = 'legacy:' || id,
+                schema_version = 0
+            """
+        )
+
+    # Protocol indexes, created after the columns exist (same ordering rule as
+    # ``idx_events_run``). The three uniques are partial so the NULL-everywhere
+    # rows current writers still produce don't all collide; the read index
+    # covers ordered per-task replay (task_id, seq, id).
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_task_seq "
+        "ON task_events(task_id, seq) WHERE seq IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_task_message "
+        "ON task_events(task_id, message_id) WHERE message_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id "
+        "ON task_events(event_id) WHERE event_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_seq_read "
+        "ON task_events(task_id, seq, id)"
+    )
+
     notify_table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
     ).fetchone() is not None
@@ -1822,13 +1913,28 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 # asserts a rebuilt legacy DB is byte-identical to a fresh one.
 _REBUILD_SPECS = {
     "task_events": (
+        # Column order MUST match SCHEMA_SQL: test_rebuilt_schema_matches_fresh_db
+        # compares PRAGMA table_info row-for-row between a rebuilt and a fresh
+        # DB. The append-protocol columns (seq..protocol) carry over from the
+        # renamed legacy table when present (backfilled by the additive pass
+        # before this rebuild runs) and default NULL otherwise.
         "CREATE TABLE task_events ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, run_id INTEGER, kind TEXT NOT NULL,"
-        " payload TEXT, created_at INTEGER NOT NULL)",
+        " payload TEXT, created_at INTEGER NOT NULL,"
+        " seq INTEGER, event_id TEXT, message_id TEXT, schema_version INTEGER,"
+        " actor TEXT, source TEXT, transition TEXT, protocol TEXT)",
         (
             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
             "CREATE INDEX idx_events_run ON task_events(run_id, id)",
+            "CREATE UNIQUE INDEX idx_events_task_seq "
+            "ON task_events(task_id, seq) WHERE seq IS NOT NULL",
+            "CREATE UNIQUE INDEX idx_events_task_message "
+            "ON task_events(task_id, message_id) WHERE message_id IS NOT NULL",
+            "CREATE UNIQUE INDEX idx_events_event_id "
+            "ON task_events(event_id) WHERE event_id IS NOT NULL",
+            "CREATE INDEX idx_events_seq_read "
+            "ON task_events(task_id, seq, id)",
         ),
     ),
     "task_comments": (

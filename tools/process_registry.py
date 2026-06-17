@@ -1213,25 +1213,50 @@ class ProcessRegistry:
         # available and we stop.
         drained = ""
         stdout = getattr(proc, "stdout", None)
-        if stdout is not None and not _IS_WINDOWS:
-            try:
-                import fcntl
-                fd = stdout.fileno()
-                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        if stdout is not None:
+            if not _IS_WINDOWS:
+                # POSIX: set pipe non-blocking via fcntl, read what's
+                # immediately available, then restore flags.
                 try:
-                    chunk = stdout.read()
-                    if chunk:
-                        drained = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                except (BlockingIOError, OSError, ValueError):
-                    pass
-                finally:
+                    import fcntl
+                    fd = stdout.fileno()
+                    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
                     try:
-                        fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+                        chunk = stdout.read()
+                        if chunk:
+                            drained = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
+                    except (BlockingIOError, OSError, ValueError):
+                        pass
+                    finally:
+                        try:
+                            fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
+            else:
+                # Windows: no fcntl, so fcntl.F_SETFL is unavailable.
+                # The direct child has already exited so the pipe will
+                # EOF shortly — unless a descendant is still holding it
+                # open.  Use a short timed drain in a daemon thread: if
+                # data arrives within the window we collect it; otherwise
+                # we proceed without it (same best-effort semantics as
+                # the POSIX path).
+                _drain_result = [""]
+
+                def _timed_drain(_out=stdout, _buf=_drain_result):
+                    try:
+                        chunk = _out.read()
+                        if chunk:
+                            _buf[0] = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
                     except Exception:
                         pass
-            except Exception as e:
-                logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
+
+                drain_thread = threading.Thread(target=_timed_drain, daemon=True)
+                drain_thread.start()
+                drain_thread.join(timeout=0.5)
+                drained = _drain_result[0]
 
         with session._lock:
             if drained:

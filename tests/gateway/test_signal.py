@@ -402,7 +402,7 @@ class TestSignalSendImageFile:
         assert len(captured) == 1
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["account"] == adapter.account
-        assert captured[0]["params"]["recipient"] == ["+155****4567"]
+        assert captured[0]["params"]["recipient"] == "+155****4567"
         assert captured[0]["params"]["attachments"] == [str(img_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         # Typing indicator must be stopped before sending
@@ -496,7 +496,7 @@ class TestSignalRecipientResolution:
 
         assert result.success is True
         assert captured[0]["method"] == "send"
-        assert captured[0]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+        assert captured[0]["params"]["recipient"] == "68680952-6d86-45bc-85e0-1a4d186d53ee"
 
     @pytest.mark.asyncio
     async def test_send_looks_up_uuid_via_list_contacts(self, monkeypatch):
@@ -525,7 +525,7 @@ class TestSignalRecipientResolution:
         assert result.success is True
         assert captured[0]["method"] == "listContacts"
         assert captured[1]["method"] == "send"
-        assert captured[1]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+        assert captured[1]["params"]["recipient"] == "68680952-6d86-45bc-85e0-1a4d186d53ee"
 
     @pytest.mark.asyncio
     async def test_send_falls_back_to_phone_when_no_uuid_found(self, monkeypatch):
@@ -547,7 +547,7 @@ class TestSignalRecipientResolution:
         result = await adapter.send(chat_id="+15551230000", content="hello")
 
         assert result.success is True
-        assert captured[1]["params"]["recipient"] == ["+15551230000"]
+        assert captured[1]["params"]["recipient"] == "+15551230000"
 
     @pytest.mark.asyncio
     async def test_send_typing_uses_cached_uuid(self, monkeypatch):
@@ -565,7 +565,7 @@ class TestSignalRecipientResolution:
         await adapter.send_typing("+15551230000")
 
         assert captured[0]["method"] == "sendTyping"
-        assert captured[0]["params"]["recipient"] == ["68680952-6d86-45bc-85e0-1a4d186d53ee"]
+        assert captured[0]["params"]["recipient"] == "68680952-6d86-45bc-85e0-1a4d186d53ee"
 
 
 # ---------------------------------------------------------------------------
@@ -1513,7 +1513,7 @@ class TestSignalSendMultipleImages:
 
         assert len(captured) == 1
         params = captured[0]["params"]
-        assert params["recipient"] == ["+155****4567"]
+        assert params["recipient"] == "+155****4567"
         assert params["message"] == ""
         assert len(params["attachments"]) == 5
         # raise_on_rate_limit must be opted into so the retry loop sees 429s

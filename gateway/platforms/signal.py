@@ -692,10 +692,25 @@ class SignalAdapter(BasePlatformAdapter):
             })
             if isinstance(contacts, list):
                 for contact in contacts:
-                    number = contact.get("number") if isinstance(contact, dict) else None
-                    service_id = self._extract_contact_uuid(contact, chat_id)
-                    if number and service_id:
-                        self._remember_recipient_identifiers(number, service_id)
+                    if not isinstance(contact, dict):
+                        continue
+                    number = contact.get("number")
+                    uuid_val = contact.get("uuid") or contact.get("serviceId")
+                    if not uuid_val or not _is_signal_service_id(str(uuid_val)):
+                        continue
+                    # Always populate cache from every contact — the caller's
+                    # chat_id might not match any single number exactly
+                    # (format differences, missing country code, etc.)
+                    if number and _looks_like_e164_number(str(number)):
+                        self._recipient_uuid_by_number[str(number)] = str(uuid_val)
+                        # Also cache partial variants so a truncated chat_id
+                        # (e.g. missing country code) still resolves
+                        raw = str(number).lstrip("+")
+                        if len(raw) > 10:
+                            raw = raw[-10:]
+                        self._recipient_uuid_by_number[raw] = str(uuid_val)
+                        self._recipient_uuid_by_number["1" + raw] = str(uuid_val)
+                        self._recipient_uuid_by_number["+1" + raw] = str(uuid_val)
 
             return self._recipient_uuid_by_number.get(chat_id, chat_id)
 
@@ -990,7 +1005,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            params["recipient"] = await self._resolve_recipient(chat_id)
 
         result = await self._rpc("send", params)
 
@@ -1040,7 +1055,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            params["recipient"] = await self._resolve_recipient(chat_id)
 
         fails = self._typing_failures.get(chat_id, 0)
         result = await self._rpc(
@@ -1140,7 +1155,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             base_params["groupId"] = chat_id[6:]
         else:
-            base_params["recipient"] = [await self._resolve_recipient(chat_id)]
+            base_params["recipient"] = await self._resolve_recipient(chat_id)
 
         att_batches = [
             attachments[i:i + SIGNAL_MAX_ATTACHMENTS_PER_MSG]
@@ -1273,7 +1288,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            params["recipient"] = await self._resolve_recipient(chat_id)
 
         result = await self._rpc("send", params)
         if result is not None:
@@ -1312,7 +1327,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            params["recipient"] = await self._resolve_recipient(chat_id)
 
         result = await self._rpc("send", params)
         if result is not None:
@@ -1424,7 +1439,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = chat_id
 
         result = await self._rpc("sendReaction", params)
         if result is not None:
@@ -1450,7 +1465,7 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [chat_id]
+            params["recipient"] = chat_id
 
         result = await self._rpc("sendReaction", params)
         return result is not None

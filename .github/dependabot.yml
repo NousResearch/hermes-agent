@@ -28,7 +28,9 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    # Temporarily disabled while we investigate duplicate Dependabot PRs
+    # triggered by PR-check automation. Restore to 5 once the approach is fixed.
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "github-actions"

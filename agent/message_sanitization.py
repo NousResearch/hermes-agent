@@ -182,6 +182,65 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _collapse_repeated_json_objects(raw_args: str) -> str | None:
+    """Collapse exact-repeated adjacent JSON object payloads into one.
+
+    Some model/provider combinations emit a single JSON object payload
+    repeated back-to-back without a separator, e.g.
+    ``{"a":1}{"a":1}`` or
+    ``{"name":"x","file_path":""}{"name":"x","file_path":""}``.
+    The standard ``json.loads`` parser raises ``Extra data`` on the
+    second payload, so the call is rejected.
+
+    The helper is conservative:
+
+    - All payloads must be objects (``dict``) — repeated arrays/scalars
+      are not collapsed (those are usually the result of truncated
+      streaming output, not duplicated emission, and the existing
+      trailing-comma / unclosed-bracket repair stages handle them).
+    - All payloads must be byte-identical JSON object substrings. Two
+      objects that parse to the same dict but were serialized
+      differently (for example with a different key order) are not
+      collapsed.
+    - The first valid object is returned as compact JSON.
+
+    Returns ``None`` for any input that cannot be safely collapsed —
+    the caller should fall through to the existing repair stages.
+    Returns ``None`` for any non-string input.
+    """
+    if not isinstance(raw_args, str):
+        return None
+    text = raw_args.strip()
+    if not text:
+        return None
+    decoder = json.JSONDecoder()
+    pos = 0
+    payloads = []
+    raw_payloads = []
+    while pos < len(text):
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        try:
+            start = pos
+            obj, end = decoder.raw_decode(text, pos)
+        except json.JSONDecodeError:
+            return None
+        payloads.append(obj)
+        raw_payloads.append(text[start:end])
+        pos = end
+    if len(payloads) < 2:
+        return None
+    first = payloads[0]
+    if not isinstance(first, dict):
+        return None
+    first_raw = raw_payloads[0]
+    if any(raw != first_raw for raw in raw_payloads[1:]):
+        return None
+    return json.dumps(first, separators=(",", ":"))
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -202,6 +261,21 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
+
+    # Repair pass 0a: collapsed repeated adjacent JSON objects
+    # (#6841 — e.g. ``{"a":1}{"a":1}`` or a real-world tool payload
+    # like ``{"name":"reddit-saas-idea-miner","file_path":""}`` repeated
+    # three times back-to-back). This runs before the unescaped-control
+    # pass because the unescaped-control pass reserialises the parsed
+    # object and would silently drop the duplicated payloads if the
+    # single-object form parsed successfully.
+    collapsed = _collapse_repeated_json_objects(raw_stripped)
+    if collapsed is not None:
+        logger.warning(
+            "Auto-repaired duplicated JSON arguments for %s: %s -> %s",
+            tool_name, raw_stripped[:80], collapsed[:80],
+        )
+        return collapsed
 
     # Repair pass 0: llama.cpp backends sometimes emit literal control
     # characters (tabs, newlines) inside JSON string values. json.loads

@@ -1922,6 +1922,39 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
 
 
+def _collapse_repeated_text(value: str) -> str:
+    """Collapse an exact double-repeated string into a single copy.
+
+    Conservative helper for tool-name repair (#6841). Two observed
+    patterns:
+
+    - ``"skills_listskills_list"`` -> ``"skills_list"`` (no separator)
+    - ``"skills_list skills_list"`` -> ``"skills_list"`` (whitespace separator)
+
+    Returns ``value`` unchanged if no clean half-repeat is found. A
+    half-repeat is only collapsed when the two halves are byte-equal
+    (after stripping leading/trailing whitespace) and the result is
+    non-empty. Triple/quadruple repeats are not handled here — they
+    are not observed in production and a recursive ``len/2`` check on
+    an odd-length string would be ambiguous. The caller is expected
+    to fall through to fuzzy match for those cases.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return text
+    n = len(text)
+    if n % 2 == 0:
+        half = n // 2
+        if text[:half] == text[half:]:
+            return text[:half]
+    parts = text.split()
+    if len(parts) >= 2 and all(p == parts[0] for p in parts[1:]):
+        return parts[0]
+    return text
+
+
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
 
@@ -1936,10 +1969,16 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
        Claude-style models sometimes tack on (TodoTool_tool ->
        TodoTool -> Todo -> todo). Applied twice so double-tacked
        suffixes like ``TodoTool_tool`` reduce all the way.
-    5. Fuzzy match (difflib, cutoff=0.7).
+    5. Collapse exact repeated tool names (#6841 — e.g.
+       ``skills_listskills_list`` -> ``skills_list``). Runs after
+       normalization so case/separator variants collapse correctly
+       (e.g. ``SKILLS_LISTSKILLS_LIST`` -> ``skills_list``).
+    6. Fuzzy match (difflib, cutoff=0.7).
 
     See #14784 for the original reports (TodoTool_tool, Patch_tool,
     BrowserClick_tool were all returning "Unknown tool" before).
+    See #6841 for the repeated-name reports (skills_listskills_list,
+    session_searchsession_search, web_searchweb_search).
 
     Returns the repaired name if found in valid_tool_names, else None.
     """
@@ -2004,6 +2043,16 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
                 extra.add(_camel_snake(stripped))
         cands |= extra
 
+    # Collapse exact repeated tool names (#6841). Apply on the
+    # normalized form so the most common case (already-valid
+    # snake_case name duplicated) is caught without a separate
+    # case-folding pass.
+    collapsed = _collapse_repeated_text(normalized)
+    if collapsed != normalized:
+        cands.add(collapsed)
+        cands.add(_collapse_repeated_text(lowered))
+        cands.add(_collapse_repeated_text(tool_name))
+
     for c in cands:
         if c and c in agent.valid_tool_names:
             return c
@@ -2014,7 +2063,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
         return matches[0]
 
     return None
-
 
 
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

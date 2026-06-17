@@ -94,3 +94,42 @@ def test_lockfile_resolves_the_pinned_electron():
         f"but the pin is {spec!r}; run `npm install --package-lock-only` so "
         "`npm ci` stays consistent."
     )
+
+
+def test_electron_dist_matches_lockfile_install_location():
+    """build.electronDist must point at where the lockfile installs Electron.
+
+    electron-builder copies the unpacked Electron from ``build.electronDist``
+    (resolved relative to ``apps/desktop``). npm workspace hoisting is not
+    deterministic across machines/npm versions: it may nest Electron under
+    ``apps/desktop/node_modules/electron`` or hoist it to the repo root. If
+    electronDist points at one location while the lockfile installs at the
+    other, packaging fails with ``The specified electronDist does not exist`` —
+    the "Building desktop app" failure reported after the June lockfile
+    regeneration floated Electron and reshuffled the hoist. Lock the two
+    together so a hoist change (root <-> nested) can't silently break the path
+    again.
+    """
+    if not ROOT_LOCK.is_file():
+        pytest.skip("root package-lock.json not present")
+    electron_dist = _desktop_pkg().get("build", {}).get("electronDist")
+    assert electron_dist, "build.electronDist is missing"
+
+    lock = json.loads(ROOT_LOCK.read_text(encoding="utf-8"))
+    electron_paths = [
+        path
+        for path in lock.get("packages", {})
+        if path.endswith("node_modules/electron")
+    ]
+    assert electron_paths, "no electron entry found in package-lock.json"
+
+    desktop_dir = REPO_ROOT / "apps" / "desktop"
+    # electronDist is resolved relative to the apps/desktop project dir.
+    configured = (desktop_dir / electron_dist).resolve()
+    # Where the lockfile actually places Electron's unpacked dist.
+    installed = {(REPO_ROOT / p / "dist").resolve() for p in electron_paths}
+    assert configured in installed, (
+        f"build.electronDist={electron_dist!r} resolves to {configured}, but the "
+        f"lockfile installs Electron at {sorted(str(p) for p in installed)}. "
+        "electron-builder will fail with 'electronDist does not exist'."
+    )

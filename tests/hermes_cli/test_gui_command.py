@@ -616,6 +616,33 @@ def test_electron_dist_ok_per_platform(tmp_path, monkeypatch, platform, rel):
     assert cli_main._electron_dist_ok(tmp_path) is True
 
 
+def test_electron_dir_prefers_workspace_local_package(tmp_path):
+    """npm may nest electron under apps/desktop; resolve there over the root hoist."""
+    root_electron = tmp_path / "node_modules" / "electron"
+    local_electron = tmp_path / "apps" / "desktop" / "node_modules" / "electron"
+    root_electron.mkdir(parents=True)
+    local_electron.mkdir(parents=True)
+
+    assert cli_main._electron_dir(tmp_path) == local_electron
+
+
+def test_electron_dir_falls_back_to_root_hoist(tmp_path):
+    """When npm hoists electron to the repo root, resolve there."""
+    root_electron = tmp_path / "node_modules" / "electron"
+    root_electron.mkdir(parents=True)
+
+    assert cli_main._electron_dir(tmp_path) == root_electron
+
+
+def test_electron_dist_ok_finds_workspace_local_binary(tmp_path, monkeypatch):
+    """A nested apps/desktop electron with a valid binary counts as ok."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    binp = tmp_path / "apps" / "desktop" / "node_modules" / "electron" / "dist" / "electron"
+    binp.parent.mkdir(parents=True)
+    binp.write_text("", encoding="utf-8")
+    assert cli_main._electron_dist_ok(tmp_path) is True
+
+
 def test_redownload_electron_dist_noop_when_present(tmp_path, monkeypatch):
     """Already-healthy dist → no download, so an unrelated build failure can't
     trigger a needless ~200 MB refetch."""

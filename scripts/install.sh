@@ -1532,8 +1532,48 @@ PY
     log_success "All dependencies installed"
 }
 
+# Fix venv entrypoint shebangs when HERMES_HOME contains spaces.
+# Python/pip generates entrypoint scripts (e.g. venv/bin/hermes) with an
+# absolute shebang like #!/path/with spaces/venv/bin/python.  The kernel
+# splits on the first space, so the shebang breaks.  Rewrite to
+# #!/usr/bin/env python3 which is space-safe on all POSIX systems.
+fix_venv_entrypoint_shebangs() {
+    [ "$USE_VENV" = true ] || return 0
+    local venv_bin="$INSTALL_DIR/venv/bin"
+    [ -d "$venv_bin" ] || return 0
+
+    # Only needed when the path actually contains spaces.
+    case "$venv_bin" in
+        *' '*) ;;
+        *) return 0 ;;
+    esac
+
+    local fixed=0
+    for script in "$venv_bin"/*; do
+        [ -f "$script" ] || continue
+        [ -x "$script" ] || continue
+        # Read the first line; skip non-shebang files.
+        IFS= read -r first_line < "$script" || continue
+        case "$first_line" in
+            '#!'*/python*) ;;
+            *) continue ;;
+        esac
+        # Rewrite the shebang to use /usr/bin/env.
+        local python_name
+        python_name="$(basename "${first_line#\#! }")"
+        # Fallback to python3 if basename extraction fails.
+        case "$python_name" in python*) ;; *) python_name=python3 ;; esac
+        sed -i '' "1s|^#!.*|#!/usr/bin/env $python_name|" "$script"
+        fixed=$((fixed + 1))
+    done
+    if [ "$fixed" -gt 0 ]; then
+        log_info "Fixed $fixed venv entrypoint shebang(s) for space-safe paths"
+    fi
+}
+
 setup_path() {
     log_info "Setting up hermes command..."
+    fix_venv_entrypoint_shebangs
 
     if [ "$USE_VENV" = true ]; then
         HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"

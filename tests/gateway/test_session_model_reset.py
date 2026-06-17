@@ -1,7 +1,11 @@
-"""Tests that /new (and its /reset alias) clears session-scoped overrides."""
+"""Tests that /new (and its /reset alias) clears session-scoped overrides.
+
+Also tests that /model consumes was_auto_reset to prevent the next message's
+auto-reset cleanup from wiping a fresh model override (issue #48031).
+"""
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -139,3 +143,67 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_model_command_consumes_was_auto_reset(tmp_path):
+    """/model must consume was_auto_reset so the next message's cleanup
+    won't wipe the fresh override (issue #48031).
+
+    Scenario:
+    1. Session auto-resets → was_auto_reset=True on session entry
+    2. /model X arrives → _handle_model_command stores override
+    3. Without the fix, was_auto_reset stays True → next regular message
+       in _handle_message_with_agent wipes the override at line 8378.
+    4. With the fix, _handle_model_command consumes was_auto_reset →
+       next message sees False → override preserved.
+    """
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    session_entry = runner.session_store.get_or_create_session.return_value
+
+    # Simulate auto-reset: session entry has was_auto_reset=True
+    session_entry.was_auto_reset = True
+    session_entry.auto_reset_reason = "idle"
+
+    # Set up config file so _handle_model_command can read it
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  default: gpt-4o-mini\n  provider: openai\n",
+        encoding="utf-8",
+    )
+
+    # Mock switch_model to return a successful result
+    mock_result = ModelSwitchResult(
+        success=True,
+        new_model="gpt-4o",
+        target_provider="openai",
+        api_key="sk-test",
+        base_url="",
+        api_mode="openai",
+        provider_label="OpenAI",
+    )
+
+    with (
+        patch("hermes_cli.model_switch.switch_model", return_value=mock_result),
+        patch("gateway.run._hermes_home", hermes_home),
+        patch("gateway.run._load_gateway_config", return_value={
+            "model": {"default": "gpt-4o-mini", "provider": "openai"},
+        }),
+        patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None),
+    ):
+        event = _make_event("/model gpt-4o")
+        await runner._handle_model_command(event)
+
+    # Verify: override was stored
+    assert session_key in runner._session_model_overrides
+    assert runner._session_model_overrides[session_key]["model"] == "gpt-4o"
+
+    # Verify: was_auto_reset was consumed
+    assert session_entry.was_auto_reset is False, (
+        "was_auto_reset must be consumed by _handle_model_command so the "
+        "next message's auto-reset cleanup won't wipe the fresh override"
+    )

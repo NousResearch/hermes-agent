@@ -1207,6 +1207,16 @@ class GatewaySlashCommandsMixin:
                         # stale cache signature to trigger a rebuild.
                         _self._evict_cached_agent(_session_key)
 
+                        # Consume was_auto_reset so the auto-reset cleanup in
+                        # _handle_message_with_agent won't wipe this fresh
+                        # override on the next regular message (#48031).
+                        try:
+                            _se = _self.session_store.get_or_create_session(source)
+                            if getattr(_se, "was_auto_reset", False):
+                                _se.was_auto_reset = False
+                        except Exception:
+                            pass
+
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [t("gateway.model.switched", model=result.new_model)]
@@ -1361,6 +1371,16 @@ class GatewaySlashCommandsMixin:
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.
             self._evict_cached_agent(session_key)
+
+            # Consume was_auto_reset so the auto-reset cleanup in
+            # _handle_message_with_agent (line 8378) won't wipe this
+            # fresh override on the next regular message (#48031).
+            try:
+                _se = self.session_store.get_or_create_session(source)
+                if getattr(_se, "was_auto_reset", False):
+                    _se.was_auto_reset = False
+            except Exception:
+                pass
 
             # Persist to config if --global
             if persist_global:

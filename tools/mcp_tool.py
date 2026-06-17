@@ -2806,6 +2806,28 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
 
+        # First-invoke approval gate (#16462): MCP tools are registered
+        # dynamically and would otherwise be callable without any human
+        # confirmation, unlike terminal commands which pass through
+        # DANGEROUS_PATTERNS. Gate the first call to each (server, tool)
+        # pair per session. Runs in the tool-executor thread, which holds
+        # the session context and (in CLI) the per-thread approval callback.
+        from tools.approval import check_mcp_tool_guard
+        try:
+            from tools.terminal_tool import _get_approval_callback
+            _approval_cb = _get_approval_callback()
+        except Exception:
+            _approval_cb = None
+        _guard = check_mcp_tool_guard(server_name, tool_name, args,
+                                      approval_callback=_approval_cb)
+        if not _guard.get("approved", False):
+            # An approval denial is user intent, not a server fault — do not
+            # bump the circuit breaker.
+            return json.dumps({
+                "error": (_guard.get("message")
+                          or "MCP tool call blocked by approval guard."),
+            }, ensure_ascii=False)
+
         async def _call():
             async with server._rpc_lock:
                 result = await server.session.call_tool(tool_name, arguments=args)

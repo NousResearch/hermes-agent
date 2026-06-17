@@ -34,6 +34,7 @@ approvals:
   timeout: 60                     # seconds to wait for user response (default: 60)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
+  mcp_first_invoke: true          # first call to each MCP (server, tool) pair asks for approval
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
 
@@ -45,6 +46,7 @@ The full set of keys:
 | `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
+| `mcp_first_invoke` | `true` | When true, the **first** call to each MCP `(server, tool)` pair in a session triggers an approval prompt showing the server, tool, and arguments — making a newly added server's capabilities visible before anything runs. Approve **once** (this call only), for the **session** (this pair until `/new`), or **always** (persisted to `command_allowlist`; add `mcp:<server>:*` there to trust a whole server). Only fires on interactive surfaces (CLI, gateway); headless and cron sessions auto-approve with a log line — restrict their tool surface via `mcp_servers.<name>.tools.include`/`exclude` instead. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. TUI uses its own modal overlay (set `HERMES_TUI_NO_CONFIRM=1` to opt out there). |
 
 | Mode | Behavior |

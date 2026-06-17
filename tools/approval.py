@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import json
 import logging
 import os
 import re
@@ -1804,6 +1805,236 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         save_permanent_allowlist(_permanent_approved)
     # choice == "once": no persistence — approval lasts this single call only.
 
+    return {"approved": True, "message": None,
+            "user_approved": True, "description": description}
+
+
+# =========================================================================
+# MCP tool first-invoke guard (#16462)
+# =========================================================================
+
+def mcp_approval_key(server_name: str, tool_name: str) -> str:
+    """Build the approval pattern key for an MCP (server, tool) pair.
+
+    The ``mcp:`` prefix namespaces these keys away from the dangerous-command
+    descriptions in the shared session/permanent approval stores. The wildcard
+    form ``mcp:<server>:*`` can be added to ``command_allowlist`` in
+    config.yaml to permanently trust every tool on a server.
+    """
+    return f"mcp:{server_name}:{tool_name}"
+
+
+def _mcp_first_invoke_enabled() -> bool:
+    """Read ``approvals.mcp_first_invoke`` from config (default: enabled)."""
+    value = _get_approval_config().get("mcp_first_invoke", True)
+    if isinstance(value, str):
+        return is_truthy_value(value)
+    return bool(value)
+
+
+def _format_mcp_call_preview(server_name: str, tool_name: str,
+                             arguments) -> str:
+    """Render an MCP tool call as the 'command' string shown in approval
+    prompts: server, tool, and a truncated JSON dump of the arguments so the
+    user can see exactly what the first invocation would do."""
+    try:
+        args_preview = json.dumps(arguments or {}, ensure_ascii=False,
+                                  default=str)
+    except (TypeError, ValueError):
+        args_preview = repr(arguments)
+    if len(args_preview) > 600:
+        args_preview = args_preview[:600] + "… (truncated)"
+    return (f"MCP tool call: {server_name}/{tool_name}\n"
+            f"Arguments: {args_preview}")
+
+
+def check_mcp_tool_guard(server_name: str, tool_name: str, arguments=None,
+                         approval_callback=None) -> dict:
+    """Approve the first invocation of an MCP tool in this session (#16462).
+
+    MCP server tools are registered dynamically at ``hermes mcp add`` /
+    connect time and were previously callable by the LLM without any human
+    confirmation — unlike terminal commands, which pass through
+    DANGEROUS_PATTERNS and the approval system. SECURITY.md assigns MCP
+    servers lower trust than installed skills; this guard makes that trust
+    distinction real in the dispatch path.
+
+    The first call to each ``(server, tool)`` pair triggers the same approval
+    flow used for dangerous commands. Scope of an approval:
+
+    - ``once``    — this single dispatch only (no persistence)
+    - ``session`` — this (server, tool) pair until the session is cleared
+      (``/new`` resets it via ``clear_session``)
+    - ``always``  — persisted to ``command_allowlist`` in config.yaml
+
+    First-use consent is a visibility decision (the user learning what a
+    newly added server can do), not a risk assessment, so ``smart`` mode does
+    not auto-approve it — only ``off``/yolo bypass the prompt, plus the
+    dedicated ``approvals.mcp_first_invoke: false`` toggle.
+
+    Scope (interactive surfaces only): headless and cron contexts
+    auto-approve with a log line — no user is present to respond, and
+    blocking every MCP tool there would break existing automation. Restrict
+    the tool surface for unattended profiles via
+    ``mcp_servers.<name>.tools.include`` / ``exclude`` instead.
+
+    Returns the same dict contract as ``check_all_command_guards``.
+    """
+    if not _mcp_first_invoke_enabled():
+        return {"approved": True, "message": None}
+
+    # --yolo or approvals.mode=off: bypass (session- or process-scoped).
+    if (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+            or _get_approval_mode() == "off"):
+        return {"approved": True, "message": None}
+
+    pattern_key = mcp_approval_key(server_name, tool_name)
+    server_wildcard = mcp_approval_key(server_name, "*")
+    session_key = get_current_session_key()
+
+    if (is_approved(session_key, pattern_key)
+            or is_approved(session_key, server_wildcard)):
+        return {"approved": True, "message": None}
+
+    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_gateway = _is_gateway_approval_context()
+    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+
+    # No approval surface (headless local, batch, cron): auto-approve and
+    # log, matching the terminal guard's non-interactive contract. Cron is
+    # deliberately NOT routed through approvals.cron_mode here — cron_mode
+    # governs dangerous commands; first-invoke visibility has no value when
+    # nobody is watching, and a default-deny would break every cron job that
+    # uses MCP tools.
+    if not is_cli and not is_gateway and not is_ask:
+        logger.info(
+            "MCP first-invoke auto-approved in non-interactive context: %s/%s",
+            server_name, tool_name,
+        )
+        return {"approved": True, "message": None}
+
+    command = _format_mcp_call_preview(server_name, tool_name, arguments)
+    description = (
+        f"first use of MCP tool '{tool_name}' from server '{server_name}' "
+        "in this session"
+    )
+    approval_data = {
+        "command": command,
+        "pattern_key": pattern_key,
+        "pattern_keys": [pattern_key],
+        "description": description,
+    }
+
+    def _persist(choice: str) -> None:
+        if choice == "session":
+            approve_session(session_key, pattern_key)
+        elif choice == "always":
+            approve_session(session_key, pattern_key)
+            approve_permanent(pattern_key)
+            save_permanent_allowlist(_permanent_approved)
+        # choice == "once": no persistence — this single dispatch only.
+
+    if is_gateway or is_ask:
+        notify_cb = None
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        if notify_cb is None:
+            # No gateway callback registered: surface a pending approval for
+            # backward compatibility (same fallback as the other guards).
+            submit_pending(session_key, approval_data)
+            return {
+                "approved": False,
+                "pattern_key": pattern_key,
+                "status": "pending_approval",
+                "approval_pending": True,
+                "command": command,
+                "description": description,
+                "message": (
+                    f"⚠️ {description}. Asking the user for approval.\n\n"
+                    f"**Tool call:**\n```\n{command}\n```"
+                ),
+            }
+
+        decision = _await_gateway_decision(
+            session_key, notify_cb, approval_data, surface="gateway"
+        )
+        if decision.get("notify_failed"):
+            return {
+                "approved": False,
+                "message": ("BLOCKED: Failed to send MCP tool approval "
+                            "request to user. Do NOT retry."),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "notify_failed",
+                "user_consent": False,
+            }
+
+        resolved = decision["resolved"]
+        choice = decision["choice"]
+
+        if not resolved or choice is None or choice == "deny":
+            reason = ("timed out without user response" if not resolved
+                      else "denied by user")
+            addendum = " Silence is not consent." if not resolved else ""
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: MCP tool call {reason}. The user has NOT "
+                    f"consented to '{tool_name}' from server '{server_name}'. "
+                    f"Do NOT retry this tool, do NOT rephrase the arguments, "
+                    f"and do NOT attempt the same outcome via a different "
+                    f"tool.{addendum}"
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "timeout" if not resolved else "denied",
+                "user_consent": False,
+            }
+
+        _persist(choice)
+        return {"approved": True, "message": None,
+                "user_approved": True, "description": description}
+
+    # CLI interactive: synchronous prompt via the per-thread callback.
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+    )
+    choice = prompt_dangerous_approval(command, description,
+                                       approval_callback=approval_callback)
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+        choice=choice,
+    )
+
+    if choice == "deny":
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: User denied this MCP tool call. The user has NOT "
+                f"consented to '{tool_name}' from server '{server_name}'. "
+                f"Do NOT retry this tool, do NOT rephrase the arguments, and "
+                f"do NOT attempt the same outcome via a different tool."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "denied",
+            "user_consent": False,
+        }
+
+    _persist(choice)
     return {"approved": True, "message": None,
             "user_approved": True, "description": description}
 

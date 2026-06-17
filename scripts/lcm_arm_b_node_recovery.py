@@ -196,7 +196,94 @@ class ArmBHarness:
             except Exception:
                 pass
 
-    # ---- one trial ----------------------------------------------------------
+    # ---- batched multi-sentinel session (10x cheaper) -----------------------
+    def run_session_batch(self, batch_idx: int, k: int) -> list[TrialResult]:
+        """Plant K sentinels across ONE long session, then recover each from its
+        condensation node. Amortizes the expensive 44-turn buildup across K
+        independent recovery samples instead of 1.
+
+        Layout per session:
+          plant s0 -> g filler -> plant s1 -> g filler -> ... -> plant s_{k-1}
+          -> big tail filler (force the early sentinels to age into leaves and
+             condense) -> recover each s_i from a depth>=1 node carrying it.
+        """
+        filler = "Routine deterministic project chatter for compaction. " * max(
+            1, self.cfg.filler_tokens // 8
+        )
+        sentinels = [
+            f"LCM-ARMB-{int(time.time())}-{batch_idx:02d}{i:02d}" for i in range(k)
+        ]
+
+        # gap filler turns between plants; tail filler after the last plant.
+        gap = max(2, self.cfg.filler_turns // (k + 2))
+        tail = self.cfg.filler_turns
+
+        # 1. plant s0 in a fresh session, capture id
+        plant0 = self._hermes(
+            ["--pass-session-id"],
+            f"Remember this exact fact for later, verbatim: "
+            f"The exact recovery sentinel is {sentinels[0]}. Reply with only OK.",
+        )
+        session_id = self._session_id(plant0.stdout) or self._session_id(plant0.stderr)
+        if not session_id:
+            return [TrialResult(batch_idx * k, s, None, None, False, "", False,
+                                False, 0, 0, notes="no session_id") for s in sentinels]
+
+        turn = 0
+        def _filler_turns(count: int):
+            nonlocal turn
+            for _ in range(count):
+                turn += 1
+                self._hermes(
+                    ["--resume", session_id],
+                    f"Status turn {turn}, reply 'ack {turn}' only. "
+                    f"Context notes: {filler}",
+                )
+
+        # 2. interleave remaining plants with gap filler
+        _filler_turns(gap)
+        for s in sentinels[1:]:
+            self._hermes(
+                ["--resume", session_id],
+                f"Remember this exact fact for later, verbatim: "
+                f"The exact recovery sentinel is {s}. Reply with only OK.",
+            )
+            _filler_turns(gap)
+
+        # 3. big tail to force condensation of the early sentinels
+        _filler_turns(tail)
+
+        # 4. recover each sentinel from a depth>=1 node carrying it
+        results: list[TrialResult] = []
+        for i, s in enumerate(sentinels):
+            hit = self._find_node_with_sentinel(s)
+            depth1_id = hit["node_id"] if hit else None
+            sentinel_in_node = hit is not None
+            sess = hit["session_id"] if hit else session_id
+            node_answer = ""
+            if depth1_id is not None:
+                try:
+                    node_answer = self._node_served_recovery(sess, depth1_id, s)
+                except Exception as exc:  # noqa: BLE001
+                    node_answer = f"[recovery error: {exc}]"
+            correct = s in node_answer
+            confident_wrong = (
+                not correct
+                and bool(re.search(r"LCM-ARMB-\d+-\d+", node_answer))
+                and "no matching" not in node_answer.lower()
+            )
+            # per-sentinel leaf/condensed counts are session-global; report node presence
+            results.append(TrialResult(
+                idx=batch_idx * k + i, sentinel=s, session_id=sess,
+                depth1_node_id=depth1_id, sentinel_in_node=sentinel_in_node,
+                node_served_answer=node_answer[:200], correct=correct,
+                confident_wrong=confident_wrong,
+                leaves=0, condensed=1 if depth1_id is not None else 0,
+                notes=f"batch={batch_idx} pos={i}",
+            ))
+        return results
+
+    # ---- one trial (legacy single-sentinel-per-session) ---------------------
     def run_trial(self, idx: int) -> TrialResult:
         sentinel = f"LCM-ARMB-{int(time.time())}-{idx:03d}"
         filler = "Routine deterministic project chatter for compaction. " * max(
@@ -280,15 +367,29 @@ class ArmBHarness:
         )
 
     # ---- run all + report ---------------------------------------------------
-    def run(self, out_path: Path) -> dict:
+    def run(self, out_path: Path, sentinels_per_session: int = 1) -> dict:
         results: list[TrialResult] = []
         t0 = time.time()
-        for i in range(self.cfg.n):
-            r = self.run_trial(i)
-            results.append(r)
-            print(f"trial {i}: node={r.depth1_node_id} "
-                  f"sentinel_in_node={r.sentinel_in_node} correct={r.correct} "
-                  f"leaves={r.leaves} condensed={r.condensed}", file=sys.stderr)
+        if sentinels_per_session > 1:
+            import math as _m
+            n_batches = _m.ceil(self.cfg.n / sentinels_per_session)
+            produced = 0
+            for b in range(n_batches):
+                k = min(sentinels_per_session, self.cfg.n - produced)
+                batch = self.run_session_batch(b, k)
+                results.extend(batch)
+                produced += len(batch)
+                for r in batch:
+                    print(f"batch {b} sentinel {r.sentinel}: node={r.depth1_node_id} "
+                          f"in_node={r.sentinel_in_node} correct={r.correct}",
+                          file=sys.stderr)
+        else:
+            for i in range(self.cfg.n):
+                r = self.run_trial(i)
+                results.append(r)
+                print(f"trial {i}: node={r.depth1_node_id} "
+                      f"sentinel_in_node={r.sentinel_in_node} correct={r.correct} "
+                      f"leaves={r.leaves} condensed={r.condensed}", file=sys.stderr)
 
         n = len(results)
         condensation_fired = sum(1 for r in results if r.condensed >= 1)
@@ -366,6 +467,9 @@ def main() -> int:
     ap.add_argument("--filler-tokens", type=int, default=3000)
     ap.add_argument("--threshold", type=float, default=0.10)
     ap.add_argument("--timeout-seconds", type=int, default=600)
+    ap.add_argument("--sentinels-per-session", type=int, default=1,
+                    help="Plant K sentinels per long session (amortizes the "
+                         "filler buildup ~Kx). K=1 = legacy one-per-session.")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -378,7 +482,8 @@ def main() -> int:
         filler_turns=args.filler_turns, filler_tokens=args.filler_tokens,
         threshold=args.threshold, timeout_seconds=args.timeout_seconds,
     )
-    rep = ArmBHarness(cfg).run(Path(args.out))
+    rep = ArmBHarness(cfg).run(Path(args.out),
+                               sentinels_per_session=args.sentinels_per_session)
     print(json.dumps({k: v for k, v in rep.items() if k != "trials"}, indent=2))
     return 0 if rep["verdict"].startswith("PASS") else 1
 

@@ -8,6 +8,11 @@ import pytest
 from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
 
 
+def _clear_openviking_tenant_env(monkeypatch):
+    for name in ("OPENVIKING_ACCOUNT", "OPENVIKING_USER", "OPENVIKING_AGENT"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_tool_search_sorts_by_raw_score_across_buckets():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -386,7 +391,8 @@ def test_viking_client_headers_send_tenant_when_default():
     assert headers["Authorization"] == "Bearer test-key"
 
 
-def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
+def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default(monkeypatch):
+    _clear_openviking_tenant_env(monkeypatch)
     # Empty account/user strings fall back to "default" via the constructor.
     # Headers are sent even for the default value — ROOT API keys need them.
     client = _VikingClient(
@@ -417,6 +423,7 @@ def test_viking_client_headers_sent_with_real_tenant_values():
 
 
 def test_viking_client_health_sends_auth_headers(monkeypatch):
+    _clear_openviking_tenant_env(monkeypatch)
     client = _VikingClient(
         "https://example.com",
         api_key="test-key",
@@ -468,6 +475,33 @@ def test_on_session_switch_skips_commit_for_empty_old_session():
     provider._client.post.assert_not_called()
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
+
+
+def test_on_session_switch_commits_pending_tokens_without_turn_count():
+    provider = _make_provider_with_session("old-sid", turn_count=0)
+    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
+
+    provider.on_session_switch("new-sid")
+
+    provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
+    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+
+
+def test_on_session_switch_rewound_same_session_only_invalidates_prefetch():
+    provider = _make_provider_with_session("same-sid", turn_count=3)
+    provider._prefetch_generation = 9
+    provider._prefetch_result = "stale recall"
+
+    provider.on_session_switch("same-sid", rewound=True)
+
+    provider._client.get.assert_not_called()
+    provider._client.post.assert_not_called()
+    assert provider._session_id == "same-sid"
+    assert provider._turn_count == 3
+    assert provider._prefetch_generation == 10
+    assert provider._prefetch_result == ""
 
 
 def test_on_session_switch_clears_stale_prefetch_result():
@@ -693,6 +727,18 @@ def test_end_then_switch_does_not_double_commit():
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
     # Exactly one commit call, on the OLD session, fired by on_session_end.
+    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+
+
+def test_end_then_switch_with_pending_tokens_does_not_double_commit():
+    provider = _make_provider_with_session("old-sid", turn_count=0)
+    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
+
+    provider.on_session_end([])
+    provider.on_session_switch("new-sid", parent_session_id="old-sid")
+
     provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
@@ -971,3 +1017,36 @@ def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
     # The stale result from the pre-bump generation must NOT have been written
     # into the new generation's prefetch slot.
     assert provider._prefetch_result == ""
+
+
+def test_queue_prefetch_sends_limit_not_legacy_top_k():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+
+    captured_payloads = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured_payloads.append(payload)
+            return {"result": {"memories": [], "resources": []}}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.queue_prefetch("anything")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured_payloads == [{"query": "anything", "limit": 5}]
+    assert "top_k" not in captured_payloads[0]

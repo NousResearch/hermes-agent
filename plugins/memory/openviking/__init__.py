@@ -444,6 +444,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._deferred_commit_sids: Set[str] = set()
         self._deferred_commit_threads: Set[threading.Thread] = set()
         self._deferred_commit_lock = threading.Lock()
+        self._committed_session_ids: Set[str] = set()
+        self._committed_session_lock = threading.Lock()
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
@@ -563,7 +565,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         # Drop prefetch results from older switch generations.
-        gen = self._prefetch_generation
+        with self._prefetch_lock:
+            gen = self._prefetch_generation
 
         def _run():
             try:
@@ -573,7 +576,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
                 resp = client.post("/api/v1/search/find", {
                     "query": query,
-                    "top_k": 5,
+                    "limit": 5,
                 })
                 result = resp.get("result", {})
                 parts = []
@@ -695,9 +698,25 @@ class OpenVikingMemoryProvider(MemoryProvider):
         except (TypeError, ValueError):
             return False
 
+    def _has_committed_session(self, sid: str) -> bool:
+        with self._committed_session_lock:
+            return sid in self._committed_session_ids
+
+    def _mark_session_committed(self, sid: str) -> None:
+        with self._committed_session_lock:
+            self._committed_session_ids.add(sid)
+
+    def _session_needs_commit(self, sid: str, turn_count: int) -> bool:
+        if turn_count > 0:
+            return True
+        if self._has_committed_session(sid):
+            return False
+        return self._session_has_pending_tokens(sid)
+
     def _commit_session(self, sid: str, turn_count: int, *, context: str) -> bool:
         try:
             self._client.post(f"/api/v1/sessions/{sid}/commit")
+            self._mark_session_committed(sid)
             logger.info("OpenViking session %s committed %s (%d turns)", sid, context, turn_count)
             return True
         except Exception as e:
@@ -739,6 +758,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
         with self._deferred_commit_lock:
             self._deferred_commit_threads.add(thread)
         thread.start()
+
+    def _invalidate_prefetch_state(self) -> None:
+        # Bump the generation under the same lock used by prefetch workers so
+        # late results from an older session are discarded deterministically.
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
+            self._prefetch_result = ""
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+        with self._prefetch_lock:
+            self._prefetch_result = ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in OpenViking's session (non-blocking)."""
@@ -798,7 +828,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
             return
 
-        if self._turn_count == 0 and not self._session_has_pending_tokens(sid):
+        if not self._session_needs_commit(sid, self._turn_count):
             return
 
         if self._commit_session(sid, self._turn_count, context="on session end"):
@@ -831,8 +861,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not new_id or not self._client:
             return
 
+        rewound = bool(kwargs.get("rewound"))
         old_session_id = self._session_id
         old_turn_count = self._turn_count
+        if rewound or new_id == old_session_id:
+            self._invalidate_prefetch_state()
+            logger.debug(
+                "OpenViking on_session_switch invalidated state without rotation: "
+                "session=%s rewound=%s",
+                old_session_id, rewound,
+            )
+            return
 
         # Commit only after session writes drain.
         writers_drained = True
@@ -845,17 +884,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     old_session_id,
                 )
 
-        if writers_drained and old_session_id and old_turn_count > 0:
+        if (
+            writers_drained
+            and old_session_id
+            and self._session_needs_commit(old_session_id, old_turn_count)
+        ):
             self._commit_session(old_session_id, old_turn_count, context="on switch")
         elif not writers_drained:
             self._schedule_deferred_commit(old_session_id, old_turn_count)
 
-        # Drop prefetch results from older switch generations.
-        self._prefetch_generation += 1
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
+        self._invalidate_prefetch_state()
 
         self._session_id = new_id
         self._turn_count = 0

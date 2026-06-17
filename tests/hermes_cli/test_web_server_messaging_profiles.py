@@ -58,6 +58,10 @@ def _telegram(payload):
     return next(p for p in payload["platforms"] if p["id"] == "telegram")
 
 
+def _platform(payload, platform_id):
+    return next(p for p in payload["platforms"] if p["id"] == platform_id)
+
+
 def _env_field(platform, key):
     return next(f for f in platform["env_vars"] if f["key"] == key)
 
@@ -90,6 +94,21 @@ class TestProfileScopedMessagingReads:
             "/api/messaging/platforms", params={"profile": "no_such_profile"}
         )
         assert resp.status_code == 404
+
+    def test_scoped_read_honors_whatsapp_env_enable_flag(
+        self, client, isolated_profiles
+    ):
+        worker_home = isolated_profiles["worker_alpha"]
+        (worker_home / ".env").write_text(
+            "WHATSAPP_ENABLED=true\n", encoding="utf-8"
+        )
+
+        resp = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        )
+        assert resp.status_code == 200
+        whatsapp = _platform(resp.json(), "whatsapp")
+        assert whatsapp["enabled"] is True
 
 
 class TestProfileScopedMessagingWrites:

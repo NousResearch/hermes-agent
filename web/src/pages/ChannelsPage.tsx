@@ -32,6 +32,7 @@ import type {
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { cn, themedBody } from "@/lib/utils";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
@@ -74,6 +75,7 @@ export default function ChannelsPage() {
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
+  const { profile, currentProfile } = useProfileScope();
 
   // Config modal state
   const [editing, setEditing] = useState<MessagingPlatform | null>(null);
@@ -89,15 +91,19 @@ export default function ChannelsPage() {
   const [restarting, setRestarting] = useState(false);
 
   const gatewayRunning = platforms.length > 0 && platforms[0].gateway_running;
+  const managedProfile = profile || currentProfile || "default";
 
   const load = useCallback(() => {
     return api
       .getMessagingPlatforms()
       .then((res) => setPlatforms(res.platforms))
       .catch((e) => showToast(`Error: ${e}`, "error"));
-  }, [showToast]);
+  }, [managedProfile, showToast]);
 
   useEffect(() => {
+    // The management profile can settle after the first mount when a deep
+    // link arrives through remote/global mode. Reload on scope changes so
+    // Channels does not stay pinned to the dashboard's own profile.
     load().finally(() => setLoading(false));
   }, [load]);
 
@@ -212,6 +218,12 @@ export default function ChannelsPage() {
     [platforms],
   );
 
+  const credentialsPath = useMemo(() => {
+    return managedProfile === "default"
+      ? "~/.hermes/.env"
+      : `~/.hermes/profiles/${managedProfile}/.env`;
+  }, [managedProfile]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -262,7 +274,7 @@ export default function ChannelsPage() {
 
       <p className="text-xs text-muted-foreground">
         {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">~/.hermes/.env</code>; the
+        written to <code className="font-courier">{credentialsPath}</code>; the
         gateway connects each enabled channel on its next restart.
       </p>
 

@@ -555,6 +555,41 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
     return _read_json_file(_get_runtime_status_path())
 
 
+def get_runtime_status_running_pid(
+    runtime: Optional[dict[str, Any]] = None,
+) -> Optional[int]:
+    """Return a live gateway PID from the runtime status record, if valid.
+
+    ``get_running_pid()`` is the primary liveness source because it verifies the
+    runtime lock and PID file.  Launch-service managers can still leave us with
+    a live process and a fresh ``gateway_state.json`` but no ``gateway.pid``; use
+    this as a conservative fallback by checking both the persisted state and the
+    OS process identity.
+    """
+    payload = runtime if runtime is not None else read_runtime_status()
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
+        return None
+
+    pid = _pid_from_record(payload)
+    if pid is None or not _pid_exists(pid):
+        return None
+
+    recorded_start = payload.get("start_time")
+    current_start = _get_process_start_time(pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return None
+
+    if _looks_like_gateway_process(pid) or _record_looks_like_gateway(payload):
+        return pid
+    return None
+
+
 def remove_pid_file() -> None:
     """Remove the gateway PID file, but only if it belongs to this process.
 

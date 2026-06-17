@@ -1,6 +1,7 @@
 """Tests for plugins/memory/openviking/__init__.py — URI normalization and payload handling."""
 
 import json
+from typing import Any, cast
 
 import plugins.memory.openviking as openviking_plugin
 from plugins.memory.openviking import OpenVikingMemoryProvider
@@ -127,7 +128,7 @@ class TestOpenVikingSkillQuerySafety:
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
-        provider._client = object()
+        provider._client = cast(Any, object())
         provider._endpoint = "http://openviking.test"
         provider._api_key = ""
         provider._account = "default"
@@ -143,6 +144,7 @@ class TestOpenVikingSkillQuerySafety:
         )
 
         provider.queue_prefetch(skill_message)
+        assert provider._prefetch_thread is not None
         provider._prefetch_thread.join(timeout=5.0)
 
         assert RecordingVikingClient.calls == [
@@ -156,7 +158,7 @@ class TestOpenVikingSkillQuerySafety:
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
-        provider._client = object()
+        provider._client = cast(Any, object())
         provider._endpoint = "http://openviking.test"
         provider._api_key = ""
         provider._account = "default"
@@ -173,6 +175,7 @@ class TestOpenVikingSkillQuerySafety:
         )
 
         provider.queue_prefetch(skill_message)
+        assert provider._prefetch_thread is not None
         provider._prefetch_thread.join(timeout=5.0)
 
         assert RecordingVikingClient.calls == [
@@ -186,7 +189,7 @@ class TestOpenVikingSkillQuerySafety:
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
-        provider._client = object()
+        provider._client = cast(Any, object())
         skill_message = (
             '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
             "you to follow its instructions. The full skill content is loaded below.]\n\n"
@@ -203,7 +206,7 @@ class TestOpenVikingSkillQuerySafety:
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
-        provider._client = object()
+        provider._client = cast(Any, object())
         provider._endpoint = "http://openviking.test"
         provider._api_key = ""
         provider._account = "default"
@@ -246,7 +249,7 @@ class TestOpenVikingSkillQuerySafety:
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
-        provider._client = object()
+        provider._client = cast(Any, object())
         skill_message = (
             '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
             "you to follow its instructions. The full skill content is loaded below.]\n\n"

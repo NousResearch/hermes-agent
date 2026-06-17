@@ -1943,3 +1943,48 @@ class TestTirithImportErrorFailOpenPolicy:
                         result = check_all_command_guards("echo hello", "local")
 
         assert result.get("approved") is True
+
+
+def test_execute_code_ask_ignores_stale_cron_env_and_context(monkeypatch):
+    """A stale cron marker must not make user-present execute_code look unattended."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import approval as mod
+
+    session_key = "test-exec-ask-cron-stale"
+    saved = {
+        k: os.environ.get(k)
+        for k in (
+            "HERMES_CRON_SESSION",
+            "HERMES_EXEC_ASK",
+            "HERMES_GATEWAY_SESSION",
+            "HERMES_SESSION_KEY",
+            "HERMES_YOLO_MODE",
+            "HERMES_INTERACTIVE",
+        )
+    }
+    tokens = set_session_vars(cron_session="1", session_key=session_key)
+    try:
+        os.environ["HERMES_CRON_SESSION"] = "1"
+        os.environ["HERMES_EXEC_ASK"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = session_key
+        os.environ.pop("HERMES_GATEWAY_SESSION", None)
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        monkeypatch.setattr(mod, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(mod, "_get_cron_approval_mode", lambda: "deny")
+
+        assert mod._is_cron_approval_context() is False
+        result = mod.check_execute_code_guard("print('ok')", "local")
+
+        assert result["approved"] is False
+        assert result.get("status") == "pending_approval"
+        assert result.get("approval_pending") is True
+        assert "Cron jobs run without a user present" not in result.get("message", "")
+    finally:
+        clear_session_vars(tokens)
+        mod._pending.pop(session_key, None)
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

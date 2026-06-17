@@ -149,13 +149,18 @@ def _is_cron_approval_context() -> bool:
     try:
         from gateway.session_context import get_raw_session_value, get_session_env
 
+        # User-present approval surfaces must win over any cron marker.
+        if env_var_enabled("HERMES_EXEC_ASK") or env_var_enabled("HERMES_GATEWAY_SESSION"):
+            return False
+
+        # Explicit context-local cron identity wins over platform origin.
+        # Cron jobs can carry HERMES_SESSION_PLATFORM for delivery/provenance;
+        # that must not make them look like live user gateway turns.
         raw_cron = get_raw_session_value("HERMES_CRON_SESSION")
         if raw_cron is not None:
             return is_truthy_value(raw_cron)
 
         if env_var_enabled("HERMES_CRON_SESSION"):
-            if env_var_enabled("HERMES_EXEC_ASK") or env_var_enabled("HERMES_GATEWAY_SESSION"):
-                return False
             if get_session_env("HERMES_SESSION_PLATFORM", ""):
                 return False
             return True

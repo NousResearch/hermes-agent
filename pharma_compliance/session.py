@@ -54,6 +54,7 @@ class VisitSession:
     merged_record_id: Optional[str] = None            # record_id from save_record for later update
     retry_count: int = 0                              # number of consecutive extraction failures for current field
     last_activity: float = field(default_factory=time.time)  # timestamp of last activity
+    _pending_notify: Optional[str] = None              # pending notification message (set on retry exhaustion)
 
     def touch_activity(self) -> None:
         """Update last_activity timestamp to current time."""
@@ -112,6 +113,23 @@ class VisitSession:
                 parts.append(msg.content)
         return " ".join(parts)
 
+    def accumulate_fields(self, new_fields: Dict[str, Any]) -> Dict[str, Any]:
+        """Accumulate new fields into merged_fields, filling empty slots.
+
+        Returns the updated merged_fields dict.
+        """
+        if self.merged_fields is None:
+            self.merged_fields = {}
+
+        for key, value in new_fields.items():
+            existing = self.merged_fields.get(key, "")
+            # Only overwrite if existing is empty AND new value is non-empty
+            if (not existing or (isinstance(existing, str) and not existing.strip())) \
+                    and value and (not isinstance(value, str) or value.strip()):
+                self.merged_fields[key] = value
+
+        return self.merged_fields
+
     def clear(self) -> None:
         self.pending_messages.clear()
         self.message_timeout = 0.0
@@ -122,6 +140,7 @@ class VisitSession:
         self.pending_field = None
         self.merged_record_id = None
         self.retry_count = 0
+        self._pending_notify = None
         self.last_activity = time.time()
 
 

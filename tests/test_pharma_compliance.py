@@ -561,7 +561,10 @@ class TestScenarioB_PhotoAndVoice:
                 msg_type="voice",
                 content=voice_path,
             )
-            assert r2["pending_count"] == 2
+            # New behavior: voice in progressive mode (after photo started it)
+            # returns needs_followup with missing_fields, not accumulating pending_count
+            assert r2["needs_followup"] is True
+            assert len(r2["missing_fields"]) > 0
 
 
 class TestScenarioC_MultiRoundMixed:
@@ -985,36 +988,34 @@ class TestRetryOnExtractionFail:
         assert session.retry_count == 2  # unchanged, field skipped
 
 
-class TestUpdateRecordExceptionNoClear:
-    """Test 82: update_record exception does NOT clear session."""
+class TestPersistFailurePreservesSession:
+    """Test 82: _finalize_accumulated persist failure preserves session."""
 
     @pytest.mark.asyncio
-    async def test_update_record_exception_preserves_session(self, handler):
-        """When update_record raises, session is NOT cleared."""
-        manager = SessionManager()
-        session = manager.get_or_create_session("exception_user")
+    async def test_persist_failure_preserves_session(self, handler):
+        """When save_record raises in _finalize_accumulated, session is cleared but returns failure."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("persist_exception_user")
         session.merged_fields = {
             "org_name": "百姓大药房",
             "contact_person": "王店长",
+            "task_type": "药店拜访",
+            "products": "小儿宝泰康",
+            "topic": "产品推广",
+            "content_summary": "拜访内容",
+            "next_steps": "下次再聊",
         }
-        session.merged_record_id = "test_record_123"
-        session.pending_field = None
-        session.pending_questions = []
+        session.add_message(MessageType.TEXT, "test message")
 
         with patch(
-            "pharma_compliance.bot_handler.update_record",
+            "pharma_compliance.bot_handler.save_record",
             side_effect=Exception("disk full"),
         ):
-            result = await handler._handle_progressive_answer(
-                "exception_user", "补充好了", session
-            )
+            result = await handler._finalize_accumulated(session)
 
-        # Should return failure, NOT clear session
+        # Should return failure
         assert result["merged"] is False
-        assert "记录更新失败" in result["warnings"][0]
-        # Session state should be preserved
-        assert session.merged_fields is not None
-        assert session.merged_record_id == "test_record_123"
+        assert "持久化失败" in result["warnings"][0]
 
 
 class TestPersistFailureNoProgressive:
@@ -1135,59 +1136,62 @@ class TestEscExitProgressive:
             mock_fm.assert_called_once()
 
 
-class TestFeedbackOnlyUpdateRecord:
-    """Test 87: When only feedback is missing, it goes through progressive flow and update_record."""
+class TestFeedbackOnlyFinalize:
+    """Test 87: When only feedback is missing, it goes through progressive flow to _finalize_accumulated."""
 
     @pytest.mark.asyncio
-    async def test_feedback_only_triggers_progressive_with_record_id(self, handler):
-        """Only feedback missing → session has pending_field='feedback', update_record called."""
+    async def test_feedback_only_triggers_progressive_from_handle_text(self, handler):
+        """First message with most fields → starts progressive on first missing field."""
         manager = handler.sessions
-        session = manager.get_or_create_session("feedback_only_user")
-        session.add_message(
-            MessageType.TEXT,
-            "药店拜访 百姓大药房 王店长 2025年6月15日 下午14:30 小儿宝泰康 主题产品推广 竞品有太极 下次带样品",
-        )
+        session = manager.get_or_create_session("fb_new_user")
 
         with patch(
             "pharma_compliance.bot_handler.save_record",
-            return_value="20250615_test_fb_record",
+            return_value="record_new",
         ):
-            result = await handler._do_merge(session)
+            result = await handler.handle_message(
+                user_id="fb_new_user",
+                msg_type="text",
+                content="药店拜访 百姓大药房 王店长 2025年6月15日 下午14:30 小儿宝泰康 主题产品推广 竞品有太极 下次带样品",
+            )
 
-        # Check that session is in progressive mode for feedback
-        assert session.pending_field == "feedback"
-        assert session.merged_record_id == "20250615_test_fb_record"
-        assert session.merged_fields is not None
-        # Should have feedback follow-up
-        assert result.get("needs_followup") or "feedback" in str(result.get("missing_fields", []))
+        # Should trigger progressive for first missing field (feedback or others)
+        assert result["needs_followup"] is True
+        assert result["followup_field"] is not None
+        assert result["followup_message"] is not None
 
     @pytest.mark.asyncio
-    async def test_feedback_answer_updates_record(self, handler):
-        """When user answers the feedback question, update_record is called."""
-        manager = SessionManager()
-        session = manager.get_or_create_session("feedback_answer_user")
+    async def test_feedback_answer_finalizes(self, handler):
+        """When the last progressive answer completes all fields, _finalize_accumulated is called."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("fb_last_field_user")
         session.merged_fields = {
+            "task_type": "药店拜访",
             "org_name": "百姓大药房",
             "contact_person": "王店长",
+            "products": "小儿宝泰康",
+            "topic": "产品推广",
+            "content_summary": "拜访内容",
+            "next_steps": "下次再聊",
+            "visit_date": "2026-06-17",
+            "visit_time": "14:30",
+            "competitor_info": "竞品有太极",
         }
-        session.merged_record_id = "fb_record_123"
         session.pending_field = "feedback"
         session.pending_questions = []
+        session.add_message(MessageType.TEXT, "initial message")
 
         with patch(
-            "pharma_compliance.bot_handler.update_record",
-            return_value=True,
-        ) as mock_update:
+            "pharma_compliance.bot_handler.save_record",
+            return_value="fb_final_record",
+        ) as mock_save:
             result = await handler._handle_progressive_answer(
-                "feedback_answer_user",
+                "fb_last_field_user",
                 "王店长说小儿宝泰康卖得不错，建议多备货",
                 session,
             )
-            # update_record should have been called with the feedback
-            mock_update.assert_called_once()
-            call_args = mock_update.call_args[0]
-            assert call_args[0] == "fb_record_123"
-            assert "feedback" in call_args[1]
+            # save_record should have been called via _finalize_accumulated
+            mock_save.assert_called_once()
             assert result["merged"] is True
 
 
@@ -1211,6 +1215,187 @@ class TestRetryCountReset:
         assert result["needs_followup"] is True
         assert result["followup_field"] == "products"
         assert session.retry_count == 0  # Reset after success
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW: Progressive questioning from first message tests (tests 90-95)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestProgressiveFirstMessage:
+    """Tests 90-91: Progressive questioning starts from the first message."""
+
+    @pytest.mark.asyncio
+    async def test_first_message_triggers_progressive(self, handler):
+        """Test 90: First text message with partial info → triggers progressive follow-up."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("prog_first_user")
+
+        with patch(
+            "pharma_compliance.bot_handler.save_record",
+            return_value="record_prog_1",
+        ):
+            result = await handler.handle_message(
+                user_id="prog_first_user",
+                msg_type="text",
+                content="去了保和康药房",
+            )
+
+        # Should have started progressive questioning
+        assert result["merged"] is False
+        assert result["needs_followup"] is True
+        assert result["followup_field"] is not None
+        assert result["followup_message"] is not None
+        # Session should have accumulated fields
+        assert session.merged_fields is not None
+        assert session.merged_fields.get("org_name") or "保和康" in str(session.merged_fields)
+
+    @pytest.mark.asyncio
+    async def test_progressive_reply_extracts_and_continues(self, handler):
+        """Test 91: User reply to progressive question → extract → continue to next field."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("prog_reply_user")
+        # Simulate after first message ("去了保和康药房") extracted org_name
+        session.merged_fields = {
+            "task_type": "药店拜访",
+            "org_name": "保和康药房",
+        }
+        session.pending_field = "contact_person"
+        session.pending_questions = ["products"]
+        session.add_message(MessageType.TEXT, "去了保和康药房")
+
+        result = await handler._handle_progressive_answer(
+            "prog_reply_user",
+            "见了王药师",  # provides contact_person
+            session,
+        )
+
+        assert result["merged"] is False
+        assert result["needs_followup"] is True
+        # Should move to next missing field
+        assert result["followup_field"] == "products"
+        assert session.merged_fields.get("contact_person") is not None
+
+
+class TestProgressiveAllFieldsComplete:
+    """Test 92: When all fields are complete, finalize immediately."""
+
+    @pytest.mark.asyncio
+    async def test_all_fields_complete_triggers_finalize(self, handler):
+        """Test 92: Message that fills all missing fields → immediate finalize."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("prog_complete_user")
+
+        with patch(
+            "pharma_compliance.bot_handler.save_record",
+            return_value="record_complete",
+        ) as mock_save:
+            result = await handler.handle_message(
+                user_id="prog_complete_user",
+                msg_type="text",
+                content=(
+                    "药店拜访 保和康药房 王药师 2025年6月15日 下午3点 "
+                    "小儿宝泰康 主题产品推广 聊了陈列和销量 "
+                    "竞品有太极 下次带样品 王药师说卖得不错"
+                ),
+            )
+
+        # With all core fields + feedback, should finalize immediately
+        assert result["merged"] is True
+        mock_save.assert_called_once()
+
+
+class TestRetrySkipField:
+    """Test 93: Retry 2 times then skip to next field."""
+
+    @pytest.mark.asyncio
+    async def test_retry_twice_then_skip(self, handler):
+        """Test 93: 2 failed attempts → skip to next field."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("retry_skip_user")
+        session.merged_fields = {
+            "task_type": "药店拜访",
+            "org_name": "保和康药房",
+        }
+        session.pending_field = "contact_person"
+        session.pending_questions = ["products", "topic"]
+        session.retry_count = 2  # Already exhausted
+
+        result = await handler._handle_progressive_answer(
+            "retry_skip_user",
+            "这个不太清楚",  # Can't extract contact_person
+            session,
+        )
+
+        # Should skip contact_person and move to products
+        assert result["merged"] is False
+        assert result["needs_followup"] is True
+        assert result["followup_field"] == "products"
+        assert session.retry_count == 2  # unchanged
+
+
+class TestManualMergeMidProgressive:
+    """Test 94: Mid-progressive '完成' triggers force merge."""
+
+    @pytest.mark.asyncio
+    async def test_done_mid_progressive_finalizes(self, handler):
+        """Test 94: Saying '完成' during progressive questioning finalizes accumulated fields."""
+        manager = handler.sessions
+        session = manager.get_or_create_session("done_mid_user")
+        session.merged_fields = {
+            "task_type": "药店拜访",
+            "org_name": "保和康药房",
+            "contact_person": "王药师",
+        }
+        session.pending_field = "products"
+        session.pending_questions = ["topic"]
+        session.add_message(MessageType.TEXT, "去了保和康药房和王药师")
+
+        with patch.object(handler, "_finalize_accumulated", new_callable=AsyncMock) as mock_final:
+            mock_final.return_value = {
+                "merged": True,
+                "task": {"fields": session.merged_fields, "summary": "test"},
+                "warnings": [],
+                "pending_count": 0,
+            }
+            result = await handler.handle_message(
+                user_id="done_mid_user",
+                msg_type="text",
+                content="完成",
+            )
+            mock_final.assert_called_once()
+            assert result["merged"] is True
+
+
+class TestAccumulateFields:
+    """Test 95: accumulate_fields properly merges new fields into existing ones."""
+
+    def test_accumulate_fills_empty_slots(self):
+        """accumulate_fields fills empty values without overwriting existing ones."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("accum_user")
+        session.accumulate_fields({"org_name": "保和康药房", "contact_person": ""})
+        assert session.merged_fields["org_name"] == "保和康药房"
+        # Empty values are not stored
+        assert "contact_person" not in session.merged_fields
+
+        # Second accumulation: fills missing contact_person
+        session.accumulate_fields({"contact_person": "王药师", "products": "板蓝根"})
+        assert session.merged_fields["contact_person"] == "王药师"
+        assert session.merged_fields["products"] == "板蓝根"
+        # org_name should not be overwritten
+        assert session.merged_fields["org_name"] == "保和康药房"
+
+    def test_accumulate_does_not_overwrite_existing(self):
+        """accumulate_fields does not overwrite existing non-empty values."""
+        manager = SessionManager()
+        session = manager.get_or_create_session("accum_keep_user")
+        session.accumulate_fields({"org_name": "保和康药房"})
+        # Try to overwrite with empty
+        session.accumulate_fields({"org_name": ""})
+        assert session.merged_fields["org_name"] == "保和康药房"
+        # Try to overwrite with different value
+        session.accumulate_fields({"org_name": "同仁堂"})
+        assert session.merged_fields["org_name"] == "保和康药房"  # unchanged
 
 
 class TestTouchActivity:

@@ -49,7 +49,7 @@ from pharma_compliance.extractor import (
     _extract_competitor,
     detect_task_type,
 )
-from pharma_compliance.persistence import save_record, update_record
+from pharma_compliance.persistence import save_record
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +238,9 @@ class ComplianceBotHandler:
             }
 
         # Schedule background merge timer (reset on each new message)
-        self._schedule_merge_timeout(session.user_id)
+        # Skip if already merged (e.g., progressive finalization)
+        if not result.get("merged"):
+            self._schedule_merge_timeout(session.user_id)
 
         # Check if session should auto-merge immediately (5-min timeout from last message)
         if session.should_merge():
@@ -256,16 +258,54 @@ class ComplianceBotHandler:
         metadata: Dict[str, Any],
         session: VisitSession,
     ) -> Dict[str, Any]:
+        """Handle a text message: extract fields, accumulate, check for missing.
+
+        If core fields are missing after accumulation, triggers progressive
+        questioning immediately (does not wait for merge).
+        """
         session.add_message(MessageType.TEXT, text, metadata=metadata)
         fields = extract_fields(text)
-        return {
-            "merged": False,
-            "task": None,
-            "warnings": [],
-            "pending_count": len(session.pending_messages),
-            "text_preview": text,
-            "missing_fields": get_missing_core_fields(fields),
-        }
+
+        # Accumulate into session for progressive completion
+        session.accumulate_fields(fields)
+
+        # Check what's still missing
+        missing = get_missing_core_fields(session.merged_fields or {})
+
+        if missing:
+            # ── Start/continue progressive questioning immediately ──
+            # Build the progressive queue (all missing fields, in priority order)
+            progressive_missing = self._build_progressive_queue(session.merged_fields or {})
+            first_field = progressive_missing.pop(0)
+            session.pending_field = first_field
+            session.pending_questions = progressive_missing
+            session.retry_count = 0
+            followup_msg = _get_field_question(first_field)
+            if not followup_msg:
+                followup_msg = f"好的，再补充一下「{CORE_FIELD_LABELS.get(first_field, first_field)}」的信息吧～"
+
+            logger.info(
+                "Progressive: user %s first message, missing=%s, asking '%s', queued=%s",
+                user_id, missing, first_field, progressive_missing,
+            )
+            return {
+                "merged": False,
+                "task": None,
+                "warnings": [],
+                "pending_count": len(session.pending_messages),
+                "text_preview": text,
+                "missing_fields": missing,
+                "needs_followup": True,
+                "followup_field": first_field,
+                "followup_message": followup_msg,
+            }
+
+        # ── All core fields present → finalize ──
+        logger.info(
+            "Progressive: user %s all core fields complete, finalizing",
+            user_id,
+        )
+        return await self._finalize_accumulated(session)
 
     # ── Voice handler ───────────────────────────────────────────────────────
 
@@ -346,6 +386,8 @@ class ComplianceBotHandler:
             if transcript:
                 session.add_message(MessageType.VOICE, transcript, metadata=metadata)
             fields = extract_fields(transcript) if transcript else {}
+            session.accumulate_fields(fields)
+            missing = get_missing_core_fields(session.merged_fields or {})
             return {
                 "merged": False,
                 "task": None,
@@ -353,19 +395,42 @@ class ComplianceBotHandler:
                 "pending_count": len(session.pending_messages),
                 "text_preview": transcript,
                 "needs_confirmation": True,
-                "missing_fields": get_missing_core_fields(fields),
+                "missing_fields": missing,
             }
 
         session.add_message(MessageType.VOICE, transcript, metadata=metadata)
         fields = extract_fields(transcript)
-        return {
-            "merged": False,
-            "task": None,
-            "warnings": [],
-            "pending_count": len(session.pending_messages),
-            "text_preview": transcript,
-            "missing_fields": get_missing_core_fields(fields),
-        }
+        session.accumulate_fields(fields)
+
+        # Check for progressive questioning
+        missing = get_missing_core_fields(session.merged_fields or {})
+        if missing:
+            progressive_missing = self._build_progressive_queue(session.merged_fields or {})
+            first_field = progressive_missing.pop(0)
+            session.pending_field = first_field
+            session.pending_questions = progressive_missing
+            session.retry_count = 0
+            followup_msg = _get_field_question(first_field)
+            if not followup_msg:
+                followup_msg = f"好的～再补充一下「{CORE_FIELD_LABELS.get(first_field, first_field)}」的信息吧"
+            logger.info(
+                "Progressive (voice): user %s missing=%s, asking '%s'",
+                user_id, missing, first_field,
+            )
+            return {
+                "merged": False,
+                "task": None,
+                "warnings": [],
+                "pending_count": len(session.pending_messages),
+                "text_preview": transcript,
+                "missing_fields": missing,
+                "needs_followup": True,
+                "followup_field": first_field,
+                "followup_message": followup_msg,
+            }
+
+        # All fields complete
+        return await self._finalize_accumulated(session)
 
     # ── Photo handler ───────────────────────────────────────────────────────
 
@@ -408,15 +473,42 @@ class ComplianceBotHandler:
             metadata=photo_metadata,
         )
 
-        return {
-            "merged": False,
-            "task": None,
-            "warnings": warnings,
-            "pending_count": len(session.pending_messages),
-            "text_preview": f"[门头照] {ocr_text}" if ocr_text else "[门头照]",
-            "photo_exif": exif_data,
-            "missing_fields": get_missing_core_fields(extract_fields(ocr_text or "[门头照]")),
-        }
+        fields = extract_fields(ocr_text or "[门头照]")
+        session.accumulate_fields(fields)
+
+        # Check for progressive questioning
+        missing = get_missing_core_fields(session.merged_fields or {})
+        if missing:
+            progressive_missing = self._build_progressive_queue(session.merged_fields or {})
+            first_field = progressive_missing.pop(0)
+            session.pending_field = first_field
+            session.pending_questions = progressive_missing
+            session.retry_count = 0
+            followup_msg = _get_field_question(first_field)
+            if not followup_msg:
+                followup_msg = f"好的～再补充一下「{CORE_FIELD_LABELS.get(first_field, first_field)}」的信息吧"
+            logger.info(
+                "Progressive (photo): user %s missing=%s, asking '%s'",
+                user_id, missing, first_field,
+            )
+            return {
+                "merged": False,
+                "task": None,
+                "warnings": warnings,
+                "pending_count": len(session.pending_messages),
+                "text_preview": f"[门头照] {ocr_text}" if ocr_text else "[门头照]",
+                "photo_exif": exif_data,
+                "missing_fields": missing,
+                "needs_followup": True,
+                "followup_field": first_field,
+                "followup_message": followup_msg,
+            }
+
+        # All fields complete
+        r = await self._finalize_accumulated(session)
+        r["warnings"] = r.get("warnings", []) + warnings
+        r["photo_exif"] = exif_data
+        return r
 
     # ── Vision+OCR ──────────────────────────────────────────────────────────
 
@@ -627,6 +719,89 @@ class ComplianceBotHandler:
 
     # ── Merge logic ─────────────────────────────────────────────────────────
 
+    async def _finalize_accumulated(self, session: VisitSession) -> Dict[str, Any]:
+        """Finalize when all core fields are complete from progressive accumulation.
+
+        Saves a record from session.merged_fields, does cross-checks with any
+        pending photo messages, then cleans up the session.
+        """
+        merged = session.merged_fields or {}
+        warnings: List[str] = []
+
+        # Cross-check photo vs text claims (if photo messages exist)
+        photo_metas = self._collect_photo_metadata(session)
+        if photo_metas:
+            warnings.extend(
+                self._run_cross_checks(merged, photo_metas)
+            )
+
+        task = {
+            "fields": merged,
+            "summary": fields_to_summary(merged),
+            "warnings": warnings,
+            "message_count": len(session.pending_messages),
+            "merged_text": session.merge_contents() if session.pending_messages else "",
+        }
+
+        # Collect photo paths for persistence
+        photo_paths = self._collect_photo_paths(session)
+
+        # Persist record
+        persist_ok = False
+        record_id = None
+        try:
+            record_id = save_record(task, photo_paths)
+            persist_ok = True
+        except Exception as e:
+            logger.error("Failed to persist record: %s", e)
+
+        if persist_ok:
+            self._archive_photos(session)
+            # Only clear session on successful persistence (CX fix: avoid clearing on failure)
+            session.clear()
+        else:
+            logger.warning(
+                "Persistence failed for user %s — session preserved for retry",
+                session.user_id,
+            )
+
+        # Cancel merge timer
+        self._cancel_merge_timer(session.user_id)
+
+        if not record_id:
+            return {
+                "merged": False,
+                "task": None,
+                "warnings": warnings + ["持久化失败，请重试"],
+                "pending_count": 0,
+                "text_preview": None,
+                "missing_fields": [],
+                "needs_followup": False,
+                "followup_field": None,
+                "followup_message": None,
+            }
+
+        # Call on_task_complete callback
+        if self.on_task_complete:
+            try:
+                result = self.on_task_complete(task)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error("on_task_complete callback failed: %s", e)
+
+        return {
+            "merged": True,
+            "task": task,
+            "warnings": warnings,
+            "pending_count": 0,
+            "text_preview": fields_to_summary(merged),
+            "missing_fields": [],
+            "needs_followup": False,
+            "followup_field": None,
+            "followup_message": None,
+        }
+
     async def _do_merge(
         self, session: VisitSession, extra_warnings: Optional[List[str]] = None
     ) -> Dict[str, Any]:
@@ -788,7 +963,23 @@ class ComplianceBotHandler:
         }
 
     async def _force_merge(self, session: VisitSession) -> Dict[str, Any]:
-        """Force merge triggered by manual phrase ('完了' etc.)."""
+        """Force merge triggered by manual phrase ('完了' etc.).
+
+        If session has accumulated fields (progressive mode), finalize them.
+        Otherwise fall back to _do_merge over pending messages.
+        """
+        # If we have accumulated fields from progressive mode, finalize them
+        if session.merged_fields and any(
+            v and (not isinstance(v, str) or v.strip())
+            for v in session.merged_fields.values()
+        ):
+            logger.info(
+                "Manual merge triggered for user %s — finalizing %d accumulated fields",
+                session.user_id, len(session.merged_fields),
+            )
+            return await self._finalize_accumulated(session)
+
+        # Fall back to merge over pending messages
         if not session.pending_messages:
             return {
                 "merged": False,
@@ -845,6 +1036,9 @@ class ComplianceBotHandler:
                         "Progressive: user %s failed field '%s' after 2 retries, skipping",
                         user_id, current_field,
                     )
+                    # Notify user that field has been skipped
+                    field_label = CORE_FIELD_LABELS.get(current_field, current_field)
+                    session._pending_notify = f"{field_label}尝试次数已达上限，将跳过该字段进入汇总"
                 else:
                     session.retry_count += 1
                     logger.info(
@@ -892,6 +1086,8 @@ class ComplianceBotHandler:
             logger.info(
                 "Progressive: user %s → next question for field '%s'", user_id, next_field,
             )
+            notify = session._pending_notify
+            session._pending_notify = None
             return {
                 "merged": False,
                 "task": None,
@@ -902,69 +1098,45 @@ class ComplianceBotHandler:
                 "needs_followup": True,
                 "followup_field": next_field,
                 "followup_message": question,
+                "_notify": notify,
             }
 
-        # ── Phase 4: All questions answered — update persisted record ────
+        # ── Phase 4: All questions answered — finalize accumulated fields ──
         session.pending_field = None
-        record_id = session.merged_record_id
-        if record_id:
-            try:
-                update_record(record_id, merged)
+        # Re-check whether all core fields are now complete
+        still_missing = get_missing_core_fields(merged)
+        if still_missing:
+            # Still have missing fields — continue progressive questioning
+            progressive_missing = self._build_progressive_queue(merged)
+            if progressive_missing:
+                next_field = progressive_missing.pop(0)
+                session.pending_field = next_field
+                session.pending_questions = progressive_missing
+                session.retry_count = 0
+                followup_msg = _get_field_question(next_field)
+                if not followup_msg:
+                    followup_msg = f"再补充一下「{CORE_FIELD_LABELS.get(next_field, next_field)}」的信息吧～"
                 logger.info(
-                    "Progressive: updated record %s for user %s with %d completed fields",
-                    record_id, user_id, len(merged),
+                    "Progressive: user %s still missing %d fields, asking '%s'",
+                    user_id, len(still_missing), next_field,
                 )
-                # Build final summary
-                final_summary = fields_to_summary(merged)
-
-                # Clean up session state (only on success)
-                session.clear()
-
-                # Cancel merge timer
-                self._cancel_merge_timer(session.user_id)
-
-                return {
-                    "merged": True,
-                    "task": {"fields": merged, "summary": final_summary, "warnings": [], "message_count": 0},
-                    "warnings": [],
-                    "pending_count": 0,
-                    "text_preview": f"✅ 记录已完善～\n{final_summary}",
-                    "missing_fields": [],
-                    "needs_followup": False,
-                    "followup_field": None,
-                    "followup_message": None,
-                }
-            except Exception as e:
-                logger.error("Progressive: failed to update record %s: %s", record_id, e)
-                # Do NOT clear session — data retained for retry
+                notify = session._pending_notify
+                session._pending_notify = None
                 return {
                     "merged": False,
                     "task": None,
-                    "warnings": [f"记录更新失败: {e}"],
+                    "warnings": [],
                     "pending_count": 0,
                     "text_preview": None,
-                    "missing_fields": [],
-                    "needs_followup": False,
-                    "followup_field": None,
-                    "followup_message": None,
+                    "missing_fields": still_missing,
+                    "needs_followup": True,
+                    "followup_field": next_field,
+                    "followup_message": followup_msg,
+                    "_notify": notify,
                 }
 
-        # No record_id — just clean up without persistence
-        final_summary = fields_to_summary(merged)
-        session.clear()
-        self._cancel_merge_timer(session.user_id)
-
-        return {
-            "merged": True,
-            "task": {"fields": merged, "summary": final_summary, "warnings": [], "message_count": 0},
-            "warnings": [],
-            "pending_count": 0,
-            "text_preview": f"✅ 记录已完善～\n{final_summary}",
-            "missing_fields": [],
-            "needs_followup": False,
-            "followup_field": None,
-            "followup_message": None,
-        }
+        # All done — use _finalize_accumulated to save and clean up
+        return await self._finalize_accumulated(session)
 
     # ── Location helpers ────────────────────────────────────────────────────
 
@@ -1075,6 +1247,13 @@ class ComplianceBotHandler:
             await asyncio.sleep(timeout)
             session = self.sessions.get_session(session_id)
             if session and session.pending_messages:
+                # Don't auto-merge if in progressive questioning mode
+                if session.pending_field is not None:
+                    logger.debug(
+                        "Background merge timer fired but user %s is in progressive mode, skipping",
+                        session_id,
+                    )
+                    return
                 logger.info(
                     "Background merge timer fired for user %s (%d pending)",
                     session_id, len(session.pending_messages),

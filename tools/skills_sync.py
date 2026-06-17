@@ -576,6 +576,16 @@ def sync_skills(quiet: bool = False) -> dict:
                 continue
 
             if user_hash != origin_hash:
+                if user_hash == bundled_hash:
+                    # User copy matches current bundled version — the
+                    # manifest origin_hash is stale (e.g. curator archived
+                    # the bundled skill without syncing the manifest).
+                    # Refresh the manifest so the skill is not falsely
+                    # flagged as user-modified on every subsequent sync.
+                    manifest[skill_name] = bundled_hash
+                    if not quiet:
+                        print(f"  ✓ {skill_name} (manifest synced)")
+                    continue
                 # User modified this skill — don't overwrite their changes
                 user_modified.append(skill_name)
                 if not quiet:

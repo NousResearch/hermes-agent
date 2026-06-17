@@ -716,6 +716,51 @@ class TestSyncSkills:
         assert manifest["old-skill"] != old_hash
 
 
+
+    def test_stale_manifest_synced_when_user_matches_bundled(self, tmp_path):
+        """When user copy matches current bundled but manifest origin is
+        stale, sync should refresh the manifest — NOT flag as user-modified.
+
+        This covers the curator-archived skill scenario: bundled version
+        updates in the repo, but the manifest still records the old origin
+        hash.  If the user copy happens to match the new bundled version
+        (e.g. from a partial prior sync or manual copy), the skill should
+        be treated as in-sync, not user-modified.
+        """
+        from tools.skills_sync import _dir_hash
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Step 1: Initial sync — user gets old-skill at version A
+        user_skill = skills_dir / "old-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# Old")
+        hash_a = _dir_hash(user_skill)
+        manifest_file.write_text("old-skill:" + hash_a + chr(10))
+
+        # Step 2: Bundled version updates to B (but manifest not synced)
+        (bundled / "old-skill" / "SKILL.md").write_text("# Old v2")
+        hash_b = _dir_hash(bundled / "old-skill")
+
+        # Step 3: User copy also at B (matches new bundled)
+        (user_skill / "SKILL.md").write_text("# Old v2")
+        assert _dir_hash(user_skill) == hash_b
+
+        # Sanity: user_hash != origin_hash (stale manifest)
+        assert hash_b != hash_a
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+            # Should NOT be flagged as user-modified
+            assert "old-skill" not in result["user_modified"]
+            # Manifest should be refreshed to match bundled
+            from tools.skills_sync import _read_manifest
+            manifest = _read_manifest()
+            assert manifest.get("old-skill") == hash_b
+
 class TestGetBundledDir:
     def test_env_var_override(self, tmp_path, monkeypatch):
         """HERMES_BUNDLED_SKILLS env var overrides the default path resolution."""
@@ -759,27 +804,24 @@ class TestResetBundledSkill:
         return stack
 
     def test_reset_clears_stuck_user_modified_flag(self, tmp_path):
-        """The core bug repro: copy-pasted bundled restore doesn't un-stick the flag; reset does."""
+        """Reset works even when sync already fixed the stale manifest."""
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # Simulate the stuck state: user edited the skill on an older bundled version,
-        # so manifest has an old origin hash that no longer matches anything on disk.
+        # Simulate: user has the current bundled version, but manifest is stale.
         dest = skills_dir / "productivity" / "google-workspace"
         dest.mkdir(parents=True)
         (dest / "SKILL.md").write_text("---\nname: google-workspace\n---\n# GW v2 (upstream)\n")
-        # Stale origin_hash — from some prior bundled version. User "restored" by pasting
-        # the current bundled contents, so user_hash == current bundled_hash, but manifest
-        # still points at the stale hash → treated as user_modified forever.
         manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
-            # Sanity check: without reset, sync would flag it user_modified
+            # Sync now correctly handles this case — manifest is refreshed,
+            # skill is NOT flagged as user_modified.
             pre = sync_skills(quiet=True)
-            assert "google-workspace" in pre["user_modified"]
+            assert "google-workspace" not in pre["user_modified"]
 
-            # Reset (no --restore) should clear the manifest entry and re-baseline
+            # Reset (no --restore) should still work as a manual override
             result = reset_bundled_skill("google-workspace", restore=False)
 
             assert result["ok"] is True

@@ -2441,7 +2441,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         ),
                     )
     except Exception as e:
-        logger.debug("Plugin platform enable pass failed: %s", e)
+        logger.warning("Plugin platform enable pass failed: %s", e)
 
     # Relay (generic connector-fronted platform, EXPERIMENTAL). Enabled when a
     # connector relay URL is configured via GATEWAY_RELAY_URL (env) or

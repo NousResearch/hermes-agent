@@ -132,8 +132,8 @@ def _monitor_loop(stop_event: threading.Event, interval: float) -> None:
         try:
             log_memory_usage()
         except Exception as e:
-            # Never let the monitor crash the gateway; just log and carry on.
-            logger.debug("Memory monitor iteration failed: %s", e)
+            # Never let the monitor crash the gateway; log a warning so operators see it.
+            logger.warning("Memory monitor iteration failed: %s", e)
 
 
 def start_memory_monitoring(interval_seconds: float = 300.0) -> bool:

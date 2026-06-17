@@ -262,6 +262,15 @@ class WhatsAppBehaviorMixin:
                 cleaned = re.sub(
                     rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned
                 )
+        for pattern in self._mention_patterns:
+            match = pattern.search(cleaned)
+            if not match or cleaned[: match.start()].strip():
+                continue
+            end = match.end()
+            suffix = re.match(r"[,:\-]*\s*", cleaned[end:])
+            if suffix:
+                end += suffix.end()
+            cleaned = (cleaned[: match.start()] + cleaned[end:]).strip()
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:

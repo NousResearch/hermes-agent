@@ -163,6 +163,30 @@ def test_mention_stripping_removes_bot_phone_from_body():
     assert "weather" in cleaned
 
 
+def test_mention_stripping_removes_leading_custom_wake_word():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)@andy\b"])
+
+    data = _group_message("@andy book a table at Andy's Diner for 7pm")
+    cleaned = adapter._clean_bot_mention_text(data["body"], data)
+    assert cleaned == "book a table at Andy's Diner for 7pm"
+
+
+def test_mention_stripping_removes_wake_word_punctuation_separator():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)@andy\b"])
+
+    data = _group_message("@andy: book a table")
+    cleaned = adapter._clean_bot_mention_text(data["body"], data)
+    assert cleaned == "book a table"
+
+
+def test_mention_stripping_preserves_in_content_custom_wake_word_match():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(?i)@andy\b"])
+
+    data = _group_message("please ask @andy about Andy's Diner")
+    cleaned = adapter._clean_bot_mention_text(data["body"], data)
+    assert cleaned == "please ask @andy about Andy's Diner"
+
+
 def test_mention_stripping_preserves_body_when_no_mention():
     adapter = _make_adapter(require_mention=True)
 

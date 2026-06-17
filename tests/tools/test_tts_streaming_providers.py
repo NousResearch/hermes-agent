@@ -837,6 +837,35 @@ def test_resolve_streaming_provider_falls_back(monkeypatch):
     assert result == "edge"
 
 
+def test_resolve_streaming_provider_reads_config_knob(monkeypatch):
+    """If tts.streaming.provider is set in config, use it.
+
+    Task 9 added a ``tts.streaming.provider`` config knob so the
+    user can pick the streaming provider explicitly via config
+    rather than via a ``preferred=`` kwarg. The resolver should
+    honour that knob (it becomes the ``preferred`` value).
+
+    Strength: we set the ElevenLabs env var (which the priority
+    walk would pick first) AND set the config knob to gemini. Only
+    a resolver that actually reads the config knob can return
+    ``gemini``; a resolver that ignores it will return ``elevenlabs``
+    and this test will fail.
+    """
+    from tools.tts_streaming import resolve_streaming_provider
+    _register_real_providers()
+    for k in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"]:
+        monkeypatch.delenv(k, raising=False)
+    # The priority walk would return ``elevenlabs`` (it's first in
+    # the list and the env is set), but the config knob overrides
+    # that to ``gemini`` (which has GEMINI_API_KEY set).
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test")
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    result = resolve_streaming_provider(
+        {"streaming": {"provider": "gemini"}}, preferred=None
+    )
+    assert result == "gemini"
+
+
 def test_resolve_streaming_provider_no_available(monkeypatch):
     """When nothing is available, raise RuntimeError."""
     from tools.tts_streaming import resolve_streaming_provider

@@ -1218,13 +1218,19 @@ def resolve_streaming_provider(
 
     Resolution order:
 
-        1. If ``preferred`` is set, the named provider is registered, and
-           a probe-instantiation succeeds → return ``preferred``.
-        2. Otherwise walk the priority list
+        1. If ``tts_config["streaming"]["provider"]`` is set, the named
+           provider is registered, and a probe-instantiation succeeds
+           → return that name. The config knob (Task 9) is a
+           per-user opt-in: ``hermes config set tts.streaming.provider
+           gemini`` overrides the default priority list.
+        2. If ``preferred`` is set (e.g. the caller already resolved
+           the config knob itself), the named provider is registered,
+           and a probe-instantiation succeeds → return ``preferred``.
+        3. Otherwise walk the priority list
            (``elevenlabs → gemini → openai → xai → edge``) and return
            the first name that is registered AND can be constructed
            without raising.
-        3. If nothing in the list is usable, raise ``RuntimeError``.
+        4. If nothing in the list is usable, raise ``RuntimeError``.
 
     The probe-instantiation deliberately *constructs* a real provider
     (then discards it) so the resolver doesn't have to know each
@@ -1233,10 +1239,26 @@ def resolve_streaming_provider(
     custom registered providers (e.g. test stubs) get the right answer
     without us having to maintain an env-var map here.
     """
-    if preferred:
+    # Config knob: ``tts.streaming.provider`` in the user's
+    # ``~/.hermes/config.yaml``. The plan document (Task 9) says
+    # callers should set this to pin a specific streaming provider
+    # (e.g. ``gemini`` for the lower-latency SSE path) instead of
+    # falling through the priority list. We extract it here so the
+    # resolver and dispatcher share the same lookup contract — both
+    # treat the config knob as the highest-priority signal.
+    streaming_cfg = tts_config.get("streaming") or {}
+    config_preferred = streaming_cfg.get("provider")
+
+    # ``config_preferred`` wins over an explicit ``preferred=`` kwarg
+    # when set; this lets the config block pin a provider even if a
+    # caller forgets to pass ``preferred``. We still fall through to
+    # ``preferred`` and then the priority list if the knob is unset
+    # or unusable.
+    effective_preferred = config_preferred or preferred
+    if effective_preferred:
         # Normalize the same way ``get()`` does so the resolver matches
         # the dispatcher's lookup contract.
-        candidate = preferred.lower().strip()
+        candidate = effective_preferred.lower().strip()
         if candidate in _PROVIDERS:
             inst = _try_instantiate_provider(
                 candidate, tts_config, stop_event=None

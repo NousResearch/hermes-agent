@@ -1790,7 +1790,7 @@ def run_conversation(
                             if assistant_message.content:
                                 truncated_response_parts.append(assistant_message.content)
 
-                            if length_continue_retries < 3:
+                            if length_continue_retries < 4:
                                 _is_partial_stream_stub = (
                                     getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                                 )
@@ -1804,18 +1804,18 @@ def run_conversation(
                                         f"{agent.log_prefix}↻ Stream interrupted mid "
                                         f"tool-call ({_tool_list}) — requesting "
                                         f"chunked retry "
-                                        f"({length_continue_retries}/3)..."
+                                        f"({length_continue_retries}/4)..."
                                     )
                                 elif _is_partial_stream_stub:
                                     agent._vprint(
                                         f"{agent.log_prefix}↻ Stream interrupted — "
                                         f"requesting continuation "
-                                        f"({length_continue_retries}/3)..."
+                                        f"({length_continue_retries}/4)..."
                                     )
                                 else:
                                     agent._vprint(
                                         f"{agent.log_prefix}↻ Requesting continuation "
-                                        f"({length_continue_retries}/3)..."
+                                        f"({length_continue_retries}/4)..."
                                     )
 
                                 _continue_content = _get_continuation_prompt(
@@ -1839,7 +1839,7 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response remained truncated after 3 continuation attempts",
+                                "error": "Response remained truncated after 4 continuation attempts",
                             }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
@@ -1848,7 +1848,7 @@ def run_conversation(
                             _is_stub_stall = (
                                 getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                             )
-                            if truncated_tool_call_retries < 3:
+                            if truncated_tool_call_retries < 4:
                                 truncated_tool_call_retries += 1
                                 if _is_stub_stall:
                                     # The stream broke mid tool-call (network /
@@ -1856,13 +1856,13 @@ def run_conversation(
                                     # cap — say so instead of "max output tokens".
                                     agent._buffer_vprint(
                                         f"⚠️  Stream interrupted mid tool-call — "
-                                        f"retrying ({truncated_tool_call_retries}/3)..."
+                                        f"retrying ({truncated_tool_call_retries}/4)..."
                                     )
                                 else:
                                     agent._buffer_vprint(
                                         f"⚠️  Truncated tool call detected — "
                                         f"retrying API call "
-                                        f"({truncated_tool_call_retries}/3)..."
+                                        f"({truncated_tool_call_retries}/4)..."
                                     )
                                 # Boost max_tokens on each retry so the model has
                                 # more room to complete the tool-call JSON. A
@@ -1870,7 +1870,7 @@ def run_conversation(
                                 # a genuine output-cap truncation does, and the
                                 # boost is harmless for the stall case.
                                 _tc_boost_base = agent.max_tokens if agent.max_tokens else 4096
-                                _tc_boost = _tc_boost_base * (truncated_tool_call_retries + 1)
+                                _tc_boost = _tc_boost_base * (2 ** truncated_tool_call_retries)
                                 _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
                                 if _tc_requested_cap is not None:
                                     _tc_boost = max(_tc_boost, _tc_requested_cap)
@@ -1883,7 +1883,7 @@ def run_conversation(
                             agent._flush_status_buffer()
                             if _is_stub_stall:
                                 agent._vprint(
-                                    f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 3 retries — the action was not executed.",
+                                    f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
                                     force=True,
                                 )
                             else:
@@ -4016,13 +4016,14 @@ def run_conversation(
 
         if _retry.restart_with_length_continuation:
             # Progressively boost the output token budget on each retry.
-            # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
+            # Retry 1 → 2× base, retry 2 → 4× base, retry 3 → 8× base,
+            # retry 4 → 16× base, then cap at 32 768.
             # Applies to all providers via _ephemeral_max_output_tokens.
             # If the original request already used a larger provider/model
             # default budget, keep that floor so continuation retries do
             # not accidentally downshift to a much smaller cap.
             _boost_base = agent.max_tokens if agent.max_tokens else 4096
-            _boost = _boost_base * (length_continue_retries + 1)
+            _boost = _boost_base * (2 ** length_continue_retries)
             _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
             if _requested_cap is not None:
                 _boost = max(_boost, _requested_cap)

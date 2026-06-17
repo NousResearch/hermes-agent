@@ -17611,9 +17611,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
             if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                final_response = _normalize_empty_agent_response(
+                    result, final_response or "", history_len=len(agent_history),
+                )
+                final_response = _sanitize_gateway_final_response(source.platform, final_response)
+                if not final_response:
+                    final_response = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
-                    "final_response": error_msg,
+                    "final_response": final_response,
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "failed": result.get("failed", False),

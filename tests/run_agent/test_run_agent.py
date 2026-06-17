@@ -5077,8 +5077,8 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
 
         # Without think tags, the agent should attempt continuation retries
-        # (up to 3), not immediately fire thinking-exhaustion.
-        assert result["api_calls"] == 3
+        # (up to 4), not immediately fire thinking-exhaustion.
+        assert result["api_calls"] == 4
         assert result["completed"] is False
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):

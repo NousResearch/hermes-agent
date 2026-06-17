@@ -512,6 +512,7 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+                    self._tool_status_text = None
 
                 # Decide whether to flush an edit
                 now = time.monotonic()

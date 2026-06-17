@@ -2149,6 +2149,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_spawn")
         )
     except Exception:
+        _kanban_cfg = {}
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
@@ -2162,6 +2163,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_watchdog=(_kanban_cfg.get("route_watchdog") if isinstance(_kanban_cfg, dict) else None),
         )
     if getattr(args, "json", False):
         print(json.dumps({

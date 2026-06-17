@@ -16184,6 +16184,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Failed to edit streamed message for session %s: %s",
                             session_key or "?", _edit_err,
                         )
+            elif not _is_empty_sentinel and _sc is not None:
+                # Streaming sent a preview but could not confirm final
+                # delivery (e.g. the finalize edit hit flood control), so
+                # the adapter's normal final-send path will re-send the
+                # full response.  Register the streamed preview messages
+                # for deletion after that send succeeds; otherwise the
+                # user sees the stuck raw preview AND the fresh copy
+                # (duplicate-answer bug, 2026-06-12 Telegram).
+                _preview_ids = list(
+                    getattr(_sc, "segment_message_ids", None) or []
+                )
+                _sc_adapter = getattr(_sc, "adapter", None)
+                if _preview_ids and hasattr(
+                    _sc_adapter, "register_stale_stream_preview"
+                ):
+                    try:
+                        _sc_adapter.register_stale_stream_preview(
+                            source.chat_id, _preview_ids
+                        )
+                        logger.info(
+                            "Registered %d stale stream preview message(s) for "
+                            "cleanup after final re-send (session %s).",
+                            len(_preview_ids), session_key or "?",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Stale preview registration failed", exc_info=True,
+                        )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

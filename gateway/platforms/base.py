@@ -1883,6 +1883,13 @@ class BasePlatformAdapter(ABC):
         # deliveries generation-aware and avoid stale runs clearing callbacks
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
+        # Streamed preview messages that an upcoming final re-send will
+        # supersede.  Keyed by chat_id; registered by GatewayRunner when
+        # streaming could not confirm final delivery (e.g. the finalize
+        # edit hit flood control) and the normal final send must run.
+        # Consumed after that send succeeds; the stale previews are
+        # deleted so the user doesn't see a duplicate copy of the answer.
+        self._stale_stream_previews: Dict[str, list] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
@@ -3335,6 +3342,38 @@ class BasePlatformAdapter(ABC):
         else:
             self._post_delivery_callbacks[session_key] = (int(generation), callback)
 
+    def register_stale_stream_preview(self, chat_id, message_ids) -> None:
+        """Remember streamed preview messages superseded by the next final send.
+
+        GatewayRunner calls this when the stream consumer could not confirm
+        final delivery (finalize edit failed, typically flood control) and
+        the normal final-send path will re-send the full response.  After
+        that send succeeds, ``_delete_stale_stream_preview`` removes these
+        messages so the user doesn't see the stuck raw preview AND the
+        fresh copy.  If the re-send fails, the previews are left in place
+        (they may be the only copy of the content the user has) and the
+        registration is dropped at the end of the processing cycle.
+        """
+        ids = [str(m) for m in (message_ids or []) if m and str(m) != "__no_edit__"]
+        if ids:
+            self._stale_stream_previews[str(chat_id)] = ids
+
+    async def _delete_stale_stream_preview(self, chat_id) -> None:
+        ids = self._stale_stream_previews.pop(str(chat_id), None)
+        if not ids:
+            return
+        delete_fn = getattr(self, "delete_message", None)
+        if not callable(delete_fn):
+            return
+        for mid in ids:
+            try:
+                await delete_fn(str(chat_id), mid)
+            except Exception:
+                logger.debug(
+                    "[%s] stale stream preview delete failed (%s)",
+                    self.name, mid, exc_info=True,
+                )
+
     def pop_post_delivery_callback(
         self,
         session_key: str,
@@ -4343,6 +4382,14 @@ class BasePlatformAdapter(ABC):
                     )
                     _record_delivery(result)
 
+                    # The fresh copy landed — remove any streamed preview
+                    # messages it supersedes (registered by GatewayRunner
+                    # when streaming couldn't confirm final delivery).
+                    if result.success:
+                        await self._delete_stale_stream_preview(
+                            event.source.chat_id
+                        )
+
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors
                     # (permission denied, message too old) are swallowed.
@@ -4596,6 +4643,11 @@ class BasePlatformAdapter(ABC):
                         )
                 except (asyncio.TimeoutError, Exception):
                     pass
+            # Drop any unconsumed stale-preview registration for this chat:
+            # the final send didn't happen or didn't succeed, so the preview
+            # must stay (it may be the only copy of the content). Without this
+            # drain, a later turn's send would delete it.
+            self._stale_stream_previews.pop(str(event.source.chat_id), None)
             # Some adapters keep platform-level typing tasks.  If callback
             # work or a late refresh recreated one, make one final bounded stop
             # before releasing the session guard.

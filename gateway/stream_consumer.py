@@ -242,6 +242,21 @@ class GatewayStreamConsumer:
         the subsequent cosmetic edit (cursor removal) failed."""
         return self._final_content_delivered
 
+    @property
+    def segment_message_ids(self) -> list:
+        """IDs of the platform messages holding the current segment's text.
+
+        After the consumer exits, this is the streamed copy of the final
+        answer.  If the gateway re-sends the response because delivery was
+        not confirmed, these messages become stale duplicates to delete."""
+        return list(self._preview_message_ids)
+
+    def _record_segment_message(self, *message_ids) -> None:
+        for mid in message_ids:
+            if not mid:
+                continue
+            self._track_preview_id(str(mid))
+
     async def _edit_message(
         self,
         *,
@@ -295,6 +310,7 @@ class GatewayStreamConsumer:
             return
         self._message_id = None
         self._message_created_ts = None
+        self._preview_message_ids = set()
         self._accumulated = ""
         self._last_sent_text = ""
         self._fallback_final_send = False
@@ -950,6 +966,7 @@ class GatewayStreamConsumer:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
+            self._record_segment_message(result.message_id)
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()
@@ -1304,6 +1321,7 @@ class GatewayStreamConsumer:
         self._preview_message_ids = set()
         if new_message_id:
             self._message_id = new_message_id
+            self._track_preview_id(new_message_id)
             self._message_created_ts = time.monotonic()
         else:
             # Send succeeded but platform didn't return an id — treat the
@@ -1452,6 +1470,10 @@ class GatewayStreamConsumer:
                         # ``getattr`` with default keeps backwards compat with
                         # SimpleNamespace mocks in tests that pre-date the field.
                         _continuation_ids = getattr(result, "continuation_message_ids", ()) or ()
+                        self._record_segment_message(*_continuation_ids)
+                        self._record_segment_message(
+                            getattr(result, "message_id", None)
+                        )
                         if (
                             _continuation_ids
                             and result.message_id
@@ -1570,6 +1592,14 @@ class GatewayStreamConsumer:
                 if result.success:
                     if result.message_id:
                         self._message_id = result.message_id
+                        self._record_segment_message(result.message_id)
+                        # A long first send may have been split into several
+                        # platform messages — track them all as preview state.
+                        _raw = getattr(result, "raw_response", None)
+                        if isinstance(_raw, dict):
+                            self._record_segment_message(
+                                *(_raw.get("message_ids") or ())
+                            )
                         # Track when the preview first became visible to
                         # the user so fresh-final logic can detect stale
                         # preview timestamps on long-running responses.

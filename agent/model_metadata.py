@@ -87,20 +87,30 @@ _TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 def _strip_provider_prefix(model: str) -> str:
     """Strip a recognised provider prefix from a model string.
 
-    ``"local:my-model"`` → ``"my-model"``
-    ``"qwen3.5:27b"``   → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
-    ``"qwen:0.5b"``     → ``"qwen:0.5b"``    (unchanged — Ollama model:tag)
-    ``"deepseek:latest"``→ ``"deepseek:latest"``(unchanged — Ollama model:tag)
+    ``"local:my-model"``        → ``"my-model"``
+    ``"opencode-go/qwen3.7-plus"`` → ``"qwen3.7-plus"``
+    ``"qwen3.5:27b"``           → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
+    ``"qwen:0.5b"``             → ``"qwen:0.5b"``    (unchanged — Ollama model:tag)
+    ``"deepseek:latest"``       → ``"deepseek:latest"`` (unchanged — Ollama model:tag)
     """
-    if ":" not in model or model.startswith("http"):
+    if not model or model.startswith("http"):
         return model
-    prefix, suffix = model.split(":", 1)
-    prefix_lower = prefix.strip().lower()
-    if prefix_lower in _PROVIDER_PREFIXES:
-        # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
-        if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
-            return model
-        return suffix
+
+    # Try colon separator first (legacy ``provider:model`` form, e.g. "local:foo").
+    # Then try slash (``provider/model`` form, e.g. "opencode-go/qwen3.7-plus").
+    # Both go through the same _PROVIDER_PREFIXES allowlist and Ollama-tag guard
+    # so a model like "requesty/openai/gpt-5" → "openai/gpt-5" (first slash only,
+    # because requesty/<upstream>/<model> is a real models.dev pattern).
+    for sep in (":", "/"):
+        if sep not in model:
+            continue
+        prefix, suffix = model.split(sep, 1)
+        prefix_lower = prefix.strip().lower()
+        if prefix_lower in _PROVIDER_PREFIXES:
+            # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
+            if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
+                return model
+            return suffix
     return model
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}

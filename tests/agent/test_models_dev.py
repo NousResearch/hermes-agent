@@ -71,10 +71,35 @@ SAMPLE_REGISTRY = {
     },
     "audio-only": {
         "id": "audio-only",
+        "name": "audio-only",
         "models": {
             "tts-model": {
                 "id": "tts-model",
                 "limit": {"context": 0, "output": 0},
+            },
+        },
+    },
+    "opencode-go": {
+        "id": "opencode-go",
+        "name": "OpenCode Go",
+        "models": {
+            "qwen3.7-plus": {
+                "id": "qwen3.7-plus",
+                "limit": {"context": 1_000_000, "output": 65_536},
+            },
+            "qwen3.5-plus": {
+                "id": "qwen3.5-plus",
+                "limit": {"context": 262_144, "output": 65_536},
+            },
+        },
+    },
+    "requesty": {
+        "id": "requesty",
+        "name": "Requesty",
+        "models": {
+            "openai/gpt-5": {
+                "id": "openai/gpt-5",
+                "limit": {"context": 100_000, "output": 32_000},
             },
         },
     },
@@ -161,6 +186,49 @@ class TestLookupModelsDevContext:
     def test_empty_registry(self, mock_fetch):
         mock_fetch.return_value = {}
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") is None
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_prefixed_slash_model_id_strips_provider(self, mock_fetch):
+        """Regression: 'opencode-go/qwen3.7-plus' must resolve to the same
+        context window as 'qwen3.7-plus' with provider='opencode-go'.
+
+        Without the slash-form prefix strip in
+        agent/model_metadata.py::_strip_provider_prefix, the prefixed
+        id falls through to DEFAULT_CONTEXT_LENGTHS and matches a
+        generic 'qwen' entry (131_072) instead of the provider-
+        specific models.dev value (1_000_000)."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        from agent.model_metadata import get_model_context_length
+        bare     = get_model_context_length("qwen3.7-plus", provider="opencode-go")
+        prefixed = get_model_context_length("opencode-go/qwen3.7-plus")
+        assert bare == prefixed == 1_000_000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_prefixed_slash_model_id_qwen3_5(self, mock_fetch):
+        """Same regression for qwen3.5-plus (262_144 ceiling)."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        from agent.model_metadata import get_model_context_length
+        bare     = get_model_context_length("qwen3.5-plus", provider="opencode-go")
+        prefixed = get_model_context_length("opencode-go/qwen3.5-plus")
+        assert bare == prefixed == 262_144
+
+    def test_prefixed_slash_only_strips_first_segment(self):
+        """The strip is 'first separator only' — 'requesty/openai/gpt-5'
+        (two slashes) must look up the key 'openai/gpt-5' under provider
+        'requesty', not 'gpt-5'. models.dev has thousands of multi-slash
+        ids under 'requesty/<upstream>/<model>', so 'split on first
+        separator only' is the correct semantics."""
+        from agent.model_metadata import _strip_provider_prefix
+        # Two slashes: keep first segment as prefix, keep the rest as-is.
+        assert _strip_provider_prefix("requesty/openai/gpt-5") == "openai/gpt-5"
+        # Three slashes: same — only the first gets stripped.
+        assert _strip_provider_prefix("requesty/openai/gpt-5/variant") == "openai/gpt-5/variant"
+        # Colon form still works (regression check on the legacy path).
+        assert _strip_provider_prefix("local:my-model") == "my-model"
+        # Ollama-style model:tag colons are NOT stripped.
+        assert _strip_provider_prefix("qwen3.5:27b") == "qwen3.5:27b"
+        # Unknown provider prefix is NOT stripped (only the allowlist matches).
+        assert _strip_provider_prefix("unknown-provider/model-x") == "unknown-provider/model-x"
 
 
 class TestFetchModelsDev:

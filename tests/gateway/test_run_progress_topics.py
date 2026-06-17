@@ -294,6 +294,67 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_separate_grouping_sends_each_tool_without_editing(monkeypatch, tmp_path):
+    """display.tool_progress_grouping="separate" must send one message per tool.
+
+    Rapid tool.started events (closer together than the edit throttle interval)
+    must each be delivered as their own message and the progress bubble must
+    never be edited. Regression for separate-mode bursts silently losing
+    per-tool progress, because the edit throttle's batch-and-continue tick only
+    makes sense for accumulate grouping (follow-up to #47228).
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_progress_grouping": "separate"}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-separate-grouping",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    # Separate grouping must never edit a shared bubble.
+    assert adapter.edits == []
+    # Both rapid tool.started events are delivered as their own messages — the
+    # second must not be dropped by the edit throttle (accumulate-only).
+    assert len(adapter.sent) == 2, f"expected one message per tool, got {adapter.sent}"
+    assert "pwd" in adapter.sent[0]["content"]
+    assert (
+        "example.com" in adapter.sent[1]["content"]
+        or "browser_navigate" in adapter.sent[1]["content"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 

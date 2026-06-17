@@ -14136,7 +14136,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+            separate_grouping = progress_grouping == "separate"  # one message per tool (pre-v0.9 behavior)
+            can_edit = not separate_grouping  # also flips to False if an edit later fails (see below)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -14319,14 +14320,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # API calls to avoid hitting Telegram flood control.
                     # (grammY auto-retry pattern: proactively rate-limit
                     # instead of reacting to 429s.)
-                    _now = time.monotonic()
-                    _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
-                    if _remaining > 0:
-                        # Wait out the throttle interval, then loop back to
-                        # drain any additional queued messages before sending
-                        # a single batched edit.
-                        await asyncio.sleep(_remaining)
-                        continue
+                    #
+                    # Skip this only for configured "separate" grouping, where
+                    # each tool is its own message sent below: the batch-and-
+                    # continue tick would silently drop it, because nothing
+                    # re-sends the buffered line if no further event wakes the
+                    # loop (rapid tool bursts then lose per-tool progress). Those
+                    # are sent immediately; the post-send sleep still paces them.
+                    # Accumulate grouping keeps the throttle even after an edit
+                    # failure flips can_edit off, so the send fallback stays
+                    # flood-protected.
+                    if not separate_grouping:
+                        _now = time.monotonic()
+                        _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
+                        if _remaining > 0:
+                            # Wait out the throttle interval, then loop back to
+                            # drain any additional queued messages before sending
+                            # a single batched edit.
+                            await asyncio.sleep(_remaining)
+                            continue
 
                     if not _run_still_current():
                         return

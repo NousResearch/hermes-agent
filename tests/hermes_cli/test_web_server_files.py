@@ -331,3 +331,33 @@ def test_hosted_policy_locks_to_opt_data(monkeypatch):
 
     assert str(policy.locked_root) == "/opt/data"
     assert policy.can_change_path is False
+
+
+def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client):
+    """Dangling symlinks should appear in listings with broken_link: true."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    # Create a valid file
+    valid = root / "valid.txt"
+    valid.write_text("hello")
+
+    # Create a dangling symlink whose target is also within the locked root
+    # so that _path_is_under() passes and the new broken_link code path is hit.
+    broken = root / "broken_link"
+    nonexistent = root / "nonexistent_target"
+    broken.symlink_to(str(nonexistent))
+
+    resp = client.get("/api/files", params={"path": str(root)})
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    names = [e["name"] for e in entries]
+    assert "valid.txt" in names
+    assert "broken_link" in names
+
+    broken_entry = next(e for e in entries if e["name"] == "broken_link")
+    assert broken_entry["broken_link"] is True
+    assert broken_entry["size"] is None
+    assert broken_entry["mtime"] is None
+    assert broken_entry["mime_type"] is None
+    assert broken_entry["is_directory"] is False

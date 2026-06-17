@@ -766,6 +766,23 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def session_db_scope_kwargs(
+    source: Optional[SessionSource],
+    session_key: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """Return SessionDB kwargs that preserve gateway chat/thread scope."""
+    if source is None:
+        return {}
+    return {
+        "user_id": str(source.user_id) if source.user_id is not None else None,
+        "user_id_alt": str(source.user_id_alt) if source.user_id_alt is not None else None,
+        "chat_type": str(source.chat_type) if source.chat_type is not None else None,
+        "chat_id": str(source.chat_id) if source.chat_id is not None else None,
+        "thread_id": str(source.thread_id) if source.thread_id is not None else None,
+        "session_key": str(session_key) if session_key is not None else None,
+    }
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -1056,7 +1073,7 @@ class SessionStore:
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": source.platform.value,
-                "user_id": source.user_id,
+                **session_db_scope_kwargs(source, session_key),
             }
 
         # SQLite operations outside the lock
@@ -1282,7 +1299,7 @@ class SessionStore:
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
-                "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                **session_db_scope_kwargs(old_entry.origin, session_key),
             }
 
         if self._db and db_end_session_id:

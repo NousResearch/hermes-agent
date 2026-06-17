@@ -33,7 +33,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, session_db_scope_kwargs
 from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
@@ -2958,7 +2958,7 @@ class GatewaySlashCommandsMixin:
                 self._session_db.create_session(
                     session_id=session_id,
                     source=source.platform.value if source.platform else "unknown",
-                    user_id=source.user_id,
+                    **session_db_scope_kwargs(source, session_entry.session_key),
                 )
             except Exception:
                 pass  # Session might already exist, ignore errors
@@ -3255,6 +3255,7 @@ class GatewaySlashCommandsMixin:
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
+                **session_db_scope_kwargs(source, session_key),
                 parent_session_id=parent_session_id,
             )
         except Exception as e:

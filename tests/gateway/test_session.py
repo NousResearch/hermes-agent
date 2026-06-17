@@ -500,6 +500,33 @@ class TestSenderPrefixWithBackfill:
         assert "[Alice] [Recent" not in result
 
 
+class TestSessionStoreScopeMetadata:
+    def test_get_or_create_session_persists_gateway_scope(self, tmp_path, monkeypatch):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            user_id="user-1",
+            user_id_alt="alt-1",
+            thread_id="111",
+        )
+
+        entry = store.get_or_create_session(source)
+        session = store._db.get_session(entry.session_id)
+
+        assert session["source"] == "telegram"
+        assert session["user_id"] == "user-1"
+        assert session["user_id_alt"] == "alt-1"
+        assert session["chat_type"] == "group"
+        assert session["chat_id"] == "-100"
+        assert session["thread_id"] == "111"
+        assert session["session_key"] == entry.session_key
+
+
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to DB."""
 

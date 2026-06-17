@@ -533,7 +533,12 @@ class AIAgent:
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=getattr(self, "_user_id", None),
+                user_id_alt=getattr(self, "_user_id_alt", None),
+                chat_type=getattr(self, "_chat_type", None),
+                chat_id=getattr(self, "_chat_id", None),
+                thread_id=getattr(self, "_thread_id", None),
+                session_key=getattr(self, "_gateway_session_key", None),
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
             )

@@ -1822,6 +1822,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     sort=next_args.get("sort"),
                     db=session_db,
                     current_session_id=agent.session_id,
+                    current_source=agent.platform or getattr(agent, "_platform", None),
+                    current_chat_type=getattr(agent, "_chat_type", None),
+                    current_chat_id=getattr(agent, "_chat_id", None),
+                    current_thread_id=getattr(agent, "_thread_id", None),
+                    current_session_key=getattr(agent, "_gateway_session_key", None),
                 ),
                 next_args,
             )

@@ -92,6 +92,26 @@ class TestSessionLifecycle:
         assert session["model"] == "test-model"
         assert session["ended_at"] is None
 
+    def test_create_session_persists_gateway_scope(self, db):
+        db.create_session(
+            session_id="s1",
+            source="telegram",
+            user_id="user-1",
+            user_id_alt="alt-1",
+            chat_type="group",
+            chat_id="-100",
+            thread_id="111",
+            session_key="agent:main:telegram:group:-100:111",
+        )
+
+        session = db.get_session("s1")
+        assert session["user_id"] == "user-1"
+        assert session["user_id_alt"] == "alt-1"
+        assert session["chat_type"] == "group"
+        assert session["chat_id"] == "-100"
+        assert session["thread_id"] == "111"
+        assert session["session_key"] == "agent:main:telegram:group:-100:111"
+
 
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
@@ -2328,9 +2348,12 @@ class TestSchemaInit:
         conn.close()
 
         db = SessionDB(db_path=old_db)
-        cursor = db._conn.execute("PRAGMA table_info(sessions)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+        tables = {row[0] for row in cursor.fetchall()}
+        assert "telegram_dm_topic_mode" not in tables
+        assert "telegram_dm_topic_bindings" not in tables
         db.close()
 
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):

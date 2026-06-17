@@ -40,6 +40,78 @@ from typing import Any, Dict, List, Optional, Union
 _HIDDEN_SESSION_SOURCES = ("subagent", "tool")
 
 
+def _clean_scope_value(value: Any, *, lower: bool = False) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text.lower() if lower else text
+
+
+def _build_current_scope(
+    *,
+    current_source: str = None,
+    current_chat_type: str = None,
+    current_chat_id: str = None,
+    current_thread_id: str = None,
+    current_session_key: str = None,
+) -> Optional[Dict[str, str]]:
+    source = _clean_scope_value(current_source, lower=True)
+    chat_id = _clean_scope_value(current_chat_id)
+    if not source or not chat_id:
+        return None
+    return {
+        "source": source,
+        "chat_type": _clean_scope_value(current_chat_type, lower=True),
+        "chat_id": chat_id,
+        "thread_id": _clean_scope_value(current_thread_id),
+        "session_key": _clean_scope_value(current_session_key),
+    }
+
+
+def _session_matches_current_scope(
+    session_meta: Dict[str, Any],
+    current_scope: Optional[Dict[str, str]],
+) -> bool:
+    if not current_scope:
+        return True
+    if _clean_scope_value(session_meta.get("source"), lower=True) != current_scope["source"]:
+        return False
+    if current_scope.get("chat_type"):
+        if _clean_scope_value(session_meta.get("chat_type"), lower=True) != current_scope["chat_type"]:
+            return False
+    if _clean_scope_value(session_meta.get("chat_id")) != current_scope["chat_id"]:
+        return False
+    meta_thread = _clean_scope_value(session_meta.get("thread_id"))
+    current_thread = current_scope.get("thread_id")
+    if current_thread:
+        return meta_thread == current_thread
+    return meta_thread is None
+
+
+def _list_scope_kwargs(current_scope: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    if not current_scope:
+        return {}
+    kwargs: Dict[str, Any] = {
+        "source": current_scope["source"],
+        "chat_type_filter": current_scope.get("chat_type"),
+        "chat_id_filter": current_scope["chat_id"],
+        "thread_id_filter": current_scope.get("thread_id"),
+        "strict_thread_scope": True,
+    }
+    return kwargs
+
+
+def _search_scope_kwargs(current_scope: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    if not current_scope:
+        return {}
+    kwargs = _list_scope_kwargs(current_scope)
+    source = kwargs.pop("source")
+    kwargs["source_filter"] = [source]
+    return kwargs
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -175,7 +247,13 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
+def _read_session(
+    db,
+    session_id: str,
+    head: int = 20,
+    tail: int = 10,
+    current_scope: Optional[Dict[str, str]] = None,
+) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -190,6 +268,11 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         meta = {}
     if not meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    if not _session_matches_current_scope(meta, current_scope):
+        return tool_error(
+            "session_id is outside the current gateway chat/thread scope",
+            success=False,
+        )
 
     try:
         rows = db.get_messages(session_id)
@@ -224,13 +307,19 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    current_scope: Optional[Dict[str, str]] = None,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
             limit=limit + 5,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
+            **_list_scope_kwargs(current_scope),
         )  # fetch extra so we can skip current
 
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
@@ -273,6 +362,7 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    current_scope: Optional[Dict[str, str]] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -316,6 +406,11 @@ def _scroll(
         session_meta = {}
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    if not _session_matches_current_scope(session_meta, current_scope):
+        return tool_error(
+            "session_id is outside the current gateway chat/thread scope",
+            success=False,
+        )
 
     # Fetch the window
     try:
@@ -398,6 +493,7 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    current_scope: Optional[Dict[str, str]] = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -410,6 +506,7 @@ def _discover(
             limit=50,  # widen so dedup-by-lineage can find distinct sessions
             offset=0,
             sort=sort,
+            **_search_scope_kwargs(current_scope),
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -498,6 +595,11 @@ def session_search(
     limit: int = 3,
     db=None,
     current_session_id: str = None,
+    current_source: str = None,
+    current_chat_type: str = None,
+    current_chat_id: str = None,
+    current_thread_id: str = None,
+    current_session_key: str = None,
     # Scroll shape
     session_id: str = None,
     around_message_id: int = None,
@@ -527,6 +629,14 @@ def session_search(
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
 
+    current_scope = _build_current_scope(
+        current_source=current_source,
+        current_chat_type=current_chat_type,
+        current_chat_id=current_chat_id,
+        current_thread_id=current_thread_id,
+        current_session_key=current_session_key,
+    )
+
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
@@ -550,6 +660,7 @@ def session_search(
         if profile_db is not None:
             db = profile_db
             current_session_id = None
+            current_scope = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
@@ -559,12 +670,13 @@ def session_search(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            current_scope=current_scope,
         )
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
-        result = _read_session(db, sid)
+        result = _read_session(db, sid, current_scope=current_scope)
         if json.loads(result).get("success"):
             return result
 
@@ -574,7 +686,7 @@ def session_search(
         located, owner = _locate_session_db(sid)
         if located is not None:
             try:
-                found = json.loads(_read_session(located, sid))
+                found = json.loads(_read_session(located, sid, current_scope=current_scope))
             finally:
                 located.close()
             if found.get("success"):
@@ -592,7 +704,7 @@ def session_search(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(db, limit, current_session_id, current_scope)
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -613,6 +725,7 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        current_scope=current_scope,
     )
 
 
@@ -791,6 +904,11 @@ registry.register(
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        current_source=kw.get("current_source"),
+        current_chat_type=kw.get("current_chat_type"),
+        current_chat_id=kw.get("current_chat_id"),
+        current_thread_id=kw.get("current_thread_id"),
+        current_session_key=kw.get("current_session_key"),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

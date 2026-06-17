@@ -58,6 +58,38 @@ def _seed_modpack_sessions(db):
     db._conn.commit()
 
 
+def _seed_gateway_session(
+    db,
+    session_id,
+    *,
+    chat_id,
+    thread_id=None,
+    text="shared needle",
+    source="telegram",
+    chat_type="group",
+    started_offset=0,
+):
+    now = int(time.time())
+    session_key = f"agent:main:{source}:{chat_type}:{chat_id}"
+    if thread_id:
+        session_key = f"{session_key}:{thread_id}"
+    db.create_session(
+        session_id,
+        source=source,
+        chat_type=chat_type,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        session_key=session_key,
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+        (now + started_offset, f"Gateway {session_id}", session_id),
+    )
+    db.append_message(session_id, role="user", content=text)
+    db.append_message(session_id, role="assistant", content=f"ack {text}")
+    db._conn.commit()
+
+
 # =========================================================================
 # Schema invariants
 # =========================================================================
@@ -232,6 +264,151 @@ class TestDiscoverySort:
         # Should not error
         result = json.loads(session_search(query="modpack", sort="bogus", db=db))
         assert result["success"] is True
+
+
+class TestGatewayScope:
+    def test_discovery_scopes_to_current_gateway_thread(self, db):
+        _seed_gateway_session(
+            db,
+            "topic-a",
+            chat_id="-100",
+            thread_id="111",
+            text="deploy path lives in topic a",
+        )
+        _seed_gateway_session(
+            db,
+            "topic-b",
+            chat_id="-100",
+            thread_id="222",
+            text="deploy path lives in topic b",
+        )
+        _seed_gateway_session(
+            db,
+            "other-chat",
+            chat_id="-200",
+            thread_id="111",
+            text="deploy path lives in another chat",
+        )
+
+        result = json.loads(session_search(
+            query="deploy",
+            db=db,
+            current_source="telegram",
+            current_chat_type="group",
+            current_chat_id="-100",
+            current_thread_id="111",
+        ))
+
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["topic-a"]
+
+    def test_discovery_without_thread_does_not_recall_thread_sessions(self, db):
+        _seed_gateway_session(
+            db,
+            "root-chat",
+            chat_id="-100",
+            thread_id=None,
+            text="incident path in parent chat",
+        )
+        _seed_gateway_session(
+            db,
+            "topic-chat",
+            chat_id="-100",
+            thread_id="111",
+            text="incident path in forum topic",
+        )
+
+        result = json.loads(session_search(
+            query="incident",
+            db=db,
+            current_source="telegram",
+            current_chat_type="group",
+            current_chat_id="-100",
+        ))
+
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["root-chat"]
+
+    def test_cjk_like_discovery_keeps_gateway_scope(self, db):
+        _seed_gateway_session(
+            db,
+            "same-topic",
+            chat_id="-100",
+            thread_id="111",
+            text="路径在当前话题",
+        )
+        _seed_gateway_session(
+            db,
+            "other-topic",
+            chat_id="-100",
+            thread_id="222",
+            text="路径在其他话题",
+        )
+
+        result = json.loads(session_search(
+            query="路径",
+            db=db,
+            current_source="telegram",
+            current_chat_type="group",
+            current_chat_id="-100",
+            current_thread_id="111",
+        ))
+
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["same-topic"]
+
+    def test_browse_scopes_to_current_gateway_thread(self, db):
+        _seed_gateway_session(db, "topic-a-old", chat_id="-100", thread_id="111", started_offset=-20)
+        _seed_gateway_session(db, "topic-b-new", chat_id="-100", thread_id="222", started_offset=20)
+        _seed_gateway_session(db, "topic-a-new", chat_id="-100", thread_id="111", started_offset=40)
+
+        result = json.loads(session_search(
+            db=db,
+            current_source="telegram",
+            current_chat_type="group",
+            current_chat_id="-100",
+            current_thread_id="111",
+        ))
+
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["topic-a-new", "topic-a-old"]
+
+    def test_read_rejects_session_outside_gateway_scope(self, db):
+        _seed_gateway_session(db, "topic-a", chat_id="-100", thread_id="111")
+        _seed_gateway_session(db, "topic-b", chat_id="-100", thread_id="222")
+
+        result = json.loads(session_search(
+            session_id="topic-b",
+            db=db,
+            current_source="telegram",
+            current_chat_type="group",
+            current_chat_id="-100",
+            current_thread_id="111",
+        ))
+
+        assert result["success"] is False
+        assert "outside the current gateway chat/thread scope" in result["error"]
+
+    def test_scroll_rejects_session_outside_gateway_scope(self, db):
+        _seed_gateway_session(db, "topic-a", chat_id="-100", thread_id="111")
+        _seed_gateway_session(db, "topic-b", chat_id="-100", thread_id="222")
+        message_id = db._conn.execute(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY id LIMIT 1",
+            ("topic-b",),
+        ).fetchone()[0]
+
+        result = json.loads(session_search(
+            session_id="topic-b",
+            around_message_id=message_id,
+            db=db,
+            current_source="telegram",
+            current_chat_type="group",
+            current_chat_id="-100",
+            current_thread_id="111",
+        ))
+
+        assert result["success"] is False
+        assert "outside the current gateway chat/thread scope" in result["error"]
 
 
 class TestRoleFilter:

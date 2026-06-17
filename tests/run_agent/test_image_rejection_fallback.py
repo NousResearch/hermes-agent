@@ -6,6 +6,7 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
+from agent.message_sanitization import _looks_like_image_rejection_error
 from run_agent import _strip_images_from_messages
 
 
@@ -178,28 +179,8 @@ class TestImageRejectionPhraseIsolation:
     so they route to the correct recovery handler (e.g. _try_shrink_image_parts).
     """
 
-    # Reproduces the phrase list used in run_agent.py's error-handler block.
-    _REJECTION_PHRASES = (
-        "only 'text' content type is supported",
-        "only text content type is supported",
-        "image_url is not supported",
-        "image content is not supported",
-        "multimodal is not supported",
-        "multimodal content is not supported",
-        "multimodal input is not supported",
-        "vision is not supported",
-        "vision input is not supported",
-        "does not support images",
-        "does not support image input",
-        "does not support multimodal",
-        "does not support vision",
-        "model does not support image",
-        "image_url'. expected",
-    )
-
     def _matches(self, body: str) -> bool:
-        low = body.lower()
-        return any(p in low for p in self._REJECTION_PHRASES)
+        return _looks_like_image_rejection_error(body)
 
     def test_anthropic_image_too_large_does_not_trip(self):
         # From agent/error_classifier.py _IMAGE_TOO_LARGE_PATTERNS —
@@ -244,6 +225,9 @@ class TestImageRejectionPhraseIsolation:
             # match the agent cascaded into compression / context-too-large
             # recovery instead of just stripping the images.
             "Invalid 'input[56].content[1].image_url'. Expected a valid URL, but got a value with an invalid format.",
+            # ChatGPT-account Codex backend can also reject a data URL whose
+            # declared image MIME is supported but whose bytes are corrupt.
+            "The image data you provided does not represent a valid image. Please check your input and try again with one of the supported image formats: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].",
         ]
         for body in bodies:
             assert self._matches(body) is True, f"false negative on: {body}"

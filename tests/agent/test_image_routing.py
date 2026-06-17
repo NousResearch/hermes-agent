@@ -300,6 +300,13 @@ def _png_bytes() -> bytes:
     )
 
 
+def _write_pillow_image(path: Path, fmt: str, *, size: tuple[int, int] = (2, 2)) -> None:
+    from PIL import Image
+
+    img = Image.new("RGB", size, color=(48, 96, 144))
+    img.save(path, format=fmt)
+
+
 class TestBuildNativeContentParts:
     def test_text_then_image(self, tmp_path: Path):
         img = tmp_path / "cat.png"
@@ -382,17 +389,17 @@ class TestBuildNativeContentParts:
         assert str(img2) in text_part["text"]
 
     def test_mime_inference_jpg(self, tmp_path: Path):
-        # Real JPEG bytes (SOI marker FF D8 FF): sniffing now wins over suffix.
+        # Real decodable JPEG bytes: sniffing wins over suffix.
         img = tmp_path / "photo.jpg"
-        img.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + b"\x00" * 32)
+        _write_pillow_image(img, "JPEG")
         parts, _ = build_native_content_parts("x", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/jpeg;base64,")
 
     def test_mime_inference_webp(self, tmp_path: Path):
-        # Real WEBP bytes (RIFF....WEBP): sniffing now wins over suffix.
+        # Real decodable WEBP bytes: sniffing wins over suffix.
         img = tmp_path / "pic.webp"
-        img.write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 32)
+        _write_pillow_image(img, "WEBP")
         parts, _ = build_native_content_parts("", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/webp;base64,")
@@ -425,8 +432,10 @@ class TestLargeImageHandling:
         from agent import image_routing as _ir
 
         img = tmp_path / "medium.png"
-        # 200 KB of real bytes; not huge but enough to verify no size gate fires.
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 200_000)
+        from PIL import Image
+
+        Image.effect_noise((768, 768), 80).convert("RGB").save(img, format="PNG")
+        assert img.stat().st_size > 200_000
         url = _ir._file_to_data_url(img)
         assert url is not None
         assert url.startswith("data:image/png;base64,")
@@ -613,6 +622,15 @@ class TestBuildNativeContentPartsURLs:
         text = parts[0]["text"]
         assert "[Image attached at:" in text
         assert "[Image attached: https://example.com/remote.jpg]" in text
+
+    def test_local_file_with_image_extension_but_invalid_bytes_is_skipped(self, tmp_path: Path):
+        img = tmp_path / "not-really.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nthis is not a decodable png")
+
+        parts, skipped = build_native_content_parts("describe it", [str(img)])
+
+        assert skipped == [str(img)]
+        assert parts == [{"type": "text", "text": "describe it"}]
 
     def test_empty_url_list_is_no_op(self, tmp_path: Path):
         img = tmp_path / "x.png"

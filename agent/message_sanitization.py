@@ -400,6 +400,44 @@ def _strip_images_from_messages(messages: list) -> bool:
     return found
 
 
+_IMAGE_REJECTION_PHRASES = (
+    "only 'text' content type is supported",
+    "only text content type is supported",
+    "image_url is not supported",
+    "image content is not supported",
+    "multimodal is not supported",
+    "multimodal content is not supported",
+    "multimodal input is not supported",
+    "vision is not supported",
+    "vision input is not supported",
+    "does not support images",
+    "does not support image input",
+    "does not support multimodal",
+    "does not support vision",
+    "model does not support image",
+    # ChatGPT-account Codex backend rejects data:image/... URLs in input_image
+    # fields with a field-path error. The public OpenAI Responses endpoint
+    # accepts data URLs, but the ChatGPT-account variant does not.
+    "image_url'. expected",
+    # DeepSeek's OpenAI-compatible API reports text-only request-body variants
+    # as: "unknown variant `image_url`, expected `text`".
+    "unknown variant `image_url`, expected `text`",
+    "unknown variant image_url, expected text",
+    # ChatGPT-account Codex can also reject a data URL whose MIME is supported
+    # but whose bytes are corrupt/truncated. Treat it as recoverable by
+    # stripping image parts from history for the retry.
+    "image data you provided does not represent a valid image",
+)
+
+
+def _looks_like_image_rejection_error(body: str) -> bool:
+    """Return True when a 4xx body says the request's image parts are unusable."""
+    if not isinstance(body, str):
+        return False
+    err_lower = body.lower()
+    return any(phrase in err_lower for phrase in _IMAGE_REJECTION_PHRASES)
+
+
 def _sanitize_structure_non_ascii(payload: Any) -> bool:
     """Strip non-ASCII characters from nested dict/list payloads in-place."""
     found = False
@@ -440,5 +478,6 @@ __all__ = [
     "_sanitize_messages_non_ascii",
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
+    "_looks_like_image_rejection_error",
     "_sanitize_structure_non_ascii",
 ]

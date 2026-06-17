@@ -35,6 +35,7 @@ main model.
 from __future__ import annotations
 
 import base64
+import io
 import logging
 import mimetypes
 import os
@@ -46,6 +47,12 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
+_SUPPORTED_NATIVE_IMAGE_MIMES = frozenset({
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+})
 
 
 # Image extensions used by extract_image_refs(). Kept tight on purpose — we
@@ -422,6 +429,20 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     }.get(suffix, "image/jpeg")
 
 
+def _is_decodable_native_image(raw: bytes, mime: str) -> bool:
+    """Return True only for image bytes the model API can decode natively."""
+    if mime not in _SUPPORTED_NATIVE_IMAGE_MIMES:
+        return False
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as img:
+            img.verify()
+        return True
+    except Exception:
+        return False
+
+
 def _file_to_data_url(path: Path) -> Optional[str]:
     """Encode a local image as a base64 data URL at its native size.
 
@@ -431,8 +452,9 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
     quality tax just because one other provider is stricter.
 
-    Returns None only if the file can't be read (missing, permission
-    denied, etc.); the caller reports those paths in ``skipped``.
+    Returns None when the file can't be read, is not a supported native
+    image MIME type, or fails decoder validation; the caller reports those
+    paths in ``skipped``.
     """
     try:
         raw = path.read_bytes()
@@ -440,6 +462,12 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
+    if not _is_decodable_native_image(raw, mime):
+        logger.warning(
+            "image_routing: skipping %s because it is not a supported decodable image",
+            path,
+        )
+        return None
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

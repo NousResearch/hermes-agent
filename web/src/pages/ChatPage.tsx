@@ -991,11 +991,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onmessage = (ev) => {
+      let text: string;
       if (typeof ev.data === "string") {
-        term.write(ev.data);
+        text = ev.data;
       } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
+        text = new TextDecoder().decode(new Uint8Array(ev.data as ArrayBuffer));
       }
+      term.write(
+        text.replace(/\n{3,}/g, "\n\n")
+            .replace(/\x1b\[\d*K/g, "")
+            .replace(/\x1b\[\d*X/g, "")
+      );
     };
 
     ws.onclose = (ev) => {

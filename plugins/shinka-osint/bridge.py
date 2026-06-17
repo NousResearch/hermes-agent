@@ -13,6 +13,8 @@ from typing import Any, Callable
 
 from hermes_constants import get_hermes_home
 
+from . import providers
+
 try:
     from hermes_cli.config import get_env_value, save_env_value
 except Exception:  # pragma: no cover - import safety during early plugin load
@@ -206,6 +208,7 @@ def _call_tool_isolated(tool_name: str, arguments: dict[str, Any]) -> Any:
         raise FileNotFoundError(f"Example not found: {example} (under {root / 'examples'})")
 
     env = os.environ.copy()
+    env.update(providers.build_env_overlay())
     env["SHINKA_OSINT_ROOT"] = str(root)
     env["MCP_QUIET_STDERR"] = "1"
     env["PYTHONPATH"] = os.pathsep.join([str(example_dir), str(root)])

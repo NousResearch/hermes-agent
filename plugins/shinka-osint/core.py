@@ -10,7 +10,7 @@ from typing import Any
 
 from hermes_constants import get_hermes_home
 
-from . import bridge
+from . import bridge, providers
 
 DOMAIN_ALIASES: dict[str, tuple[str, ...]] = {
     "national_security": ("国家安全", "経済安全", "サプライチェーン", "national_security"),
@@ -105,6 +105,13 @@ BRIEFING_SCHEMA = {
             "save_report": {
                 "type": "boolean",
                 "description": "Save JSON briefing under ~/.hermes/shinka-osint/briefings/.",
+            },
+            "llm_summary": {
+                "type": "boolean",
+                "description": (
+                    "Add Japanese executive summary via Hermes LLM "
+                    "(openai-codex / NVIDIA / Nous / xAI — no google-generativeai)."
+                ),
             },
         },
     },
@@ -241,6 +248,7 @@ def _match_scenarios(
 
 def status() -> dict[str, Any]:
     info = bridge.root_status()
+    info["llm"] = providers.provider_status()
     info["available"] = bridge.check_available()
     if info["available"]:
         try:
@@ -298,6 +306,7 @@ def briefing(
     example: str,
     source_mode: str = "mock",
     save_report: bool = False,
+    llm_summary: bool = False,
 ) -> dict[str, Any]:
     scenarios = _scenario_records(example)
     selected = _match_scenarios(
@@ -346,7 +355,14 @@ def briefing(
         "scenario_count": len(runs),
         "average_score": round(total_score / len(runs), 4) if runs else 0.0,
         "runs": runs,
+        "llm": providers.provider_status(),
     }
+
+    if llm_summary:
+        payload["executive_summary"] = providers.synthesize_executive_summary(
+            topic=topic or domain or "安全保障",
+            briefing_payload=payload,
+        )
 
     if save_report:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -413,6 +429,7 @@ def handle_briefing(args: dict[str, Any], **_: Any) -> str:
             example=_example_name(args),
             source_mode=_source_mode(args),
             save_report=bool(args.get("save_report")),
+            llm_summary=bool(args.get("llm_summary")),
         )
     )
 

@@ -42,6 +42,11 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     briefing.add_argument("--example", default=None)
     briefing.add_argument("--source-mode", choices=("mock", "real"), default="mock")
     briefing.add_argument("--save", action="store_true")
+    briefing.add_argument(
+        "--llm-summary",
+        action="store_true",
+        help="Add Japanese executive summary via Hermes LLM (no google-generativeai)",
+    )
 
     verify = subs.add_parser("verify", help="Verify corpus and audit-chain integrity")
     verify.add_argument("--example", default=None)
@@ -129,6 +134,7 @@ def shinka_osint_command(args: argparse.Namespace) -> int:
                 example=_example_name(args.example),
                 source_mode=args.source_mode,
                 save_report=bool(args.save),
+                llm_summary=bool(getattr(args, "llm_summary", False)),
             )
         )
     if command == "setup-stack":

@@ -50,6 +50,11 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         default="auto",
         help="WM data: auto=sidecar/key else Free web (default)",
     )
+    fusion.add_argument(
+        "--llm-summary",
+        action="store_true",
+        help="Japanese executive summary via Hermes LLM (no google-generativeai)",
+    )
 
     setup = subs.add_parser(
         "setup-stack",
@@ -122,6 +127,7 @@ def worldmonitor_osint_command(args: argparse.Namespace) -> int:
                 source_mode=args.source_mode,
                 save_report=bool(args.save),
                 wm_tier=args.wm_tier,
+                llm_summary=bool(getattr(args, "llm_summary", False)),
             )
         )
     if command == "setup-stack":

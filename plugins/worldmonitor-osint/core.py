@@ -139,6 +139,13 @@ FUSION_SCHEMA = {
                 "enum": ["auto", "free", "pro"],
                 "description": "World Monitor data tier: auto (sidecar/key else Free web), free, pro.",
             },
+            "llm_summary": {
+                "type": "boolean",
+                "description": (
+                    "Add Shinka executive summary via Hermes LLM "
+                    "(GPT Auth / NVIDIA / Nous / xAI — not google-generativeai)."
+                ),
+            },
         },
     },
 }
@@ -180,7 +187,7 @@ def _load_shinka_core():
       pkg_mod.__path__ = [str(shinka_dir)]  # type: ignore[attr-defined]
       sys.modules[pkg] = pkg_mod
 
-  for sub in ("bridge", "core"):
+  for sub in ("providers", "bridge", "core"):
       full = f"{pkg}.{sub}"
       if full in sys.modules:
           continue
@@ -336,9 +343,11 @@ def fusion_report(
     source_mode: str = "real",
     save_report: bool = False,
     wm_tier: str = "auto",
+    llm_summary: bool = False,
 ) -> dict[str, Any]:
     wm = snapshot(country_code=country_code, tier_mode=wm_tier)
     shinka_block: dict[str, Any] = {"success": False}
+    shinka_llm: dict[str, Any] = {}
     try:
         shinka = _load_shinka_core()
         example = shinka.bridge.resolve_default_example()
@@ -349,7 +358,10 @@ def fusion_report(
             example=example,
             source_mode=source_mode,
             save_report=False,
+            llm_summary=llm_summary,
         )
+        if hasattr(shinka, "providers"):
+            shinka_llm = shinka.providers.provider_status()
     except Exception as exc:
         shinka_block = {"success": False, "error": str(exc)}
 
@@ -362,6 +374,7 @@ def fusion_report(
         "source_mode": source_mode,
         "worldmonitor": wm,
         "shinka_milspec": shinka_block,
+        "shinka_llm": shinka_llm,
         "primary_sources": {
             "egov_law_mcp": {
                 "configured_hint": "Use MCP server `egov-law` when installed via `hermes mcp install egov-law`.",
@@ -375,7 +388,8 @@ def fusion_report(
         },
         "methodology": (
             "Fusion combines World Monitor real-time risk/news (koala73/worldmonitor) with "
-            "ShinkaEvolve-OSINT MILSPEC scoring and evolution-style scenario evaluation."
+            "ShinkaEvolve-OSINT MILSPEC scoring (rule-based, no google-generativeai required). "
+            "Optional LLM summary uses Hermes auth: openai-codex, NVIDIA_API_KEY, nous, xai-oauth."
         ),
     }
 
@@ -435,6 +449,7 @@ def handle_fusion_report(args: dict[str, Any], **_: Any) -> str:
             source_mode=args.get("source_mode") or "real",
             save_report=bool(args.get("save_report")),
             wm_tier=args.get("wm_tier") or "auto",
+            llm_summary=bool(args.get("llm_summary")),
         )
     )
 

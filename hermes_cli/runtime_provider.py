@@ -151,6 +151,16 @@ def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> 
     return configured_mode or detected_mode or "chat_completions"
 
 
+def _expand_env_secret(value: Any) -> str:
+    """Expand env placeholders in configured secrets, rejecting unresolved $VAR."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    expanded = os.path.expandvars(raw).strip()
+    if expanded == raw and expanded.startswith("$"):
+        return ""
+    return expanded
+
 def _host_derived_api_key(base_url: str) -> str:
     """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
 
@@ -562,6 +572,8 @@ def _try_resolve_from_custom_pool(
         if entry is None:
             return None
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+        if isinstance(pool_api_key, str):
+            pool_api_key = _expand_env_secret(pool_api_key)
         if not pool_api_key:
             return None
         return {
@@ -645,7 +657,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
+                resolved_api_key = _expand_env_secret(entry.get("api_key", ""))
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
@@ -726,7 +738,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
+            "api_key": _expand_env_secret(entry.get("api_key", "")),
         }
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:
@@ -892,6 +904,7 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
@@ -960,7 +973,7 @@ def _resolve_named_custom_runtime(
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
+        model_name = target_model or custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
         if isinstance(custom_provider.get("max_output_tokens"), int):
@@ -977,8 +990,8 @@ def _resolve_named_custom_runtime(
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
-        _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
+        _expand_env_secret(custom_provider.get("api_key", "")),
+        os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
         (_getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
@@ -1000,8 +1013,11 @@ def _resolve_named_custom_runtime(
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
-    if custom_provider.get("model"):
-        result["model"] = custom_provider["model"]
+    # When target_model is provided (explicit override from delegate_task),
+    # use it instead of the provider's default model (GH #17478).
+    model_override = target_model or custom_provider.get("model")
+    if model_override:
+        result["model"] = model_override
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
     request_overrides = _custom_provider_request_overrides(custom_provider)
@@ -1577,6 +1593,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider

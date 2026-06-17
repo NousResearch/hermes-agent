@@ -76,6 +76,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "model_override": t.model_override,
+        "reasoning_effort": t.reasoning_effort,
         "max_retries": t.max_retries,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
@@ -360,6 +362,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument("--model", default=None,
+                          help="Override the model for this task. When set, "
+                               "the dispatcher passes -m <model> to the "
+                               "worker instead of the profile's default model.")
+    p_create.add_argument("--reasoning-effort", default=None,
+                          dest="reasoning_effort",
+                          help="Override the model's reasoning budget "
+                               "(e.g. 'low', 'medium', 'high'). The "
+                               "dispatcher sets HERMES_REASONING_EFFORT "
+                               "so the worker can honour it.")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1346,6 +1358,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_retries=max_retries,
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            model_override=getattr(args, "model", None) or None,
+            reasoning_effort=getattr(args, "reasoning_effort", None) or None,
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -1519,6 +1533,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
         print(f"  model:     {task.model_override}")
+    if task.reasoning_effort:
+        print(f"  reasoning: {task.reasoning_effort}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see

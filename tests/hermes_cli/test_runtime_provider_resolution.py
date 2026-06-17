@@ -2000,6 +2000,37 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
 
 
+def test_named_custom_runtime_target_model_overrides_pool_default(monkeypatch):
+    """Explicit target_model must win even when credential pool handles credentials."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "default-flash",
+        },
+    )
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-server",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="my-server",
+        target_model="explicit-pro",
+    )
+
+    assert resolved["model"] == "explicit-pro"
+    assert resolved["api_key"] == "pool-key"
+
 def test_named_custom_runtime_propagates_extra_body_pool_path(monkeypatch):
     """Custom provider extra_body should survive credential-pool resolution."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
@@ -2029,6 +2060,32 @@ def test_named_custom_runtime_propagates_extra_body_pool_path(monkeypatch):
         "extra_body": {"enable_thinking": True}
     }
 
+
+def test_custom_pool_ignores_unresolved_env_placeholder(monkeypatch):
+    """A literal $VAR in a custom pool is not a usable API key."""
+    class _Entry:
+        runtime_api_key = "$MISSING_DEEPSEEK_API_KEY"
+        access_token = "$MISSING_DEEPSEEK_API_KEY"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.delenv("MISSING_DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "get_custom_provider_pool_key", lambda *a, **k: "custom:my-server")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+
+    resolved = rp._try_resolve_from_custom_pool(
+        "http://localhost:8000/v1",
+        "custom",
+        "chat_completions",
+        provider_name="my-server",
+    )
+
+    assert resolved is None
 
 def test_named_custom_runtime_no_model_when_absent(monkeypatch):
     """When custom_providers entry has no model field, runtime should not either."""

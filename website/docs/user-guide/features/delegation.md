@@ -129,9 +129,79 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
-## Model Override
+## Per-Task Model Selection
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+You can route delegated work to different models at call time. This is useful when a batch mixes simple lookup work with harder reasoning, or when you want independent model perspectives in parallel.
+
+### Single Task
+
+```python
+delegate_task(
+    goal="Summarize the latest failing test output",
+    model="haiku",
+)
+
+delegate_task(
+    goal="Review the authentication refactor",
+    model="sonnet",
+    provider="anthropic",
+)
+```
+
+The `model` field uses the same syntax as `/model`, so inline provider selection is also supported:
+
+```python
+delegate_task(
+    goal="Check OpenRouter availability",
+    model="llama-3.3-70b:free --provider openrouter",
+)
+```
+
+For JSON tool calls, prefer the structured `provider` field:
+
+```python
+delegate_task(
+    goal="Run a quick implementation check",
+    model="qwen3.6-plus",
+    provider="opencode-go",
+)
+```
+
+Do not use `provider:model` colon-prefix syntax. Colons remain valid inside model IDs or provider-specific variant suffixes such as `:free`.
+
+### Batch With Mixed Models
+
+Each task in a batch can choose its own model/provider:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "List files touched by this change",
+        "model": "haiku",
+    },
+    {
+        "goal": "Review the concurrency design",
+        "model": "sonnet",
+        "provider": "anthropic",
+    },
+    {
+        "goal": "Give an independent implementation critique",
+        "model": "qwen3.6-plus",
+        "provider": "opencode-go",
+    },
+])
+```
+
+Resolution precedence is:
+
+1. Per-task `model` / `provider`
+2. Top-level `model` / `provider`
+3. `delegation.model` / `delegation.provider` in `config.yaml`
+4. Parent agent model/provider
+
+### Configuration Default
+
+You can still configure a default model for all subagents via `config.yaml`:
 
 ```yaml
 # In ~/.hermes/config.yaml

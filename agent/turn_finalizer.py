@@ -152,6 +152,7 @@ def finalize_turn(
             api_call_count < agent.max_iterations
             or normal_text_response
         )
+        and not str(_turn_exit_reason).startswith("budget_preemptive_summary")
     )
 
     # Post-loop cleanup must never lose the response.  Trajectory save,

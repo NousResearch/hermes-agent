@@ -155,6 +155,18 @@ class GatewaySlashCommandsMixin:
             "session_key": session_key,
         })
 
+        # Reset group chat name to standby
+        if source.chat_type not in ("dm", "direct", "private", ""):
+            _adapter = self.adapters.get(source.platform)
+            if _adapter and hasattr(_adapter, "update_chat_name"):
+                try:
+                    import asyncio as _asyncio
+                    _asyncio.ensure_future(
+                        _adapter.update_chat_name(source.chat_id, "🤖|待命")
+                    )
+                except Exception:
+                    pass
+
         # Resolve session config info to surface to the user
         try:
             session_info = self._format_session_info()

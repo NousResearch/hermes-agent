@@ -435,6 +435,18 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
 
+    # Group chat: instruct agent to output <group-name> tag for chat title
+    if context.source.chat_type in ("group", "channel"):
+        lines.append("")
+        lines.append(
+            "**Group name:** When replying in this group chat, include a "
+            "`<group-name>` tag in your FIRST response to summarize the task "
+            "in ≤5 Chinese characters (or short English). Example: "
+            "`<group-name>修复群聊功能</group-name>`. "
+            "Only include this tag once per conversation, in the first reply. "
+            "The tag will be stripped before display."
+        )
+
     return "\n".join(lines)
 
 

@@ -5762,6 +5762,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                         except Exception:
                             pass
+                        # Reset group chat name to standby on session expiry
+                        # Key format: "agent:main:feishu:group:oc_xxx:ou_xxx"
+                        _key_parts = key.split(":")
+                        if len(_key_parts) >= 5 and _key_parts[3] in ("group", "channel"):
+                            try:
+                                _plat = Platform(_key_parts[2])
+                                _exp_adapter = self.adapters.get(_plat)
+                                if _exp_adapter and hasattr(_exp_adapter, "update_chat_name"):
+                                    asyncio.ensure_future(
+                                        _exp_adapter.update_chat_name(_key_parts[4], "\U0001f916|待命")
+                                    )
+                            except Exception:
+                                pass
                         # Shut down memory provider and close tool resources
                         # on the cached agent.  Idle agents live in
                         # _agent_cache (not _running_agents), so look there.
@@ -9100,6 +9113,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+
+            # Extract <group-name> tag from agent output for group chats
+            if response and source.chat_type not in ("p2p", "dm", ""):
+                try:
+                    from gateway.platforms.group_name import extract_group_name
+                    _clean_text, _group_name = extract_group_name(response)
+                    if _group_name or _clean_text != response:
+                        response = _clean_text
+                    if _group_name:
+                        _fc_adapter = self.adapters.get(source.platform)
+                        if _fc_adapter and hasattr(_fc_adapter, "update_chat_name"):
+                            if not hasattr(self, "_group_name_limiter"):
+                                from gateway.platforms.group_name import GroupNameRateLimiter
+                                self._group_name_limiter = GroupNameRateLimiter()
+                            if self._group_name_limiter.should_update(source.chat_id):
+                                self._group_name_limiter.record_update(source.chat_id)
+                                asyncio.ensure_future(
+                                    _fc_adapter.update_chat_name(source.chat_id, _group_name)
+                                )
+                except Exception:
+                    pass
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().

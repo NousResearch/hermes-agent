@@ -2465,6 +2465,32 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
 
+    async def update_chat_name(self, chat_id: str, name: str) -> bool:
+        """Update a group chat's display name. Non-fatal — failures are logged but never block message delivery."""
+        if not self._client or not chat_id or not name:
+            return False
+        name = name[:20]
+        try:
+            from lark_oapi.api.im.v1 import UpdateChatRequest, UpdateChatRequestBody
+            request = (
+                UpdateChatRequest.builder()
+                .chat_id(chat_id)
+                .request_body(UpdateChatRequestBody.builder().name(name).build())
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.chat.update, request)
+            success = getattr(response, "success", lambda: False)()
+            if success:
+                logger.info("[Feishu] Group name updated: chat=%s name=%r", chat_id, name)
+            else:
+                _code = getattr(response, "code", "?")
+                _msg = getattr(response, "msg", "?")
+                logger.warning("[Feishu] Group name update failed: chat=%s code=%s msg=%s", chat_id, _code, _msg)
+            return success
+        except Exception as e:
+            logger.warning("[Feishu] Group name update error: chat=%s error=%s", chat_id, e)
+            return False
+
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
         return content.strip()
@@ -2623,7 +2649,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
         reason = self._admit(sender, message)
         if reason is not None:
-            logger.debug("[Feishu] dropping inbound event: %s", reason)
+            _sid = getattr(sender, "sender_id", None)
+            logger.info(
+                "[Feishu] dropping inbound event: reason=%s chat_type=%s chat_id=%s sender_open_id=%s sender_user_id=%s",
+                reason,
+                getattr(message, "chat_type", "?"),
+                getattr(message, "chat_id", "?"),
+                getattr(_sid, "open_id", "?"),
+                getattr(_sid, "user_id", "?"),
+            )
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
@@ -3331,10 +3365,13 @@ class FeishuAdapter(BasePlatformAdapter):
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 
-        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
+        # Pure "@Bot" with no body in a group → treat as a ping rather than dropping.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
+            if chat_type != "p2p" and any(m.is_self for m in mentions):
+                text = "（被 @，请响应）"
+            else:
+                logger.info("[Feishu] Ignoring empty text message id=%s chat_type=%s chat_id=%s", message_id, chat_type, getattr(message, "chat_id", "?"))
+                return
 
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)

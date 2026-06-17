@@ -34,10 +34,14 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ~/.hermes:/opt/data
+      - /home/admin/.hermes:/opt/data
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_TIMEZONE=Asia/Shanghai
+      - HERMES_CONTAINER_ROLE=gateway
+    env_file:
+      - ${HERMES_HOME:-/home/admin/.hermes}/.env
       # To expose the OpenAI-compatible API server beyond localhost,
       # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
       # - API_SERVER_HOST=0.0.0.0
@@ -68,9 +72,14 @@ services:
     depends_on:
       - gateway
     volumes:
-      - ~/.hermes:/opt/data
+      - /home/admin/.hermes:/opt/data
+      - /home/admin/.hermes/hermes-agent/hermes_cli/container_boot.py:/opt/hermes/hermes_cli/container_boot.py:ro
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_TIMEZONE=Asia/Shanghai
+      - HERMES_CONTAINER_ROLE=dashboard
+    env_file:
+      - ${HERMES_HOME:-/home/admin/.hermes}/.env
     # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
     command: ["dashboard", "--host", "127.0.0.1", "--no-open"]

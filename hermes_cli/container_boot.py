@@ -436,6 +436,24 @@ def main() -> int:
     # skip reconciliation in the dashboard container. No operator flag:
     # the role is a fact about the container's command, and a flag can be
     # forgotten in a hand-written manifest, reintroducing the storm.
+    # HERMES_CONTAINER_ROLE env var: explicit operator role override.
+    #
+    # The argv-based check below (c6b0eb4) reads /proc/1/cmdline, which
+    # under s6-overlay v3 is `s6-svscan` rather than the wrapper script.
+    # It then silently fails to detect dashboard containers and the
+    # reconcile runs anyway, producing a second `hermes gateway run`
+    # that races the real gateway on the shared s6-log lock and the
+    # API server bind. The env var short-circuit runs first; the argv
+    # check stays as a fallback for bare `docker run` invocations that
+    # never set the env.
+    _role = os.environ.get("HERMES_CONTAINER_ROLE", "").strip().lower()
+    if _role == "dashboard":
+        print(
+            "reconcile: skipping (HERMES_CONTAINER_ROLE=dashboard -- "
+            "this container does not need per-profile gateways)"
+        )
+        return 0
+
     if _is_dashboard_container(_read_container_argv()):
         print(
             "reconcile: skipping (dashboard container — does not need "

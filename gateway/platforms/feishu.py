@@ -163,6 +163,185 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Interactive card support: convert markdown tables → Feishu card table
+# component, with surrounding text rendered as markdown div elements.
+# ---------------------------------------------------------------------------
+
+# Header separator: |---|---| or |:---|:---:|---:|
+_MD_TABLE_SEPARATOR_RE = re.compile(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_MD_TABLE_ROW_RE = re.compile(r"^\|.*\|$")
+
+
+@dataclass(frozen=True)
+class _ParsedMarkdownSegment:
+    """A slice of markdown content: either plain text or a parsed table."""
+    kind: str  # "text" or "table"
+    text: str = ""
+    headers: tuple = ()
+    rows: tuple = ()
+
+
+def _split_markdown_table_row(line: str) -> List[str]:
+    """Split a markdown table row like '| a | b | c |' into ['a','b','c'].
+
+    Strips surrounding pipes and whitespace; tolerates leading/trailing pipes.
+    """
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _parse_markdown_table(lines: List[str], start: int) -> Optional[Tuple[List[str], List[List[str]], int]]:
+    """Parse a markdown table starting at index `start` in `lines`.
+
+    Returns (headers, rows, end_index_exclusive) or None if `lines[start]`
+    does not look like a valid table header line. Caller must guarantee
+    that `lines[start+1]` is a separator line (|---|).
+    """
+    if start + 1 >= len(lines):
+        return None
+    header_line = lines[start]
+    sep_line = lines[start + 1]
+    if not _MD_TABLE_ROW_RE.match(header_line):
+        return None
+    if not _MD_TABLE_SEPARATOR_RE.match(sep_line.strip()):
+        return None
+    headers = _split_markdown_table_row(header_line)
+    rows: List[List[str]] = []
+    end = start + 2
+    while end < len(lines) and _MD_TABLE_ROW_RE.match(lines[end]):
+        rows.append(_split_markdown_table_row(lines[end]))
+        end += 1
+    return headers, rows, end
+
+
+def _split_content_into_segments(content: str) -> List[_ParsedMarkdownSegment]:
+    """Walk through content, splitting on markdown tables vs surrounding text.
+
+    Each segment is either text (with the table stripped out) or a table
+    (with headers + rows). Tables are detected when a `| ... |` line is
+    followed by a `|---|` separator line.
+    """
+    lines = content.split("\n")
+    segments: List[_ParsedMarkdownSegment] = []
+    text_chunks: List[str] = []
+    i = 0
+    while i < len(lines):
+        if (
+            _MD_TABLE_ROW_RE.match(lines[i])
+            and i + 1 < len(lines)
+            and _MD_TABLE_SEPARATOR_RE.match(lines[i + 1].strip())
+        ):
+            # Flush accumulated text
+            if text_chunks:
+                segments.append(_ParsedMarkdownSegment(
+                    kind="text", text="\n".join(text_chunks).strip("\n")
+                ))
+                text_chunks = []
+            parsed = _parse_markdown_table(lines, i)
+            if parsed is None:
+                text_chunks.append(lines[i])
+                i += 1
+                continue
+            headers, rows, end = parsed
+            segments.append(_ParsedMarkdownSegment(
+                kind="table", headers=tuple(headers), rows=tuple(tuple(r) for r in rows)
+            ))
+            i = end
+            continue
+        text_chunks.append(lines[i])
+        i += 1
+    if text_chunks:
+        remaining = "\n".join(text_chunks).strip("\n")
+        if remaining:
+            segments.append(_ParsedMarkdownSegment(kind="text", text=remaining))
+    return segments
+
+
+def _markdown_to_card_paragraph_elements(md_text: str) -> List[Dict[str, Any]]:
+    """Convert a markdown text block into a list of card div/markdown elements.
+
+    Splits on blank-line boundaries. Each non-empty paragraph becomes one
+    ``{"tag": "div", "text": {"tag": "lark_md", "content": md}}`` element.
+    """
+    elements: List[Dict[str, Any]] = []
+    if not md_text.strip():
+        return elements
+    # Split into paragraphs on blank lines
+    for para in re.split(r"\n{2,}", md_text.strip()):
+        if not para.strip():
+            continue
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": para},
+        })
+    return elements
+
+
+def _build_card_table_element(headers: tuple, rows: tuple) -> Dict[str, Any]:
+    """Build a Feishu card 'table' component element from headers + rows.
+
+    Uses the JSON 2.0 schema (which the openAPI now requires — JSON 1.0 with
+    `rows[].cells` is rejected with "table rows name is invalid; invalid
+    name:cells" / ErrCode 200915). In 2.0, each row is a flat object keyed
+    by `column.name`:
+        {"tag": "table", "columns": [...], "rows": [{"c0":"...", "c1":"..."}]}
+    """
+    columns = [
+        {
+            "name": f"c{i}",
+            "display_name": str(h) if h else f"列{i+1}",
+            "data_type": "text",
+            "width": "auto",
+        }
+        for i, h in enumerate(headers)
+    ]
+    card_rows = []
+    for row in rows:
+        # Pad row to header length so cell count matches column count
+        padded = list(row) + [""] * (len(headers) - len(row))
+        # JSON 2.0: flat object, key = column.name, value = cell string
+        card_rows.append({f"c{i}": str(c) for i, c in enumerate(padded)})
+    return {
+        "tag": "table",
+        "page_size": max(len(card_rows), 1),
+        "row_height": "low",
+        "columns": columns,
+        "rows": card_rows,
+    }
+
+
+def _build_table_card_payload(content: str) -> Optional[str]:
+    """Build a full Feishu interactive card JSON string from markdown content.
+
+    Returns None if content has no markdown tables (caller should fall back
+    to other message types). On success returns the JSON string suitable
+    for msg_type='interactive'.
+    """
+    segments = _split_content_into_segments(content)
+    if not any(seg.kind == "table" for seg in segments):
+        return None
+    elements: List[Dict[str, Any]] = []
+    for seg in segments:
+        if seg.kind == "text":
+            elements.extend(_markdown_to_card_paragraph_elements(seg.text))
+        else:
+            elements.append(_build_card_table_element(seg.headers, seg.rows))
+    # JSON 2.0 schema: top-level requires "schema":"2.0" and elements live
+    # under "body.elements". JSON 1.0 layout (top-level config+elements) is
+    # still accepted by the openAPI but tables in 1.0 are rejected.
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "enable_forward": True},
+        "body": {"elements": elements},
+    }
+    return json.dumps(card, ensure_ascii=False)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -4374,12 +4553,14 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Markdown tables: emit as a Feishu interactive card so the table
+        # renders natively in the client (post 'md' elements show tables
+        # as raw text, which is unreadable). Surrounding text becomes
+        # markdown div elements inside the same card.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            card_payload = _build_table_card_payload(content)
+            if card_payload is not None:
+                return "interactive", card_payload
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

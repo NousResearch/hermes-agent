@@ -210,43 +210,36 @@ def build_models_payload(
     _opencode_sibling_slugs = frozenset({"opencode-zen", "opencode-go"})
 
     if _is_aggregator is not None:
+        user_models: set[str] = set()
         for row in rows:
-            slug = str(row.get("slug", "") or "")
-            if not slug or not _is_aggregator(slug):
-                continue
-            original = row.get("models") or []
-            if not original:
-                continue
-            # Only dedupe against *other* user-defined providers. Canonical
-            # providers configured via providers: (e.g. opencode-zen) are
-            # marked is_user_defined but must not compete with themselves —
-            # that erased every model and hid the row from GUI pickers (#45954).
-            slug_lower = slug.lower()
-            # OpenCode Zen/Go are curated subscriptions — never strip their
-            # catalogs when another provider (e.g. Ollama) serves the same ID.
-            if slug_lower in _opencode_sibling_slugs:
-                continue
-            competing_models: set[str] = set()
-            for other in rows:
-                if not other.get("is_user_defined"):
+            if row.get("is_user_defined"):
+                user_models.update(m.lower() for m in (row.get("models") or []))
+
+        if user_models:
+            for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_aggregator() reports True for every custom:*
+                # slug.  Without this guard the dedup strips a user-defined
+                # custom provider's entire model list (all of it lives in
+                # user_models), emptying its picker row.
+                if row.get("is_user_defined"):
                     continue
-                other_slug = str(other.get("slug", "") or "").lower()
-                if not other_slug or other_slug == slug_lower:
+                slug = str(row.get("slug", "") or "")
+                slug_lower = slug.lower()
+                if not slug or not _is_aggregator(slug):
                     continue
-                if (
-                    slug_lower in _opencode_sibling_slugs
-                    and other_slug in _opencode_sibling_slugs
-                ):
+                # OpenCode Zen/Go are curated subscriptions — never strip their
+                # catalogs when another provider (e.g. Ollama) serves the same ID.
+                if slug_lower in _opencode_sibling_slugs:
                     continue
-                competing_models.update(
-                    m.lower() for m in (other.get("models") or [])
-                )
-            if not competing_models:
-                continue
-            filtered = [m for m in original if m.lower() not in competing_models]
-            if len(filtered) < len(original):
-                row["models"] = filtered
-                row["total_models"] = len(filtered)
+                original = row.get("models") or []
+                if not original:
+                    continue
+                filtered = [m for m in original if m.lower() not in user_models]
+                if len(filtered) < len(original):
+                    row["models"] = filtered
+                    row["total_models"] = len(filtered)
 
     from hermes_cli.model_switch import _merge_user_provider_models_into_results
 

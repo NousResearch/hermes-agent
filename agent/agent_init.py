@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -195,6 +195,7 @@ def init_agent(
     status_callback: callable = None,
     notice_callback: callable = None,
     notice_clear_callback: callable = None,
+    event_callback: Optional[Callable[[str, dict], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
@@ -426,6 +427,7 @@ def init_agent(
     agent.status_callback = status_callback
     agent.notice_callback = notice_callback
     agent.notice_clear_callback = notice_clear_callback
+    agent.event_callback = event_callback
     agent.tool_gen_callback = tool_gen_callback
 
     
@@ -597,6 +599,7 @@ def init_agent(
     # (e.g. CLI voice mode adds a temporary prefix for the live call only).
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
 
     # Cache anthropic image-to-text fallbacks per image payload/URL so a
     # single tool loop does not repeatedly re-run auxiliary vision on the

@@ -111,6 +111,37 @@ class ArmBHarness:
         return m[-1] if m else None
 
     # ---- DB introspection ---------------------------------------------------
+    def _resolve_current_session(self, planted_session: str) -> str:
+        """Follow the lifecycle rollover chain from the planted session to the
+        session that actually owns the nodes now.
+
+        Live long sessions roll the session id on compaction-boundary rollover
+        (carry_over_new_session_context reassigns retained nodes to the new
+        session). So nodes for this conversation may live under a DIFFERENT
+        session id than the one we planted into. We resolve it by walking
+        lcm_lifecycle_state from old->new, then fall back to the most recent
+        session that has a depth>=1 node.
+        """
+        conn = sqlite3.connect(self.cfg.lcm_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            # Walk forward: find rows where last_finalized_session_id chains from
+            # our planted session toward the current session.
+            current = planted_session
+            for _ in range(50):  # bounded
+                row = conn.execute(
+                    "SELECT current_session_id FROM lcm_lifecycle_state "
+                    "WHERE last_finalized_session_id = ? "
+                    "ORDER BY rowid DESC LIMIT 1",
+                    (current,),
+                ).fetchone()
+                if not row or not row["current_session_id"]:
+                    break
+                current = row["current_session_id"]
+            return current
+        finally:
+            conn.close()
+
     def _nodes_for_session(self, session_id: str) -> list[dict]:
         conn = sqlite3.connect(self.cfg.lcm_db)
         conn.row_factory = sqlite3.Row
@@ -121,6 +152,22 @@ class ArmBHarness:
                 (session_id,),
             ).fetchall()
             return [dict(zip(cols, r)) for r in rows]
+        finally:
+            conn.close()
+
+    def _find_node_with_sentinel(self, sentinel: str) -> dict | None:
+        """Last-resort: locate ANY depth>=1 node whose summary carries the
+        sentinel, regardless of session (proves condensation preserved it)."""
+        conn = sqlite3.connect(self.cfg.lcm_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(summary_nodes)")]
+            rows = conn.execute(
+                "SELECT * FROM summary_nodes WHERE depth >= 1 AND summary LIKE ? "
+                "ORDER BY node_id DESC LIMIT 1",
+                (f"%{sentinel}%",),
+            ).fetchall()
+            return dict(zip(cols, rows[0])) if rows else None
         finally:
             conn.close()
 
@@ -174,8 +221,14 @@ class ArmBHarness:
                 f"Context notes: {filler}",
             )
 
-        # Inspect the DAG.
-        nodes = self._nodes_for_session(session_id)
+        # Inspect the DAG. The session id rolls over on compaction, so resolve
+        # the session that actually owns the nodes now.
+        current_session = self._resolve_current_session(session_id)
+        nodes = self._nodes_for_session(current_session)
+        if not any((n.get("depth") or 0) >= 1 for n in nodes):
+            # planted session may itself still own them, or chain resolution
+            # missed a hop — also check the planted session directly.
+            nodes = nodes + self._nodes_for_session(session_id)
         leaves = sum(1 for n in nodes if n.get("depth") == 0)
         condensed_nodes = [n for n in nodes if (n.get("depth") or 0) >= 1
                            and str(n.get("source_type")) == "nodes"]
@@ -188,14 +241,26 @@ class ArmBHarness:
                 depth1_id = n["node_id"]
                 sentinel_in_node = True
                 break
-        # Fall back: any condensation node, even if it didn't carry the fact.
+        # Authoritative fallback: find ANY depth>=1 node carrying this sentinel,
+        # regardless of session bookkeeping (proves condensation preserved it).
+        if depth1_id is None:
+            hit = self._find_node_with_sentinel(sentinel)
+            if hit is not None:
+                depth1_id = hit["node_id"]
+                sentinel_in_node = True
+                current_session = hit["session_id"]
+                if condensed == 0:
+                    condensed = 1
+        # Last fall back: any condensation node, even without the fact.
         if depth1_id is None and condensed_nodes:
             depth1_id = condensed_nodes[0]["node_id"]
 
         node_answer = ""
         if depth1_id is not None:
             try:
-                node_answer = self._node_served_recovery(session_id, depth1_id, sentinel)
+                node_answer = self._node_served_recovery(
+                    current_session, depth1_id, sentinel
+                )
             except Exception as exc:  # noqa: BLE001
                 node_answer = f"[recovery error: {exc}]"
 

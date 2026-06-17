@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -11,8 +12,12 @@ from pathlib import Path
 HERMES_HOME = Path.home() / ".hermes"
 JOBS_PATH = HERMES_HOME / "cron" / "jobs.json"
 CONFIG_PATH = HERMES_HOME / "config.yaml"
-STALE_WORKDIR = "C:/Users/downl/Desktop/clawdbot-main3/hermes-agent-upstream"
-CURRENT_REPO = r"C:\Users\downl\Documents\New project\hermes-agent"
+# Override via env when running a local migration (avoids hardcoded Desktop paths in CI).
+STALE_WORKDIR = os.environ.get("HERMES_CRON_STALE_WORKDIR", "")
+CURRENT_REPO = os.environ.get(
+    "HERMES_CRON_CURRENT_REPO",
+    str(Path(__file__).resolve().parents[1]),
+)
 
 PINNED_PROVIDER = "openai-codex"
 PINNED_MODELS = {"gpt-5.5", "gpt-5.4", "gpt-5.3-codex"}
@@ -48,7 +53,7 @@ def main() -> int:
             print(f"  cleared pin: {job.get('id')} {job.get('name', '')[:50]}")
 
         prompt = job.get("prompt")
-        if isinstance(prompt, str) and STALE_WORKDIR in prompt:
+        if STALE_WORKDIR and isinstance(prompt, str) and STALE_WORKDIR in prompt:
             job["prompt"] = prompt.replace(STALE_WORKDIR, CURRENT_REPO)
             path_fixed += 1
             print(f"  fixed path: {job.get('id')}")

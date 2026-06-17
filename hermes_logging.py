@@ -467,7 +467,12 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except (PermissionError, OSError):
+            # Windows: gateway/another process may hold agent.log open (WinError 32).
+            # Skip rollover; keep writing to the current stream instead of crashing CLI startup.
+            return
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.

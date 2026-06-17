@@ -205,6 +205,37 @@ class TestPayloadSanitization:
         }
 
 
+class TestTraceScopeKey:
+    def _fresh_plugin(self):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    def test_trace_key_scopes_by_turn_id_when_available(self):
+        plugin = self._fresh_plugin()
+
+        key_a = plugin._trace_key("task-1", "session-1", turn_id="turn-a")
+        key_b = plugin._trace_key("task-1", "session-1", turn_id="turn-b")
+
+        assert key_a != key_b
+        assert "turn:turn-a" in key_a
+        assert "turn:turn-b" in key_b
+
+    def test_trace_key_scopes_by_api_request_id_when_turn_missing(self):
+        plugin = self._fresh_plugin()
+
+        key_a = plugin._trace_key("task-1", "session-1", api_request_id="req-a")
+        key_b = plugin._trace_key("task-1", "session-1", api_request_id="req-b")
+
+        assert key_a != key_b
+        assert "api:req-a" in key_a
+        assert "api:req-b" in key_b
+
+    def test_trace_key_keeps_legacy_shape_without_turn_or_api_id(self):
+        plugin = self._fresh_plugin()
+        assert plugin._trace_key("task-1", "session-1") == "task-1"
+
+
 # ---------------------------------------------------------------------------
 # Placeholder-credential guard (#23823).
 #

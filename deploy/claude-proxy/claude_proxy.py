@@ -20,6 +20,8 @@ import urllib.error
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
+import base64
+import uuid
 from pathlib import Path
 
 
@@ -97,6 +99,15 @@ TIER_MODEL_MAP = {
     "sonnet": os.environ.get("ANTHROPIC_MODEL_SONNET", "claude-sonnet-4-6"),
     "opus": os.environ.get("ANTHROPIC_MODEL_OPUS", "claude-opus-4-8"),
 }
+
+# DeepSeek API routing — take over for large text-only prompts (>threshold chars,
+# no images) where Claude Code's subprocess-based path crashes.  Direct HTTP call
+# to api.deepseek.com/v1, no internal turns, no subprocess — stable at 200K+ chars.
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions")
+# Prompts longer than this (chars) route to DeepSeek instead of Claude Code.
+# 0 disables routing — everything goes to Claude Code.
+DEEPSEEK_THRESHOLD = int(os.environ.get("CLAUDE_PROXY_DEEPSEEK_THRESHOLD", "20000"))
 
 # Cache config
 CACHE_TTL = int(os.environ.get("CLAUDE_CACHE_TTL", "86400"))  # seconds; 0 = disabled
@@ -1078,6 +1089,69 @@ def _make_backend(name: str):
     return ClaudeCliBackend()
 
 
+class DeepSeekApiBackend:
+    """Call DeepSeek API directly over HTTPS (stdlib urllib only) — no subprocess,
+    no internal turns, stable at 200K+ char documents.  Returns the claude -p
+    result shape so the rest of the pipeline is agnostic to the backend."""
+
+    name = "deepseek"
+
+    def complete(self, system: str, prompt: str, tier: str, tenant: str,
+                 images: list = None) -> dict:
+        if not DEEPSEEK_API_KEY:
+            return {"error": True, "message": "DEEPSEEK_API_KEY not set", "code": 500}
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        payload = {
+            "model": "deepseek-chat",
+            "messages": messages,
+            "stream": False,
+            "max_tokens": 8000,
+        }
+        try:
+            req = urllib.request.Request(
+                DEEPSEEK_API_URL,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8")[:500]
+            except Exception:
+                pass
+            print(f"[deepseek] HTTP {e.code}: {body}", flush=True)
+            return {"error": True, "message": f"deepseek api http {e.code}: {body}", "code": e.code}
+        except Exception as e:
+            print(f"[deepseek] EXCEPTION: {type(e).__name__}: {e}", flush=True)
+            return {"error": True, "message": f"deepseek api call failed: {e}"}
+
+        choice = data.get("choices", [{}])[0]
+        msg = choice.get("message", {})
+        content = msg.get("content", "")
+        usage = data.get("usage", {})
+        return {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": content,
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            },
+            "stop_reason": choice.get("finish_reason", "stop"),
+            "session_id": data.get("id", "deepseek"),
+        }
+
+
 # Selected once at import; DEFAULT "cli" keeps prod unchanged.
 BACKEND = _make_backend(BACKEND_NAME)
 
@@ -1109,6 +1183,31 @@ def call_claude(system_prompt: str, prompt: str, model: str = None,
 
     images = images or []
     no_cache = no_cache or bool(images)  # text-based cache key can't reflect images
+
+    # Route large text-only prompts to DeepSeek API — Claude Code subprocess
+    # crashes on prompts >~20K chars (tested: 100K=502, 219K=502).  DeepSeek
+    # API is a plain HTTP call — stable at 200K+ chars, 5-7s latency.
+    if (not images and DEEPSEEK_THRESHOLD > 0
+            and len(prompt) > DEEPSEEK_THRESHOLD and DEEPSEEK_API_KEY):
+        t_ds = time.time()
+        backend = DeepSeekApiBackend()
+        result = backend.complete(system_prompt, prompt, tier, tenant)
+        elapsed_ms = int((time.time() - t_ds) * 1000)
+        bad = _is_bad_result(result)
+        _log_claude_call({
+            "backend": "deepseek",
+            "tenant": tenant,
+            "tier": tier,
+            "prompt_chars": len(prompt),
+            "system_chars": len(system_prompt or ""),
+            "has_text": bool(_result_text(result).strip()),
+            "text_len": len(_result_text(result)),
+            "is_error": bool(result.get("is_error") or result.get("error")),
+            "subtype": result.get("subtype"),
+            "decision": "empty_or_error" if bad else "deepseek_ok",
+            "elapsed_ms": elapsed_ms,
+        })
+        return result
 
     key = _cache_key(tenant, system_prompt, prompt, tier)
     meta = {
@@ -1164,6 +1263,43 @@ def call_claude(system_prompt: str, prompt: str, model: str = None,
                   f"tier={tier} — retrying", flush=True)
 
     bad = _is_bad_result(result)
+    # Last-resort: if Claude returned empty/error and DeepSeek API key is
+    # available, try DeepSeek for this request (even if it's below the
+    # DEEPSEEK_THRESHOLD).  This recovers from transient Claude outages
+    # without waiting for the Hermes-level fallback_providers cascade
+    # (which costs 3 extra retries and ~60s of user-visible lag).
+    # DeepSeek cannot handle images, so skip this for image-bearing
+    # prompts (they will fall through to the gateway's fallback_providers).
+    if bad and DEEPSEEK_API_KEY and not images:
+        print(f"[proxy] Claude failed after {attempts} attempt(s) — "
+              f"trying DeepSeek as last-resort (tier={tier}, prompt_len={len(prompt)})",
+              flush=True)
+        t_ds = time.time()
+        _claude_error = result.get("error") or result.get("message", "")
+        try:
+            ds_backend = DeepSeekApiBackend()
+            ds_result = ds_backend.complete(system_prompt, prompt, tier, tenant)
+            if not _is_bad_result(ds_result):
+                result = ds_result
+                bad = False
+                elapsed_ms = int((time.time() - t_ds) * 1000)
+                _log_claude_call({
+                    **meta,
+                    "backend": "deepseek_last_resort",
+                    "cache": "miss",
+                    "attempts": attempts,
+                    "has_text": bool(_result_text(result).strip()),
+                    "text_len": len(_result_text(result)),
+                    "decision": "deepseek_saved",
+                    "elapsed_ms": elapsed_ms,
+                    "original_error": _claude_error,
+                })
+                print(f"[proxy] DeepSeek last-resort SUCCESS in {elapsed_ms}ms", flush=True)
+            else:
+                print(f"[proxy] DeepSeek last-resort also failed", flush=True)
+        except Exception as e:
+            print(f"[proxy] DeepSeek last-resort exception: {e}", flush=True)
+
     if not bad:
         if not no_cache:
             cache_set(tenant, system_prompt, prompt, tier, result)
@@ -1312,6 +1448,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     "recent_bad_prompts": len(_breaker_bad),
                     "threshold": BREAKER_THRESHOLD,
                     "trips": _breaker_trips,
+                },
+                "deepseek": {
+                    "threshold_chars": DEEPSEEK_THRESHOLD,
+                    "key_set": bool(DEEPSEEK_API_KEY),
+                    "routing": "enabled" if (DEEPSEEK_API_KEY and DEEPSEEK_THRESHOLD > 0) else "disabled",
                 },
             }).encode())
         else:
@@ -1476,6 +1617,8 @@ def main():
     print(f"Starting Claude Code Proxy on port {PORT}...")
     print(f"Claude binary: {CLAUDE_BIN} (exists: {os.path.exists(CLAUDE_BIN)})")
     print(f"Backend: {BACKEND_NAME}")
+    ds_status = "enabled" if (DEEPSEEK_API_KEY and DEEPSEEK_THRESHOLD > 0) else "disabled"
+    print(f"DeepSeek routing: {ds_status} (threshold={DEEPSEEK_THRESHOLD} chars, key={'set' if DEEPSEEK_API_KEY else 'MISSING'})")
     print(f"HOME: {HOME}")
     print(f"Workdir: {WORKDIR}")
     print(f"Auth: allow_anon={ALLOW_ANON} keys_file={KEYS_FILE} "

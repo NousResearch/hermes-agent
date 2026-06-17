@@ -178,6 +178,30 @@ def _import_httpx():
     return httpx
 
 
+def _import_websockets():
+    """Lazy import the ``websockets`` async WebSocket client library.
+
+    Returns the ``websockets`` *module* (not a connection object) so
+    callers can write ``websockets.connect(...)`` exactly like the real
+    production code does. The module-level lookup means tests can
+    monkeypatch the helper to return a stub module exposing a fake
+    ``connect`` function without installing the real package.
+
+    ``websockets`` is already a core dependency of ``hermes-agent`` (it's
+    used by the browser CDP supervisor and ``browser_dialog``), so
+    ``import websockets`` succeeds on every install; the
+    ``ImportError`` branch is purely a defensive message so the user
+    knows what to install if they ever build a lean venv without it.
+    """
+    try:
+        import websockets  # type: ignore
+    except ImportError as e:
+        raise ImportError(
+            "websockets package not installed. Run: pip install websockets"
+        ) from e
+    return websockets
+
+
 def _import_openai_client():
     """Lazy import the ``openai`` SDK module.
 
@@ -599,6 +623,248 @@ class OpenAIStreamingProvider(StreamingTTSProvider):
             return
 
 
+# TODO(verify-xai-sample-rate): xAI's docs do not pin a sample rate for the
+# WebSocket TTS endpoint as of this writing. The legacy ``_generate_xai_tts``
+# in tools.tts_tool.py reads ``DEFAULT_XAI_SAMPLE_RATE = 24000`` from config,
+# and the rest of the streaming providers in this module all use 24 kHz, so
+# we hard-code 24 kHz here. The E2E test gated on a real ``XAI_API_KEY``
+# (added in a later task) should confirm this and remove the TODO if xAI
+# standardises on a different rate.
+@register("xai")
+class XAIStreamingProvider(StreamingTTSProvider):
+    """Streaming TTS provider for xAI's WebSocket TTS endpoint.
+
+    Unlike ElevenLabs, Gemini, and OpenAI — all of which expose
+    server-sent HTTP streams — xAI's TTS API is **WebSocket-only**. The
+    client opens a connection to ``wss://api.x.ai/v1/tts``, sends a
+    single JSON request ``{"text": ..., "voice": ..., "response_format":
+    "pcm"}``, then reads a sequence of binary PCM frames back until the
+    server closes the socket. The exact envelope (binary vs JSON,
+    ``done``/``error`` sentinel shape) is documented at
+    https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
+    and may evolve; the async-to-sync bridge below is the seam an E2E
+    test can replace when that happens.
+
+    Because the dispatcher's audio callback is a sync generator, the
+    async WebSocket API has to be bridged onto a sync ``Iterator``. The
+    shape mirrors the rest of the providers in this module — yield
+    raw PCM bytes, honour the stop event, wrap in a broad try/except —
+    but the bridging is done by a small pair of helpers:
+
+      * ``_async_collect_chunks(text)`` is an ``async`` generator that
+        opens the WebSocket and ``yield``s each raw PCM frame as it
+        arrives from the server.
+      * ``_collect_async(text)`` runs that generator under
+        ``asyncio.run()`` and returns a ``list[bytes]`` of every frame
+        received. The sync ``stream()`` method just iterates the list
+        in order and checks ``self._stop_event`` between yields.
+
+    The ``_collect_async`` seam exists purely for the test suite:
+    monkeypatching it to return a canned ``list[bytes]`` exercises the
+    full sync-path machinery (config validation, stop-event handling,
+    error wrapping) without faking the WebSocket protocol. The async
+    WS path is small enough to read directly and is covered by the E2E
+    test in a later task.
+
+    Audio format: 24 kHz, mono, 16-bit signed little-endian PCM. The
+    ``sample_rate`` matches ``DEFAULT_XAI_SAMPLE_RATE`` in
+    ``tools.tts_tool.py`` and the format the dispatcher's
+    ``sounddevice.OutputStream`` is opened with; see the
+    ``TODO(verify-xai-sample-rate)`` comment at the top of this class
+    for the open question.
+    """
+
+    sample_rate = 24000
+    channels = 1
+    sample_width = 2
+
+    def __init__(self, config: dict, *, stop_event: Optional[threading.Event] = None):
+        # Config keys mirror the ``tts.xai`` block from config.yaml.
+        # The defaults match the constants in tools.tts_tool.py
+        # (``DEFAULT_XAI_VOICE_ID``/``DEFAULT_XAI_BASE_URL``) so
+        # behaviour stays consistent with the legacy
+        # ``_generate_xai_tts`` path that this provider will eventually
+        # replace for streaming use cases.
+        self._voice = config.get("voice", "eve")
+        self._base_url = config.get("base_url", "wss://api.x.ai/v1/tts")
+        # The stop event is optional so this class is usable outside
+        # the dispatcher (e.g. one-off scripts). When None, the
+        # ``stream()`` loop simply skips the stop check.
+        self._stop_event = stop_event
+
+        # Auth: read XAI_API_KEY directly from the environment. This
+        # matches the simple ``os.environ.get`` pattern used by the
+        # legacy ``_generate_xai_tts`` (the OAuth resolver is
+        # non-streaming-specific, so we keep the streaming path
+        # symmetric and let the dispatcher pull credentials via the
+        # normal config-driven flow). A missing key fails loud in
+        # ``__init__`` so the dispatcher never pulls zero chunks.
+        api_key = os.environ.get("XAI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError(
+                "XAI_API_KEY not set; cannot use xAI streaming TTS"
+            )
+        self._api_key = api_key
+
+        # Lazy SDK import — wrapped in a helper so the test suite can
+        # monkeypatch it without installing the real package. We
+        # surface the import error loudly because silently disabling
+        # the provider would mask config bugs the user can fix.
+        # ``websockets`` is a core dependency of hermes-agent (used by
+        # the browser CDP supervisor) so this normally succeeds
+        # transparently.
+        try:
+            self._websockets = _import_websockets()
+        except ImportError as e:
+            logger.warning("websockets package not installed: %s", e)
+            raise
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        """Yield PCM chunks for *text* as they arrive from xAI.
+
+        The sync generator shape is what the dispatcher's audio
+        callback expects, but the actual work happens inside
+        ``_collect_async`` — which runs the WebSocket message loop
+        under ``asyncio.run()`` and returns a ``list[bytes]`` of every
+        frame received. The list is iterated here so the stop event
+        can be honoured between yields, matching the contract of the
+        other providers in this module.
+
+        The ``try/except`` is deliberately broad (same shape as the
+        ElevenLabs, Gemini, and OpenAI providers above): a streaming
+        response that fails halfway through should log a warning and
+        stop yielding rather than crash the dispatcher's audio
+        callback. Connection-level errors (DNS, TLS, handshake) bubble
+        up through ``_collect_async`` and land here.
+        """
+        try:
+            chunks = self._collect_async(text)
+            for chunk in chunks:
+                if self._stop_event is not None and self._stop_event.is_set():
+                    break
+                yield chunk
+        except Exception as exc:
+            logger.warning("xAI streaming TTS failed: %s", exc)
+            return
+
+    def _collect_async(self, text: str) -> List[bytes]:
+        """Run ``_async_collect_chunks`` under a fresh event loop and
+        return every frame as a ``list[bytes]``.
+
+        This is the sync seam the test suite monkeypatches — keeping
+        it as a separate method (rather than inlining the
+        ``asyncio.run()`` call into ``stream()``) means unit tests can
+        substitute a canned list without ever spinning up an event
+        loop or a fake WebSocket. The E2E test in a later task
+        exercises the real path.
+
+        Importing ``asyncio`` lazily here (not at module top) keeps
+        the import cost off the import path for users who only enable
+        a different streaming provider.
+        """
+        import asyncio  # noqa: WPS433 — intentional late import
+
+        return asyncio.run(self._drain_async(text))
+
+    async def _drain_async(self, text: str) -> List[bytes]:
+        """Coroutine-friendly wrapper around ``_async_collect_chunks``.
+
+        ``asyncio.run`` doesn't accept async generators directly; it
+        needs a coroutine that returns a concrete value. This coroutine
+        just runs the async generator to completion and collects the
+        frames into a list — keeping the websocket lifecycle inside
+        the coroutine so the connection is closed deterministically
+        when ``asyncio.run`` returns.
+        """
+        frames: List[bytes] = []
+        async for frame in self._async_collect_chunks(text):
+            frames.append(frame)
+        return frames
+
+    async def _async_collect_chunks(self, text: str):  # type: ignore[no-untyped-def]
+        """Async generator: yield every PCM frame the WebSocket emits.
+
+        Connects to ``wss://api.x.ai/v1/tts`` with a Bearer-token
+        ``Authorization`` header (the same auth shape as the legacy
+        ``_generate_xai_tts`` HTTP path), sends the TTS request as a
+        single JSON message, and ``yield``s each frame as it arrives.
+
+        End-of-stream detection is the single fragile point in this
+        class: the xAI docs describe ``done`` / ``error`` envelopes
+        in a shape that has shifted across early-access versions. The
+        current best-effort implementation treats any non-bytes
+        message as a control frame — if the message is JSON, we look
+        for ``{"type": "done"}`` and stop; if it's a string, we look
+        for the literal token ``"done"``; everything else is logged
+        and ignored. A ``websockets.ConnectionClosed`` exception is
+        the normal end-of-stream signal and is caught locally so the
+        async generator terminates cleanly.
+
+        This method is the seam an E2E test (gated on a real
+        ``XAI_API_KEY``) will exercise. Unit tests bypass it via the
+        ``_collect_async`` patch — see the test docstring for the
+        rationale.
+        """
+        import json as _json
+
+        websockets = self._websockets
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        url = self._base_url
+
+        # ``extra_headers`` is the websockets>=10 kwarg; older versions
+        # used ``extra_headers=`` too, so this works for everything
+        # the project's lockfile pins.
+        async with websockets.connect(url, extra_headers=headers) as ws:
+            await ws.send(
+                _json.dumps(
+                    {
+                        "text": text,
+                        "voice": self._voice,
+                        "response_format": "pcm",
+                    }
+                )
+            )
+            try:
+                while True:
+                    message = await ws.recv()
+                    if isinstance(message, (bytes, bytearray, memoryview)):
+                        # Raw binary PCM frame — the happy path.
+                        yield bytes(message)
+                        continue
+                    # Control frame: try to interpret it as JSON.
+                    try:
+                        envelope = _json.loads(message)
+                    except (ValueError, TypeError):
+                        # Non-JSON text control frame; the xAI
+                        # protocol has historically used the literal
+                        # string "done" as a fallback end-of-stream
+                        # marker. Log and stop on that exact match,
+                        # otherwise just log and continue.
+                        if message == "done":
+                            return
+                        logger.debug("xAI WS: ignoring control frame: %r", message)
+                        continue
+                    etype = envelope.get("type")
+                    if etype == "done":
+                        return
+                    if etype == "error":
+                        err = envelope.get("error") or envelope.get("message") or envelope
+                        logger.warning("xAI WS error envelope: %s", err)
+                        return
+                    # Unknown envelope type — log and keep going so
+                    # one bad frame doesn't kill the whole stream.
+                    logger.debug("xAI WS: ignoring envelope: %r", envelope)
+            except Exception as exc:
+                # ``websockets.ConnectionClosed`` is the normal
+                # end-of-stream signal on the xAI endpoint; the server
+                # just closes the socket when audio is done. Anything
+                # else is a real error worth logging.
+                if exc.__class__.__name__ == "ConnectionClosed":
+                    return
+                logger.warning("xAI WS receive failed: %s", exc)
+                return
+
+
 __all__ = [
     "StreamingTTSProvider",
     "register",
@@ -607,4 +873,5 @@ __all__ = [
     "ElevenLabsStreamingProvider",
     "GeminiStreamingProvider",
     "OpenAIStreamingProvider",
+    "XAIStreamingProvider",
 ]

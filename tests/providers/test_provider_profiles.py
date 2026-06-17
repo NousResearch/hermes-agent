@@ -96,6 +96,82 @@ class TestKimiProfile:
         assert "reasoning_effort" not in tl
 
 
+class TestZaiProfile:
+    def test_reasoning_effort_high(self):
+        # enabled + high → top-level reasoning_effort=high, no extra_body.
+        p = get_provider_profile("zai")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="glm-5.2",
+        )
+        assert tl["reasoning_effort"] == "high"
+        assert eb == {}
+
+    def test_reasoning_effort_xhigh_clamps_to_high(self):
+        # xhigh has no Z.AI equivalent — clamp to high (the max real value).
+        p = get_provider_profile("zai")
+        _, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            model="glm-5.2",
+        )
+        assert tl["reasoning_effort"] == "high"
+
+    def test_reasoning_disabled_emits_minimal(self):
+        # explicit disable → minimal, which turns Z.AI thinking off entirely.
+        p = get_provider_profile("zai")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="glm-5.2",
+        )
+        assert tl["reasoning_effort"] == "minimal"
+        assert eb == {}
+
+    def test_reasoning_enabled_no_effort_omits(self):
+        # enabled with no effort → omit reasoning_effort so Z.AI applies its
+        # server default, matching the DeepSeek profile convention.
+        p = get_provider_profile("zai")
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True},
+            model="glm-5.2",
+        )
+        assert "reasoning_effort" not in tl
+        assert eb == {}
+
+    def test_no_config_omits(self):
+        # No reasoning_config → no params sent (server default).
+        p = get_provider_profile("zai")
+        eb, tl = p.build_api_kwargs_extras(model="glm-5.2")
+        assert tl == {}
+        assert eb == {}
+
+    def test_non_reasoning_model_untouched(self):
+        # glm-4.x are not thinking models — never send reasoning_effort.
+        p = get_provider_profile("zai")
+        for model in ("glm-4.7", "glm-4.5-flash", "glm-4-9b"):
+            eb, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "high"},
+                model=model,
+            )
+            assert "reasoning_effort" not in tl, (model, tl)
+            assert eb == {}
+
+    def test_all_reasoning_efforts_map(self):
+        # Cover the full VALID_REASONING_EFFORTS range.
+        p = get_provider_profile("zai")
+        for effort, expected in [
+            ("minimal", "minimal"),
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "high"),
+        ]:
+            _, tl = p.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": effort},
+                model="glm-5",
+            )
+            assert tl["reasoning_effort"] == expected, (effort, tl)
+
+
 class TestOpenRouterProfile:
     def test_extra_body_with_prefs(self):
         p = get_provider_profile("openrouter")

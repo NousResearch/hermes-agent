@@ -682,6 +682,29 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return name
 
 
+# Trailing 8-digit release-date suffix on a NEW-scheme Anthropic model id, e.g.
+# claude-haiku-4-5-20251001 → the dated alias of claude-haiku-4-5. Anchored to
+# the end and require a preceding "-N" version segment so we only strip a date
+# that was APPENDED to an already-versioned name — never the canonical OLD-scheme
+# ids whose date IS part of the name (claude-3-5-haiku-20241022, where stripping
+# would land on the non-existent claude-3-5-haiku). Used ONLY as a last-resort
+# snapshot fallback, after direct + dot-normalized lookups, so a real dated entry
+# always wins.
+_ANTHROPIC_DATED_SUFFIX_RE = re.compile(r"^(claude-.*-\d+-\d+)-\d{8}$")
+
+
+def _strip_anthropic_release_date(name: str) -> Optional[str]:
+    """Strip a trailing -YYYYMMDD appended to a versioned new-scheme name.
+
+    claude-haiku-4-5-20251001 → claude-haiku-4-5 ; claude-opus-4-8-20260115 →
+    claude-opus-4-8. Returns None when there is no such suffix to strip (incl.
+    the old-scheme claude-3-5-haiku-20241022, which lacks the -N-N version tail
+    before the date and so is left intact for its own direct entry).
+    """
+    m = _ANTHROPIC_DATED_SUFFIX_RE.match(name)
+    return m.group(1) if m else None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     # Direct lookup first
@@ -693,6 +716,16 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
         normalized = _normalize_anthropic_model_name(model)
         if normalized != model:
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+        # Last-resort: strip a trailing -YYYYMMDD release date appended to a
+        # versioned new-scheme id and retry on the base (claude-haiku-4-5-
+        # 20251001 → claude-haiku-4-5). Runs AFTER direct + dot-normalized so a
+        # real dated entry (e.g. claude-3-5-haiku-20241022) always wins on its
+        # own key. Fixes the dated-Haiku unpriced gap (audit 2026-06-17).
+        base = _strip_anthropic_release_date(normalized)
+        if base and base != normalized:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, base))
             if entry:
                 return entry
     return None

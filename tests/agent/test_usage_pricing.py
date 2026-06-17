@@ -281,6 +281,47 @@ _CODEX_STUB_METADATA = {
 }
 
 
+def test_anthropic_dated_release_suffix_falls_back_to_base_snapshot():
+    """A new-scheme Anthropic id with a trailing -YYYYMMDD release date that has
+    no explicit snapshot entry must fall back to its base model's pricing —
+    NOT price 'unknown'. Fixes the dated-Haiku gap (claude-haiku-4-5-20251001
+    priced $0 while bare claude-haiku-4-5 priced fine; audit 2026-06-17)."""
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=100,
+                           cache_read_tokens=5000, cache_write_tokens=200)
+    base = estimate_usage_cost("claude-haiku-4-5", usage, provider="claude-pool")
+    dated = estimate_usage_cost("claude-haiku-4-5-20251001", usage, provider="claude-pool")
+    assert base.status == "estimated"
+    assert dated.status == "estimated", f"dated priced {dated.status}"
+    assert dated.amount_usd is not None and dated.amount_usd == base.amount_usd, (
+        f"dated {dated.amount_usd} != base {base.amount_usd}"
+    )
+    # Also covers a hypothetical future dated Opus id.
+    opus = estimate_usage_cost("claude-opus-4-8-20260115", usage, provider="claude-bridge")
+    assert opus.status == "estimated" and opus.amount_usd is not None
+
+
+def test_anthropic_old_scheme_dated_model_is_not_date_stripped():
+    """No-regression guard: an OLD-scheme id whose date is PART of the canonical
+    name (claude-3-5-haiku-20241022) must hit its OWN snapshot entry directly,
+    never get date-stripped to a non-existent base (claude-3-5-haiku). It has
+    its own distinct rate, so stripping would mis-price it."""
+    from agent.usage_pricing import _strip_anthropic_release_date
+    # The strip helper must DECLINE the old-scheme name (no -N-N version tail).
+    assert _strip_anthropic_release_date("claude-3-5-haiku-20241022") is None
+    assert _strip_anthropic_release_date("claude-haiku-4-5-20251001") == "claude-haiku-4-5"
+    assert _strip_anthropic_release_date("claude-opus-4-8-20260115") == "claude-opus-4-8"
+    # Non-dated / partial-date names are left alone.
+    for n in ("claude-haiku-4-5", "claude-opus-4-8", "claude-haiku-4-5-2025", "gpt-5.5"):
+        assert _strip_anthropic_release_date(n) is None, n
+    # End-to-end: the old-scheme dated Haiku still prices via its own entry,
+    # and its rate is DISTINCT from the new 4-5 Haiku (proves no cross-contamination).
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=0)
+    old = estimate_usage_cost("claude-3-5-haiku-20241022", usage, provider="anthropic")
+    new = estimate_usage_cost("claude-haiku-4-5", usage, provider="anthropic")
+    assert old.status == "estimated" and new.status == "estimated"
+    assert old.amount_usd != new.amount_usd, "old-scheme must keep its own rate"
+
+
 def test_openai_codex_route_resolves_to_notional_openrouter():
     """openai-codex must resolve to an OpenRouter-priced route (notional cost
     visibility), NOT subscription_included/$0 — so /cost cards can fire."""

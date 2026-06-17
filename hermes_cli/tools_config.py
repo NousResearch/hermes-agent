@@ -694,6 +694,19 @@ def _pip_install(
 # no Python-side duplication.
 
 
+def _cua_install_target_writable() -> bool:
+    """Return whether the upstream installer can write its app bundle target."""
+    if sys.platform != "darwin":
+        return True
+    applications_dir = "/Applications"
+    try:
+        if not os.path.isdir(applications_dir):
+            return True
+        return os.access(applications_dir, os.W_OK)
+    except Exception:
+        return True
+
+
 def install_cua_driver(upgrade: bool = False) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
 
@@ -736,6 +749,14 @@ def install_cua_driver(upgrade: bool = False) -> bool:
 
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
+        if not _cua_install_target_writable():
+            _print_info(
+                "    /Applications is not writable; skipping cua-driver install."
+            )
+            _print_info(
+                "    Run from an admin account or install cua-driver manually."
+            )
+            return False
         if not shutil.which(fetch_tool):
             _print_warning(f"    {fetch_tool} not found — install manually:")
             _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
@@ -767,6 +788,15 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         return True
 
     # upgrade=True path — refresh to the latest upstream release.
+    if not _cua_install_target_writable():
+        _print_info(
+            "    /Applications is not writable; skipping cua-driver refresh."
+        )
+        _print_info(
+            "    Run `hermes computer-use install --upgrade` from an admin account to update it."
+        )
+        return bool(binary)
+
     if not shutil.which(fetch_tool):
         _print_warning(f"    {fetch_tool} not found — cannot refresh cua-driver.")
         return bool(binary)

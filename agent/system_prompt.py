@@ -24,6 +24,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -44,6 +45,8 @@ from agent.prompt_builder import (
 )
 from agent.runtime_cwd import resolve_context_cwd
 
+logger = logging.getLogger(__name__)
+
 
 def _ra():
     """Lazy reference to the ``run_agent`` module.
@@ -58,6 +61,33 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _resolve_agent_sister_prompt(agent: Any) -> str:
+    """
+    Resolve the active sister's system prompt for the given agent.
+
+    Checks ``agent._active_sister_id`` (set by delegate_task or CLI).
+    If set, loads the sister's full system prompt from sisters.yaml
+    and appends the global safety footer.
+
+    Returns empty string if no sister is active or if the sister is not found.
+    Falls back to Astra (the default first responder) if the specified sister
+    is invalid or disabled.
+
+    NOTE: This function only handles identity/personality. Model selection
+    is owned by HARP — do not hardcode model names in sister prompts.
+    """
+    try:
+        sister_id = getattr(agent, "_active_sister_id", None)
+        if not sister_id:
+            return ""
+        from agent.sister_prompt_loader import build_sister_system_prompt
+        return build_sister_system_prompt(sister_id)
+    except Exception:
+        # Sister prompt loading must never block system prompt assembly.
+        logger.debug("Failed to load sister prompt for agent", exc_info=True)
+        return ""
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -99,6 +129,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if not _soul_loaded:
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
+
+    # ── Sister personality injection ────────────────────────────────
+    # If a sister is active, inject her system prompt into the stable tier.
+    # This replaces the generic "helpful assistant" persona with the selected
+    # sister's identity, domain expertise, and behavioral style.
+    #
+    # IMPORTANT: Do not hardcode model names in sister personality prompts.
+    # HARP owns model selection. This layer only provides identity/behavior.
+    _sister_prompt = _resolve_agent_sister_prompt(agent)
+    if _sister_prompt:
+        stable_parts.append(_sister_prompt)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)

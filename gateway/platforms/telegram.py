@@ -476,6 +476,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._forum_command_registered: set[int] = set()
         # Lock per la registrazione sicura dei comandi nei forum supergroup
         self._forum_lock = asyncio.Lock()
+        # Sister preference per chat_id: user-selected sister for routing
+        self._sister_preference: Dict[str, str] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
@@ -5930,6 +5932,66 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        # Handle /sister command to set sister preference
+        if event.text and event.text.lower().startswith("/sister"):
+            parts = event.text.strip().split()
+            if len(parts) >= 2:
+                requested_sister = parts[1].lower()
+                # TODO: Validate sister ID against known sisters
+                # For now, accept any non-empty string
+                if requested_sister:
+                    # Build session key to store preference
+                    from gateway.session import build_session_key
+                    session_key = build_session_key(
+                        event.source,
+                        group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                        thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+                    )
+                    self._sister_preference[session_key] = requested_sister
+                    # Send confirmation message
+                    try:
+                        await self._bot.send_message(
+                            chat_id=int(msg.chat_id),
+                            text=f"✅ Sister preference set to: {requested_sister}\nUse /sister to change or clear preference.",
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            reply_to_message_id=getattr(msg, "message_id", None),
+                            **self._thread_kwargs_for_send(
+                                str(msg.chat_id),
+                                getattr(msg, "message_thread_id", None),
+                                {},
+                            ),
+                            **self._link_preview_kwargs(),
+                            **self._notification_kwargs({}),
+                        )
+                    except Exception as send_err:
+                        logger.warning(
+                            "[%s] Failed to send sister preference confirmation: %s",
+                            self.name,
+                            send_err,
+                        )
+                    return
+            # If malformed /sister command, show usage
+            try:
+                await self._bot.send_message(
+                    chat_id=int(msg.chat_id),
+                    text="Usage: /sister <sister_id>\nExample: /sister novus\nRun /sister list to see available sisters.",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_to_message_id=getattr(msg, "message_id", None),
+                    **self._thread_kwargs_for_send(
+                        str(msg.chat_id),
+                        getattr(msg, "message_thread_id", None),
+                        {},
+                    ),
+                    **self._link_preview_kwargs(),
+                    **self._notification_kwargs({}),
+                )
+            except Exception as send_err:
+                logger.warning(
+                    "[%s] Failed to send sister command usage: %s",
+                    self.name,
+                    send_err,
+                )
+            return
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)

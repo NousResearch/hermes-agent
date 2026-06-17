@@ -266,6 +266,7 @@ from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.sister import build_sister_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 from hermes_cli.subcommands.postinstall import build_postinstall_parser
@@ -10064,6 +10065,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "update",
         "uninstall",
         "profile",
+        "sister",
         "dashboard",
         "desktop",
         "gui",
@@ -10686,6 +10688,12 @@ def cmd_profile(args):
         print()
 
 
+def cmd_sister(args):
+    """Sister Personality System — list, show, match, reload, status."""
+    from hermes_cli.subcommands.sister import cmd_sister as _cmd_sister
+    _cmd_sister(args)
+
+
 def _render_distribution_plan(plan) -> None:
     """Print a human-readable summary of a pending distribution install."""
     from hermes_cli.profile_distribution import MANIFEST_FILENAME
@@ -11065,7 +11073,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "model", "pairing", "plugins", "portal", "postinstall", "profile", "sister", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -12412,6 +12420,11 @@ def main():
     # profile command  (parser built in hermes_cli/subcommands/profile.py)
     # =========================================================================
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+
+    # =========================================================================
+    # sister command  (parser built in hermes_cli/subcommands/sister.py)
+    # =========================================================================
+    build_sister_parser(subparsers, cmd_sister=cmd_sister)
 
     # =========================================================================
     # completion command

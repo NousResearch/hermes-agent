@@ -661,6 +661,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    sister_id: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -669,12 +670,39 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    When sister_id is provided, prepends the sister's personality system prompt
+    so the child agent operates with the correct sister identity.
+    IMPORTANT: Do not hardcode model names in sister personality prompts.
+    HARP owns model selection.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    parts: List[str] = []
+
+    # ── Sister personality injection (if specified) ────────────────────
+    # Prepends the sister's identity prompt to the child's system prompt.
+    # This replaces the generic "focused subagent" persona with the
+    # selected sister's domain expertise and behavioral style.
+    if sister_id:
+        try:
+            from agent.sister_prompt_loader import get_system_prompt
+            _sp = get_system_prompt(sister_id)
+            if _sp:
+                parts.append(_sp.strip())
+                parts.append("")  # blank line separator
+        except Exception:
+            logger.debug(
+                "Failed to load sister prompt for %s, falling back to default",
+                sister_id,
+                exc_info=True,
+            )
+
+    parts.extend(
+        [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+            f"YOUR TASK:\n{goal}",
+        ]
+    )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -990,6 +1018,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Sister identity — when set, the child agent operates as this sister
+    sister_id: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1077,6 +1107,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        sister_id=sister_id,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1254,6 +1285,14 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    # Propagate sister identity to child agent for personality injection.
+    # The sister prompt is already in child_prompt (prepended by _build_child_system_prompt).
+    # _active_sister_id is used by _resolve_agent_sister_prompt() in system_prompt.py
+    # for any recursive delegation deeper than this level.
+    if sister_id:
+        child._active_sister_id = sister_id
+    elif getattr(parent_agent, "_active_sister_id", None):
+        child._active_sister_id = parent_agent._active_sister_id
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
@@ -2072,6 +2111,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    sister_id: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2179,7 +2219,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "sister_id": sister_id,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2242,6 +2288,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                sister_id=t.get("sister_id") or sister_id,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3042,6 +3089,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "sister_id": {
+                            "type": "string",
+                            "description": "Optional sister identity for this task (e.g. astra, novus, nova, luna, ada, maya). Internal/specialized use only.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3072,6 +3123,10 @@ DELEGATE_TASK_SCHEMA = {
                     "multi-step investigations). Do NOT poll or wait after "
                     "dispatching — just continue; the result will come to you."
                 ),
+            },
+            "sister_id": {
+                "type": "string",
+                "description": "Optional sister identity for specialized internal delegation. Ordinary callers should use delegate_to_sister instead.",
             },
             "acp_command": {
                 "type": "string",
@@ -3118,6 +3173,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=args.get("background"),
+        sister_id=args.get("sister_id"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

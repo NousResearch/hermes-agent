@@ -93,6 +93,86 @@ def test_gateway_keeps_global_user_profile_for_local_source():
     ) is False
 
 
+def _write_lid_mapping(tmp_home, lid_digits, phone_jid):
+    """Create the bridge lid-mapping file the canonicalizer reads."""
+    mapping_dir = tmp_home / "whatsapp" / "session"
+    mapping_dir.mkdir(parents=True, exist_ok=True)
+    import json
+    (mapping_dir / f"lid-mapping-{lid_digits}.json").write_text(
+        json.dumps(phone_jid), encoding="utf-8"
+    )
+
+
+def test_gateway_keeps_user_profile_for_owner_lid_in_whatsapp_group(tmp_path, monkeypatch):
+    """Regression: the owner speaking from inside a WhatsApp GROUP arrives as a
+    LID, not a phone number. The owner gate must canonicalize the LID back to
+    the phone-JID home channel and recognize the owner — otherwise USER.md is
+    hidden and the agent treats Aldo as a stranger in his own group.
+    """
+    tmp_home = tmp_path / "hermes-home"
+    tmp_home.mkdir(parents=True, exist_ok=True)
+    _write_lid_mapping(tmp_home, "96370627199010", "5215514706713@s.whatsapp.net")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+    runner = _runner(
+        HomeChannel(
+            platform=Platform.WHATSAPP,
+            chat_id="5215514706713@s.whatsapp.net",
+            name="Home",
+        )
+    )
+    # Owner posting in a group: user_id is the opaque LID, chat_id is the group.
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="5215514706713-1503324008@g.us",
+        chat_type="group",
+        user_id="96370627199010@lid",
+        user_name="Aldo",
+    )
+
+    assert runner._should_skip_user_profile_for_source(
+        source=source,
+        session_key="agent:main:whatsapp:group:5215514706713-1503324008@g.us",
+        user_config={},
+    ) is False
+
+
+def test_gateway_skips_user_profile_for_non_owner_lid_in_whatsapp_group(tmp_path, monkeypatch):
+    """A different group member (non-owner) whose LID maps to their OWN phone
+    must still have USER.md hidden — the canonicalization must not leak owner
+    status to other members, even though the group JID shares the owner's
+    phone-number prefix.
+    """
+    tmp_home = tmp_path / "hermes-home"
+    tmp_home.mkdir(parents=True, exist_ok=True)
+    # Owner mapping + a different member mapping to a different phone.
+    _write_lid_mapping(tmp_home, "96370627199010", "5215514706713@s.whatsapp.net")
+    _write_lid_mapping(tmp_home, "74831349469423", "5215620337474@s.whatsapp.net")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+    runner = _runner(
+        HomeChannel(
+            platform=Platform.WHATSAPP,
+            chat_id="5215514706713@s.whatsapp.net",
+            name="Home",
+        )
+    )
+    # Necro (non-owner) posting in the OWNER's group.
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="5215514706713-1503324008@g.us",
+        chat_type="group",
+        user_id="74831349469423@lid",
+        user_name="Necro",
+    )
+
+    assert runner._should_skip_user_profile_for_source(
+        source=source,
+        session_key="agent:main:whatsapp:group:5215514706713-1503324008@g.us",
+        user_config={},
+    ) is True
+
+
 def test_session_context_marks_current_source_as_authoritative_identity():
     context = SessionContext(
         source=SessionSource(

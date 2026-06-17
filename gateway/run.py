@@ -15263,6 +15263,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             str(getattr(source, "user_id_alt", "") or ""),
         }
 
+        # WhatsApp delivers a group participant's identity as an opaque LID
+        # (e.g. ``96370627199010@lid``), NOT their phone number — so the owner,
+        # speaking from inside a group, is NOT recognized by a raw comparison
+        # against the phone-number home channel, and the gate wrongly hides
+        # USER.md (the agent treats the owner as a stranger in his own group).
+        # Canonicalize WhatsApp identifiers (LID <-> phone-JID) on BOTH sides so
+        # the owner is matched regardless of which alias form WhatsApp used.
+        # The resolver is the same one build_session_key already relies on.
+        if platform == Platform.WHATSAPP:
+            try:
+                from gateway.session import canonical_whatsapp_identifier as _canon_wa
+                for _val in list(source_values):
+                    _c = _canon_wa(_val) if _val else None
+                    if _c:
+                        source_values.add(str(_c))
+                for _hid in list(home_ids):
+                    _c = _canon_wa(_hid) if _hid else None
+                    if _c:
+                        home_ids.add(str(_c))
+            except Exception:
+                pass
+
         if home_ids.intersection(source_values):
             return False
 

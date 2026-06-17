@@ -20,6 +20,53 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Source-code file extensions for redaction heuristics.
+# Files with these extensions are treated as source code when calling
+# ``redact_sensitive_text(code_file=True)`` — which skips ENV-assignment
+# and JSON-field regex patterns to avoid false positives (e.g. MAX_TOKENS=100
+# in a Python file).  All other files (including .env, .yaml, .json, .conf,
+# .toml, .ini, .cfg, .properties, etc.) use ``code_file=False`` so that
+# secret-bearing patterns like ``API_KEY=<value>`` are properly redacted.
+# ---------------------------------------------------------------------------
+_SOURCE_CODE_EXTENSIONS = frozenset({
+    ".py", ".pyi", ".pyx",               # Python
+    ".js", ".mjs", ".cjs", ".jsx",       # JavaScript
+    ".ts", ".tsx", ".mts",               # TypeScript
+    ".go",                               # Go
+    ".rs",                               # Rust
+    ".java", ".kt", ".kts", ".scala",    # JVM
+    ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx",  # C/C++
+    ".rb", ".erb",                       # Ruby
+    ".php",                              # PHP
+    ".swift",                            # Swift
+    ".lua",                              # Lua
+    ".r", ".R",                          # R
+    ".m", ".mm",                         # Objective-C
+    ".sh", ".bash", ".zsh", ".fish",     # Shell
+    ".pl", ".pm",                        # Perl
+    ".ex", ".exs",                       # Elixir
+    ".erl", ".hrl",                      # Erlang
+    ".hs", ".lhs",                       # Haskell
+    ".ml", ".mli",                       # OCaml
+    ".clj", ".cljs", ".cljc",           # Clojure
+    ".dart",                             # Dart
+    ".vue", ".svelte",                   # Frontend frameworks
+    ".sql",                              # SQL
+})
+
+
+def _is_source_code_file(path: str) -> bool:
+    """Return True if *path* looks like a source-code file.
+
+    Used to decide whether ``code_file=True`` should be passed to
+    ``redact_sensitive_text``.  Source-code files get ENV-assignment and
+    JSON-field patterns skipped to reduce false positives; config/env files
+    keep those patterns active so secrets are properly masked.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    return ext in _SOURCE_CODE_EXTENSIONS
+
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
@@ -958,7 +1005,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
-            result.content = redact_sensitive_text(result.content, code_file=True)
+            result.content = redact_sensitive_text(
+                result.content, code_file=_is_source_code_file(path),
+            )
             result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
@@ -1477,7 +1526,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
-                    m.content = redact_sensitive_text(m.content, code_file=True)
+                    m.content = redact_sensitive_text(
+                        m.content, code_file=_is_source_code_file(m.path),
+                    )
         result_dict = result.to_dict()
 
         if count >= 3:

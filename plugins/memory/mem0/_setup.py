@@ -67,6 +67,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flags: dict[str, str] = {
         "mode": "",
         "api_key": "",
+        "api_url": "",
         "oss_llm": "openai",
         "oss_llm_key": "",
         "oss_llm_model": "",
@@ -90,6 +91,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flag_map = {
         "--mode": "mode",
         "--api-key": "api_key",
+        "--api-url": "api_url",
         "--oss-llm": "oss_llm",
         "--oss-llm-key": "oss_llm_key",
         "--oss-llm-model": "oss_llm_model",
@@ -227,7 +229,8 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     doesn't exist, preserving the original platform onboarding experience.
     """
     schema = [
-        {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+        {"key": "api_url", "description": "Mem0 Platform API URL (default \"https://api.mem0.ai\")", "env_var": "MEM0_API_URL"},
+        {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY"},
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
         {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
         {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -259,6 +262,10 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
             env_writes["MEM0_API_KEY"] = flags["api_key"]
             continue
 
+        if flags.get("api_url") and key == "api_url":
+            provider_config["MEM0_API_URL"] = flags["api_url"]
+            continue
+
         if choices and not is_secret:
             choice_items = [(c, "") for c in choices]
             current = provider_config.get(key, default)
@@ -279,7 +286,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
             if val and env_var:
                 env_writes[env_var] = val
         else:
-            current = provider_config.get(key)
+            current = provider_config.get(key) or os.environ.get(env_var, "") if env_var else ""
             effective_default = current or default
             val = _prompt(desc, default=str(effective_default) if effective_default else None)
             if val:
@@ -847,7 +854,7 @@ def post_setup(hermes_home: str, config: dict) -> None:
 
     # No --mode flag: show interactive picker
     mode_items = [
-        ("Platform", "Mem0 Cloud API (lightweight, just needs an API key)"),
+        ("Platform", "Mem0 Cloud API (lightweight, just needs an API key and API URL)"),
         ("Open Source", "Run Mem0 locally (self-hosted LLM + vector store)"),
     ]
     mode_idx = _curses_select("  Select mode", mode_items, 0)

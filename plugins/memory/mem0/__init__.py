@@ -80,6 +80,7 @@ def _load_config() -> dict:
     config = {
         "mode": os.environ.get("MEM0_MODE", "platform"),
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "api_url": os.environ.get("MEM0_API_URL", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "oss": {},
     }
@@ -194,6 +195,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._backend = None
         self._mode = "platform"
         self._api_key = ""
+        self._api_url = ""
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
@@ -239,7 +241,8 @@ class Mem0MemoryProvider(MemoryProvider):
         mode = cfg.get("mode", "platform")
         api_key_required = mode != "oss"
         return [
-            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "api_url", "description": "Mem0 Platform API URL (default \"https://api.mem0.ai\")", "env_var": "MEM0_API_URL"},
+            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -255,7 +258,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))
             from ._backend import PlatformBackend
-            return PlatformBackend(self._api_key)
+            return PlatformBackend(self._api_key, self._api_url)
         except Exception as e:
             logger.error("Mem0 backend failed to initialize (%s mode): %s", self._mode, e)
             self._init_error = str(e)
@@ -308,6 +311,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = _load_config()
         self._mode = self._config.get("mode", "platform")
         self._api_key = self._config.get("api_key", "")
+        self._api_url = self._config.get("api_url", "")
         # Resolution order for user_id:
         #   1. Operator-configured MEM0_USER_ID (env or $HERMES_HOME/mem0.json) —
         #      the canonical principal, applied across every gateway so the same

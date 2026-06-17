@@ -5,7 +5,7 @@ Server-side LLM fact extraction with semantic search and hybrid multi-signal ret
 ## Requirements
 
 - `pip install mem0ai`
-- Mem0 API key from [app.mem0.ai](https://app.mem0.ai)
+- Mem0 API key from [app.mem0.ai](https://app.mem0.ai), custom mem0 platform, or self-host mem0
 
 ## Setup
 
@@ -26,6 +26,7 @@ Behavioral settings live in `$HERMES_HOME/mem0.json` (set them via `hermes memor
 | Key | Default | Description |
 |-----|---------|-------------|
 | `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-hosted) |
+| `api_url` | `https://api.mem0.ai` | Mem0 Platform API URL |
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `true` | Rerank search results for relevance (platform mode only) |

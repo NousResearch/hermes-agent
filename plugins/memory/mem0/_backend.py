@@ -53,9 +53,12 @@ def _unwrap_results(response: Any) -> list:
 class PlatformBackend(Mem0Backend):
     """Wraps mem0.MemoryClient for Mem0 Platform (cloud API)."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, api_url: Optional[str] = None):
         from mem0 import MemoryClient
-        self._client = MemoryClient(api_key=api_key)
+        kwargs = {"api_key": api_key}
+        if api_url:
+            kwargs["host"] = api_url
+        self._client = MemoryClient(**kwargs)
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
         response = self._client.search(query, filters=filters, top_k=top_k, rerank=rerank)

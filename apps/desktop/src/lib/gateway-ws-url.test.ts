@@ -38,6 +38,15 @@ describe('resolveGatewayWsUrl', () => {
       expect(result).toBe('threw')
       expect(result).not.toBe(oauthConn.wsUrl)
     })
+
+    it('propagates non-auth mint failures instead of relabeling them as reauth', async () => {
+      const cause = new Error('522: error code: 522')
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(cause)
+      const error = await resolveGatewayWsUrl({ getGatewayWsUrl }, oauthConn).catch(e => e)
+
+      expect(error).toBe(cause)
+      expect(isGatewayReauthRequired(error)).toBe(false)
+    })
   })
 
   describe('token / local mode', () => {

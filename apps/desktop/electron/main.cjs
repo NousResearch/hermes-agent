@@ -59,7 +59,9 @@ const {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  isOauthReauthError,
   normAuthMode,
+  oauthTicketMintErrorMessage,
   normalizeRemoteBaseUrl,
   profileRemoteOverride,
   resolveAuthMode,
@@ -3963,7 +3965,17 @@ async function freshGatewayWsUrl(profile) {
   // legacy callers and single-profile users are unchanged.
   const connection = await ensureBackend(profile)
   if (connection.authMode === 'oauth') {
-    const ticket = await mintGatewayWsTicket(connection.baseUrl)
+    let ticket
+    try {
+      ticket = await mintGatewayWsTicket(connection.baseUrl)
+    } catch (error) {
+      const err = new Error(oauthTicketMintErrorMessage(error))
+      if (isOauthReauthError(error)) {
+        err.needsOauthLogin = true
+      }
+      err.cause = error
+      throw err
+    }
     return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
   }
   // Local/token: the cached wsUrl already carries the (long-lived) token.
@@ -4243,10 +4255,10 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     try {
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Your remote gateway session has expired. ' + 'Open Settings → Gateway and click "Sign in" again.'
-      )
-      err.needsOauthLogin = true
+      const err = new Error(oauthTicketMintErrorMessage(error))
+      if (isOauthReauthError(error)) {
+        err.needsOauthLogin = true
+      }
       err.cause = error
       throw err
     }

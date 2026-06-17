@@ -47,6 +47,16 @@ export function isGatewayReauthRequired(error: unknown): error is GatewayReauthR
   )
 }
 
+function shouldTreatMintErrorAsReauth(error: unknown): boolean {
+  if (isGatewayReauthRequired(error)) {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error || '')
+
+  return /\b(401|403)\b/.test(message)
+}
+
 export async function resolveGatewayWsUrl(
   desktop: ResolveGatewayWsUrlDeps,
   conn: Pick<HermesConnection, 'authMode' | 'profile' | 'wsUrl'>
@@ -70,6 +80,10 @@ export async function resolveGatewayWsUrl(
     try {
       return await mint(profile)
     } catch (error) {
+      if (!shouldTreatMintErrorAsReauth(error)) {
+        throw error
+      }
+
       throw new GatewayReauthRequiredError(
         'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
         { cause: error }

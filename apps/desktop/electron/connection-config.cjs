@@ -115,11 +115,10 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
     try {
       ticket = await mintTicket(baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
-          '(it may have expired). Open Settings → Gateway and sign in again.'
-      )
-      err.needsOauthLogin = true
+      const err = new Error(oauthTicketMintErrorMessage(error))
+      if (isOauthReauthError(error)) {
+        err.needsOauthLogin = true
+      }
       err.cause = error
       throw err
     }
@@ -236,6 +235,35 @@ function cookiesHaveLiveSession(cookies) {
   )
 }
 
+function errorStatusCode(error) {
+  const status = Number(error?.statusCode || error?.status || 0)
+
+  if (status) return status
+
+  const match = String(error?.message || '').match(/\b(401|403)\b/)
+
+  return match ? Number(match[1]) : 0
+}
+
+function isOauthReauthError(error) {
+  const status = errorStatusCode(error)
+
+  return status === 401 || status === 403
+}
+
+function oauthTicketMintErrorMessage(error) {
+  if (isOauthReauthError(error)) {
+    return (
+      'Reached the gateway over HTTP, but could not mint a WebSocket ticket for the OAuth session ' +
+      '(it may have expired). Open Settings → Gateway and sign in again.'
+    )
+  }
+
+  const detail = error instanceof Error ? error.message : String(error || 'unknown error')
+
+  return `Remote xNova gateway is not reachable while minting a WebSocket ticket: ${detail}`
+}
+
 module.exports = {
   AT_COOKIE_VARIANTS,
   RT_COOKIE_VARIANTS,
@@ -245,7 +273,9 @@ module.exports = {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  isOauthReauthError,
   normAuthMode,
+  oauthTicketMintErrorMessage,
   normalizeRemoteBaseUrl,
   profileRemoteOverride,
   resolveAuthMode,

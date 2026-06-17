@@ -1,0 +1,23 @@
+title = "xNova secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Repository paths that are generated, binary, or dependency snapshots."
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)venv/''',
+  '''(^|/)dist/''',
+  '''(^|/)build/''',
+  '''(^|/)coverage/''',
+  '''(^|/)\.pytest_cache/''',
+  '''(^|/)\.ruff_cache/''',
+  '''(^|/)__pycache__/''',
+  '''(^|/)apps/desktop/dist/''',
+  '''(^|/)apps/desktop/release/''',
+  '''(^|/)apps/desktop/assets/.*\.(icns|ico|png)$''',
+  '''(^|/)apps/desktop/public/.*\.(png|jpg|jpeg|webp)$''',
+  '''(^|/)\.codex/security-scans/'''
+]

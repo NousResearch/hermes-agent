@@ -1,8 +1,9 @@
 import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setGatewayState } from '@/store/session'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
@@ -44,6 +45,8 @@ function resetStores() {
     manual: false,
     localEndpoint: false
   })
+  $activeGatewayProfile.set('default')
+  delete (window as { hermesDesktop?: unknown }).hermesDesktop
 }
 
 beforeEach(resetStores)
@@ -138,7 +141,61 @@ describe('connecting overlay vs recovery surface', () => {
 
     // Escape hatch is now reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
-    expect(screen.getByText(/use local gateway/i)).toBeTruthy()
+    expect(screen.getByText(/use local backend/i)).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
+  })
+
+  it('FIX: expired OAuth session for an active profile remote shows the sign-in action', async () => {
+    $activeGatewayProfile.set('work')
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: 'Your remote gateway session has expired. Open Settings -> Gateway and click "Sign in" again.',
+      running: false,
+      visible: true
+    })
+
+    const getConnectionConfig = vi.fn(async (profile?: string | null) =>
+      profile === 'work'
+        ? {
+            envOverride: false,
+            mode: 'remote',
+            profile: 'work',
+            remoteAuthMode: 'oauth',
+            remoteOauthConnected: false,
+            remoteTokenPreview: null,
+            remoteTokenSet: false,
+            remoteUrl: 'https://box.example.com'
+          }
+        : {
+            envOverride: false,
+            mode: 'local',
+            profile: null,
+            remoteAuthMode: 'token',
+            remoteOauthConnected: false,
+            remoteTokenPreview: null,
+            remoteTokenSet: false,
+            remoteUrl: ''
+          }
+    )
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      getConnectionConfig,
+      getRecentLogs: vi.fn(async () => ({ lines: [], path: '/tmp/xnova.log' })),
+      probeConnectionConfig: vi.fn(async () => ({
+        authMode: 'oauth',
+        baseUrl: 'https://box.example.com',
+        error: null,
+        providers: [{ name: 'nous', displayName: 'Nous Research', supportsPassword: false }],
+        reachable: true,
+        version: null
+      }))
+    }
+
+    render(<BootFailureOverlay />)
+
+    expect(await screen.findByText(/sign in with nous research/i)).toBeTruthy()
+    expect(screen.queryByText(/^retry$/i)).toBeNull()
+    expect(screen.queryByText(/repair install/i)).toBeNull()
+    expect(getConnectionConfig).toHaveBeenCalledWith('work')
   })
 })

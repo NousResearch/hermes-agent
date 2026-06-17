@@ -10,6 +10,7 @@ import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthErrorMessage, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
@@ -72,15 +73,23 @@ export function BootFailureOverlay() {
         return
       }
 
-      let config: DesktopConnectionConfig
+      const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+      let configs: DesktopConnectionConfig[]
 
       try {
-        config = await desktop.getConnectionConfig()
+        if (activeProfile === 'default') {
+          configs = [await desktop.getConnectionConfig()]
+        } else {
+          const scopedConfig = await desktop.getConnectionConfig(activeProfile)
+          const defaultConfig = await desktop.getConnectionConfig().catch(() => null)
+          configs = [scopedConfig, defaultConfig].filter((item): item is DesktopConnectionConfig => Boolean(item))
+        }
       } catch {
         return
       }
 
-      const needsRemoteReauth = isRemoteReauthFailure(config) || isRemoteReauthErrorMessage(boot.error)
+      const config = configs.find(item => item.mode === 'remote' && item.remoteUrl) ?? configs[0]
+      const needsRemoteReauth = configs.some(isRemoteReauthFailure) || isRemoteReauthErrorMessage(boot.error)
 
       if (cancelled || !needsRemoteReauth || config.mode !== 'remote' || !config.remoteUrl) {
         return

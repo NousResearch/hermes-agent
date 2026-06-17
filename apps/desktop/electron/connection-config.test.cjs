@@ -22,7 +22,9 @@ const {
   connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  isOauthReauthError,
   normAuthMode,
+  oauthTicketMintErrorMessage,
   normalizeRemoteBaseUrl,
   profileRemoteOverride,
   resolveAuthMode,
@@ -319,6 +321,44 @@ test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validatio
       return true
     }
   )
+})
+
+test('resolveTestWsUrl (oauth, non-auth mint failure) does not claim reauth is required', async () => {
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          const err = new Error('522: error code: 522')
+          err.statusCode = 522
+          throw err
+        }
+      }),
+    err => {
+      assert.match(err.message, /not reachable/i)
+      assert.match(err.message, /522/)
+      assert.equal(err.needsOauthLogin, undefined)
+      assert.ok(err.cause instanceof Error)
+      return true
+    }
+  )
+})
+
+test('isOauthReauthError only classifies auth statuses', () => {
+  const unauthorized = new Error('401 cookie expired')
+  const forbidden = new Error('forbidden')
+  forbidden.statusCode = 403
+  const cloudflare = new Error('522: error code: 522')
+  cloudflare.statusCode = 522
+
+  assert.equal(isOauthReauthError(unauthorized), true)
+  assert.equal(isOauthReauthError(forbidden), true)
+  assert.equal(isOauthReauthError(cloudflare), false)
+  assert.equal(isOauthReauthError(new Error('Timed out connecting to Hermes backend')), false)
+})
+
+test('oauthTicketMintErrorMessage distinguishes auth expiry from reachability', () => {
+  assert.match(oauthTicketMintErrorMessage(new Error('401 cookie expired')), /sign in again/i)
+  assert.match(oauthTicketMintErrorMessage(Object.assign(new Error('522: error code: 522'), { statusCode: 522 })), /not reachable/i)
 })
 
 test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {

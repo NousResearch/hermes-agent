@@ -304,6 +304,24 @@ export interface Translations {
       needsHomeChannel?: string;
       noneConfigured?: string;
     };
+    /** Interactive timeline view. Optional — falls back to English
+     * literals until each locale carries the keys. */
+    timeline?: {
+      tab: string;
+      windows: { d1: string; d2: string; d7: string };
+      now: string;
+      recenter: string;
+      legendPast: string;
+      legendNext: string;
+      legendFuture: string;
+      legendPaused: string;
+      empty: string;
+      noOccurrences: string;
+      schedule: string;
+      edit: string;
+      close: string;
+      dense: string;
+    };
   };
 
   // ── Plugins page ──

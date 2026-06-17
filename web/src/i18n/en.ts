@@ -287,6 +287,22 @@ export const en: Translations = {
       noneConfigured:
         "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },
+    timeline: {
+      tab: "Timeline",
+      windows: { d1: "24h", d2: "48h", d7: "7d" },
+      now: "Now",
+      recenter: "Recenter",
+      legendPast: "Past",
+      legendNext: "Next",
+      legendFuture: "Upcoming",
+      legendPaused: "Paused",
+      empty: "No cron jobs to plot on the timeline.",
+      noOccurrences: "No run in this window",
+      schedule: "Schedule",
+      edit: "Edit",
+      close: "Close",
+      dense: "Fires very frequently",
+    },
   },
 
   profiles: {

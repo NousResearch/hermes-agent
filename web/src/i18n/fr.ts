@@ -277,6 +277,22 @@ export const fr: Translations = {
       slack: "Slack",
       email: "Email",
     },
+    timeline: {
+      tab: "Chronologie",
+      windows: { d1: "24 h", d2: "48 h", d7: "7 j" },
+      now: "Maintenant",
+      recenter: "Recentrer",
+      legendPast: "Passé",
+      legendNext: "Prochaine",
+      legendFuture: "À venir",
+      legendPaused: "En pause",
+      empty: "Aucune tâche cron à afficher sur la chronologie.",
+      noOccurrences: "Aucune exécution dans cette fenêtre",
+      schedule: "Planning",
+      edit: "Modifier",
+      close: "Fermer",
+      dense: "S'exécute très fréquemment",
+    },
   },
 
   profiles: {

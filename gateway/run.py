@@ -8318,7 +8318,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
-        self._cache_session_source(session_key, source)
+        # Preserve original session source on resume — don't overwrite with
+        # the interrupting message's metadata (wrong thread_id).  See #47445.
+        if not self._get_cached_session_source(session_key):
+            self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):
             try:
                 binding = self._session_db.get_telegram_topic_binding(
@@ -13520,6 +13523,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+
+        # On session resume after cross-thread interrupt, the current source
+        # may carry the interrupting message's metadata (thread_id=None on
+        # channel-level posts).  Fall back to the cached original session
+        # source so streamed responses route to the correct thread.  #47445
+        if _thread_metadata is None:
+            _cached_meta_source = self._get_cached_session_source(
+                self._session_key_for_source(source)
+            )
+            if _cached_meta_source is not None:
+                _thread_metadata = self._thread_metadata_for_source(
+                    _cached_meta_source,
+                    event_message_id,
+                )
 
         if _streaming_enabled:
             try:

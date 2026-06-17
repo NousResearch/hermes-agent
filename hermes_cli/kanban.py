@@ -59,10 +59,10 @@ def _fmt_task_line(t: kb.Task) -> str:
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     live = kb.live_worker_workspace_snapshot(t)
-    if "workspace_kind" in live:
-        workspace_kind = live["workspace_kind"]
-        workspace_path = live["workspace_path"]
-        branch_name = live["branch_name"]
+    if live:
+        workspace_kind = live.get("workspace_kind", t.workspace_kind)
+        workspace_path = live.get("workspace_path", t.workspace_path)
+        branch_name = live.get("branch_name", t.branch_name)
     else:
         workspace_kind = t.workspace_kind
         workspace_path = t.workspace_path

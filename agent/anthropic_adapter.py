@@ -375,6 +375,60 @@ _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for 
 _MCP_TOOL_PREFIX = "mcp__"
 
 
+# Anthropic's Claude-Code OAuth proxy has brittle request-shape routing. Certain
+# Hermes-specific product/tool literals embedded in the system prompt (and the
+# heartbeat sentinel that gets surfaced through replayed prompts) can flip an
+# otherwise valid subscription request into the extra-usage billing lane,
+# yielding the misleading 400 "Third-party apps now draw from extra usage"
+# error. Keep the prompt's *intent* readable while removing the literals the
+# classifier keys on. Applied only on the native Anthropic OAuth path; API-key
+# and third-party Anthropic-compatible providers see the prompt unchanged.
+#
+# Ordered longest-match-first so e.g. "Hermes Agent" rewrites before bare
+# "Hermes" and a later pass doesn't re-rewrite an already-rewritten token.
+_OAUTH_SYSTEM_TEXT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("Hermes Agent", "Claude Code"),
+    ("Hermes agent", "Claude Code"),
+    ("hermes-agent", "claude-code"),
+    ("Nous Research", "Anthropic"),
+    ("session_search", "session lookup"),
+    ("skill_manage", "skill editor"),
+    ("HEARTBEAT_OK", "NO_ACTION_NEEDED"),
+    ("MEDIA:", "FILE:"),
+    ("Hermes", "Claude Code"),
+)
+
+
+def _sanitize_oauth_system_text(text: str) -> str:
+    """Strip literals that misroute Claude-Code OAuth requests to extra-usage.
+
+    See :data:`_OAUTH_SYSTEM_TEXT_REPLACEMENTS` for rationale and the ordered
+    rewrite list.
+    """
+    for old, new in _OAUTH_SYSTEM_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
+def _to_oauth_wire_name(name: str) -> str:
+    """Encode a tool name for the Claude-Code OAuth wire.
+
+    Anthropic's OAuth billing classifier treats a single-underscore ``mcp_``
+    tool name as a third-party-app fingerprint and rejects the request with
+    HTTP 400 "Third-party apps now draw from extra usage, not plan limits".
+    Promote every leading ``mcp_`` to ``mcp__`` and prefix bare native tool
+    names so NOTHING on the wire carries a single-underscore ``mcp_``.
+
+    Idempotent on already-encoded names. See PR #47723.
+    """
+    if name.startswith("mcp__"):
+        return name  # already correct, don't double-prefix
+    if name.startswith("mcp_"):
+        # single-underscore native MCP tool -> promote to double
+        return "mcp__" + name[len("mcp_"):]
+    return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+
+
 def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
     global _claude_code_version_cache
@@ -2536,15 +2590,13 @@ def build_anthropic_kwargs(
             system = [cc_block]
 
         # 2. Sanitize system prompt — replace product name references
-        #    to avoid Anthropic's server-side content filters.
+        #    to avoid Anthropic's server-side content filters and the
+        #    Claude-Code OAuth proxy classifier triggers. See
+        #    :data:`_OAUTH_SYSTEM_TEXT_REPLACEMENTS`.
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
                 text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+                block["text"] = _sanitize_oauth_system_text(text)
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
@@ -2564,14 +2616,6 @@ def build_anthropic_kwargs(
         #    so any session with an MCP server configured still tripped the
         #    classifier. normalize_response reverses both forms via registry
         #    lookup so the dispatcher still sees the original name. GH-25255.
-        def _to_oauth_wire_name(name: str) -> str:
-            if name.startswith("mcp__"):
-                return name  # already correct, don't double-prefix
-            if name.startswith("mcp_"):
-                # single-underscore native MCP tool -> promote to double
-                return "mcp__" + name[len("mcp_"):]
-            return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
-
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:

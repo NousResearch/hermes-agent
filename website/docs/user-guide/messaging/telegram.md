@@ -537,6 +537,8 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - `@botusername` mentions
   - `/command@botusername` (Telegram's bot-menu command form that includes the bot name)
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
+  - follow-ups in a forum topic that already has an active session (see below)
+- Once a forum topic has an active session, follow-up messages in that topic are treated as part of the ongoing conversation and do not need a fresh mention, the same way Slack handles replies in an active thread. This applies to text and to media (photos, screenshots, and files), so an uncaptioned image continuing a conversation reaches the agent instead of being dropped by the mention gate. Starting a new topic conversation still needs a mention when `require_mention` is enabled, and `telegram.ignored_threads` still silences a topic entirely.
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see

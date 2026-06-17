@@ -7741,7 +7741,75 @@ class TelegramAdapter(BasePlatformAdapter):
         # _message_mentions_bot above — skip the redundant second call.
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
-        return self._message_matches_mention_patterns(message)
+        if self._message_matches_mention_patterns(message):
+            return True
+        # Ongoing conversation: a forum topic that already has an active
+        # session keeps accepting follow-up messages (text and media, even
+        # without a caption mention) so the conversation is not broken by a
+        # missing re-mention. Mirrors Slack thread behavior. Idle topics still
+        # require a mention to start, so the bot stays quiet on unrelated
+        # group chatter.
+        return self._forum_topic_has_active_session(message)
+
+    def _forum_topic_has_active_session(self, message: Message) -> bool:
+        """Return True when a group forum topic already has an active session.
+
+        Mirrors :meth:`SlackAdapter._has_active_session_for_thread`. Once a
+        session is running in a forum topic, follow-up messages in that topic
+        belong to the ongoing conversation and should be processed without a
+        fresh @mention. This is what lets an uncaptioned screenshot continue an
+        active topic conversation instead of being dropped by the mention gate.
+
+        Only fires for real forum topic threads that already have a session, so
+        idle topics still need a mention to start. Builds the lookup key with
+        ``build_session_key`` using the same isolation flags the store used to
+        key the entry, so the lookup matches the stored key. Any failure returns
+        False (mention still required).
+        """
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return False
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            chat = getattr(message, "chat", None)
+            chat_id = str(getattr(chat, "id", "") or "")
+            if not chat_id:
+                return False
+            thread_id = self._effective_message_thread_id(message)
+            if not thread_id:
+                return False
+            user = getattr(message, "from_user", None)
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=chat_id,
+                chat_type="group",
+                user_id=str(user.id) if user is not None else None,
+                thread_id=thread_id,
+            )
+            # Read isolation flags from the session store's own config, not the
+            # adapter's PlatformConfig.extra. The store keys entries via
+            # SessionStore._generate_session_key, which reads these flags from
+            # the gateway config it holds; using the same source keeps the
+            # lookup key aligned with the stored key when an operator changes
+            # group_sessions_per_user / thread_sessions_per_user. Mirrors
+            # SlackAdapter._has_active_session_for_thread.
+            store_cfg = getattr(store, "config", None)
+            group_per_user = (
+                getattr(store_cfg, "group_sessions_per_user", True) if store_cfg is not None else True
+            )
+            thread_per_user = (
+                getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg is not None else False
+            )
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=group_per_user,
+                thread_sessions_per_user=thread_per_user,
+            )
+            store._ensure_loaded()
+            return session_key in store._entries
+        except Exception:
+            return False
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.

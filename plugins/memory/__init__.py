@@ -198,6 +198,15 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
         provider = _load_provider_from_dir(provider_dir)
         if provider:
             return provider
+        # The general plugin system may be concurrently registering this
+        # provider in a background task.  A single brief retry avoids a
+        # spurious WARNING on every cold start when the provider arrives
+        # milliseconds later.  (#47954)
+        import time
+        time.sleep(0.1)
+        provider = _load_provider_from_dir(provider_dir)
+        if provider:
+            return provider
         logger.warning("Memory provider '%s' loaded but no provider instance found", name)
         return None
     except Exception as e:

@@ -435,6 +435,35 @@ class TestPluginMemoryDiscovery:
         from plugins.memory import load_memory_provider
         assert load_memory_provider("nonexistent_provider") is None
 
+    def test_retry_succeeds_on_second_attempt(self, monkeypatch):
+        """load_memory_provider retries once when first probe finds no provider.
+
+        Regression test for #47954: the plugin system may register the
+        provider milliseconds after the initial probe.  A single brief
+        retry avoids a spurious WARNING on every cold start.
+        """
+        from plugins.memory import load_memory_provider
+
+        call_count = {"n": 0}
+        fake_provider = type("FakeProvider", (), {
+            "name": "fake",
+            "is_available": lambda self: True,
+        })()
+
+        def patched_load(provider_dir):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return None  # first probe: provider not ready yet
+            return fake_provider  # second probe: provider registered
+
+        monkeypatch.setattr("plugins.memory._load_provider_from_dir", patched_load)
+        monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: "/fake/dir")
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        result = load_memory_provider("fake")
+        assert result is fake_provider
+        assert call_count["n"] == 2  # retried once
+
 
 class TestUserInstalledProviderDiscovery:
     """Memory providers installed to $HERMES_HOME/plugins/ should be found.

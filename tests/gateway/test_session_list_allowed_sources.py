@@ -42,7 +42,7 @@ def _call(limit: int | None = None):
 def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     """acp / webhook / custom sources should all appear; only ``tool`` is hidden."""
     rows = [
-        {"id": "tui-1", "source": "tui", "started_at": 9},
+        {"id": "tui-1", "source": "tui", "started_at": 9, "ended_at": 11},
         {"id": "tool-1", "source": "tool", "started_at": 8},
         {"id": "tg-1", "source": "telegram", "started_at": 7},
         {"id": "acp-1", "source": "acp", "started_at": 6},
@@ -54,7 +54,9 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     monkeypatch.setattr(server, "_get_db", lambda: db)
 
     resp = _call(limit=10)
-    ids = [s["id"] for s in resp["result"]["sessions"]]
+    assert resp is not None
+    session_rows = (resp.get("result") or {}).get("sessions") or []
+    ids = [s["id"] for s in session_rows]
 
     # Every human-facing source — including previously-hidden acp, webhook,
     # and custom sources — must surface in the picker now.
@@ -64,6 +66,7 @@ def test_session_list_surfaces_all_user_facing_sources(monkeypatch):
     assert "acp-1" in ids, "acp sessions were being hidden by the old allow-list"
     assert "webhook-1" in ids, "webhook sessions were being hidden by the old allow-list"
     assert "custom-1" in ids, "custom HERMES_SESSION_SOURCE values were being hidden"
+    assert next(s for s in session_rows if s["id"] == "tui-1")["ended_at"] == 11
 
     # Only internal sub-agent runs stay hidden.
     assert "tool-1" not in ids
@@ -77,6 +80,7 @@ def test_session_list_default_limit_is_200(monkeypatch):
     _call()  # no explicit limit
     # fetch_limit = max(limit * 2, 200); limit defaults to 200, so 400.
     assert db.calls[0].get("limit") == 400, db.calls[0]
+    assert db.calls[0].get("order_by_recent_close") is True, db.calls[0]
 
 
 def test_session_list_respects_explicit_limit(monkeypatch):

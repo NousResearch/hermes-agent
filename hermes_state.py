@@ -1979,7 +1979,7 @@ class SessionDB:
 
     def list_sessions_rich(
         self,
-        source: str = None,
+        source: Optional[str] = None,
         exclude_sources: List[str] = None,
         limit: int = 20,
         offset: int = 0,
@@ -1987,6 +1987,7 @@ class SessionDB:
         min_message_count: int = 0,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
+        order_by_recent_close: bool = False,
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
@@ -2017,6 +2018,11 @@ class SessionDB:
         surfaces in the correct slot. Ordering is computed at SQL level via
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
+
+        Pass ``order_by_recent_close=True`` for resume pickers that should show
+        the sessions most recently closed first. This orders by ``ended_at``
+        when present, falling back to the last message timestamp and then
+        ``started_at`` for legacy/open rows.
         """
         where_clauses = []
         params = []
@@ -2143,6 +2149,11 @@ class SessionDB:
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
+            order_sql = (
+                "COALESCE(s.ended_at, last_active, s.started_at) DESC, s.started_at DESC, s.id DESC"
+                if order_by_recent_close
+                else "s.started_at DESC"
+            )
             query = f"""
                 SELECT s.*,
                     COALESCE(
@@ -2158,7 +2169,7 @@ class SessionDB:
                     ) AS last_active
                 FROM sessions s
                 {where_sql}
-                ORDER BY s.started_at DESC
+                ORDER BY {order_sql}
                 LIMIT ? OFFSET ?
             """
             params.extend([limit, offset])

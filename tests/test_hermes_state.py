@@ -2728,6 +2728,31 @@ class TestListSessionsRich:
             s["id"] for s in db.list_sessions_rich(limit=5, order_by_last_active=True)
         ] == ["old", "new"]
 
+    def test_order_by_recent_close_surfaces_most_recently_closed_first(self, db):
+        t0 = 1709500000.0
+        db.create_session("older-start-recent-close", "cli")
+        db.create_session("newer-start-old-close", "cli")
+
+        with db._lock:
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, ended_at=? WHERE id=?",
+                (t0, t0 + 100, "older-start-recent-close"),
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at=?, ended_at=? WHERE id=?",
+                (t0 + 50, t0 + 60, "newer-start-old-close"),
+            )
+            db._conn.commit()
+
+        assert [s["id"] for s in db.list_sessions_rich(limit=5)] == [
+            "newer-start-old-close",
+            "older-start-recent-close",
+        ]
+        assert [s["id"] for s in db.list_sessions_rich(limit=5, order_by_recent_close=True)] == [
+            "older-start-recent-close",
+            "newer-start-old-close",
+        ]
+
     def test_order_by_last_active_uses_compression_tip_activity(self, db):
         """A compression root whose tip was touched recently must rank above
         a newer uncompressed session, even when that tip activity lives in a

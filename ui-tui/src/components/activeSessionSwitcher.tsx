@@ -70,17 +70,27 @@ export const relativeSessionAge = (ts?: number) => {
     return ''
   }
 
-  const days = (Date.now() / 1000 - ts) / 86400
+  const elapsed = Math.max(0, Date.now() / 1000 - ts)
+  const minutes = Math.floor(elapsed / 60)
 
-  if (days < 1) {
-    return 'today'
+  if (minutes < 1) {
+    return 'just now'
   }
 
-  if (days < 2) {
+  if (minutes < 60) {
+    return `${minutes}m ago`
+  }
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) {
+    return `${hours}h ago`
+  }
+
+  if (hours < 48) {
     return 'yesterday'
   }
 
-  return `${Math.floor(days)}d ago`
+  return `${Math.floor(hours / 24)}d ago`
 }
 
 /** Drop already-live sessions from the resumable history list (dedupe by id). */
@@ -784,7 +794,7 @@ export function ActiveSessionSwitcher({
 
               <Box {...fixedSessionColumnStyle()} width={11}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {relativeSessionAge(h.started_at)}
+                  {relativeSessionAge(h.ended_at || h.started_at)}
                 </Text>
               </Box>
 

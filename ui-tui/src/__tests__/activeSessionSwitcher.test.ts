@@ -195,7 +195,9 @@ describe('unified Sessions overlay helpers', () => {
   it('renders relative session age, blank when unknown', () => {
     const nowSec = Math.floor(Date.now() / 1000)
 
-    expect(relativeSessionAge(nowSec)).toBe('today')
+    expect(relativeSessionAge(nowSec)).toBe('just now')
+    expect(relativeSessionAge(nowSec - 5 * 60)).toBe('5m ago')
+    expect(relativeSessionAge(nowSec - 3 * 3600)).toBe('3h ago')
     expect(relativeSessionAge(nowSec - 36 * 3600)).toBe('yesterday')
     expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
     expect(relativeSessionAge(undefined)).toBe('')

@@ -4148,7 +4148,7 @@ def _(rid, params: dict) -> dict:
         fetch_limit = max(limit * 2, 200)
         rows = [
             s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
+            for s in db.list_sessions_rich(source=None, limit=fetch_limit, order_by_recent_close=True)
             if (s.get("source") or "").strip().lower() not in deny
         ][:limit]
         return _ok(
@@ -4160,6 +4160,7 @@ def _(rid, params: dict) -> dict:
                         "title": s.get("title") or "",
                         "preview": s.get("preview") or "",
                         "started_at": s.get("started_at") or 0,
+                        "ended_at": s.get("ended_at") or 0,
                         "message_count": s.get("message_count") or 0,
                         "source": s.get("source") or "",
                     }

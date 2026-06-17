@@ -180,9 +180,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 # rebuilds self._routes from _static_routes and would drop
                 # the sentinel on the next reload. Instead, auth is handled
                 # at request time via the allow_insecure key directly.
-                continue
+                # Fall through to remaining validations (deliver_only etc.)
 
-            if not secret:
+            elif not secret:
                 raise ValueError(
                     f"[webhook] Route '{name}' has no HMAC secret. "
                     f"Set 'secret' on the route or set 'allow_insecure: true' "

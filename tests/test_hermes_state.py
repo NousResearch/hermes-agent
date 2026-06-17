@@ -806,6 +806,177 @@ class TestMessageStorage:
 
 
 # =========================================================================
+# Timestamp preservation
+# =========================================================================
+
+
+class TestTimestampPreservation:
+    """Tests for the timestamp preservation feature.
+
+    ``append_message()`` and ``replace_messages()`` now accept/forward an
+    optional ``timestamp`` parameter.  These tests verify custom timestamps
+    survive the round trip through the DB and fall back to ``time.time()``
+    when omitted.
+    """
+
+    @staticmethod
+    def _build_messages(ts_list, contents=None, roles=None):
+        """Build message dicts with explicit timestamps for testing."""
+        if contents is None:
+            contents = [f"msg-{i}" for i in range(len(ts_list))]
+        if roles is None:
+            roles = ["user", "assistant"] * (len(ts_list) // 2 + 1)
+        return [
+            {"role": roles[i], "content": contents[i], "timestamp": ts}
+            for i, ts in enumerate(ts_list)
+        ]
+
+    def _raw_timestamps(self, db, session_id):
+        """Query timestamp column directly from SQLite for verification."""
+        rows = db._conn.execute(
+            "SELECT timestamp FROM messages WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def test_append_message_with_explicit_timestamp(self, db):
+        """A caller-supplied timestamp is stored and round-tripped."""
+        db.create_session(session_id="s1", source="cli")
+        ts = 1_234_567.0
+        mid = db.append_message("s1", role="user", content="hello",
+                                timestamp=ts)
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 1
+        assert msgs[0]["timestamp"] == ts
+        assert msgs[0]["id"] == mid
+        raw = self._raw_timestamps(db, "s1")
+        assert raw == [ts]
+
+    def test_append_message_multiple_timestamps(self, db):
+        """Multiple messages with different explicit timestamps."""
+        db.create_session(session_id="s1", source="cli")
+        timestamps = [1_000_000.0, 2_000_000.0, 3_000_000.0]
+        for i, ts in enumerate(timestamps, 1):
+            db.append_message("s1", role="user", content=f"msg {i}",
+                              timestamp=ts)
+        msgs = db.get_messages("s1")
+        assert [m["timestamp"] for m in msgs] == timestamps
+        assert self._raw_timestamps(db, "s1") == timestamps
+
+    def test_append_message_without_timestamp_defaults(self, db):
+        """Omitting timestamp stores a recent time.time() value."""
+        db.create_session(session_id="s1", source="cli")
+        before = time.time()
+        db.append_message("s1", role="user", content="hello")
+        after = time.time()
+        msgs = db.get_messages("s1")
+        stored = msgs[0]["timestamp"]
+        assert before <= stored <= after, (
+            f"Expected timestamp between {before} and {after}, got {stored}"
+        )
+        raw_stored = self._raw_timestamps(db, "s1")[0]
+        assert before <= raw_stored <= after
+
+    def test_append_message_mixed_timestamps(self, db):
+        """Messages with and without explicit timestamps — those without
+        get a current time, those with keep their value."""
+        db.create_session(session_id="s1", source="cli")
+        explicit_ts = 500_000.0
+        db.append_message("s1", role="user", content="explicit",
+                          timestamp=explicit_ts)
+        before = time.time()
+        db.append_message("s1", role="user", content="default")
+        after = time.time()
+        msgs = db.get_messages("s1")
+        assert msgs[0]["timestamp"] == explicit_ts
+        assert before <= msgs[1]["timestamp"] <= after
+        raw = self._raw_timestamps(db, "s1")
+        assert raw[0] == explicit_ts
+        assert before <= raw[1] <= after
+
+    def test_replace_messages_preserves_timestamps(self, db):
+        """Message dicts with ``timestamp`` passed to ``replace_messages``
+        retain those timestamps after the rewrite."""
+        db.create_session(session_id="s1", source="cli")
+        msgs_in = [
+            {"role": "user", "content": "first", "timestamp": 100.0},
+            {"role": "assistant", "content": "second", "timestamp": 200.0},
+            {"role": "user", "content": "third", "timestamp": 300.0},
+        ]
+        db.replace_messages("s1", msgs_in)
+        msgs_out = db.get_messages("s1")
+        assert [m["timestamp"] for m in msgs_out] == [100.0, 200.0, 300.0]
+        assert self._raw_timestamps(db, "s1") == [100.0, 200.0, 300.0]
+
+    def test_replace_messages_fallback_when_no_timestamp(self, db):
+        """Message dicts without ``timestamp`` get auto-incrementing
+        fallback values (starting from ~time.time())."""
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages("s1", [
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+        ])
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 2
+        t0, t1 = msgs[0]["timestamp"], msgs[1]["timestamp"]
+        assert t1 > t0
+        raw = self._raw_timestamps(db, "s1")
+        assert len(raw) == 2
+        assert raw[1] > raw[0]
+
+    def test_replace_messages_mixed_timestamps(self, db):
+        """Some messages with timestamp, some without — a message without
+        timestamp uses the fallback clock, which is larger than any
+        explicit historical timestamp."""
+        db.create_session(session_id="s1", source="cli")
+        old_ts = 1_000.0
+        db.replace_messages("s1", [
+            {"role": "user", "content": "old", "timestamp": old_ts},
+            {"role": "user", "content": "new"},
+        ])
+        msgs = db.get_messages("s1")
+        assert msgs[0]["timestamp"] == old_ts
+        assert msgs[1]["timestamp"] > old_ts
+        raw = self._raw_timestamps(db, "s1")
+        assert raw[0] == old_ts
+        assert raw[1] > old_ts
+
+    def test_fork_chain_preserves_timestamps(self, db):
+        """Simulate a /branch fork: copy messages from parent to child,
+        verify timestamps are identical in both via raw SQL."""
+        base_ts = 1_700_000_000.0
+        timestamps = [base_ts + i * 20 for i in range(5)]
+        contents = [
+            "how do I fix a TypeError?",
+            "show me the traceback",
+            "TypeError at line 42",
+            "issue in utils.py",
+            "try int(...)",
+        ]
+        roles = ["user", "assistant", "tool", "user", "assistant"]
+        parent_msgs = self._build_messages(timestamps, contents, roles)
+
+        db.create_session(session_id="parent", source="cli")
+        for msg in parent_msgs:
+            db.append_message("parent", role=msg["role"],
+                              content=msg["content"],
+                              timestamp=msg["timestamp"])
+
+        db.create_session(session_id="child", source="cli",
+                          parent_session_id="parent")
+        for msg in parent_msgs:
+            db.append_message("child", role=msg["role"],
+                              content=msg["content"],
+                              timestamp=msg["timestamp"])
+
+        parent_raw = self._raw_timestamps(db, "parent")
+        child_raw = self._raw_timestamps(db, "child")
+        assert parent_raw == timestamps
+        assert child_raw == timestamps
+        assert parent_raw == child_raw
+
+
+# =========================================================================
 # FTS5 search
 # =========================================================================
 

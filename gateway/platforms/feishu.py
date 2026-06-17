@@ -197,6 +197,7 @@ _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
 _DEFAULT_MEDIA_BATCH_DELAY_SECONDS = 0.8
 _DEFAULT_DEDUP_CACHE_SIZE = 2048
+_DEFAULT_RECENT_CONTEXT_LIMIT = 20
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
 _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
@@ -241,6 +242,12 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_RECENT_CONTEXT_MAX_CHARS = 6000
+_FEISHU_RECENT_CONTEXT_ENTRY_MAX_CHARS = 800
+_FEISHU_RECENT_CONTEXT_STATE_FILE = "feishu_recent_context.json"
+_FEISHU_RECENT_CONTEXT_HEADER = (
+    "[Observed Feishu recent chat context - context only, prioritize the new message]"
+)
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -361,6 +368,14 @@ class FeishuNormalizedMessage:
 
 
 @dataclass(frozen=True)
+class FeishuRecentContextEntry:
+    message_id: str
+    sender_label: str
+    text: str
+    observed_at: float
+
+
+@dataclass(frozen=True)
 class FeishuAdapterSettings:
     app_id: str  # Canonical bot/app identifier (credential, not from event payloads)
     app_secret: str
@@ -378,6 +393,8 @@ class FeishuAdapterSettings:
     bot_user_id: str
     bot_name: str
     dedup_cache_size: int
+    recent_context_limit: int
+    recent_context_state_path: Optional[Path]
     text_batch_delay_seconds: float
     text_batch_split_delay_seconds: float
     text_batch_max_messages: int
@@ -425,6 +442,7 @@ RejectReason = Literal[
     "bots_disabled",
     "bot_not_mentioned",
     "group_policy_rejected",
+    "human_to_human_mention",
 ]
 
 
@@ -1441,6 +1459,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
+        self._recent_context_by_chat: "OrderedDict[str, collections.deque[FeishuRecentContextEntry]]" = OrderedDict()
+        self._recent_context_lock = threading.Lock()
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
@@ -1474,6 +1494,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
+        self._load_recent_context_state()
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -1537,6 +1558,24 @@ class FeishuAdapter(BasePlatformAdapter):
                 32,
                 int(os.getenv("HERMES_FEISHU_DEDUP_CACHE_SIZE", str(_DEFAULT_DEDUP_CACHE_SIZE))),
             ),
+            recent_context_limit=_coerce_required_int(
+                os.getenv("HERMES_FEISHU_RECENT_CONTEXT_LIMIT"),
+                default=_DEFAULT_RECENT_CONTEXT_LIMIT,
+                min_value=0,
+            ),
+            recent_context_state_path=(
+                Path(
+                    str(
+                        extra.get("recent_context_state_path")
+                        or os.getenv("HERMES_FEISHU_RECENT_CONTEXT_STATE_PATH", "")
+                    )
+                ).expanduser()
+                if (
+                    extra.get("recent_context_state_path")
+                    or os.getenv("HERMES_FEISHU_RECENT_CONTEXT_STATE_PATH", "")
+                )
+                else None
+            ),
             text_batch_delay_seconds=float(
                 os.getenv("HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", str(_DEFAULT_TEXT_BATCH_DELAY_SECONDS))
             ),
@@ -1593,6 +1632,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._bot_user_id = settings.bot_user_id
         self._bot_name = settings.bot_name
         self._dedup_cache_size = settings.dedup_cache_size
+        self._recent_context_limit = settings.recent_context_limit
+        self._recent_context_state_path = settings.recent_context_state_path
         self._text_batch_delay_seconds = settings.text_batch_delay_seconds
         self._text_batch_split_delay_seconds = settings.text_batch_split_delay_seconds
         self._text_batch_max_messages = settings.text_batch_max_messages
@@ -2422,6 +2463,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
         reason = self._admit(sender, message)
         if reason is not None:
+            self._observe_rejected_message_for_context(
+                sender=sender,
+                message=message,
+                reason=reason,
+            )
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             return
 
@@ -3152,6 +3198,10 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
+        channel_context = self._build_recent_channel_context(
+            chat_id,
+            current_message_id=message_id,
+        )
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
@@ -3172,9 +3222,20 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
+            channel_context=channel_context,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
+        if not is_bot and normalized.message_type == MessageType.TEXT:
+            self._remember_recent_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                sender_label=self._sender_label_for_context(
+                    sender_id,
+                    sender_profile=sender_profile,
+                ),
+                text=normalized.text,
+            )
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
@@ -4073,6 +4134,243 @@ class FeishuAdapter(BasePlatformAdapter):
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
         return str(placeholder).strip() or None
 
+    # =========================================================================
+    # Recent chat context
+    # =========================================================================
+
+    def _ensure_recent_context_state(self) -> None:
+        if not hasattr(self, "_recent_context_by_chat"):
+            self._recent_context_by_chat = OrderedDict()
+        if not hasattr(self, "_recent_context_lock"):
+            self._recent_context_lock = threading.Lock()
+        if not hasattr(self, "_recent_context_limit"):
+            self._recent_context_limit = _DEFAULT_RECENT_CONTEXT_LIMIT
+        if not hasattr(self, "_recent_context_state_path"):
+            self._recent_context_state_path = None
+
+    def _load_recent_context_state(self) -> None:
+        self._ensure_recent_context_state()
+        raw_path = getattr(self, "_recent_context_state_path", None)
+        if not raw_path:
+            return
+        path = Path(raw_path)
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("[Feishu] Failed to load recent context state from %s", path, exc_info=True)
+            return
+        raw_chats = data.get("chats", {}) if isinstance(data, dict) else {}
+        if not isinstance(raw_chats, dict):
+            return
+        limit = int(getattr(self, "_recent_context_limit", _DEFAULT_RECENT_CONTEXT_LIMIT) or 0)
+        if limit <= 0:
+            return
+        restored: "OrderedDict[str, collections.deque[FeishuRecentContextEntry]]" = OrderedDict()
+        for chat_id, rows in raw_chats.items():
+            if not isinstance(rows, list):
+                continue
+            entries: list[FeishuRecentContextEntry] = []
+            for row in rows[-limit:]:
+                if not isinstance(row, dict):
+                    continue
+                text = self._compact_recent_context_text(str(row.get("text", "") or ""))
+                if not text:
+                    continue
+                entries.append(
+                    FeishuRecentContextEntry(
+                        message_id=str(row.get("message_id", "") or ""),
+                        sender_label=str(row.get("sender_label", "") or "unknown"),
+                        text=text,
+                        observed_at=float(row.get("observed_at") or 0.0),
+                    )
+                )
+            if entries:
+                restored[str(chat_id)] = collections.deque(entries[-limit:], maxlen=limit)
+        with self._recent_context_lock:
+            self._recent_context_by_chat = restored
+
+    def _persist_recent_context_state(self) -> None:
+        self._ensure_recent_context_state()
+        raw_path = getattr(self, "_recent_context_state_path", None)
+        if not raw_path:
+            return
+        path = Path(raw_path)
+        try:
+            with self._recent_context_lock:
+                chats = {
+                    chat_id: [
+                        {
+                            "message_id": entry.message_id,
+                            "sender_label": entry.sender_label,
+                            "text": entry.text,
+                            "observed_at": entry.observed_at,
+                        }
+                        for entry in bucket
+                    ]
+                    for chat_id, bucket in self._recent_context_by_chat.items()
+                }
+                latest_by_chat = {}
+                for chat_id, bucket in self._recent_context_by_chat.items():
+                    if not bucket:
+                        continue
+                    latest = bucket[-1]
+                    latest_by_chat[chat_id] = {
+                        "latest_message_id": latest.message_id,
+                        "latest_sender_label": latest.sender_label,
+                        "latest_purpose": latest.text,
+                        "updated_at": latest.observed_at,
+                    }
+            atomic_json_write(path, {"chats": chats, "latest_by_chat": latest_by_chat})
+        except Exception:
+            logger.warning("[Feishu] Failed to persist recent context state to %s", path, exc_info=True)
+
+    @staticmethod
+    def _compact_recent_context_text(text: str) -> str:
+        compacted = _WHITESPACE_RE.sub(" ", (text or "").strip())
+        if len(compacted) <= _FEISHU_RECENT_CONTEXT_ENTRY_MAX_CHARS:
+            return compacted
+        return compacted[: _FEISHU_RECENT_CONTEXT_ENTRY_MAX_CHARS - 1].rstrip() + "…"
+
+    @staticmethod
+    def _sender_label_from_sender_id(sender_id: Any, fallback: str = "unknown") -> str:
+        return (
+            str(getattr(sender_id, "open_id", "") or "").strip()
+            or str(getattr(sender_id, "user_id", "") or "").strip()
+            or str(getattr(sender_id, "union_id", "") or "").strip()
+            or fallback
+        )
+
+    def _sender_label_for_context(
+        self,
+        sender_or_id: Any,
+        *,
+        sender_profile: Optional[Dict[str, str]] = None,
+    ) -> str:
+        if sender_profile:
+            profile_name = str(sender_profile.get("user_name") or "").strip()
+            if profile_name:
+                return profile_name
+        sender_id = getattr(sender_or_id, "sender_id", sender_or_id)
+        return self._sender_label_from_sender_id(sender_id)
+
+    def _remember_recent_message(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        sender_label: str,
+        text: str,
+    ) -> None:
+        """Remember a bounded, human-authored Feishu message for later context."""
+
+        self._ensure_recent_context_state()
+        limit = int(getattr(self, "_recent_context_limit", _DEFAULT_RECENT_CONTEXT_LIMIT) or 0)
+        if limit <= 0:
+            return
+        chat_id = str(chat_id or "").strip()
+        message_id = str(message_id or "").strip()
+        text = self._compact_recent_context_text(text)
+        if not chat_id or not text:
+            return
+
+        entry = FeishuRecentContextEntry(
+            message_id=message_id,
+            sender_label=str(sender_label or "unknown").strip() or "unknown",
+            text=text,
+            observed_at=time.time(),
+        )
+        changed = False
+        with self._recent_context_lock:
+            bucket = self._recent_context_by_chat.get(chat_id)
+            if bucket is None or bucket.maxlen != limit:
+                existing = list(bucket or [])[-limit:]
+                bucket = collections.deque(existing, maxlen=limit)
+                self._recent_context_by_chat[chat_id] = bucket
+            else:
+                self._recent_context_by_chat.move_to_end(chat_id)
+            if message_id and any(item.message_id == message_id for item in bucket):
+                return
+            bucket.append(entry)
+            changed = True
+            while len(self._recent_context_by_chat) > self.CHAT_LOCK_MAX_SIZE:
+                self._recent_context_by_chat.popitem(last=False)
+        if changed:
+            self._persist_recent_context_state()
+
+    def _build_recent_channel_context(
+        self,
+        chat_id: str,
+        *,
+        current_message_id: Optional[str] = None,
+    ) -> Optional[str]:
+        self._ensure_recent_context_state()
+        chat_id = str(chat_id or "").strip()
+        if not chat_id:
+            return None
+        with self._recent_context_lock:
+            bucket = self._recent_context_by_chat.get(chat_id)
+            if not bucket:
+                return None
+            self._recent_context_by_chat.move_to_end(chat_id)
+            entries = list(bucket)
+
+        lines: List[str] = []
+        current_message_id = str(current_message_id or "").strip()
+        for entry in entries:
+            if current_message_id and entry.message_id == current_message_id:
+                continue
+            line = f"- {entry.sender_label}: {entry.text}"
+            lines.append(line)
+
+        body = "\n".join(lines).strip()
+        if not body:
+            return None
+        if len(body) > _FEISHU_RECENT_CONTEXT_MAX_CHARS:
+            body = body[-_FEISHU_RECENT_CONTEXT_MAX_CHARS:].lstrip()
+        return f"{_FEISHU_RECENT_CONTEXT_HEADER}\n{body}"
+
+    def _has_human_to_human_mention(self, message: Any) -> bool:
+        mentions = getattr(message, "mentions", None) or []
+        if not mentions or self._mentions_self(message):
+            return False
+        normalized = normalize_feishu_message(
+            message_type=getattr(message, "message_type", "") or "",
+            raw_content=getattr(message, "content", "") or "",
+            mentions=mentions,
+            bot=self._bot_identity(),
+        )
+        return any(
+            not ref.is_self
+            and not ref.is_all
+            and bool(ref.open_id or ref.name)
+            for ref in normalized.mentions
+        )
+
+    def _observe_rejected_message_for_context(
+        self,
+        *,
+        sender: Any,
+        message: Any,
+        reason: RejectReason,
+    ) -> None:
+        if reason != "human_to_human_mention" or _is_bot_sender(sender):
+            return
+        text = self._extract_text_from_raw_content(
+            msg_type=getattr(message, "message_type", "") or "",
+            raw_content=getattr(message, "content", "") or "",
+            mentions=getattr(message, "mentions", None),
+        )
+        if not text:
+            return
+        self._remember_recent_message(
+            chat_id=getattr(message, "chat_id", "") or "",
+            message_id=getattr(message, "message_id", "") or "",
+            sender_label=self._sender_label_for_context(sender),
+            text=text,
+        )
+
     @staticmethod
     def _default_image_media_type(ext: str) -> str:
         normalized_ext = (ext or "").lower()
@@ -4118,6 +4416,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         if not is_group:
             return None
+
+        if not is_bot and not require_mention and self._has_human_to_human_mention(message):
+            return "human_to_human_mention"
 
         if not self._allow_group_message(
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,

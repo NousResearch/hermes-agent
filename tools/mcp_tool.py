@@ -2350,7 +2350,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
-                    )
+                    ),
+                    "_business_error": True,
                 }, ensure_ascii=False)
 
             # Collect text from content blocks. MCP tool results can also
@@ -2396,7 +2397,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Check if the MCP tool itself returned an error
             try:
                 parsed = json.loads(result)
-                if "error" in parsed:
+                if parsed.get("_business_error"):
+                    # Business-logic error (tool returned isError=true).
+                    # The server itself is healthy — do NOT bump the
+                    # circuit breaker. (#47851)
+                    pass
+                elif "error" in parsed:
                     _bump_server_error(server_name)
                 else:
                     _reset_server_error(server_name)  # success — reset

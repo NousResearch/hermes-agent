@@ -1964,13 +1964,22 @@ class TelegramAdapter(BasePlatformAdapter):
                             self.name, topic_name, seed_err,
                         )
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
         By default, uses long polling (outbound connection to Telegram).
         If ``TELEGRAM_WEBHOOK_URL`` is set, starts an HTTP webhook server
         instead.  Webhook mode is useful for cloud deployments (Fly.io,
         Railway) where inbound HTTP can wake a suspended machine.
+
+        ``is_reconnect`` distinguishes a cold first boot (``False``, default
+        — drop any stale queue) from a watcher-reconnect after a
+        prolonged outage (``True`` — preserve the messages that the Bot
+        API queued during the outage, otherwise all user messages sent
+        while the platform was down are silently lost). The Telegram
+        network-error ladder and 409-conflict handler already pass
+        ``drop_pending_updates=False`` for the same reason (#46621);
+        bootstrap just needed to follow suit on the reconnect path.
 
         Env vars for webhook mode::
 
@@ -1984,7 +1993,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name,
             )
             return False
-        
+
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
             return False
@@ -2161,7 +2170,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    # Webhooks are push-based — there's no Bot API queue
+                    # to drop, so this flag is a no-op in practice. Kept
+                    # False for consistency with the in-process ladder.
+                    drop_pending_updates=False,
                 )
                 self._webhook_mode = True
                 logger.info(
@@ -2194,7 +2206,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    # Preserve the Bot API queue on watcher reconnect
+                    # (messages sent during an outage must reach us after
+                    # recovery). Cold first boot keeps the historical
+                    # ``True`` behavior via the ``is_reconnect`` flag plumbed
+                    # in by ``GatewayRunner._platform_reconnect_watcher``.
+                    # Mirrors ``_handle_polling_network_error`` and the
+                    # 409-conflict handler, which already pass ``False`` here
+                    # for the same reason. Fixes #46621.
+                    drop_pending_updates=not is_reconnect,
                     error_callback=_polling_error_callback,
                 )
             

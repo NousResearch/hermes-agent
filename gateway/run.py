@@ -2754,13 +2754,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return max(0.0, timeout)
         return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
 
-    async def _connect_adapter_with_timeout(self, adapter, platform) -> bool:
-        """Connect an adapter without allowing one platform to block others."""
+    async def _connect_adapter_with_timeout(
+        self, adapter, platform, *, is_reconnect: bool = False
+    ) -> bool:
+        """Connect an adapter without allowing one platform to block others.
+
+        ``is_reconnect`` is forwarded to ``adapter.connect(is_reconnect=...)``
+        so platform adapters can distinguish a cold first boot (drop stale
+        queue) from a watcher reconnect after a prolonged outage (preserve
+        the Bot API queue so messages sent during the outage are not
+        silently dropped — #46621).
+        """
         timeout = self._platform_connect_timeout_secs()
         if timeout <= 0:
-            return await adapter.connect()
+            return await adapter.connect(is_reconnect=is_reconnect)
         try:
-            return await asyncio.wait_for(adapter.connect(), timeout=timeout)
+            return await asyncio.wait_for(
+                adapter.connect(is_reconnect=is_reconnect), timeout=timeout
+            )
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
                 f"{platform.value} connect timed out after {timeout:g}s"
@@ -5964,7 +5975,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
 
-                    success = await self._connect_adapter_with_timeout(adapter, platform)
+                    success = await self._connect_adapter_with_timeout(
+                        adapter, platform, is_reconnect=True
+                    )
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)

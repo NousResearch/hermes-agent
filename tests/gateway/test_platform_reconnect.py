@@ -26,8 +26,12 @@ class StubAdapter(BasePlatformAdapter):
         self._succeed = succeed
         self._fatal_error = fatal_error
         self._fatal_retryable = fatal_retryable
+        # Records every (is_reconnect,) tuple that connect() was called with
+        # so tests can assert whether the watcher passed the reconnect flag.
+        self.connect_calls: list[bool] = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):  # noqa: D401
+        self.connect_calls.append(is_reconnect)
         if self._fatal_error:
             self._set_fatal_error("test_error", self._fatal_error, retryable=self._fatal_retryable)
             return False
@@ -140,7 +144,10 @@ class TestStartupPlatformIsolation:
         runner = _make_runner()
         adapter = StubAdapter()
 
-        async def hang():
+        # StubAdapter.connect now takes ``is_reconnect`` (see #46621).
+        # The hanging stub used here only needs to block; the reconnect
+        # flag is irrelevant to the timeout behavior under test.
+        async def hang(*, is_reconnect: bool = False):
             await asyncio.sleep(60)
             return True
 
@@ -216,6 +223,71 @@ class TestPlatformReconnectWatcher:
 
         assert Platform.TELEGRAM not in runner._failed_platforms
         assert Platform.TELEGRAM in runner.adapters
+
+    @pytest.mark.asyncio
+    async def test_reconnect_passes_is_reconnect_true_to_adapter(self):
+        """The watcher must pass ``is_reconnect=True`` so platform adapters
+        can preserve the Bot API update queue (#46621). The previous
+        bootstrap code unconditionally called ``start_polling(
+        drop_pending_updates=True)`` which discarded every message the
+        platform queued during the outage that triggered the reconnect.
+        """
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        succeed_adapter = StubAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
+            with patch("gateway.run.build_channel_directory", create=True):
+
+                async def run_one_iteration():
+                    runner._running = True
+                    call_count = 0
+
+                    async def fake_sleep(n):
+                        nonlocal call_count
+                        call_count += 1
+                        if call_count > 1:
+                            runner._running = False
+                        await real_sleep(0)
+
+                    with patch("asyncio.sleep", side_effect=fake_sleep):
+                        await runner._platform_reconnect_watcher()
+
+                await run_one_iteration()
+
+        # The watcher invoked the adapter exactly once, with the
+        # is_reconnect=True flag plumbed through.
+        assert succeed_adapter.connect_calls == [True], (
+            f"watcher should pass is_reconnect=True on the reconnect path; "
+            f"got {succeed_adapter.connect_calls!r}"
+        )
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert Platform.TELEGRAM in runner.adapters
+
+    @pytest.mark.asyncio
+    async def test_cold_start_passes_is_reconnect_false_to_adapter(self):
+        """The cold-start ``_connect_adapter_with_timeout`` path must keep
+        the historical default ``is_reconnect=False`` so platform
+        adapters continue to drop the stale Bot API queue on first boot.
+        """
+        runner = _make_runner()
+        adapter = StubAdapter(succeed=True)
+
+        success = await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
+        assert success is True
+        assert adapter.connect_calls == [False], (
+            f"cold-start path should pass is_reconnect=False (default); "
+            f"got {adapter.connect_calls!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_reconnect_retries_resume_pending_for_platform(self):

@@ -20,7 +20,9 @@ Design summary
 * The ``iron-proxy`` binary is auto-installed into ``<hermes_home>/bin/iron-proxy``
   on first use.  Hermes pins one upstream version (``_IRON_PROXY_VERSION``)
   and downloads the matching tar.gz from the official GitHub Releases page,
-  verifying the SHA-256 against the release's ``checksums.txt``.
+  verifying the SHA-256 against a source-pinned digest
+  (``_IRON_PROXY_PINNED_SHA256``); the release's ``checksums.txt`` is only a
+  defence-in-depth cross-check.
 
 * A long-lived CA at ``<hermes_home>/proxy/ca.{crt,key}`` is generated on
   first ``hermes egress setup``.  Sandboxes trust this CA so iron-proxy can
@@ -90,6 +92,24 @@ _IRON_PROXY_RELEASE_BASE = (
     f"https://github.com/ironsh/iron-proxy/releases/download/v{_IRON_PROXY_VERSION}"
 )
 _IRON_PROXY_CHECKSUM_NAME = "checksums.txt"
+
+# weklund: pin the expected per-platform SHA-256 directly in source, next to
+# the version. The release ``checksums.txt`` is fetched from the same URL as
+# the binary, so an attacker who controls the download path (corporate proxy,
+# DNS hijack, poisoned CDN cache) could serve a malicious binary AND a matching
+# checksums file, making that verification a no-op. Pinning the digest here
+# means the only way a new hash reaches users is via a code-reviewed commit,
+# regardless of the download channel. We still cross-check checksums.txt when
+# present (defence-in-depth), but the source-pinned value is authoritative.
+#
+# Hashes for iron-proxy v0.39.0 (verified against upstream checksums.txt).
+# When bumping _IRON_PROXY_VERSION, update every entry in the same commit.
+_IRON_PROXY_PINNED_SHA256: dict[str, str] = {
+    "iron-proxy_0.39.0_darwin_amd64.tar.gz": "9c278663d2e9c04fb3f6b1c18588fc2095974b42347c7885d10014835fc4b24a",
+    "iron-proxy_0.39.0_darwin_arm64.tar.gz": "6aa2d3d78ba87bdfacaef8f8465ffd289f8d23ab4d3f433e8c0b2b77f887632a",
+    "iron-proxy_0.39.0_linux_amd64.tar.gz": "0ab2e031074a01410caecaa2769c0b38f69cbdf4b6333bce498fe73919f6f9f6",
+    "iron-proxy_0.39.0_linux_arm64.tar.gz": "1316cb4f20fcfba5042b06d07cd523ffa617de9de2999cd5f1f44474777c48ad",
+}
 
 # How long to wait for HTTP downloads and subprocess interactions, in seconds.
 _DOWNLOAD_TIMEOUT = 120  # binary is ~16MB
@@ -434,15 +454,44 @@ def install_iron_proxy(*, force: bool = False) -> Path:
 
         logger.info("Downloading %s", asset_url)
         _http_download(asset_url, archive_path)
-        _http_download(checksum_url, checksum_path)
 
-        expected = _expected_sha256(checksum_path, asset_name)
         actual = _sha256_file(archive_path)
-        if expected.lower() != actual.lower():
+
+        # Source-pinned digest is authoritative (see _IRON_PROXY_PINNED_SHA256).
+        # This is the trust anchor: it can't be influenced by whoever served
+        # the download.
+        pinned = _IRON_PROXY_PINNED_SHA256.get(asset_name)
+        if pinned is None:
             raise RuntimeError(
-                f"Checksum mismatch for {asset_name}: "
-                f"expected {expected}, got {actual}"
+                f"No source-pinned SHA-256 for {asset_name}. Refusing to "
+                "install an unpinned iron-proxy build. Add the digest to "
+                "_IRON_PROXY_PINNED_SHA256 in a reviewed commit."
             )
+        if pinned.lower() != actual.lower():
+            raise RuntimeError(
+                f"Checksum mismatch for {asset_name}: expected (pinned) "
+                f"{pinned}, got {actual}. The downloaded binary does not "
+                "match the source-pinned digest — aborting."
+            )
+
+        # Defence-in-depth: if the release ships a checksums.txt, cross-check
+        # it too and warn loudly on any disagreement with the pinned value.
+        # A mismatch here (when the pinned check already passed) means the
+        # upstream release content changed — worth surfacing.
+        try:
+            _http_download(checksum_url, checksum_path)
+            published = _expected_sha256(checksum_path, asset_name)
+            if published.lower() != pinned.lower():
+                logger.warning(
+                    "iron-proxy %s: upstream checksums.txt (%s) disagrees "
+                    "with the source-pinned digest (%s) for %s. Installed the "
+                    "pinned, verified binary; investigate the upstream release.",
+                    _IRON_PROXY_VERSION, published, pinned, asset_name,
+                )
+        except RuntimeError as exc:
+            # Missing/unreadable checksums.txt is non-fatal now that the
+            # pinned digest is authoritative.
+            logger.debug("checksums.txt cross-check skipped: %s", exc)
 
         with tarfile.open(archive_path, "r:gz") as tf:
             member = _pick_tar_member(tf, _platform_binary_name())
@@ -598,8 +647,12 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
             "brew: `openssl`) to generate the iron-proxy CA cert."
         )
 
-    # 10-year cert.  iron-proxy mints short-lived leaf certs from this CA,
-    # so the CA itself only rotates when the user explicitly forces it.
+    # weklund: 2-year CA validity. iron-proxy mints short-lived leaf certs
+    # from this CA, so a long-lived CA isn't load-bearing for normal operation
+    # — but a 10-year cert means a locally-compromised CA key stays trusted for
+    # a decade. A 2-year window is a natural forcing function to revisit the
+    # proxy CA, and rotation is seamless (`hermes egress rotate-ca`, or
+    # `ensure_ca_cert(force=True)`).
     with tempfile.TemporaryDirectory(prefix="hermes-proxy-ca-") as tmpdir:
         tmp = Path(tmpdir)
         tmp_key = tmp / "ca.key"
@@ -615,7 +668,7 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
             [
                 "openssl", "req", "-x509", "-new", "-nodes",
                 "-key", str(tmp_key),
-                "-sha256", "-days", "3650",
+                "-sha256", "-days", "730",
                 "-subj", "/CN=hermes iron-proxy CA",
                 "-addext", "basicConstraints=critical,CA:TRUE",
                 "-addext", "keyUsage=critical,keyCertSign",

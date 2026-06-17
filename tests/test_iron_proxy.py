@@ -513,12 +513,21 @@ def _make_fake_tar(binary_name: str, payload: bytes = b"#!/bin/sh\necho ok\n") -
     return buf.getvalue()
 
 
-def test_install_iron_proxy_verifies_checksum_and_extracts(hermes_home, monkeypatch):
-    fake_payload = _make_fake_tar(ip._platform_binary_name())
+def _pin_fake_payload(monkeypatch, fake_payload: bytes) -> str:
+    """Point the source-pinned SHA dict at the fake payload's real hash so the
+    authoritative check passes for the current platform's asset name."""
     import hashlib
-
-    expected_sha = hashlib.sha256(fake_payload).hexdigest()
+    sha = hashlib.sha256(fake_payload).hexdigest()
     asset_name = ip._platform_asset_name()
+    monkeypatch.setattr(ip, "_IRON_PROXY_PINNED_SHA256", {asset_name: sha})
+    return sha
+
+
+def test_install_iron_proxy_verifies_pinned_sha_and_extracts(hermes_home, monkeypatch):
+    fake_payload = _make_fake_tar(ip._platform_binary_name())
+    expected_sha = _pin_fake_payload(monkeypatch, fake_payload)
+    asset_name = ip._platform_asset_name()
+    # checksums.txt agrees with the pinned digest (the happy cross-check path).
     checksum_text = f"{expected_sha}  {asset_name}\nffff  other-asset.tar.gz\n"
 
     def fake_download(url: str, dest: Path) -> None:
@@ -531,38 +540,72 @@ def test_install_iron_proxy_verifies_checksum_and_extracts(hermes_home, monkeypa
     target = ip.install_iron_proxy()
     assert target.exists()
     assert target.read_bytes() == b"#!/bin/sh\necho ok\n"
-    # Executable bit is set
     assert os.access(target, os.X_OK)
 
 
-def test_install_iron_proxy_rejects_bad_checksum(hermes_home, monkeypatch):
+def test_install_iron_proxy_rejects_pinned_mismatch(hermes_home, monkeypatch):
+    """A binary that doesn't match the source-pinned digest is rejected, even
+    if a (malicious) checksums.txt would have matched the served binary."""
     fake_payload = _make_fake_tar(ip._platform_binary_name())
     asset_name = ip._platform_asset_name()
-    bad_text = f"deadbeef  {asset_name}\n"
+    # Pin a digest that does NOT match the payload.
+    monkeypatch.setattr(
+        ip, "_IRON_PROXY_PINNED_SHA256", {asset_name: "deadbeef" * 8})
+    import hashlib
+    served = hashlib.sha256(fake_payload).hexdigest()
 
     def fake_download(url: str, dest: Path) -> None:
         if url.endswith(ip._IRON_PROXY_CHECKSUM_NAME):
-            dest.write_text(bad_text)
+            # Attacker-matching checksums.txt — must NOT save the install.
+            dest.write_text(f"{served}  {asset_name}\n")
         else:
             dest.write_bytes(fake_payload)
 
     monkeypatch.setattr(ip, "_http_download", fake_download)
-    with pytest.raises(RuntimeError, match="Checksum mismatch"):
+    with pytest.raises(RuntimeError, match="Checksum mismatch.*pinned"):
         ip.install_iron_proxy()
 
 
-def test_install_iron_proxy_rejects_missing_checksum_entry(hermes_home, monkeypatch):
+def test_install_iron_proxy_refuses_unpinned_asset(hermes_home, monkeypatch):
+    """If no source-pinned digest exists for the platform asset, refuse rather
+    than trust the download channel."""
     fake_payload = _make_fake_tar(ip._platform_binary_name())
+    monkeypatch.setattr(ip, "_IRON_PROXY_PINNED_SHA256", {})
+
+    def fake_download(url: str, dest: Path) -> None:
+        dest.write_bytes(fake_payload)
+
+    monkeypatch.setattr(ip, "_http_download", fake_download)
+    with pytest.raises(RuntimeError, match="No source-pinned SHA-256"):
+        ip.install_iron_proxy()
+
+
+def test_install_iron_proxy_succeeds_without_checksums_file(hermes_home, monkeypatch):
+    """checksums.txt is now only a defence-in-depth cross-check; a missing one
+    must not fail the install once the pinned digest verifies."""
+    fake_payload = _make_fake_tar(ip._platform_binary_name())
+    _pin_fake_payload(monkeypatch, fake_payload)
 
     def fake_download(url: str, dest: Path) -> None:
         if url.endswith(ip._IRON_PROXY_CHECKSUM_NAME):
-            dest.write_text("aaaa  some-other-file.tar.gz\n")
-        else:
-            dest.write_bytes(fake_payload)
+            raise RuntimeError("Failed to download checksums.txt: 404")
+        dest.write_bytes(fake_payload)
 
     monkeypatch.setattr(ip, "_http_download", fake_download)
-    with pytest.raises(RuntimeError, match="No checksum entry"):
-        ip.install_iron_proxy()
+    target = ip.install_iron_proxy()
+    assert target.exists()
+    assert os.access(target, os.X_OK)
+
+
+def test_pinned_sha_table_matches_current_version(hermes_home):
+    """Guard against bumping _IRON_PROXY_VERSION without updating the pinned
+    digests: the current platform's asset name must be present in the table."""
+    asset_name = ip._platform_asset_name()
+    assert asset_name in ip._IRON_PROXY_PINNED_SHA256, (
+        f"{asset_name} missing from _IRON_PROXY_PINNED_SHA256 — update the "
+        "pinned per-platform digests when bumping _IRON_PROXY_VERSION."
+    )
+    assert len(ip._IRON_PROXY_PINNED_SHA256[asset_name]) == 64
 
 
 def test_pick_tar_member_rejects_path_traversal():
@@ -951,6 +994,31 @@ def test_ca_key_created_with_0o600(hermes_home, monkeypatch):
     assert ca_key.exists()
     mode = ca_key.stat().st_mode & 0o777
     assert mode == 0o600, f"CA key has perms {oct(mode)}, expected 0o600"
+
+
+def test_ca_cert_validity_is_two_years(hermes_home, monkeypatch):
+    """weklund: CA validity is a 2-year forcing function, not 10 years."""
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        if args[1] == "genrsa":
+            Path(args[-2]).write_bytes(b"-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----\n")
+        elif args[1] == "req":
+            if "-days" in args:
+                captured["days"] = args[args.index("-days") + 1]
+            i = args.index("-out")
+            Path(args[i + 1]).write_bytes(b"-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    monkeypatch.setattr(ip.shutil, "which", lambda name: "/usr/bin/openssl" if name == "openssl" else None)
+    monkeypatch.setattr(ip.subprocess, "run", fake_run)
+
+    ip.ensure_ca_cert()
+    assert captured.get("days") == "730", (
+        f"expected 2-year (730d) CA validity, got {captured.get('days')}"
+    )
 
 
 # ---------------------------------------------------------------------------

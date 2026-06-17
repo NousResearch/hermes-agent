@@ -896,6 +896,50 @@ def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
         _make_dummy_env(extra_args=["-e", "HTTPS_PROXY="])
 
 
+def test_extra_args_rogue_ca_mount_refuses_under_egress(monkeypatch):
+    """weklund: a -v/--mount in docker_extra_args onto the egress CA path is
+    appended last, so Docker would resolve the rogue cert over the egress CA.
+    Enforcement must detect the colliding mount target and refuse."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    container_ca = "/etc/ssl/certs/hermes-egress-ca.crt"
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: (
+            ["-v", f"/home/user/.hermes/proxy/ca.crt:{container_ca}:ro"],
+            {"HTTPS_PROXY": "http://host.docker.internal:9090"},
+            [],
+        ),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_extra_args.*hermes-egress-ca"):
+        _make_dummy_env(
+            extra_args=["-v", f"/tmp/rogue.crt:{container_ca}:ro"],
+        )
+
+
+def test_extra_args_unrelated_mount_allowed_under_egress(monkeypatch):
+    """A benign volume mount that does NOT target the egress CA path must not
+    trip the collision guard."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    container_ca = "/etc/ssl/certs/hermes-egress-ca.crt"
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: (
+            ["-v", f"/home/user/.hermes/proxy/ca.crt:{container_ca}:ro"],
+            {"HTTPS_PROXY": "http://host.docker.internal:9090"},
+            [],
+        ),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    # Should not raise — a normal data mount is fine.
+    env = _make_dummy_env(extra_args=["-v", "/tmp/data:/workspace/data:ro"])
+    assert env._container_id is not None
+
+
 def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     """A labeled container in ``exited`` state must be restarted via
     ``docker start`` before the new Hermes process uses it. Without this

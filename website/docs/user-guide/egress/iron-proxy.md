@@ -442,10 +442,11 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 - Allowlisted-host data exfiltration. If `api.openai.com` is allowed, an agent could embed exfil data in a request body to that host. The daemon log captures the request happened but doesn't prevent it.
 - Uncovered providers (Anthropic native, AWS Bedrock, Azure OpenAI, Gemini). Their env vars stay in the sandbox; if you enable them, those credentials bypass the proxy entirely. See [Uncovered providers](#uncovered-providers).
 - iron-proxy in-memory secret zeroisation. The Go binary holds swapped-in real credentials in process memory; a core-dump or `/proc/<pid>/mem` read from a same-uid attacker would expose them. Out of scope for this layer.
+- **Direct TCP to other host services via `host.docker.internal`.** The `--add-host=host.docker.internal:host-gateway` entry the sandbox uses to reach the proxy resolves to the host gateway IP. Any host service bound to `0.0.0.0` (e.g. a database on `:5432`, a dev server on `:8080`) is then reachable from the sandbox over **raw TCP at `host.docker.internal:<port>`** — those connections are plain sockets, not routed through `HTTPS_PROXY`, so the proxy never sees them. This is an accepted trade-off of the `--add-host` approach. **Mitigation: bind sensitive host services to `127.0.0.1`, not `0.0.0.0`, when relying on egress isolation.**
 
 ## Failure modes
 
-- **Binary not installed, `auto_install: true`** — first `hermes egress setup` or `hermes egress start` downloads it. SHA-256 verified against the upstream `checksums.txt`.
+- **Binary not installed, `auto_install: true`** — first `hermes egress setup` or `hermes egress start` downloads it. SHA-256 verified against a **source-pinned per-platform digest** (committed next to the version pin); the upstream `checksums.txt` is only a defence-in-depth cross-check, so a compromised download channel can't substitute a matching hash.
 - **Binary not installed, `auto_install: false`** — `start` fails with a clear message pointing to manual install.
 - **`enabled: true` but proxy not running** — with `enforce_on_docker: true` (default), Docker sandbox creation refuses to start with an explanatory error. With `enforce_on_docker: false`, it falls back to direct outbound with real creds and logs a warning.
 - **Port collision** — iron-proxy exits immediately; `hermes egress start` reports the last 20 log lines and fails with non-zero exit.
@@ -454,7 +455,7 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 - **Strict-tier uncovered provider env var set** — `hermes egress start` refuses with a list of the offending env vars and the `proxy.fail_on_uncovered_providers: false` escape hatch.
 - **`docker_env` collides with a proxy-controlling var (enforce on)** — sandbox creation refuses with the names of the colliding keys.
 - **`docker_forward_env` tries to forward a protected provider key (enforce on)** — sandbox creation refuses; remove the key from `docker_forward_env` or opt out with `proxy.enforce_on_docker: false`.
-- **`docker_extra_args` overrides proxy env/network controls (enforce on)** — sandbox creation refuses; user-supplied `-e HTTPS_PROXY=...`, `--env-file`, or `--network` args run after Hermes' generated args and can bypass egress.
+- **`docker_extra_args` overrides proxy env/network controls (enforce on)** — sandbox creation refuses; user-supplied `-e HTTPS_PROXY=...`, `--env-file`, `--network`, or a `-v`/`--mount` onto the egress CA path (e.g. `-v /tmp/rogue.crt:/etc/ssl/certs/hermes-egress-ca.crt`) run after Hermes' generated args and would otherwise win, so they're detected and refused.
 - **BWS access token missing in `credential_source: bitwarden`** — `hermes egress start` refuses with `--no-bitwarden` as the recovery hint.
 - **iron-proxy doesn't bind within 5 seconds** — process is killed, pidfile unlinked, error names the port + tail of `iron-proxy.log`.
 - **Concurrent `hermes egress start` calls** — second call refuses with "another start in progress" if the first's daemon is up; otherwise the second unlinks the stale pidfile and proceeds.

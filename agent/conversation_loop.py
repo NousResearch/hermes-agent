@@ -251,6 +251,17 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+_system_prompt_locks: dict[str, threading.Lock] = {}
+_system_prompt_locks_mutex = threading.Lock()
+
+
+def _get_session_prompt_lock(session_id: str) -> threading.Lock:
+    with _system_prompt_locks_mutex:
+        if session_id not in _system_prompt_locks:
+            _system_prompt_locks[session_id] = threading.Lock()
+        return _system_prompt_locks[session_id]
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -278,101 +289,108 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     (which constructs a fresh ``AIAgent`` per turn and depends on this
     DB roundtrip).
     """
-    stored_prompt = None
-    stored_state = "missing"
-    if conversation_history and agent._session_db:
-        try:
-            session_row = agent._session_db.get_session(agent.session_id)
-            if session_row is not None:
-                raw_prompt = session_row.get("system_prompt")
-                if raw_prompt is None:
-                    stored_state = "null"
-                elif raw_prompt == "":
-                    stored_state = "empty"
-                else:
-                    stored_prompt = raw_prompt
-                    stored_state = "present"
-        except Exception as exc:
-            logger.warning(
-                "Session DB get_session failed for system-prompt restore "
-                "(session=%s): %s. Falling back to fresh build — prefix "
-                "cache will miss for this turn.",
-                agent.session_id, exc,
+    with _get_session_prompt_lock(agent.session_id):
+        stored_prompt = None
+        stored_state = "missing"
+        if conversation_history and agent._session_db:
+            try:
+                session_row = agent._session_db.get_session(agent.session_id)
+                if session_row is not None:
+                    raw_prompt = session_row.get("system_prompt")
+                    if raw_prompt is None:
+                        stored_state = "null"
+                    elif raw_prompt == "":
+                        stored_state = "empty"
+                    else:
+                        stored_prompt = raw_prompt
+                        stored_state = "present"
+            except Exception as exc:
+                logger.warning(
+                    "Session DB get_session failed for system-prompt restore "
+                    "(session=%s): %s. Falling back to fresh build — prefix "
+                    "cache will miss for this turn.",
+                    agent.session_id, exc,
+                )
+
+        if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+            # Continuing session — reuse the exact system prompt from the
+            # previous turn so the Anthropic cache prefix matches.
+            agent._cached_system_prompt = stored_prompt
+            return
+        if stored_prompt:
+            stored_state = "stale_runtime"
+            logger.info(
+                "Stored system prompt for session %s has stale runtime identity; "
+                "rebuilding for model=%s provider=%s.",
+                agent.session_id,
+                getattr(agent, "model", "") or "",
+                getattr(agent, "provider", "") or "",
             )
 
-    if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
-        # Continuing session — reuse the exact system prompt from the
-        # previous turn so the Anthropic cache prefix matches.
-        agent._cached_system_prompt = stored_prompt
-        return
-    if stored_prompt:
-        stored_state = "stale_runtime"
-        logger.info(
-            "Stored system prompt for session %s has stale runtime identity; "
-            "rebuilding for model=%s provider=%s.",
-            agent.session_id,
-            getattr(agent, "model", "") or "",
-            getattr(agent, "provider", "") or "",
-        )
-
-    if conversation_history and stored_state in ("null", "empty"):
-        # Continuing session whose stored prompt is unusable.  The
-        # previous turn's write either never happened or wrote an empty
-        # string — either way every turn now rebuilds and the prefix
-        # cache misses every time.
-        logger.warning(
-            "Stored system prompt for session %s is %s; rebuilding "
-            "from scratch this turn. Prefix cache will miss until "
-            "the rebuild persists. Investigate the previous turn's "
-            "update_system_prompt write path.",
-            agent.session_id, stored_state,
-        )
-
-    # First turn of a new session (or recovering from a broken stored
-    # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
-
-    # Plugin hook: on_session_start — fired once when a brand-new
-    # session is created (not on continuation).  Plugins can use this
-    # to initialise session-scoped state (e.g. warm a memory cache).
-    try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start",
-            session_id=agent.session_id,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_start hook failed: %s", exc)
-
-    # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
-    # desktop build seeds at session OPEN (see seed_credits_at_session_start in
-    # tui_gateway), so this call is usually a no-op there (idempotent: skips when
-    # _credits_state already exists). For the plain CLI / any path that didn't seed
-    # at build, it primes credits state from /api/oauth/account (or a fixture) on the
-    # first turn so depletion / usage-band warnings fire. Fail-open inside the helper.
-    try:
-        from agent.credits_tracker import seed_credits_at_session_start
-
-        seed_credits_at_session_start(agent)
-    except Exception:
-        logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
-
-    # Persist the system prompt snapshot in SQLite.  Failure here used
-    # to log at DEBUG, which silently broke prefix-cache reuse on the
-    # gateway path (fresh AIAgent per turn → reads from this row every
-    # subsequent turn).
-    if agent._session_db:
-        try:
-            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
-        except Exception as exc:
+        if conversation_history and stored_state in ("null", "empty"):
+            # Continuing session whose stored prompt is unusable.  The
+            # previous turn's write either never happened or wrote an empty
+            # string — either way every turn now rebuilds and the prefix
+            # cache misses every time.
             logger.warning(
-                "Session DB update_system_prompt failed for session %s: "
-                "%s. Subsequent turns will rebuild the system prompt and "
-                "miss the prefix cache.",
-                agent.session_id, exc,
+                "Stored system prompt for session %s is %s; rebuilding "
+                "from scratch this turn. Prefix cache will miss until "
+                "the rebuild persists. Investigate the previous turn's "
+                "update_system_prompt write path.",
+                agent.session_id, stored_state,
             )
+
+        # Double-checked locking: another thread may have already built
+        # and cached the prompt while we were waiting for the lock.
+        # Re-check before rebuilding to avoid duplicate on_session_start.
+        if agent._cached_system_prompt is not None:
+            return
+
+        # First turn of a new session (or recovering from a broken stored
+        # prompt) — build from scratch.
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+
+        # Plugin hook: on_session_start — fired once when a brand-new
+        # session is created (not on continuation).  Plugins can use this
+        # to initialise session-scoped state (e.g. warm a memory cache).
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_start",
+                session_id=agent.session_id,
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_start hook failed: %s", exc)
+
+        # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
+        # desktop build seeds at session OPEN (see seed_credits_at_session_start in
+        # tui_gateway), so this call is usually a no-op there (idempotent: skips when
+        # _credits_state already exists). For the plain CLI / any path that didn't seed
+        # at build, it primes credits state from /api/oauth/account (or a fixture) on the
+        # first turn so depletion / usage-band warnings fire. Fail-open inside the helper.
+        try:
+            from agent.credits_tracker import seed_credits_at_session_start
+
+            seed_credits_at_session_start(agent)
+        except Exception:
+            logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
+
+        # Persist the system prompt snapshot in SQLite.  Failure here used
+        # to log at DEBUG, which silently broke prefix-cache reuse on the
+        # gateway path (fresh AIAgent per turn → reads from this row every
+        # subsequent turn).
+        if agent._session_db:
+            try:
+                agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            except Exception as exc:
+                logger.warning(
+                    "Session DB update_system_prompt failed for session %s: "
+                    "%s. Subsequent turns will rebuild the system prompt and "
+                    "miss the prefix cache.",
+                    agent.session_id, exc,
+                )
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:

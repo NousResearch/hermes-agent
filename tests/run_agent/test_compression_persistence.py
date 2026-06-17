@@ -198,3 +198,57 @@ class TestGatewayHistoryOffsetAfterSplit:
         assert len(new_messages) == 0, (
             "Expected 0 messages with stale offset=200 (demonstrates the bug)"
         )
+
+
+
+
+def test_system_prompt_restore_guards_against_concurrent_rebuild(monkeypatch):
+    import threading
+    from agent.conversation_loop import _restore_or_build_system_prompt
+
+    call_count = {"n": 0}
+    count_lock = threading.Lock()
+
+    def fake_invoke_hook(*args, **kwargs):
+        with count_lock:
+            call_count["n"] += 1
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+    monkeypatch.setattr(
+        "agent.credits_tracker.seed_credits_at_session_start",
+        lambda agent: None,
+    )
+    monkeypatch.setattr(
+        "agent.conversation_loop._stored_prompt_matches_runtime",
+        lambda agent, prompt: False,
+    )
+
+    class FakeAgent:
+        session_id = "session-race-test"
+        model = "m"
+        provider = "p"
+        platform = ""
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message):
+            return "built"
+
+    agent = FakeAgent()
+    barrier = threading.Barrier(2)
+
+    def target():
+        barrier.wait(timeout=5)
+        _restore_or_build_system_prompt(agent, "sm", ["msg"])
+
+    t1 = threading.Thread(target=target)
+    t2 = threading.Thread(target=target)
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert not t1.is_alive() and not t2.is_alive()
+    assert call_count["n"] == 1, (
+        f"on_session_start called {call_count['n']} times; expected 1"
+    )

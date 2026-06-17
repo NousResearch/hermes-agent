@@ -13,6 +13,7 @@ import argparse
 import json
 import math
 import os
+import re
 import random
 import shlex
 import subprocess
@@ -241,6 +242,146 @@ class LiveAegisDriver(RecoveryDriver):
             answer=_extract_answer(stdout),
             tool_calls=_extract_tool_calls(stdout + "\n" + stderr),
             usage=_extract_usage(stdout + "\n" + stderr),
+        )
+
+
+def _clean_cli_answer(text: str) -> str:
+    """Strip Hermes CLI banner/warning noise so only the model reply remains."""
+    skip_prefixes = (
+        "Warning:", "⚠", "session_id:", "Query:", "Initializing agent",
+        "Resume this session", "↻", "⟳", "Normalized model",
+        "claude-pool", "  hermes --resume", "Session:", "Duration:", "Messages:",
+        "─", "╭", "╰",
+    )
+    out = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if any(s.startswith(p) for p in skip_prefixes):
+            continue
+        out.append(s)
+    return "\n".join(out).strip()
+
+
+class LiveAegisSessionDriver(RecoveryDriver):
+    """Persistent multi-turn driver that exercises the REAL LCM store.
+
+    Unlike LiveAegisDriver (which renders the whole transcript inline in one
+    prompt, so the model can read the buried fact directly and never needs an
+    LCM tool), this driver:
+
+      1. Plants the buried fact in a fresh Aegis session (captures session_id).
+      2. Drives filler turns under a LOW ``LCM_CONTEXT_THRESHOLD`` so the fact
+         ages out of the active tail and the store compacts/rolls over.
+      3. Asks for the fact back, instructing the model to use its LCM retrieval
+         tools, with ``-Q`` so stdout carries only the final answer (no prompt
+         echo to contaminate recall scoring).
+      4. Detects the ACTUAL ``lcm_*`` tool call by reading the Aegis lcm.db
+         (the authoritative signal; the quiet CLI emits no JSON tool markers).
+
+    Cost: 1 plant + N_FILLER filler + 1 recovery call per trial. Keep filler
+    small; the point is crossing the (lowered) threshold, not raw volume.
+    """
+
+    def __init__(
+        self,
+        *,
+        profile: str = "aegis",
+        timeout_seconds: int = 300,
+        threshold: float = 0.02,
+        filler_turns: int = 4,
+        filler_tokens: int = 2500,
+        lcm_db: str | None = None,
+    ) -> None:
+        self.profile = profile
+        self.timeout_seconds = timeout_seconds
+        self.threshold = threshold
+        self.filler_turns = filler_turns
+        self.filler_tokens = filler_tokens
+        self.lcm_db = lcm_db or os.path.expanduser(
+            f"~/.hermes/profiles/{profile}/lcm.db"
+        )
+
+    def _hermes(self, args: list[str], prompt: str) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env["LCM_CONTEXT_THRESHOLD"] = str(self.threshold)
+        return subprocess.run(
+            ["hermes", "-p", self.profile, "chat", "-Q", *args, "-q", prompt],
+            capture_output=True, text=True, timeout=self.timeout_seconds,
+            env=env, check=False,
+        )
+
+    @staticmethod
+    def _session_id(stdout: str) -> str | None:
+        m = re.findall(r"session_id:\s*([0-9A-Za-z_]+)", stdout or "")
+        return m[-1] if m else None
+
+    def _grep_called_since(self, since_ts: float) -> list[dict[str, Any]]:
+        """Read lcm.db for real lcm_* tool messages written after since_ts."""
+        calls: list[dict[str, Any]] = []
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.lcm_db)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT tool_name, content, timestamp FROM messages "
+                "WHERE role='tool' AND tool_name LIKE 'lcm_%' AND timestamp >= ? "
+                "ORDER BY timestamp DESC LIMIT 20",
+                (since_ts,),
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                name = r["tool_name"]
+                if name in ("lcm_grep", "lcm_expand", "lcm_expand_query", "lcm_load_session"):
+                    calls.append({"name": name, "arguments": (r["content"] or "")[:200]})
+        except Exception:
+            pass
+        return calls
+
+    def run_trial(self, fixture: TrialFixture, sampling: SamplingParams) -> DriverResponse:
+        import time
+        filler = ("Routine deterministic project chatter for compaction. "
+                  * max(1, self.filler_tokens // 8))
+        # 1. plant
+        plant = self._hermes(
+            ["--pass-session-id"],
+            f"Remember this exact fact for later, verbatim: {fixture.buried_fact} "
+            f"Reply with only OK.",
+        )
+        sid = self._session_id((plant.stdout or '') + (plant.stderr or ''))
+        if not sid:
+            return DriverResponse(answer="", tool_calls=[], usage={},
+                                  confidence_wrong=False)
+        # 2. filler turns to age the fact out + trigger compaction
+        for i in range(self.filler_turns):
+            _r = self._hermes(
+                ["--resume", sid],
+                f"Status turn {i}, reply 'ack {i}' only. Context notes: {filler}",
+            )
+            sid = self._session_id((_r.stdout or "") + (_r.stderr or "")) or sid
+        # 3. recovery (mark time so we only count tool calls from THIS step)
+        t0 = time.time() - 1.0
+        rec = self._hermes(
+            ["--resume", sid],
+            "Earlier I gave you a fact that is no longer in your active context. "
+            "Use your LCM retrieval tools (lcm_grep / lcm_load_session / lcm_expand) "
+            "to search the stored conversation and recover it. " + fixture.question,
+        )
+        answer = _clean_cli_answer(rec.stdout or "")
+        if rec.returncode != 0:
+            answer = answer or _clean_cli_answer(rec.stderr or "")
+        # 4. authoritative tool-call detection from the store
+        tool_calls = self._grep_called_since(t0)
+        prompt_tokens = estimate_messages_tokens(
+            fixture.messages + [{"role": "user", "content": fixture.question}]
+        )
+        completion_tokens = max(16, estimate_text_tokens(answer))
+        return DriverResponse(
+            answer=answer,
+            tool_calls=tool_calls,
+            usage={"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+            confidence_wrong=False,
         )
 
 
@@ -759,6 +900,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--judge-precision-min", type=float, default=DEFAULT_JUDGE_MIN)
     parser.add_argument("--judge-recall-min", type=float, default=DEFAULT_JUDGE_MIN)
     parser.add_argument("--no-tool-call-required", action="store_true", help="Record tool calls but do not fail the gate when they are absent.")
+    parser.add_argument("--session-mode", action="store_true", help="Use the persistent multi-turn LiveAegisSessionDriver (plant->filler->recover against the real LCM store) instead of the inline single-prompt driver.")
+    parser.add_argument("--profile", default="aegis", help="Hermes profile to drive in --session-mode.")
+    parser.add_argument("--lcm-threshold", type=float, default=0.02, help="LCM_CONTEXT_THRESHOLD override for --session-mode filler turns.")
+    parser.add_argument("--filler-turns", type=int, default=4, help="Filler turns per trial in --session-mode.")
     return parser.parse_args(argv)
 
 
@@ -792,7 +937,15 @@ def main(argv: list[str] | None = None) -> int:
     command = shlex.split(args.aegis_command) if args.aegis_command else None
     driver: RecoveryDriver | None = None
     if mode == "live":
-        driver = LiveAegisDriver(command=command, timeout_seconds=args.timeout_seconds)
+        if getattr(args, "session_mode", False):
+            driver = LiveAegisSessionDriver(
+                profile=args.profile,
+                timeout_seconds=args.timeout_seconds,
+                threshold=args.lcm_threshold,
+                filler_turns=args.filler_turns,
+            )
+        else:
+            driver = LiveAegisDriver(command=command, timeout_seconds=args.timeout_seconds)
     run = run_recovery_gate(
         mode=mode,
         n=args.n,

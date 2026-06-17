@@ -164,3 +164,61 @@ def test_default_gate_thresholds_match_prd6_spec():
     assert gt.judge_precision_min == pytest.approx(0.95)
     assert gt.judge_recall_min == pytest.approx(0.95)
     assert gt.require_tool_call_evidence is True
+
+
+def test_session_driver_recovers_fact_and_reads_tool_calls_from_db(tmp_path, monkeypatch):
+    """LiveAegisSessionDriver: plants via -q, parses session_id from stderr,
+    cleans CLI banner noise from the answer, and reads real lcm_* tool calls
+    from the lcm.db (not absent JSON markers). All offline via fakes."""
+    import sqlite3
+    import subprocess as _sub
+
+    # fake lcm.db with a real lcm_grep tool row written "now"
+    db = tmp_path / "lcm.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE messages (role TEXT, tool_name TEXT, content TEXT, timestamp REAL)"
+    )
+    conn.execute(
+        "INSERT INTO messages VALUES ('tool','lcm_grep','{\"query\": \"sentinel\"}', ?)",
+        (9_999_999_999.0,),
+    )
+    conn.commit()
+    conn.close()
+
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        calls["n"] += 1
+        # session_id goes to STDERR (real CLI behavior); answer to STDOUT
+        is_recovery = "recover" in cmd[-1].lower() or "sentinel" in cmd[-1].lower()
+        stdout = "Warning: Unknown toolsets: rl\n"
+        if is_recovery:
+            stdout += "The exact recovery sentinel is SENTINEL-XYZ.\n"
+        else:
+            stdout += "OK\n"
+        return _sub.CompletedProcess(cmd, 0, stdout=stdout, stderr="\nsession_id: 20990101_000000_abc\n")
+
+    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+
+    drv = harness.LiveAegisSessionDriver(
+        profile="aegis", filler_turns=2, lcm_db=str(db)
+    )
+    fx = harness.make_fixtures(180, seed=4242)[2]
+    # force the fixture's expected answer to match our fake reply
+    fx = harness.TrialFixture(
+        prompt_id=fx.prompt_id, arm="exact",
+        buried_fact="The exact recovery sentinel is SENTINEL-XYZ.",
+        expected_answer="SENTINEL-XYZ", semantic_accept=["SENTINEL-XYZ"],
+        messages=fx.messages,
+        question="What is the exact recovery sentinel? Return only the sentinel.",
+    )
+    resp = drv.run_trial(fx, harness.SamplingParams(temperature=0, seed=4242))
+
+    # answer is cleaned of banner noise and contains the sentinel
+    assert "SENTINEL-XYZ" in resp.answer
+    assert "Warning" not in resp.answer
+    # tool evidence came from the db, not absent JSON markers
+    assert any(t["name"] == "lcm_grep" for t in resp.tool_calls)
+    # plant + 2 filler + 1 recovery = 4 subprocess calls
+    assert calls["n"] == 4

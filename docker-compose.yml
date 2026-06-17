@@ -4,8 +4,10 @@
 # Usage:
 #   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
 #
-# Set HERMES_UID / HERMES_GID to the host user that owns ~/.hermes so
-# files created inside the container stay readable/writable on the host.
+# Set HERMES_UID / HERMES_GID to the host user that owns the data
+# directory (defaults to ${HOME}/.hermes) so files created inside the
+# container stay readable/writable on the host. Override the path with
+# HERMES_DATA_DIR=/custom/path if ${HOME}/.hermes is not what you want.
 # The s6-overlay stage2 hook remaps the internal `hermes` user to these
 # values via usermod/groupmod; each supervised service then drops to that
 # user via `s6-setuidgid`.
@@ -34,7 +36,7 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ~/.hermes:/opt/data
+      - ${HERMES_DATA_DIR:-${HOME}/.hermes}:/opt/data
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
@@ -52,7 +54,7 @@ services:
       # Google Chat — uncomment and fill in to enable the Google Chat gateway.
       # See website/docs/user-guide/messaging/google_chat.md for the full setup.
       # The SA JSON path must point to a file mounted into the container —
-      # add a volume entry above (e.g. ``- ~/.hermes/google-chat-sa.json:/secrets/google-chat-sa.json:ro``)
+      # add a volume entry above (e.g. ``- ${HERMES_DATA_DIR:-${HOME}/.hermes}/google-chat-sa.json:/secrets/google-chat-sa.json:ro``)
       # then set GOOGLE_CHAT_SERVICE_ACCOUNT_JSON to that mount path.
       # - GOOGLE_CHAT_PROJECT_ID=${GOOGLE_CHAT_PROJECT_ID}
       # - GOOGLE_CHAT_SUBSCRIPTION_NAME=${GOOGLE_CHAT_SUBSCRIPTION_NAME}
@@ -68,7 +70,7 @@ services:
     depends_on:
       - gateway
     volumes:
-      - ~/.hermes:/opt/data
+      - ${HERMES_DATA_DIR:-${HOME}/.hermes}:/opt/data
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}

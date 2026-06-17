@@ -109,7 +109,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
-    CommandDef("status", "Show session info", "Session"),
+    CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -1053,7 +1053,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits"})
+#   - debug: the log/report upload surface; reached via /hermes debug on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

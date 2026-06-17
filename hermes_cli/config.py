@@ -1104,6 +1104,11 @@ DEFAULT_CONFIG = {
         "min_interval_hours": 24,
     },
 
+    # Maximum characters loaded from a single automatic context file such as
+    # SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes
+    # applies head/tail truncation. This is separate from read_file tool limits.
+    "context_file_max_chars": 20_000,
+
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
@@ -1428,6 +1433,12 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # Background self-improvement review notifications surfaced in chat.
+        #   "off"     — no chat notification (the review still runs and writes)
+        #   "on"      — generic "💾 Memory updated" line (default)
+        #   "verbose" — include a compact content preview of what changed
+        # Per-platform overrides via display.platforms.<platform>.memory_notifications.
+        "memory_notifications": "on",
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
@@ -1479,6 +1490,12 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # How gateway tool-progress is grouped on platforms that support message
+        # editing: "accumulate" (default) edits one bubble in place; "separate"
+        # sends one message per tool (the pre-v0.9 behavior, noisier). Only
+        # applies where tool_progress is already enabled. Per-platform override
+        # via display.platforms.<platform>.tool_progress_grouping.
+        "tool_progress_grouping": "accumulate",
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
         # that support message deletion (currently Telegram; other platforms
@@ -1775,6 +1792,7 @@ DEFAULT_CONFIG = {
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
+        "max_async_children": 3,  # max concurrent background (background=true) subagents; new dispatches rejected at capacity
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.
@@ -1990,7 +2008,7 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         "extra": {
-            "rich_messages": False,     # Opt in to Bot API 10.1 rich messages; default uses legacy MarkdownV2
+            "rich_messages": True,      # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
         },
     },
 
@@ -2252,6 +2270,17 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Inject a human-readable timestamp prefix (e.g.
+        # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
+        # CONTEXT so the agent has temporal awareness of when each message was
+        # sent. Off by default — when off, the model sees clean message text.
+        # Persisted transcripts always stay clean (the timestamp is stored as
+        # message metadata regardless of this toggle), so turning it on later
+        # surfaces send-times for past messages too.
+        "message_timestamps": {
+            "enabled": False,
+        },
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,

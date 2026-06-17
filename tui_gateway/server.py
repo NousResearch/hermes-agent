@@ -904,6 +904,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
     ready = session.get("agent_ready")
     if ready is None:
         return
+    # A lazy watch session spectating an in-flight child must stay lazy so the
+    # subagent live-mirror keeps flowing. Incidental RPCs (session.info, model
+    # metadata, etc.) resolve through _sess(), which would otherwise upgrade it
+    # to a full agent mid-stream and silently kill the mirror (the mirror bails
+    # once agent is set). Once the child completes, the guard lifts and the next
+    # prompt/RPC builds the agent normally so the user can talk to the session.
+    if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        return
     lock = session.setdefault("agent_build_lock", threading.Lock())
     with lock:
         if ready.is_set() or session.get("agent_build_started"):
@@ -946,6 +954,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 kw = {"session_db": session_db}
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
+                # Model/effort/fast the desktop picked for a brand-new chat ride
+                # in as per-session overrides so the first build uses them
+                # directly (no global config, no build-then-switch).
+                if override := current.get("model_override"):
+                    kw["model_override"] = override
+                if (reasoning := current.get("create_reasoning_override")) is not None:
+                    kw["reasoning_config_override"] = reasoning
+                if (tier := current.get("create_service_tier_override")) is not None:
+                    kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
@@ -1174,11 +1191,38 @@ def _ensure_session_db_row(session: dict) -> None:
         close_db = False
     if db is None:
         return
+    # The session's own model/effort/fast pick — the composer override shipped on
+    # session.create, or a restored /model switch — must own the row's model +
+    # model_config. The agent isn't built yet at first prompt.submit, so derive
+    # the row from the live override dict; fall back to the global resolved model
+    # only when this chat made no explicit pick. Writing the global default here
+    # used to win the INSERT-OR-IGNORE race against the agent's own correct
+    # lazy-create, so a reconnect/resume rebuilt from the global model and
+    # silently reverted the chat (e.g. picked gpt-5.5, reconnect snapped back to
+    # the profile default). model_config carries provider/reasoning/service_tier
+    # so resume restores effort + fast too, not just the model name.
+    override = session.get("model_override")
+    override = override if isinstance(override, dict) else {}
+    row_model = str(override.get("model") or "").strip() or _resolve_model()
+    model_config: dict = {}
+    for src_key, cfg_key in (
+        ("model", "model"),
+        ("provider", "provider"),
+        ("base_url", "base_url"),
+        ("api_mode", "api_mode"),
+    ):
+        if val := override.get(src_key):
+            model_config[cfg_key] = str(val)
+    if (reasoning := session.get("create_reasoning_override")) is not None:
+        model_config["reasoning_config"] = reasoning
+    if tier := session.get("create_service_tier_override"):
+        model_config["service_tier"] = tier
     try:
         db.create_session(
             key,
             source="tui",
-            model=_resolve_model(),
+            model=row_model,
+            model_config=model_config or None,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:
@@ -1637,6 +1681,69 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         logger.debug("failed to persist live session runtime", exc_info=True)
 
 
+def _persist_live_session_system_prompt(session: dict | None) -> None:
+    """Refresh the stored system prompt after a live runtime identity change."""
+    if not session:
+        return
+    agent = session.get("agent")
+    session_key = str(session.get("session_key") or "").strip()
+    if agent is None or not session_key or not hasattr(agent, "_build_system_prompt"):
+        return
+
+    db = getattr(agent, "_session_db", None) or _get_db()
+    if db is None or not hasattr(db, "update_system_prompt"):
+        return
+
+    try:
+        prompt = agent._build_system_prompt(None)
+        agent._cached_system_prompt = prompt
+        db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
+    except Exception:
+        logger.debug("failed to persist live session system prompt", exc_info=True)
+
+
+def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
+    """Record a real system-history pivot after a live model switch."""
+    if not session:
+        return
+    session_key = str(session.get("session_key") or "").strip()
+    if not session_key:
+        return
+
+    provider_part = f" via provider {provider}" if provider else ""
+    marker = (
+        "[System: The active model for this chat has changed to "
+        f"{model}{provider_part}. From this point forward, use this runtime "
+        "metadata when answering questions about what model/provider is active.]"
+    )
+    entry = {"role": "system", "content": marker}
+
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            session.setdefault("history", []).append(entry)
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+    else:
+        session.setdefault("history", []).append(entry)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+
+    try:
+        agent = session.get("agent")
+        db = getattr(agent, "_session_db", None) if agent is not None else None
+        if db is not None:
+            db.append_message(session_id=session_key, role="system", content=marker)
+            return
+
+        _ensure_session_db_row(session)
+        with _session_db(session) as scoped_db:
+            if scoped_db is not None:
+                scoped_db.append_message(
+                    session_id=session_key, role="system", content=marker
+                )
+    except Exception:
+        logger.debug("failed to persist model switch marker", exc_info=True)
+
+
 def _write_config_key(key_path: str, value):
     cfg = _load_cfg()
     current = cfg
@@ -1961,11 +2068,14 @@ def _apply_model_switch(
     *,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
+    parsed_flags: tuple[str, str, bool, bool] | None = None,
 ) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(raw_input)
+    if parsed_flags is None:
+        parsed_flags = parse_model_flags(raw_input)
+    model_input, explicit_provider, persist_global, _force_refresh = parsed_flags
     if not model_input:
         raise ValueError("model value required")
 
@@ -1976,20 +2086,24 @@ def _apply_model_switch(
         current_base_url = getattr(agent, "base_url", "") or ""
         current_api_key = getattr(agent, "api_key", "") or ""
     else:
-        runtime = resolve_runtime_provider(requested=None)
-        current_provider = str(runtime.get("provider", "") or "")
         current_model = _resolve_model()
-        current_base_url = str(runtime.get("base_url", "") or "")
-        # Preserve a callable api_key (Azure Foundry Entra ID bearer
-        # provider) unchanged — ``str(...)`` would produce
-        # ``"<function ...>"`` and poison downstream switch_model
-        # validation. Match the agent-present branch's behavior at the
-        # top of this block.
-        _runtime_key = runtime.get("api_key", "")
-        if callable(_runtime_key) and not isinstance(_runtime_key, str):
-            current_api_key = _runtime_key
-        else:
-            current_api_key = str(_runtime_key or "")
+        current_provider = explicit_provider.strip()
+        current_base_url = ""
+        current_api_key = ""
+        if not explicit_provider:
+            runtime = resolve_runtime_provider(requested=None)
+            current_provider = str(runtime.get("provider", "") or "")
+            current_base_url = str(runtime.get("base_url", "") or "")
+            # Preserve a callable api_key (Azure Foundry Entra ID bearer
+            # provider) unchanged — ``str(...)`` would produce
+            # ``"<function ...>"`` and poison downstream switch_model
+            # validation. Match the agent-present branch's behavior at the
+            # top of this block.
+            _runtime_key = runtime.get("api_key", "")
+            if callable(_runtime_key) and not isinstance(_runtime_key, str):
+                current_api_key = _runtime_key
+            else:
+                current_api_key = str(_runtime_key or "")
 
     # Load user-defined providers so switch_model can resolve named custom
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
@@ -2051,6 +2165,10 @@ def _apply_model_switch(
         )
         _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
+        _persist_live_session_system_prompt(session)
+        _append_model_switch_marker(
+            session, model=result.new_model, provider=result.target_provider
+        )
         _emit("session.info", sid, _session_info(agent, session))
 
     # Record the switch as a PER-SESSION override so a later rebuild of THIS
@@ -2760,7 +2878,14 @@ def _on_tool_progress(
         if preview and event_type == "subagent.tool":
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)
-        _emit(event_type, sid, payload)
+        # subagent.text is the child's per-token reply, relayed solely to feed a
+        # watch window's live mirror. It is meaningless on the parent session
+        # (which shows the child via the spawn tree, not its reply body), so
+        # skip the parent emit — sending hundreds of ignored token frames there
+        # is wasted traffic and a trap for any future parent-side subagent
+        # catch-all. The mirror keys off the child sid and is unaffected.
+        if event_type != "subagent.text":
+            _emit(event_type, sid, payload)
         _mirror_subagent_to_child(event_type, payload)
 
 
@@ -2820,11 +2945,15 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         if event_type == "subagent.thinking":
             if text := str(payload.get("text") or ""):
                 _emit("reasoning.delta", csid, {"text": text})
-        elif event_type in {"subagent.start", "subagent.progress"}:
-            # Mirror branch-level progress lines so a just-opened child window
-            # shows immediate activity instead of waiting for the next tool or
-            # completion event. This matches the TUI /agents "live branch log"
-            # feel that users expect.
+        elif event_type == "subagent.text":
+            # The child's streamed reply text — the actual "agent talking".
+            # Relayed token-by-token from the child's run_conversation
+            # stream_callback, so the watch window streams the reply live.
+            if text := str(payload.get("text") or ""):
+                _emit("message.delta", csid, {"text": text})
+        elif event_type == "subagent.start":
+            # One-time header line (the child's goal) so a freshly opened window
+            # shows immediate context before the first reply token streams.
             if text := str(payload.get("text") or ""):
                 _emit("message.delta", csid, {"text": f"{text}\n"})
         elif event_type == "subagent.tool":
@@ -3890,6 +4019,29 @@ def _(rid, params: dict) -> dict:
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
 
+    # The desktop composer owns its model/effort/fast as plain UI state and ships
+    # it on every session.create. Honor each as a PER-SESSION override (built into
+    # the agent below) — never a global config write, so picking a model/effort
+    # for a new chat can't mutate the profile default. provider is optional
+    # (resolved at build).
+    create_model = str(params.get("model") or "").strip()
+    session_model_override = (
+        {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
+        if create_model
+        else None
+    )
+    create_reasoning_override = None
+    if effort := str(params.get("reasoning_effort") or "").strip():
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            create_reasoning_override = parse_reasoning_effort(effort)
+        except Exception:
+            create_reasoning_override = None
+    # Only pin "fast" when explicitly requested; leaving it None lets the build
+    # fall back to the profile default service tier rather than forcing normal.
+    create_service_tier_override = "priority" if params.get("fast") else None
+
     ready = threading.Event()
     now = time.time()
     lease, limit_message = _claim_active_session_slot(key, live_session_id=sid)
@@ -3915,6 +4067,9 @@ def _(rid, params: dict) -> dict:
             "cwd": resolved_cwd,
             "inflight_turn": None,
             "last_active": now,
+            "model_override": session_model_override,
+            "create_reasoning_override": create_reasoning_override,
+            "create_service_tier_override": create_service_tier_override,
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
@@ -3954,7 +4109,20 @@ def _(rid, params: dict) -> dict:
             "message_count": len(history),
             "messages": _history_to_messages(history),
             "info": {
-                "model": _resolve_model(),
+                # Reflect the per-session model override (desktop composer pick)
+                # in the immediate response so the client doesn't briefly clobber
+                # its sticky pick with the global default before the deferred
+                # build's session.info lands.
+                "model": (
+                    session_model_override.get("model")
+                    if session_model_override
+                    else _resolve_model()
+                ),
+                **(
+                    {"provider": session_model_override["provider"]}
+                    if session_model_override and session_model_override.get("provider")
+                    else {}
+                ),
                 "tools": {},
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
@@ -4087,6 +4255,19 @@ def _(rid, params: dict) -> dict:
         found = db.get_session_by_title(target)
         if found:
             target = found["id"]
+        elif is_truthy_value(params.get("lazy", False)) and _child_run_active(target):
+            # Race: a watch window opened on a freshly-spawned subagent. The
+            # child relays `subagent.start` (which carries child_session_id and
+            # triggers the window) BEFORE its first run_conversation() flushes
+            # the DB row via _ensure_db_session, so db.get_session(target) is
+            # momentarily empty. On slower hosts (notably WSL2, where SQLite +
+            # process scheduling widen the gap) the window's resume consistently
+            # lands inside this window and used to hard-fail "session not found"
+            # — the frontend then 404'd on the REST messages fallback and the
+            # window spun forever. The child is provably live (_child_run_active),
+            # so proceed into the lazy branch with empty history; the live mirror
+            # streams the whole turn anyway and the row exists by upgrade time.
+            found = {}
         else:
             return _err(rid, 4007, "session not found")
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
@@ -5598,6 +5779,11 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
             evt.get("message", ""),
             evt.get("suppressed", 0),
         )
+    if evt_type == "async_delegation":
+        # Async-delegation completions have no process session_id; without
+        # this the fallthrough keys every one as ("", "async_delegation")
+        # and the second completion's status update is suppressed forever.
+        return (evt.get("delegation_id", ""), evt_type)
     return (evt_sid, evt_type)
 
 
@@ -7015,7 +7201,11 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
-                if session.get("agent") is None:
+                from hermes_cli.model_switch import parse_model_flags
+
+                parsed_flags = parse_model_flags(value)
+                _model_input, explicit_provider, _persist_global, _force_refresh = parsed_flags
+                if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)
                     init_err = _wait_agent(session, rid)
@@ -7030,6 +7220,7 @@ def _(rid, params: dict) -> dict:
                     confirm_expensive_model=bool(
                         params.get("confirm_expensive_model", False)
                     ),
+                    parsed_flags=parsed_flags,
                 )
             else:
                 result = _apply_model_switch(

@@ -413,6 +413,25 @@ get_command_link_display_dir() {
     fi
 }
 
+# Point a Hermes-managed Node's `npm install -g` at a directory that is on
+# PATH. npm's default global prefix for a bundled Node is the Node dir itself,
+# so global package binaries land in $HERMES_HOME/node/bin — which is NOT on
+# PATH (only the command link dir is) and is wiped on every Node upgrade.
+# Redirecting the prefix to the link dir's parent makes global bins resolve to
+# the command link dir (node/npm/npx live there too, already on PATH) and
+# survive upgrades. Scoped to the managed Node via its prefix-local global
+# npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
+# Hermes's own global installs pass an explicit --prefix and are unaffected.
+# Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
+# every install run repairs pre-existing installs, not just fresh ones.
+configure_managed_node_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
@@ -722,6 +741,11 @@ node_satisfies_build() {
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
+    # Repair pre-existing Hermes-managed installs where `npm install -g` lands
+    # off PATH. No-op when there's no managed Node, so this is safe to run on
+    # every install — including re-runs that skip the Node (re)install below.
+    configure_managed_node_npm_prefix
+
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
         log_success "Node.js $(node --version) found"
         HAS_NODE=true
@@ -850,6 +874,8 @@ install_node() {
     ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
     ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
     ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    configure_managed_node_npm_prefix
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -2381,6 +2407,58 @@ _desktop_pack() {
 # failed, and we never override a user-pinned ELECTRON_MIRROR.
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
+# True (returns 0) when node_modules/electron/dist holds a usable Electron
+# binary. electron-builder reads the binary from build.electronDist
+# (node_modules/electron/dist) since #38673, so this is the exact file whose
+# absence makes a pack fail with "The specified electronDist does not exist". A
+# dist dir that exists but is missing the binary (partial extraction / aborted
+# postinstall) is NOT ok. $1 = the workspace root holding node_modules.
+_electron_dist_ok() {
+    local install_dir="$1"
+    local electron_dir="$install_dir/node_modules/electron"
+    if [ "$OS" = "macos" ]; then
+        [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
+    else
+        [ -e "$electron_dir/dist/electron" ]
+    fi
+}
+
+# (Re)populate node_modules/electron/dist via electron's own downloader.
+#
+# Since #38673 the desktop build pins build.electronDist to
+# node_modules/electron/dist, so electron-builder reads the Electron binary
+# straight from there and never downloads it during `npm run pack`. That dist
+# tree is produced by the electron package's postinstall (install.js) during
+# `npm ci`. When that download is blocked/throttled (GitHub's release host is
+# unreachable in some regions - #47266), dist is missing and re-running pack only
+# re-throws "The specified electronDist does not exist". The mirror fallback
+# therefore has to drive THIS downloader, not another pack.
+#
+# No-op (returns 0) when the dist binary is already present. Otherwise drops a
+# partial dist + version marker (electron's install.js short-circuits when
+# path.txt already matches) and runs the downloader once. $1 = the workspace root
+# holding node_modules; optional $2 = an ELECTRON_MIRROR base URL. Best-effort:
+# returns 0 iff the dist binary exists afterward.
+_restore_electron_dist() {
+    local install_dir="$1"
+    local mirror="${2:-}"
+    local electron_dir="$install_dir/node_modules/electron"
+    _electron_dist_ok "$install_dir" && return 0
+
+    [ -f "$electron_dir/install.js" ] || return 1
+    command -v node >/dev/null 2>&1 || return 1
+
+    rm -rf "$electron_dir/dist" 2>/dev/null || true
+    rm -f "$electron_dir/path.txt" 2>/dev/null || true
+
+    if [ -n "$mirror" ]; then
+        ( cd "$electron_dir" && ELECTRON_MIRROR="$mirror" node install.js ) || true
+    else
+        ( cd "$electron_dir" && node install.js ) || true
+    fi
+    _electron_dist_ok "$install_dir"
+}
+
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
@@ -2453,8 +2531,19 @@ install_desktop() {
         # (b) Corrupt cached Electron zip is the most common self-healable cause.
         local purged
         purged="$(clear_electron_build_cache "$desktop_dir")"
-        if [ -n "$purged" ]; then
-            log_warn "Desktop build failed; cleared cached Electron download and retrying once..."
+        # electronDist is pinned to node_modules/electron/dist (#38673):
+        # electron-builder reads the binary from there and `pack` never downloads
+        # it, so purging the cache + re-running pack can't by itself repopulate a
+        # missing/partial dist. When the dist is actually gone, re-run electron's
+        # own downloader so the retry has a binary to read. Gated on the dist
+        # check so an unrelated build failure (tsc/vite) doesn't trigger a
+        # pointless ~200MB refetch.
+        local restored=false
+        if ! _electron_dist_ok "$INSTALL_DIR"; then
+            if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
+        fi
+        if [ -n "$purged" ] || [ "$restored" = true ]; then
+            log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
             if _desktop_pack "$desktop_dir"; then
                 pack_ok=true
             fi
@@ -2462,14 +2551,26 @@ install_desktop() {
     fi
 
     # (c) Still failing and the user hasn't pinned their own mirror: the GitHub
-    #     release host is likely blocked/throttled. Retry once via a public
-    #     Electron mirror (@electron/get still SHASUM-verifies the download).
+    #     release host is likely blocked/throttled. Re-download the Electron
+    #     binary via a public mirror, then retry. The mirror MUST drive
+    #     electron's own downloader — `npm run pack` reads the pinned electronDist
+    #     and never downloads, so a mirror passed only to pack is a no-op (#47266).
     if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
         log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
-        log_warn "Retrying once via a public Electron mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR)..."
+        log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-            pack_ok=true
+        local have_dist=false
+        if _electron_dist_ok "$INSTALL_DIR"; then
+            have_dist=true
+        elif _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+            have_dist=true
+        fi
+        if [ "$have_dist" = true ]; then
+            if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+                pack_ok=true
+            fi
+        else
+            log_warn "Could not re-download Electron from the mirror (node_modules/electron/dist still missing)"
         fi
     fi
 

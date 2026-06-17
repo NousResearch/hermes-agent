@@ -61,6 +61,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
+    ("z-ai/glm-5.2",                           ""),
     ("z-ai/glm-5.1",                           ""),
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
@@ -109,6 +110,7 @@ def _codex_curated_models() -> list[str]:
 # (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
+    "grok-build-0.1",
     "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
@@ -116,7 +118,7 @@ _XAI_STATIC_FALLBACK: list[str] = [
 ]
 
 
-_XAI_TOP_MODEL = "grok-4.3"
+_XAI_TOP_MODEL = "grok-build-0.1"
 
 
 def _xai_promote_top(ids: list[str]) -> list[str]:
@@ -182,6 +184,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
+        "z-ai/glm-5.2",
         "z-ai/glm-5.1",
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",
@@ -2368,10 +2371,17 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key)
+                live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
                 if live:
-                    if normalized in {"kimi-coding", "kimi-coding-cn"}:
-                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    # Merge static curated list with live API results so
+                    # models that the live endpoint omits (stale cache,
+                    # partial rollout) still appear in the picker.
+                    # Curated entries come first so deliberately-surfaced
+                    # newest models (e.g. kimi-k2.7-code, #46309) stay at
+                    # the top of the picker; live-only entries are appended
+                    # afterwards for discovery.  (#46850)
+                    curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    if curated:
                         merged = list(curated)
                         merged_lower = {m.lower() for m in curated}
                         for m in live:
@@ -3933,6 +3943,24 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+
+            # Model not in live /v1/models — check the curated catalog
+            # before rejecting.  Providers may omit models from their live
+            # listing that are still valid (stale cache, partial rollout,
+            # gated previews).  Use the pure-catalog helper (no extra live
+            # fetch) so we only accept models Hermes actually ships.  (#46850)
+            if _model_in_provider_catalog(
+                requested_for_lookup.lower(), _provider_keys(normalized)
+            ):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": (
+                        f"Note: `{requested}` was not found in the live /v1/models listing "
+                        f"but exists in the curated catalog — accepted."
+                    ),
+                }
 
         return {
             "accepted": False,

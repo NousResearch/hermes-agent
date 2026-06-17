@@ -99,6 +99,9 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # Browser CDP supervisor + browser_dialog import this directly. Keep core
+  # so browser tool discovery doesn't fail on lean installs.
+  "websockets==15.0.1",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
@@ -132,7 +135,7 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==82.0.1"]  # starlette: CVE-2026-48710
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
@@ -176,6 +179,7 @@ mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.4"]
 sms = ["aiohttp==3.13.4"]
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk

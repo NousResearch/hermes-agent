@@ -86,6 +86,12 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
+def _hard_stop_config_with_after(after: dict) -> dict:
+    cfg = _hard_stop_config()
+    cfg["tool_loop_guardrails"]["hard_stop_after"].update(after)
+    return cfg
+
+
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
     agent = _make_agent("web_search")
     args = {"query": "same"}
@@ -304,6 +310,66 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
         call_ids = [tc["id"] for tc in assistant_msg["tool_calls"]]
         following_results = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") in call_ids]
         assert len(following_results) == len(call_ids)
+
+
+def test_feishu_preemptive_budget_summary_stops_before_final_iteration():
+    agent = _make_agent("web_search", max_iterations=3)
+    agent.platform = "feishu"
+    agent._platform_budget_key = "feishu"
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps({"query": f"q{i}"}), f"c{i}")],
+        )
+        for i in range(1, 3)
+    ]
+    responses.append(_mock_response(content="current evidence summary", finish_reason="stop"))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("run_agent.handle_function_call", return_value=json.dumps({"result": "observed"})) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("diagnose in Feishu")
+
+    assert mock_hfc.call_count == 2
+    assert result["api_calls"] == 2
+    assert result["completed"] is False
+    assert result["turn_exit_reason"] == "budget_preemptive_summary(2/3)"
+    assert result["final_response"] == "current evidence summary"
+
+
+def test_exploratory_success_streak_halts_varied_probe_loop():
+    agent = _make_agent(
+        "terminal",
+        max_iterations=10,
+        config=_hard_stop_config_with_after({"exploratory_no_progress": 3}),
+    )
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("terminal", json.dumps({"command": f"find path{i}"}), f"c{i}")],
+        )
+        for i in range(1, 6)
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("run_agent.handle_function_call", return_value="read-only probe output") as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("keep probing")
+
+    assert mock_hfc.call_count == 3
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["code"] == "exploratory_no_progress_halt"
+    assert "diagnostic exploration" in result["final_response"]
 
 
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():

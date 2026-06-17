@@ -380,6 +380,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files = _translate_docker_workspace_paths(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
@@ -558,6 +559,43 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
     return None, None, False
+
+
+def _translate_docker_workspace_paths(media_files: list) -> list:
+    """Translate /workspace/ container paths to their host equivalents.
+
+    When the terminal backend is Docker, commands run inside a container where
+    /workspace is a bind-mount of a host directory.  The send_message tool runs
+    on the HOST where /workspace does not exist, so validate_media_delivery_path
+    silently drops those files.  This translator looks up the active Docker
+    environment's workspace host path and rewrites matching paths so the
+    host-side file is found and delivered correctly.
+    """
+    if not any(p.startswith("/workspace") for p, _ in media_files):
+        return media_files
+
+    host_workspace: str | None = None
+    try:
+        from tools.terminal_tool import _active_environments  # type: ignore[import]
+        for env in list(_active_environments.values()):
+            wd = getattr(env, "_workspace_dir", None)
+            if wd:
+                host_workspace = wd
+                break
+    except Exception:
+        pass
+
+    if host_workspace is None:
+        return media_files
+
+    translated = []
+    for path, is_voice in media_files:
+        if path == "/workspace":
+            path = host_workspace
+        elif path.startswith("/workspace/"):
+            path = host_workspace + path[len("/workspace"):]
+        translated.append((path, is_voice))
+    return translated
 
 
 def _describe_media_for_mirror(media_files):

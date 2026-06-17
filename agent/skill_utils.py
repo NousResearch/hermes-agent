@@ -701,9 +701,19 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     scripts) can contain arbitrary markdown and even archived package
     ``SKILL.md`` files, but they are progressive-disclosure data loaded through
     ``skill_view(..., file_path=...)`` rather than active skill roots.
+
+    Symlink cycles (e.g. ``skills/productivity/productivity -> ..``) are
+    detected via a *visited* set of resolved real paths.  When a cycle is
+    encountered the branch is pruned instead of recursing infinitely.
     """
     matches = []
+    visited: set = set()
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
+        real_root = Path(root).resolve()
+        if real_root in visited:
+            dirs[:] = []  # prune this branch — already traversed
+            continue
+        visited.add(real_root)
         has_skill_md = "SKILL.md" in files
         dirs[:] = [
             d

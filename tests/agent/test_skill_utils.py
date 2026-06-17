@@ -215,7 +215,37 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
 
 
-# ── skill_matches_platform on Termux ──────────────────────────────────────
+def test_iter_skill_index_files_prunes_self_referencing_symlinks(tmp_path):
+    """Self-referencing symlinks must not cause infinite recursion.
+
+    Regression test for <https://github.com/NousResearch/hermes-agent/issues/47659>.
+    A symlink inside a skill directory that points back to its own parent
+    (e.g. ``productivity/productivity -> productivity/``) must be detected
+    as a cycle and pruned instead of recursing infinitely.
+    """
+    # Create a skill directory with a self-referencing symlink.
+    skill_dir = tmp_path / "productivity"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: productivity\n---\n", encoding="utf-8"
+    )
+    # Symlink: productivity/productivity -> productivity/
+    (skill_dir / "productivity").symlink_to(skill_dir)
+
+    # Create a second skill without a cycle (control).
+    normal_skill = tmp_path / "research"
+    normal_skill.mkdir()
+    (normal_skill / "SKILL.md").write_text(
+        "---\nname: research\n---\n", encoding="utf-8"
+    )
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    # Each skill should appear exactly once — no duplicated entries from
+    # the cycle.
+    assert len(found) == 2
+    names = sorted(p.parent.name for p in found)
+    assert names == ["productivity", "research"]
 
 
 class TestSkillMatchesPlatformTermux:

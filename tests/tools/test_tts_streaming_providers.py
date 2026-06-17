@@ -942,3 +942,62 @@ def test_dispatch_stream_tts_writes_chunks(monkeypatch):
     assert fake_stream.stopped
     assert fake_stream.closed
     assert b"".join(fake_stream.writes) == b"\x10\x00\x20\x00\x30\x00\x40\x00"
+
+
+# --- Full dispatcher integration ---
+
+
+def test_dispatch_stream_tts_full_flow_with_fake(monkeypatch):
+    """End-to-end: dispatch a sentence through the dispatcher with a fake provider, verify all chunks land in the output stream.
+
+    Task 10's integration test: prove the dispatcher can carry a
+    sentence from a registered provider all the way to a (fake)
+    output stream, with the lifecycle (start → write each chunk →
+    stop → close) intact. The provider yields three synthetic
+    chunks; the test asserts each one reaches the stream, in order,
+    and that ``start``/``stop``/``close`` were all called so the
+    dispatcher's lifecycle contract holds for downstream audio
+    backends.
+    """
+    from tools.tts_streaming import dispatch_stream_tts
+
+    # Register a fake provider inside the test so we don't have to
+    # import a real provider or mock the SDK. ``@register`` mutates
+    # the module-level registry; the autouse ``_clear_registry``
+    # fixture snapshots and restores it, so this is hermetic.
+    @register("flow_test")
+    class FlowProvider(StreamingTTSProvider):
+        sample_rate = 24000
+        channels = 1
+        sample_width = 2
+        def __init__(self, config, *, stop_event=None):
+            # The dispatcher's contract requires ``(config, *,
+            # stop_event=None)``; mirror it. We stash the config
+            # and stop event so the test could extend assertions
+            # later (e.g. verify config is forwarded) without
+            # changing the provider shape.
+            self._config = config
+            self._stop_event = stop_event
+        def stream(self, text):
+            # Assert the dispatcher forwarded the sentence verbatim.
+            # This catches a class of regression where the dispatcher
+            # might mangle/normalize the input before passing it on.
+            assert text == "hello world"
+            yield b"\x01\x00"
+            yield b"\x02\x00"
+            yield b"\x03\x00"
+
+    fake_stream = _FakeOutputStream()
+    dispatch_stream_tts("hello world", "flow_test", output_stream=fake_stream)
+    # Lifecycle: dispatcher must start the stream before writing
+    # and stop + close it afterwards so a real ``sounddevice``
+    # stream doesn't leak file descriptors.
+    assert fake_stream.started
+    assert fake_stream.stopped
+    assert fake_stream.closed
+    # Every chunk the provider yielded must have been written to
+    # the stream, in order, concatenated. We use ``in`` to be
+    # tolerant of dispatcher-side padding; combined bytes are
+    # always the prefix the provider produced.
+    combined = b"".join(fake_stream.writes)
+    assert b"\x01\x00\x02\x00\x03\x00" in combined

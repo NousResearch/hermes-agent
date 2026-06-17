@@ -1165,6 +1165,12 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         # Phase 4: report s6 supervision when running under our /init.
         # Other container runtimes (or containers built before Phase 2)
         # still get the original "docker (foreground)" label.
+        #
+        # Some Linux environments expose container markers while still running
+        # a real systemd as PID 1 (systemd-nspawn, systemd-bearing dev
+        # containers, and VLM-style hosts with an overlay/containerd rootfs).
+        # In those cases systemd is the authoritative supervisor for the
+        # gateway, so do not stop at the generic "docker foreground" label.
         try:
             from hermes_cli.service_manager import detect_service_manager, get_service_manager
             if detect_service_manager() == "s6":
@@ -1192,11 +1198,12 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
                     service_scope="s6",
                 )
         except Exception:
-            pass  # Fall through to the legacy label on any detection error.
-        return GatewayRuntimeSnapshot(
-            manager="docker (foreground)",
-            gateway_pids=gateway_pids,
-        )
+            pass  # Fall through to systemd or the legacy label below.
+        if not _container_systemd_operational():
+            return GatewayRuntimeSnapshot(
+                manager="docker (foreground)",
+                gateway_pids=gateway_pids,
+            )
 
     if supports_systemd_services():
         selected_system, service_running = _probe_systemd_service_running(system=system)

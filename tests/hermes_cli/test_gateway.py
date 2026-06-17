@@ -280,6 +280,31 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.gateway_pids == (123,)
 
 
+def test_container_with_operational_systemd_snapshot_reports_systemd(monkeypatch):
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "none")
+    monkeypatch.setattr(gateway, "_container_systemd_operational", lambda: True)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "_select_systemd_scope", lambda system=False: False)
+    monkeypatch.setattr(gateway, "_service_scope_label", lambda system=False: "user")
+    monkeypatch.setattr(gateway, "_probe_systemd_service_running", lambda system=False: (False, True))
+    monkeypatch.setattr(
+        gateway,
+        "get_systemd_unit_path",
+        lambda system=False: SimpleNamespace(exists=lambda: True),
+    )
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [456])
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == "systemd (user)"
+    assert snapshot.service_installed is True
+    assert snapshot.service_running is True
+    assert snapshot.service_scope == "user"
+    assert snapshot.gateway_pids == (456,)
+
+
 def test_running_under_gateway_supervisor_markers(monkeypatch):
     _clear_supervisor_markers(monkeypatch)
     assert gateway._running_under_gateway_supervisor() is False

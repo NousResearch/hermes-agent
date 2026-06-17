@@ -4,10 +4,11 @@ Delegates to the existing adapter functions in agent/anthropic_adapter.py.
 This transport owns format conversion and normalization — NOT client lifecycle.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse
+from agent.transports.types import NormalizedResponse, ToolCall
 
 
 class AnthropicTransport(ProviderTransport):
@@ -16,6 +17,14 @@ class AnthropicTransport(ProviderTransport):
     Wraps the existing functions in anthropic_adapter.py behind the
     ProviderTransport ABC.  Each method delegates — no logic is duplicated.
     """
+
+    # Regex to match complete <invoke> blocks in text content.
+    # Matches: <invoke name="tool_name"><![CDATA[{"param": "value"}]]></invoke>
+    # The CDATA section is optional but commonly used by Anthropic.
+    _INVOKE_RE = re.compile(
+        r'<invoke\s+name="([^"]+)">(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</invoke>',
+        re.DOTALL
+    )
 
     @property
     def api_mode(self) -> str:
@@ -131,6 +140,20 @@ class AnthropicTransport(ProviderTransport):
         if reasoning_details:
             provider_data["reasoning_details"] = reasoning_details
 
+        # Salvage tool calls from text blocks if no structured tool_use blocks found
+        if not tool_calls:
+            joined_text = "\n".join(text_parts)
+            tool_calls = self._salvage_text_tool_calls(joined_text)
+            # If we salvaged tool calls, update finish_reason and clean text content
+            if tool_calls:
+                finish_reason = "tool_calls"
+                # Remove the invoke markup from text content
+                text_parts = [self._INVOKE_RE.sub("", t) for t in text_parts]
+
+        provider_data = {}
+        if reasoning_details:
+            provider_data["reasoning_details"] = reasoning_details
+
         return NormalizedResponse(
             content="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls or None,
@@ -139,6 +162,35 @@ class AnthropicTransport(ProviderTransport):
             usage=None,
             provider_data=provider_data or None,
         )
+
+    @staticmethod
+    def _salvage_text_tool_calls(text: str) -> list:
+        """Recover tool calls emitted as text instead of tool_use blocks.
+
+        Safety properties:
+        - Only called when no structured tool_calls are present
+        - Only salvages complete blocks (requires closing </invoke> tag)
+        - Validates JSON parameters
+        - Returns empty list if no valid invoke blocks found
+        """
+        import json
+        from agent.transports.types import ToolCall
+
+        calls = []
+        for match in AnthropicTransport._INVOKE_RE.finditer(text):
+            name = match.group(1)
+            try:
+                # Validate that parameters are valid JSON
+                args = json.loads(match.group(2).strip())
+                calls.append(ToolCall(
+                    id=f"salvaged_{len(calls)}",
+                    name=name,
+                    arguments=json.dumps(args)
+                ))
+            except (json.JSONDecodeError, ValueError):
+                # Skip invalid JSON - don't execute malformed tool calls
+                continue
+        return calls
 
     def validate_response(self, response: Any) -> bool:
         """Check Anthropic response structure is valid.

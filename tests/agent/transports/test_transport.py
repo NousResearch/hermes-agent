@@ -9,7 +9,7 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 from agent.transports import get_transport, register_transport, _REGISTRY
 
 
-# ── ABC contract tests ──────────────────────────────────────────────────
+# ── ABC contract tests ──────────────────────────────────────────────
 
 class TestProviderTransportABC:
     """Verify the ABC contract is enforceable."""
@@ -47,7 +47,7 @@ class TestProviderTransportABC:
         assert t.map_finish_reason("end_turn") == "end_turn"  # default passthrough
 
 
-# ── Registry tests ───────────────────────────────────────────────────────
+# ── Registry tests ────────────────────────────────────────────────
 
 class TestTransportRegistry:
 
@@ -88,7 +88,7 @@ class TestTransportRegistry:
         _REGISTRY.pop("dummy_test", None)
 
 
-# ── AnthropicTransport tests ────────────────────────────────────────────
+# ── AnthropicTransport tests ────────────────────────────────────────
 
 class TestAnthropicTransport:
 
@@ -107,7 +107,7 @@ class TestAnthropicTransport:
                 "name": "test_tool",
                 "description": "A test",
                 "parameters": {"type": "object", "properties": {}},
-            }
+            },
         }]
         result = transport.convert_tools(tools)
         assert len(result) == 1
@@ -233,3 +233,140 @@ class TestAnthropicTransport:
         assert system is not None
         # Messages should only have user
         assert len(msgs) >= 1
+
+    def test_normalize_response_text_with_invoke_salvage(self, transport):
+        """Test salvage of tool calls from text blocks when no tool_use blocks present."""
+        # Simulate Anthropic response where tool call is in text block as <invoke> markup
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text='I will now run the ls command:<invoke name="terminal"><![CDATA[{"command": "ls -la"}]]></invoke>'
+                ),
+            ],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=20),
+            model="claude-sonnet-4-6",
+        )
+        nr = transport.normalize_response(r)
+        
+        # Should have salvaged the tool call from text
+        assert nr.finish_reason == "tool_calls"
+        assert nr.tool_calls is not None
+        assert len(nr.tool_calls) == 1
+        tc = nr.tool_calls[0]
+        assert tc.name == "terminal"
+        # Arguments should be valid JSON
+        assert '"command"' in tc.arguments
+        assert '"ls -la"' in tc.arguments
+        # Text content should be cleaned (invoke markup removed)
+        assert nr.content == "I will now run the ls command:"
+
+    def test_normalize_response_text_with_multiple_invoke_salvage(self, transport):
+        """Test salvage of multiple tool calls from text blocks."""
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text='First:<invoke name="terminal"><![CDATA[{"command": "ls"}]]></invoke> Then:<invoke name="read_file"><![CDATA[{"path": "/etc/passwd"}]]></invoke>'
+                ),
+            ],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=30),
+            model="claude-sonnet-4-6",
+        )
+        nr = transport.normalize_response(r)
+        
+        # Should have salvaged both tool calls
+        assert nr.finish_reason == "tool_calls"
+        assert nr.tool_calls is not None
+        assert len(nr.tool_calls) == 2
+        
+        # First tool call
+        tc1 = nr.tool_calls[0]
+        assert tc1.name == "terminal"
+        assert '"command"' in tc1.arguments
+        assert '"ls"' in tc1.arguments
+        
+        # Second tool call
+        tc2 = nr.tool_calls[1]
+        assert tc2.name == "read_file"
+        assert '"path"' in tc2.arguments
+        assert '"/etc/passwd"' in tc2.arguments
+        
+        # Text content should be cleaned
+        assert nr.content == "First: Then:"
+
+    def test_normalize_response_text_with_invalid_invoke_no_salvage(self, transport):
+        """Test that invalid JSON in invoke block does not create tool calls."""
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text='Running command:<invoke name="terminal"><![CDATA[{invalid json: }]]></invoke>'
+                ),
+            ],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=10),
+            model="claude-sonnet-4-6",
+        )
+        nr = transport.normalize_response(r)
+        
+        # Should NOT have salvaged tool call due to invalid JSON
+        assert nr.finish_reason == "stop"
+        assert nr.tool_calls is None or len(nr.tool_calls) == 0
+        # Text content should remain unchanged (no valid invoke blocks to remove)
+        assert nr.content == 'Running command:<invoke name="terminal"><![CDATA[{invalid json: }]]></invoke>'
+
+    def test_normalize_response_text_with_incomplete_invoke_no_salvage(self, transport):
+        """Test that incomplete invoke block (missing closing tag) does not create tool calls."""
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text='Running command:<invoke name="terminal"><![CDATA[{"command": "ls"}]]'
+                ),
+            ],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=10),
+            model="claude-sonnet-4-6",
+        )
+        nr = transport.normalize_response(r)
+        
+        # Should NOT have salvaged tool call due to missing closing tag
+        assert nr.finish_reason == "stop"
+        assert nr.tool_calls is None or len(nr.tool_calls) == 0
+        # Text content should remain unchanged
+        assert nr.content == 'Running command:<invoke name="terminal"><![CDATA[{"command": "ls"}]]'
+
+    def test_normalize_response_prefers_tool_use_over_text(self, transport):
+        """Test that when both tool_use and text blocks with invoke are present, tool_use wins."""
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="toolu_123",
+                    name="terminal",
+                    input={"command": "ls -l"},
+                ),
+                SimpleNamespace(
+                    type="text",
+                    text='Alternative:<invoke name="read_file"><![CDATA[{"path": "/tmp/test"}]]></invoke>'
+                ),
+            ],
+            stop_reason="tool_use",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=20),
+            model="claude-sonnet-4-6",
+        )
+        nr = transport.normalize_response(r)
+        
+        # Should use the structured tool_use block, not salvage from text
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        tc = nr.tool_calls[0]
+        assert tc.name == "terminal"
+        assert tc.id == "toolu_123"
+        assert '"command"' in tc.arguments
+        assert '"ls -l"' in tc.arguments
+        # Text content should be preserved (including the invoke markup since we didn't salvage)
+        assert nr.content == 'Alternative:<invoke name="read_file"><![CDATA[{"path": "/tmp/test"}]]></invoke>'

@@ -554,3 +554,129 @@ class TestProfileScopedChatPty:
         with pytest.raises(web_server.HTTPException) as exc:
             web_server._resolve_chat_argv(profile="ghost")
         assert exc.value.status_code == 404
+
+
+class TestProfileScopedChatResume:
+    """Resuming a chat must resolve the session in its OWNING profile, not the
+    dashboard's sticky-active/management profile.
+
+    Regression for cross-profile "session not found": the dashboard stores
+    sessions in per-profile state.db files, but the resume path (latest
+    descendant + chat PTY) used the process/active profile only, so reopening a
+    chat that belongs to a different profile than the one currently selected —
+    including a bare desktop-restored ``/chat?resume=<id>`` URL carrying no
+    ``?profile=`` — 404'd. See ``_find_session_profile`` /
+    ``_session_latest_descendant`` / ``_resolve_chat_argv``.
+    """
+
+    @staticmethod
+    def _seed(home, sid, *, parent=None):
+        import hermes_state
+
+        db = hermes_state.SessionDB(db_path=home / "state.db")
+        try:
+            kw = {"model": "test"}
+            if parent is not None:
+                kw["parent_session_id"] = parent
+            db.create_session(session_id=sid, source="tui", **kw)
+        finally:
+            db.close()
+
+    @staticmethod
+    def _patch_tui(monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.main._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+    def test_find_session_profile_locates_owner(self, isolated_profiles):
+        import hermes_cli.web_server as web_server
+
+        self._seed(isolated_profiles["worker_beta"], "wb-sess")
+        self._seed(isolated_profiles["default"], "def-sess")
+        assert web_server._find_session_profile("wb-sess") == "worker_beta"
+        assert web_server._find_session_profile("def-sess") == "default"
+        assert web_server._find_session_profile("nope-zzz") is None
+
+    def test_latest_descendant_walks_owning_profile_chain(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_state
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", isolated_profiles["default"] / "state.db"
+        )
+        # parent -> child compression chain lives ONLY in worker_beta
+        self._seed(isolated_profiles["worker_beta"], "p")
+        self._seed(isolated_profiles["worker_beta"], "c", parent="p")
+
+        # explicit owning profile walks to the tip
+        assert web_server._session_latest_descendant("p", profile="worker_beta")[0] == "c"
+        # no profile -> cross-profile fallback still resolves it (was None before)
+        assert web_server._session_latest_descendant("p")[0] == "c"
+        # a wrong/sticky profile -> fallback corrects to the real owner
+        assert web_server._session_latest_descendant("p", profile="default")[0] == "c"
+        # genuinely unknown id stays clean
+        assert web_server._session_latest_descendant("ghost-zzz") == (None, [])
+
+    def test_latest_descendant_endpoint_honors_and_falls_back(
+        self, client, isolated_profiles
+    ):
+        self._seed(isolated_profiles["worker_beta"], "wb1")
+        # explicit profile
+        r = client.get(
+            "/api/sessions/wb1/latest-descendant", params={"profile": "worker_beta"}
+        )
+        assert r.status_code == 200 and r.json()["session_id"] == "wb1"
+        # no profile -> fallback resolves the owner (regression: used to 404)
+        r = client.get("/api/sessions/wb1/latest-descendant")
+        assert r.status_code == 200 and r.json()["session_id"] == "wb1"
+        # genuinely missing -> 404
+        assert client.get("/api/sessions/ghost-zzz/latest-descendant").status_code == 404
+
+    def test_chat_argv_resume_binds_owning_profile(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_state
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", isolated_profiles["default"] / "state.db"
+        )
+        self._patch_tui(monkeypatch)
+        # worker_beta-owned session whose compression tip is "wc"
+        self._seed(isolated_profiles["worker_beta"], "wp")
+        self._seed(isolated_profiles["worker_beta"], "wc", parent="wp")
+
+        # The reported bug: resume a worker_beta session while the switcher is on
+        # the default/empty scope. Must bind worker_beta and walk to the tip.
+        _, _, env = web_server._resolve_chat_argv(resume="wp", profile="")
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env["HERMES_TUI_RESUME"] == "wc"
+        # Named owner spawns its own gateway (no in-memory attach).
+        assert "HERMES_TUI_GATEWAY_URL" not in env
+
+        # Correct explicit hint also binds worker_beta.
+        _, _, env = web_server._resolve_chat_argv(resume="wp", profile="worker_beta")
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env["HERMES_TUI_RESUME"] == "wc"
+
+    def test_chat_argv_resume_default_owned_stays_default(
+        self, isolated_profiles, monkeypatch
+    ):
+        import hermes_state
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", isolated_profiles["default"] / "state.db"
+        )
+        self._patch_tui(monkeypatch)
+        self._seed(isolated_profiles["default"], "dp")
+
+        # Even when the switcher points at worker_beta, a default-owned resume
+        # must bind the default home (the wrong hint is corrected to the owner).
+        _, _, env = web_server._resolve_chat_argv(resume="dp", profile="worker_beta")
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])
+        assert env["HERMES_TUI_RESUME"] == "dp"

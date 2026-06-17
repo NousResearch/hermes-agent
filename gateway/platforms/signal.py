@@ -17,6 +17,9 @@ import json
 import logging
 import os
 import random
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -76,7 +79,14 @@ def _parse_comma_list(value: str) -> List[str]:
 
 
 def _guess_extension(data: bytes) -> str:
-    """Guess file extension from magic bytes."""
+    """Guess file extension from magic bytes.
+
+    Android Signal delivers voice notes as raw ADTS AAC frames, which share
+    the ``0xFF 0xFx`` sync word with MPEG-1/2 Layer 3 (MP3). The byte-1
+    layout disambiguates: ADTS packs ``ID layer protection_absent`` into
+    bits 3-0, where ``ID`` is 0 for MPEG-2/4 AAC and ``layer`` is always
+    0 for ADTS. A real MP3 frame has ``ID=1`` and ``layer`` in {1, 2, 3}.
+    """
     if data[:4] == b"\x89PNG":
         return ".png"
     if data[:2] == b"\xff\xd8":
@@ -92,6 +102,12 @@ def _guess_extension(data: bytes) -> str:
     if data[:4] == b"OggS":
         return ".ogg"
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        # ``0xFF 0xFx`` is shared by MP3 and ADTS AAC. The discriminator
+        # is bits 3-1 of byte 1: ADTS has ``ID=0`` and ``layer=00`` (mask
+        # 0xF6, target 0xF0); MP3 has ``ID=1`` and ``layer`` in {01,10,11}
+        # (mask 0xF6, target in {0xF2, 0xF4, 0xF6}).
+        if (data[1] & 0xF6) == 0xF0:
+            return ".aac"
         return ".mp3"
     if data[:2] == b"PK":
         return ".zip"
@@ -118,6 +134,61 @@ _EXT_TO_MIME = {
 def _ext_to_mime(ext: str) -> str:
     """Map file extension to MIME type."""
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+
+
+def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
+    """Losslessly remux raw ADTS AAC bytes into an MP4 (.m4a) container.
+
+    Used by the Signal attachment cache so Android voice notes land on disk
+    in a container that every major STT API (Groq, OpenAI, xAI, Mistral
+    Voxtral) will accept. ``ffmpeg -c:a copy`` is a single demux/remux —
+    no re-encode, no quality loss, sub-100ms for typical voice-note sizes.
+
+    Returns ``(m4a_bytes, ".m4a")`` on success, or ``None`` if ffmpeg is
+    missing, input is invalid, or remux fails for any reason. Callers
+    must treat ``None`` as "pass through unchanged" and not raise.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        # Common Homebrew/local prefixes on macOS dev hosts.
+        for prefix in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+            if os.path.isfile(prefix) and os.access(prefix, os.X_OK):
+                ffmpeg = prefix
+                break
+    if not ffmpeg:
+        logger.debug("Signal: ffmpeg not found, skipping AAC→M4A remux")
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as src:
+            src.write(aac_data)
+            src_path = src.name
+        dst_path = src_path[:-4] + ".m4a"
+        try:
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-i", src_path,
+                 "-c:a", "copy", "-movflags", "+faststart", dst_path],
+                capture_output=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
+                    proc.returncode, proc.stderr.decode("utf-8", "replace")[:300],
+                )
+                return None
+            with open(dst_path, "rb") as f:
+                return f.read(), ".m4a"
+        finally:
+            for p in (src_path, dst_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    except subprocess.TimeoutExpired:
+        logger.warning("Signal: AAC→M4A remux timed out (>10s)")
+        return None
+    except Exception:
+        logger.exception("Signal: AAC→M4A remux error")
+        return None
 
 
 def _render_mentions(text: str, mentions: list) -> str:
@@ -723,6 +794,17 @@ class SignalAdapter(BasePlatformAdapter):
         # Result is base64-encoded file content
         raw_data = base64.b64decode(result)
         ext = _guess_extension(raw_data)
+
+        # Android Signal voice notes are raw ADTS AAC streams. Most STT
+        # providers (Groq Whisper, OpenAI Whisper) reject raw ADTS — they
+        # require AAC to be muxed into an MP4 container. Remux losslessly
+        # with ``ffmpeg -c:a copy`` so the cached file is a normal .m4a.
+        # No re-encode, sub-100ms on a Pi 5. Graceful no-op if ffmpeg is
+        # absent; the STT layer has its own sniff-and-remux fallback.
+        if ext == ".aac":
+            remuxed: Optional[Tuple[bytes, str]] = await asyncio.to_thread(_remux_aac_to_m4a, raw_data)
+            if remuxed is not None:
+                raw_data, ext = remuxed
 
         if _is_image_ext(ext):
             path = cache_image_from_bytes(raw_data, ext)

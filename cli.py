@@ -12068,6 +12068,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
 
+            # Stash the raw result dict so the single-query (-q) non-quiet path
+            # in main() can read self._last_run_result to determine the exit
+            # code for kanban workers (see #48000).
+            self._last_run_result = result
             return response
             
         except Exception as e:
@@ -15475,14 +15479,18 @@ def main(
                         # ``rate_limited`` exit and releases the task back to
                         # ``ready`` WITHOUT incrementing the failure counter, so a
                         # 5-hour quota window can't trip the circuit breaker and
-                        # permanently block the card. Non-kanban runs keep the
-                        # plain 0/1 contract automation wrappers expect.
+                        # permanently block the card.  The allowlist now also
+                        # includes ``timeout``, ``overloaded``, and ``server_error``
+                        # — transient provider unavailability that is no more the
+                        # task's fault than a 429.  (#48000)
+                        # Non-kanban runs keep the plain 0/1 contract automation
+                        # wrappers expect.
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
                             if os.environ.get("HERMES_KANBAN_TASK") and result.get(
                                 "failure_reason"
-                            ) in ("rate_limit", "billing"):
+                            ) in ("rate_limit", "billing", "timeout", "overloaded", "server_error"):
                                 try:
                                     from hermes_cli.kanban_db import (
                                         KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
@@ -15515,6 +15523,34 @@ def main(
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
+
+                # Kanban exit-code mapping for the single-query (-q) path.
+                # The dispatcher spawns workers with ``chat -q <prompt>`` (not
+                # ``-Q``), so this path is what kanban workers actually hit.
+                # Without this, transient provider failures (timeout, 5xx, etc.)
+                # cause the worker to exit 0, which the dispatcher's reap
+                # classifier records as a protocol_violation and permanently
+                # blocks the card.  The fully-quiet (-Q) path already has this
+                # mapping via inline run_conversation; here we read the result
+                # that chat() stashed in self._last_run_result.  (#48000)
+                _last_result = getattr(cli, '_last_run_result', None)
+                if _last_result is not None:
+                    _exit_code = 0
+                    if isinstance(_last_result, dict) and _last_result.get("failed"):
+                        _exit_code = 1
+                        if os.environ.get("HERMES_KANBAN_TASK") and _last_result.get(
+                            "failure_reason"
+                        ) in ("rate_limit", "billing", "timeout", "overloaded", "server_error"):
+                            try:
+                                from hermes_cli.kanban_db import (
+                                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                )
+                                _exit_code = _RL_CODE
+                            except Exception:
+                                _exit_code = 1
+                    if _exit_code:
+                        sys.exit(_exit_code)
+
                 cli._print_exit_summary()
         finally:
             _finalize_single_query(cli)

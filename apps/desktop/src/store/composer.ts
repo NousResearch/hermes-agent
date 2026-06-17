@@ -7,6 +7,10 @@ export interface ComposerAttachment {
   kind: 'image' | 'file' | 'folder' | 'terminal' | 'url'
   label: string
   detail?: string
+  file?: File
+  mimeType?: string
+  byteSize?: number
+  dataUrl?: string
   refText?: string
   previewUrl?: string
   path?: string

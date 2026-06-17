@@ -1445,17 +1445,25 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       for (const candidate of osDrops) {
         const path = candidate.path || ''
-
-        if (!path) {
-          continue
-        }
+        const file = candidate.file
+        const fallbackName = file?.name || 'file'
+        const key = path || `${fallbackName}:${file?.size ?? 0}:${file?.lastModified ?? 0}`
 
         const kind: ComposerAttachment['kind'] =
-          candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
+          file?.type.startsWith('image/') || isImagePath(file?.name || path) ? 'image' : 'file'
 
         try {
           const uploaded = await uploadComposerAttachment(
-            { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
+            {
+              byteSize: file?.size,
+              detail: path || file?.name,
+              file,
+              id: attachmentId(kind, key),
+              kind,
+              label: pathLabel(path || fallbackName),
+              mimeType: file?.type || undefined,
+              path: path || undefined
+            },
             { remote, requestGateway, sessionId }
           )
 

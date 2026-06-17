@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { getBrowserDashboardConnection } from '@/lib/browser-dashboard'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {
@@ -83,10 +84,87 @@ export function useGatewayBoot({
     }
 
     if (!desktop) {
-      failDesktopBoot('Desktop IPC bridge is unavailable.')
-      setSessionsLoading(false)
+      setDesktopBootStep({
+        phase: 'renderer.boot',
+        message: translateNow('boot.steps.startingDesktopConnection'),
+        progress: 8
+      })
 
-      return () => void (cancelled = true)
+      const gateway = new HermesGateway()
+      callbacksRef.current.onGatewayReady(gateway)
+      setPrimaryGateway(gateway, normalizeProfileKey($activeGatewayProfile.get()))
+      configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
+
+      const offState = gateway.onState(st => reportPrimaryGatewayState(st))
+      const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent(event))
+
+      async function bootBrowserDashboard() {
+        try {
+          const conn = await getBrowserDashboardConnection()
+
+          if (cancelled) {
+            return
+          }
+
+          publish(conn)
+          setDesktopBootStep({
+            phase: 'renderer.gateway.connect',
+            message: translateNow('boot.steps.connectingGateway'),
+            progress: 95
+          })
+          await gateway.connect(conn.wsUrl)
+
+          if (cancelled) {
+            return
+          }
+
+          $activeGatewayProfile.set('default')
+          setDesktopBootStep({
+            phase: 'renderer.config',
+            message: translateNow('boot.steps.loadingSettings'),
+            progress: 97
+          })
+          await ensureDefaultWorkspaceCwd()
+          const remoteDefault = await desktopDefaultCwd().catch(() => null)
+          if (remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
+            setCurrentCwd(remoteDefault.cwd)
+            setCurrentBranch(remoteDefault.branch || '')
+          }
+          await callbacksRef.current.refreshHermesConfig()
+
+          if (cancelled) {
+            return
+          }
+
+          setDesktopBootStep({
+            phase: 'renderer.sessions',
+            message: translateNow('boot.steps.loadingSessions'),
+            progress: 99
+          })
+          await callbacksRef.current.refreshSessions()
+          completeDesktopBoot()
+        } catch (err) {
+          if (!cancelled) {
+            failDesktopBoot(err instanceof Error ? err.message : String(err))
+            notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+            setSessionsLoading(false)
+          }
+        }
+      }
+
+      void bootBrowserDashboard()
+
+      return () => {
+        cancelled = true
+        offState()
+        offEvent()
+        closeSecondaryGateways()
+        gateway.close()
+        publish(null)
+        callbacksRef.current.onGatewayReady(null)
+        setPrimaryGateway(null)
+        $gateway.set(null)
+      }
     }
 
     // --- Reconnect-after-sleep machinery -------------------------------------

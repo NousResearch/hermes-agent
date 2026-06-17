@@ -724,6 +724,71 @@ describe('usePromptActions file attachment sync', () => {
       params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
     })
   })
+
+  it('uploads browser-held file bytes even when no filesystem path exists', async () => {
+    const file = new File(['hello'], 'browser-report.txt', { type: 'text/plain' })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/browser-report.txt' } as never
+      }
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        byteSize: file.size,
+        file,
+        id: 'file:browser-report',
+        kind: 'file',
+        label: 'browser-report.txt',
+        mimeType: file.type
+      },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(uploaded.refText).toBe('@file:.hermes/desktop-attachments/browser-report.txt')
+    expect(requestGateway).toHaveBeenCalledWith(
+      'file.attach',
+      expect.objectContaining({
+        data_url: 'data:text/plain;base64,aGVsbG8=',
+        name: 'browser-report.txt',
+        path: '',
+        session_id: RUNTIME_SESSION_ID
+      })
+    )
+  })
+
+  it('uploads browser-held images through image.attach_bytes', async () => {
+    const file = new File([new Uint8Array([1, 2, 3])], 'browser-image.png', { type: 'image/png' })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/remote/session/browser-image.png' } as never
+      }
+      return {} as never
+    })
+
+    const uploaded = await uploadComposerAttachment(
+      {
+        byteSize: file.size,
+        file,
+        id: 'image:browser-image',
+        kind: 'image',
+        label: 'browser-image.png',
+        mimeType: file.type
+      },
+      { remote: false, requestGateway, sessionId: RUNTIME_SESSION_ID }
+    )
+
+    expect(uploaded.path).toBe('/remote/session/browser-image.png')
+    expect(requestGateway).toHaveBeenCalledWith(
+      'image.attach_bytes',
+      expect.objectContaining({
+        content_base64: 'AQID',
+        filename: 'browser-image.png',
+        session_id: RUNTIME_SESSION_ID
+      })
+    )
+  })
 })
 
 describe('usePromptActions eager-upload races', () => {

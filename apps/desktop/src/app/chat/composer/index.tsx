@@ -57,7 +57,7 @@ import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { useTheme } from '@/themes'
 
-import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, isImagePath, partitionDroppedFiles } from '../hooks/use-composer-actions'
 
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
@@ -637,6 +637,22 @@ export function ChatBar({
           void onAttachImageBlob(blob)
         }
       }
+
+      return
+    }
+
+    const pastedFiles = onAttachDroppedItems
+      ? extractDroppedFiles(event.clipboardData).filter(candidate => {
+          const file = candidate.file
+
+          return Boolean(file && !file.type.startsWith('image/') && !isImagePath(file.name || candidate.path))
+        })
+      : []
+
+    if (pastedFiles.length > 0 && onAttachDroppedItems) {
+      event.preventDefault()
+      triggerHaptic('selection')
+      void onAttachDroppedItems(pastedFiles)
 
       return
     }

@@ -486,8 +486,10 @@ function getTitleBarOverlayOptions() {
 const MEDIA_MIME_TYPES = {
   '.avi': 'video/x-msvideo',
   '.bmp': 'image/bmp',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.flac': 'audio/flac',
   '.gif': 'image/gif',
+  '.ipynb': 'application/x-ipynb+json',
   '.jpeg': 'image/jpeg',
   '.jpg': 'image/jpeg',
   '.m4a': 'audio/mp4',
@@ -497,14 +499,18 @@ const MEDIA_MIME_TYPES = {
   '.mp4': 'video/mp4',
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg; codecs=opus',
+  '.pdf': 'application/pdf',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.wav': 'audio/wav',
   '.webm': 'video/webm',
-  '.webp': 'image/webp'
+  '.webp': 'image/webp',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 }
 
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
+const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
+const PREVIEW_DOCUMENT_EXTENSIONS = new Set(['.docx', '.ipynb', '.xlsx'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -524,9 +530,11 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.json': 'json',
   '.jsx': 'jsx',
   '.kt': 'kotlin',
+  '.ipynb': 'json',
   '.lua': 'lua',
   '.md': 'markdown',
   '.mjs': 'javascript',
+  '.pdf': 'text',
   '.py': 'python',
   '.rb': 'ruby',
   '.rs': 'rust',
@@ -537,6 +545,8 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.ts': 'typescript',
   '.tsx': 'tsx',
   '.txt': 'text',
+  '.docx': 'text',
+  '.xlsx': 'text',
   '.xml': 'xml',
   '.yaml': 'yaml',
   '.yml': 'yaml',
@@ -3147,7 +3157,19 @@ async function previewFileTarget(rawTarget, baseDir) {
   const metadata = previewFileMetadata(resolved, mimeType)
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : metadata.binary ? 'binary' : 'text'
+  const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext)
+  const isDocument = PREVIEW_DOCUMENT_EXTENSIONS.has(ext)
+  const previewKind = isHtml
+    ? 'html'
+    : isImage
+      ? 'image'
+      : isPdf
+        ? 'pdf'
+        : isDocument
+          ? 'document'
+          : metadata.binary
+            ? 'binary'
+            : 'text'
 
   return {
     binary: metadata.binary,

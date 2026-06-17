@@ -63,6 +63,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
 from utils import env_var_enabled
 
 try:
@@ -947,6 +948,9 @@ _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
+_PREVIEW_PDF_EXTENSIONS = frozenset({".pdf"})
+_PREVIEW_DOCUMENT_EXTENSIONS = frozenset({".docx", ".ipynb", ".xlsx"})
+_PREVIEW_HTML_EXTENSIONS = frozenset({".htm", ".html"})
 
 
 @dataclass(frozen=True)
@@ -990,9 +994,11 @@ _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".json": "json",
     ".jsx": "jsx",
     ".kt": "kotlin",
+    ".ipynb": "json",
     ".lua": "lua",
     ".md": "markdown",
     ".mjs": "javascript",
+    ".pdf": "text",
     ".py": "python",
     ".rb": "ruby",
     ".rs": "rust",
@@ -1003,6 +1009,8 @@ _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".ts": "typescript",
     ".tsx": "tsx",
     ".txt": "text",
+    ".docx": "text",
+    ".xlsx": "text",
     ".xml": "xml",
     ".yaml": "yaml",
     ".yml": "yaml",
@@ -1011,8 +1019,10 @@ _FS_PREVIEW_LANGUAGE_BY_EXT = {
 _FS_MIME_TYPES = {
     ".avi": "video/x-msvideo",
     ".bmp": "image/bmp",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".flac": "audio/flac",
     ".gif": "image/gif",
+    ".ipynb": "application/x-ipynb+json",
     ".jpeg": "image/jpeg",
     ".jpg": "image/jpeg",
     ".m4a": "audio/mp4",
@@ -1022,11 +1032,13 @@ _FS_MIME_TYPES = {
     ".mp4": "video/mp4",
     ".ogg": "audio/ogg",
     ".opus": "audio/ogg; codecs=opus",
+    ".pdf": "application/pdf",
     ".png": "image/png",
     ".svg": "image/svg+xml",
     ".wav": "audio/wav",
     ".webm": "video/webm",
     ".webp": "image/webp",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 
@@ -1361,6 +1373,56 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     return data, mime_type
 
 
+def _truncate_preview_text(text: str | None, limit: int = _FS_TEXT_PREVIEW_MAX_BYTES) -> tuple[str | None, bool]:
+    if text is None:
+        return None, False
+    if len(text.encode("utf-8")) <= limit:
+        return text, False
+    trimmed = text[:limit]
+    while len(trimmed.encode("utf-8")) > limit:
+        trimmed = trimmed[:-1024] if len(trimmed) > 1024 else trimmed[:-1]
+    return trimmed, True
+
+
+def _extract_pdf_preview_text(path: Path) -> str | None:
+    pdftotext = shutil.which("pdftotext")
+    if not pdftotext:
+        return None
+    try:
+        result = subprocess.run(
+            [pdftotext, "-layout", "-enc", "UTF-8", str(path), "-"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _preview_kind_for_path(path: Path, mime_type: str, binary: bool) -> str:
+    suffix = path.suffix.lower()
+    if suffix in _PREVIEW_PDF_EXTENSIONS or mime_type == "application/pdf":
+        return "pdf"
+    if suffix in _PREVIEW_DOCUMENT_EXTENSIONS or is_extractable_document(str(path)):
+        return "document"
+    if mime_type.startswith("image/"):
+        return "image"
+    if suffix in _PREVIEW_HTML_EXTENSIONS:
+        return "html"
+    return "binary" if binary else "text"
+
+
+def _managed_download_url(path: str, *, inline: bool = False) -> str:
+    params = {"path": path}
+    if inline:
+        params["inline"] = "1"
+    return f"/api/files/download?{urllib.parse.urlencode(params)}"
+
+
 @app.get("/api/files")
 async def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)
@@ -1423,7 +1485,7 @@ async def read_managed_file(request: Request, path: str):
 
 
 @app.get("/api/files/download")
-async def download_managed_file(request: Request, path: str):
+async def download_managed_file(request: Request, path: str, inline: bool = False):
     """Stream a managed file as an attachment download.
 
     Remote clients (desktop app, browser dashboard) open agent-written files
@@ -1452,8 +1514,66 @@ async def download_managed_file(request: Request, path: str):
         path=str(target),
         media_type=mime_type,
         filename=target.name,
-        content_disposition_type="attachment",
+        content_disposition_type="inline" if inline else "attachment",
     )
+
+
+@app.get("/api/files/preview")
+async def preview_managed_file(request: Request, path: str):
+    _policy, target, display_path = _resolve_managed_path(path, request)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}")
+    if size > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large")
+
+    mime_type = _fs_mime_type(target)
+    text: str | None = None
+    truncated = False
+    binary = False
+    suffix = target.suffix.lower()
+
+    if suffix in _PREVIEW_PDF_EXTENSIONS or mime_type == "application/pdf":
+        text, truncated = _truncate_preview_text(_extract_pdf_preview_text(target))
+        preview_kind = "pdf"
+    elif suffix in _PREVIEW_DOCUMENT_EXTENSIONS or is_extractable_document(str(target)):
+        try:
+            text, truncated = _truncate_preview_text(extract_document_text(str(target)))
+        except ExtractionError:
+            text, truncated = None, False
+        preview_kind = "document"
+    else:
+        bytes_to_read = min(size, _FS_TEXT_PREVIEW_MAX_BYTES)
+        try:
+            with target.open("rb") as handle:
+                data = handle.read(bytes_to_read)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="File is not readable")
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
+        binary = _fs_looks_binary(data[:4096])
+        preview_kind = _preview_kind_for_path(target, mime_type, binary)
+        if preview_kind in {"html", "text"}:
+            text = data.decode("utf-8", errors="replace")
+            truncated = size > _FS_TEXT_PREVIEW_MAX_BYTES
+
+    return {
+        "byte_size": size,
+        "download_url": _managed_download_url(display_path),
+        "inline_url": _managed_download_url(display_path, inline=True),
+        "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(suffix, "text"),
+        "mime_type": mime_type,
+        "path": display_path,
+        "preview_kind": preview_kind,
+        "text": text,
+        "truncated": truncated,
+    }
 
 
 @app.post("/api/files/upload")

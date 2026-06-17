@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -23,9 +24,12 @@ import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { mediaExternalUrl } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
+import { setCurrentSessionPreviewTarget } from '@/store/preview'
+import { $currentCwd } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -55,7 +59,7 @@ const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
-const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
+const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|docx|xlsx|ipynb|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
 
 const ARTIFACT_TIME_FMT = new Intl.DateTimeFormat(undefined, {
@@ -347,7 +351,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 }
 
 type CellCtx = {
-  onOpen: (href: string) => void | Promise<void>
+  onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
 }
 
@@ -370,6 +374,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const { t } = useI18n()
   const a = t.artifacts
   const navigate = useNavigate()
+  const cwd = useStore($currentCwd)
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -477,17 +482,29 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [artifacts])
 
-  const openArtifact = useCallback(async (href: string) => {
+  const openArtifact = useCallback(async (artifact: ArtifactRecord) => {
     try {
+      if (artifact.kind !== 'link') {
+        const preview = await normalizeOrLocalPreviewTarget(artifact.value, cwd || undefined)
+
+        if (!preview) {
+          throw new Error(`Could not open preview target: ${artifact.value}`)
+        }
+
+        setCurrentSessionPreviewTarget(preview, 'manual', artifact.value)
+
+        return
+      }
+
       if (window.hermesDesktop?.openExternal) {
-        await window.hermesDesktop.openExternal(href)
+        await window.hermesDesktop.openExternal(artifact.href)
       } else {
-        window.open(href, '_blank', 'noopener,noreferrer')
+        window.open(artifact.href, '_blank', 'noopener,noreferrer')
       }
     } catch (err) {
       notifyError(err, a.openFailed)
     }
-  }, [a])
+  }, [a.openFailed, cwd])
 
   const markImageFailed = useCallback((id: string) => {
     setFailedImageIds(current => {
@@ -777,7 +794,7 @@ function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
   return (
     <ArtifactCellAction
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact.href)}
+      onClick={isLink ? undefined : () => void ctx.onOpen(artifact)}
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">

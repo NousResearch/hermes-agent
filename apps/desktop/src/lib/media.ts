@@ -10,8 +10,10 @@ interface MediaInfo {
 const MEDIA_BY_EXT: Record<string, MediaInfo> = {
   avi: { kind: 'video', mime: 'video/x-msvideo' },
   bmp: { kind: 'image', mime: 'image/bmp' },
+  docx: { kind: 'file', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
   flac: { kind: 'audio', mime: 'audio/flac' },
   gif: { kind: 'image', mime: 'image/gif' },
+  ipynb: { kind: 'file', mime: 'application/x-ipynb+json' },
   jpeg: { kind: 'image', mime: 'image/jpeg' },
   jpg: { kind: 'image', mime: 'image/jpeg' },
   m4a: { kind: 'audio', mime: 'audio/mp4' },
@@ -21,11 +23,13 @@ const MEDIA_BY_EXT: Record<string, MediaInfo> = {
   mp4: { kind: 'video', mime: 'video/mp4' },
   ogg: { kind: 'audio', mime: 'audio/ogg' },
   opus: { kind: 'audio', mime: 'audio/ogg; codecs=opus' },
+  pdf: { kind: 'file', mime: 'application/pdf' },
   png: { kind: 'image', mime: 'image/png' },
   svg: { kind: 'image', mime: 'image/svg+xml' },
   wav: { kind: 'audio', mime: 'audio/wav' },
   webm: { kind: 'video', mime: 'video/webm' },
-  webp: { kind: 'image', mime: 'image/webp' }
+  webp: { kind: 'image', mime: 'image/webp' },
+  xlsx: { kind: 'file', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
 }
 
 function mediaInfo(path: string): MediaInfo | undefined {

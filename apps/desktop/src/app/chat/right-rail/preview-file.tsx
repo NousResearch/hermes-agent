@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
   ComponentProps,
@@ -13,13 +14,16 @@ import { Streamdown } from 'streamdown'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
+import { dashboardApi } from '@/lib/browser-dashboard'
 import { readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 import type { PreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $activeSessionId, $connection, $currentCwd } from '@/store/session'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -126,10 +130,25 @@ interface LocalPreviewState {
   binary?: boolean
   byteSize?: number
   dataUrl?: string
+  downloadUrl?: string
   error?: string
+  inlineUrl?: string
   language?: string
   loading: boolean
+  mimeType?: string
   text?: string
+  truncated?: boolean
+}
+
+interface ManagedFilePreviewResponse {
+  byte_size?: number
+  download_url?: string
+  inline_url?: string
+  language?: string
+  mime_type?: string
+  path?: string
+  preview_kind?: PreviewTarget['previewKind']
+  text?: null | string
   truncated?: boolean
 }
 
@@ -145,6 +164,44 @@ function filePathForTarget(target: PreviewTarget) {
   } catch {
     return target.url
   }
+}
+
+function dashboardBaseUrl(): string {
+  const baseUrl = $connection.get()?.baseUrl
+
+  if (baseUrl) {
+    return baseUrl.replace(/\/+$/, '')
+  }
+
+  const basePath = typeof window === 'undefined' ? '' : window.__HERMES_BASE_PATH__ || ''
+  const normalizedBasePath = basePath ? `/${basePath.replace(/^\/+|\/+$/g, '')}` : ''
+
+  return typeof window === 'undefined' ? normalizedBasePath : `${window.location.origin}${normalizedBasePath}`
+}
+
+function dashboardFileUrl(pathOrUrl: string, filePath: string, inline = false): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    return pathOrUrl
+  }
+
+  const relative =
+    pathOrUrl ||
+    `/api/files/download?path=${encodeURIComponent(filePath)}${inline ? '&inline=1' : ''}`
+  const url = new URL(relative, `${dashboardBaseUrl()}/`)
+
+  if (window.__HERMES_SESSION_TOKEN__ && url.pathname.endsWith('/api/files/download')) {
+    url.searchParams.set('token', window.__HERMES_SESSION_TOKEN__)
+  }
+
+  return url.toString()
+}
+
+async function readManagedFilePreview(filePath: string): Promise<ManagedFilePreviewResponse> {
+  const path = `/api/files/preview?path=${encodeURIComponent(filePath)}`
+
+  return window.hermesDesktop?.api
+    ? window.hermesDesktop.api<ManagedFilePreviewResponse>({ path })
+    : dashboardApi<ManagedFilePreviewResponse>({ path })
 }
 
 function formatBytes(bytes: number | undefined) {
@@ -315,6 +372,76 @@ function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: ()
   )
 }
 
+function canUseDirectFileUrl(target: PreviewTarget) {
+  return Boolean(window.hermesDesktop && $connection.get()?.mode !== 'remote' && /^file:/i.test(target.url))
+}
+
+function pdfUrlsForTarget(target: PreviewTarget, filePath: string, response?: ManagedFilePreviewResponse) {
+  if (canUseDirectFileUrl(target)) {
+    return { downloadUrl: target.url, inlineUrl: target.url }
+  }
+
+  return {
+    downloadUrl: dashboardFileUrl(response?.download_url || '', filePath),
+    inlineUrl: dashboardFileUrl(response?.inline_url || response?.download_url || '', filePath, true)
+  }
+}
+
+function PdfPreview({
+  attaching,
+  downloadUrl,
+  inlineUrl,
+  label,
+  onAttachVisual
+}: {
+  attaching?: boolean
+  downloadUrl: string
+  inlineUrl: string
+  label: string
+  onAttachVisual?: () => void
+}) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-transparent">
+      <div className="flex shrink-0 items-center justify-end gap-3 border-b border-border/40 px-3 py-1.5 text-[0.68rem] font-medium">
+        {onAttachVisual && (
+          <button
+            className="text-muted-foreground underline decoration-current/20 underline-offset-4 transition hover:text-foreground disabled:cursor-default disabled:opacity-55"
+            disabled={attaching}
+            onClick={onAttachVisual}
+            type="button"
+          >
+            {attaching ? 'Attaching...' : 'Attach pages'}
+          </button>
+        )}
+        <a
+          className="text-muted-foreground underline decoration-current/20 underline-offset-4 transition hover:text-foreground"
+          href={inlineUrl}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          Open
+        </a>
+        <a
+          className="text-muted-foreground underline decoration-current/20 underline-offset-4 transition hover:text-foreground"
+          href={downloadUrl}
+          rel="noopener noreferrer"
+        >
+          Download
+        </a>
+      </div>
+      <object aria-label={label} className="min-h-0 flex-1 bg-background" data={inlineUrl} type="application/pdf">
+        <PreviewEmptyState
+          body={t.preview.noInlineBody('application/pdf')}
+          primaryAction={{ label: t.preview.openPreview, onClick: () => window.open(inlineUrl, '_blank', 'noopener') }}
+          title={t.preview.noInlineTitle}
+        />
+      </object>
+    </div>
+  )
+}
+
 // Gutter and Shiki output share `font-mono text-xs leading-relaxed py-3` so
 // each line aligns vertically. The selection overlay relies on the same
 // `text-xs * leading-relaxed = 1.21875rem` line-height to position itself.
@@ -451,18 +578,54 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
+  const activeSessionId = useStore($activeSessionId)
+  const { requestGateway } = useGatewayRequest()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
+  const [attachingPdf, setAttachingPdf] = useState(false)
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+  const isPdf = target.previewKind === 'pdf'
+  const isDocument = target.previewKind === 'document'
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isPdf && !isDocument && !forcePreview && (target.binary || target.large)
+
+  async function attachVisualPdf() {
+    if (!activeSessionId || attachingPdf) {
+      return
+    }
+
+    setAttachingPdf(true)
+
+    try {
+      const result = await requestGateway<{ attached?: boolean; message?: string; pages_attached?: number }>('pdf.attach', {
+        path: filePath,
+        session_id: activeSessionId
+      })
+
+      if (!result.attached) {
+        throw new Error(result.message || `Could not attach ${target.label}`)
+      }
+
+      const pages = result.pages_attached ?? 0
+
+      notify({
+        kind: 'success',
+        title: 'PDF pages attached',
+        message: pages > 0 ? `${pages} page${pages === 1 ? '' : 's'} attached for vision.` : target.label
+      })
+    } catch (error) {
+      notifyError(error, 'PDF attach failed')
+    } finally {
+      setAttachingPdf(false)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -474,7 +637,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         return
       }
 
-      if (!isImage && !isText) {
+      if (!isImage && !isText && !isPdf && !isDocument) {
         setState({ loading: false })
 
         return
@@ -490,6 +653,28 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
           if (active) {
             setState({ dataUrl, loading: false })
+          }
+
+          return
+        }
+
+        if (isPdf || isDocument) {
+          const result = await readManagedFilePreview(filePath)
+          const urls = isPdf
+            ? pdfUrlsForTarget(target, filePath, result)
+            : { downloadUrl: undefined, inlineUrl: undefined }
+
+          if (active) {
+            setState({
+              byteSize: result.byte_size,
+              downloadUrl: urls.downloadUrl,
+              inlineUrl: urls.inlineUrl,
+              language: result.language || target.language || 'text',
+              loading: false,
+              mimeType: result.mime_type || target.mimeType,
+              text: result.text ?? undefined,
+              truncated: result.truncated
+            })
           }
 
           return
@@ -511,6 +696,19 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         }
       } catch (error) {
         if (active) {
+          if (isPdf) {
+            const urls = pdfUrlsForTarget(target, filePath)
+
+            setState({
+              downloadUrl: urls.downloadUrl,
+              inlineUrl: urls.inlineUrl,
+              loading: false,
+              mimeType: target.mimeType || 'application/pdf'
+            })
+
+            return
+          }
+
           setState({
             error: error instanceof Error ? error.message : String(error),
             loading: false
@@ -524,7 +722,20 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
+  }, [
+    blockedByTarget,
+    filePath,
+    forcePreview,
+    isDocument,
+    isImage,
+    isPdf,
+    isText,
+    reloadKey,
+    target,
+    target.dataUrl,
+    target.language,
+    target.mimeType
+  ])
 
   if (state.loading) {
     return <PageLoader label={t.preview.loading} />
@@ -536,6 +747,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
   if (
     !isImage &&
+    !isPdf &&
+    !isDocument &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -565,6 +778,31 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           draggable={false}
           src={state.dataUrl}
         />
+      </div>
+    )
+  }
+
+  if (isPdf && state.inlineUrl) {
+    return (
+      <PdfPreview
+        attaching={attachingPdf}
+        downloadUrl={state.downloadUrl || state.inlineUrl}
+        inlineUrl={state.inlineUrl}
+        label={target.label}
+        onAttachVisual={activeSessionId ? attachVisualPdf : undefined}
+      />
+    )
+  }
+
+  if (isDocument && state.text !== undefined) {
+    return (
+      <div className="h-full overflow-auto bg-transparent">
+        {state.truncated && (
+          <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
+            {t.preview.truncated}
+          </div>
+        )}
+        <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
       </div>
     )
   }

@@ -2,6 +2,9 @@ export {}
 
 declare global {
   interface Window {
+    __HERMES_AUTH_REQUIRED__?: boolean
+    __HERMES_BASE_PATH__?: string
+    __HERMES_SESSION_TOKEN__?: string
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
@@ -431,7 +434,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'text'
+  previewKind?: 'binary' | 'document' | 'html' | 'image' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

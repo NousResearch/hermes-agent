@@ -1,5 +1,6 @@
 """Tests for the dashboard-managed file browser API."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -274,6 +275,90 @@ def test_download_returns_file_as_attachment(forced_files_client):
     disposition = resp.headers["content-disposition"]
     assert "attachment" in disposition
     assert "hello.txt" in disposition
+
+
+def test_preview_text_file_metadata(forced_files_client):
+    client, root = forced_files_client
+    file_path = root / "notes.md"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("# Notes\n\nhello\n", encoding="utf-8")
+
+    resp = client.get("/api/files/preview", params={"path": str(file_path)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["preview_kind"] == "text"
+    assert body["mime_type"] == "text/markdown"
+    assert body["byte_size"] == file_path.stat().st_size
+    assert body["language"] == "markdown"
+    assert body["text"] == "# Notes\n\nhello\n"
+    assert body["truncated"] is False
+    assert body["download_url"].startswith("/api/files/download?")
+
+
+def test_preview_extracts_notebook_document(forced_files_client):
+    client, root = forced_files_client
+    file_path = root / "analysis.ipynb"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {"cell_type": "markdown", "source": ["# Report\n", "summary"]},
+                    {"cell_type": "code", "source": "print('ok')"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    resp = client.get("/api/files/preview", params={"path": str(file_path)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["preview_kind"] == "document"
+    assert body["mime_type"] == "application/x-ipynb+json"
+    assert "# Report" in body["text"]
+    assert "print('ok')" in body["text"]
+    assert body["truncated"] is False
+
+
+def test_preview_pdf_falls_back_without_pdftotext(forced_files_client, monkeypatch):
+    client, root = forced_files_client
+    file_path = root / "paper.pdf"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_bytes(b"%PDF-1.4\n% minimal test fixture\n")
+    monkeypatch.setattr(web_server.shutil, "which", lambda name: None)
+
+    resp = client.get("/api/files/preview", params={"path": str(file_path)})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["preview_kind"] == "pdf"
+    assert body["mime_type"] == "application/pdf"
+    assert body["text"] is None
+    assert body["truncated"] is False
+    assert "inline=1" in body["inline_url"]
+
+
+def test_preview_missing_file_returns_404(forced_files_client):
+    client, root = forced_files_client
+
+    resp = client.get("/api/files/preview", params={"path": str(root / "missing.txt")})
+
+    assert resp.status_code == 404
+
+
+def test_preview_rejects_files_over_managed_limit(forced_files_client, monkeypatch):
+    client, root = forced_files_client
+    file_path = root / "large.txt"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 4)
+
+    resp = client.get("/api/files/preview", params={"path": str(file_path)})
+
+    assert resp.status_code == 413
 
 
 def test_download_authenticates_via_query_token(forced_files_client):

@@ -59,4 +59,21 @@ describe('collectArtifactsForSession', () => {
       value: 'https://example.com/changelog/latest'
     })
   })
+
+  it('indexes generated document artifact paths', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Wrote /tmp/report.docx and /tmp/table.xlsx plus /tmp/notebook.ipynb',
+        role: 'assistant',
+        timestamp: 4000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([
+      '/tmp/report.docx',
+      '/tmp/table.xlsx',
+      '/tmp/notebook.ipynb'
+    ])
+    expect(artifacts.every(artifact => artifact.kind === 'file')).toBe(true)
+  })
 })

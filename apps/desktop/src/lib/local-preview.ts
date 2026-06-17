@@ -3,6 +3,8 @@ import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
 const IMAGE_EXTENSIONS = new Set(['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
+const PDF_EXTENSIONS = new Set(['.pdf'])
+const DOCUMENT_EXTENSIONS = new Set(['.docx', '.ipynb', '.xlsx'])
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
   '.c': 'c',
@@ -23,6 +25,8 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   '.lua': 'lua',
   '.md': 'markdown',
   '.mjs': 'javascript',
+  '.ipynb': 'json',
+  '.pdf': 'text',
   '.py': 'python',
   '.rb': 'ruby',
   '.rs': 'rust',
@@ -33,6 +37,8 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   '.ts': 'typescript',
   '.tsx': 'tsx',
   '.txt': 'text',
+  '.docx': 'text',
+  '.xlsx': 'text',
   '.xml': 'xml',
   '.yaml': 'yaml',
   '.yml': 'yaml',
@@ -93,6 +99,8 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   const ext = extension(path)
   const isHtml = HTML_EXTENSIONS.has(ext)
   const isImage = IMAGE_EXTENSIONS.has(ext)
+  const isPdf = PDF_EXTENSIONS.has(ext)
+  const isDocument = DOCUMENT_EXTENSIONS.has(ext)
 
   return {
     kind: 'file',
@@ -102,14 +110,21 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     // Renderer fallback can't stat/sniff without reading; assume text unless
     // image/html extension says otherwise. LocalFilePreview still guards
     // binary/large files when readFileText/readFileDataUrl returns metadata.
-    previewKind: isHtml ? 'html' : isImage ? 'image' : 'text',
+    previewKind: isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : isDocument ? 'document' : 'text',
     source: raw,
     url: pathToFileUrl(path)
   }
 }
 
 async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
-  if (!isDesktopFsRemoteMode() || !target || target.kind !== 'file' || target.previewKind === 'image') {
+  if (
+    !isDesktopFsRemoteMode() ||
+    !target ||
+    target.kind !== 'file' ||
+    target.previewKind === 'image' ||
+    target.previewKind === 'pdf' ||
+    target.previewKind === 'document'
+  ) {
     return target
   }
 

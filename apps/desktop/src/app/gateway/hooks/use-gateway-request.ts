@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { getBrowserDashboardConnection, isBrowserDashboard } from '@/lib/browser-dashboard'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -54,17 +55,13 @@ export function useGatewayRequest() {
     reconnectingRef.current = (async () => {
       const desktop = window.hermesDesktop
 
-      if (!desktop) {
-        return null
-      }
-
       reauthErrorRef.current = null
 
       try {
         // Reconnect to whichever profile the gateway is currently routed to (not
         // always the primary), so a sleep/wake reconnect keeps the user on the
         // profile they were chatting in.
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        const conn = desktop ? await desktop.getConnection($activeGatewayProfile.get()) : await getBrowserDashboardConnection()
         connectionRef.current = conn
         setConnection(conn)
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
@@ -72,7 +69,7 @@ export function useGatewayRequest() {
         // resolveGatewayWsUrl() throws a reauth error in OAuth mode rather than
         // connecting with a stale ticket. Stash it so requestGateway can show
         // the actionable "sign in again" message.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = desktop ? await resolveGatewayWsUrl(desktop, conn) : conn.wsUrl
         await existing.connect(wsUrl)
 
         return existing
@@ -113,7 +110,8 @@ export function useGatewayRequest() {
         // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
         // single-use ticket); background profiles are always local pool
         // backends, so the registry handles their reconnect with no reauth.
-        const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
+        const recovered =
+          isActivePrimary() || isBrowserDashboard() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
 
         if (!recovered) {
           // Prefer the reauth error from the failed reconnect (OAuth session

@@ -9,7 +9,8 @@ import {
   addComposerAttachment,
   type ComposerAttachment,
   removeComposerAttachment,
-  setComposerTerminalSelection
+  setComposerTerminalSelection,
+  updateComposerAttachment
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -28,10 +29,78 @@ const BLOB_MIME_EXTENSION: Record<string, string> = {
   'image/x-icon': '.ico'
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.addEventListener('load', () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result)
+      } else {
+        reject(new Error('Could not read file'))
+      }
+    })
+    reader.addEventListener('error', () => reject(reader.error || new Error('Could not read file')))
+    reader.readAsDataURL(blob)
+  })
+}
+
 function blobExtension(blob: Blob): string {
   const mime = blob.type.split(';')[0]?.trim().toLowerCase()
 
   return (mime && BLOB_MIME_EXTENSION[mime]) || '.png'
+}
+
+function browserFileId(kind: ComposerAttachment['kind'], file: File, path = ''): string {
+  const key = path || `${file.name}:${file.size}:${file.lastModified}`
+  return attachmentId(kind, key)
+}
+
+function fileDetail(file: File, path = ''): string {
+  if (path) {
+    return path
+  }
+
+  const size = file.size ? `${Math.ceil(file.size / 1024)} KB` : ''
+  const type = file.type || 'file'
+
+  return [type, size].filter(Boolean).join(' · ')
+}
+
+function pickBrowserFiles(options: { accept?: string; directory?: boolean } = {}): Promise<File[]> {
+  return new Promise(resolve => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    if (options.accept) {
+      input.accept = options.accept
+    }
+    if (options.directory) {
+      input.setAttribute('webkitdirectory', '')
+    }
+    input.style.position = 'fixed'
+    input.style.left = '-10000px'
+    input.style.top = '-10000px'
+    input.addEventListener(
+      'change',
+      () => {
+        const files = Array.from(input.files || [])
+        input.remove()
+        resolve(files)
+      },
+      { once: true }
+    )
+    input.addEventListener(
+      'cancel',
+      () => {
+        input.remove()
+        resolve([])
+      },
+      { once: true }
+    )
+    document.body.appendChild(input)
+    input.click()
+  })
 }
 
 export function isImagePath(filePath: string): boolean {
@@ -228,7 +297,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   const copy = t.desktop
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
-  }, [copy.imagePreviewFailed])
+  }, [])
 
   const addTerminalSelectionAttachment = useCallback((text: string, label = 'selection') => {
     const trimmed = text.trim()
@@ -259,8 +328,60 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     })
   }, [])
 
+  const attachBrowserFile = useCallback(
+    async (file: File, knownPath = '') => {
+      if (!file || file.size === 0) {
+        return false
+      }
+
+      const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (knownPath && isImagePath(knownPath))
+      const kind: ComposerAttachment['kind'] = isImage ? 'image' : 'file'
+      const label = pathLabel(knownPath || file.name || (isImage ? 'image' : 'file'))
+      const baseAttachment: ComposerAttachment = {
+        byteSize: file.size,
+        detail: fileDetail(file, knownPath),
+        file,
+        id: browserFileId(kind, file, knownPath),
+        kind,
+        label,
+        mimeType: file.type || undefined,
+        path: knownPath || undefined
+      }
+
+      attachToMain(baseAttachment)
+
+      if (!isImage) {
+        return true
+      }
+
+      try {
+        const dataUrl = await blobToDataUrl(file)
+        updateComposerAttachment({
+          ...baseAttachment,
+          dataUrl,
+          previewUrl: dataUrl
+        })
+      } catch (err) {
+        notifyError(err, copy.imagePreviewFailed)
+      }
+
+      return true
+    },
+    [copy.imagePreviewFailed]
+  )
+
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
+      if (!window.hermesDesktop?.selectPaths) {
+        const files = await pickBrowserFiles({ directory: kind === 'folder' })
+
+        for (const file of files) {
+          await attachBrowserFile(file)
+        }
+
+        return
+      }
+
       const paths = await window.hermesDesktop?.selectPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
@@ -284,7 +405,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         })
       }
     },
-    [currentCwd]
+    [attachBrowserFile, currentCwd]
   )
 
   const insertContextPathInlineRef = useCallback(
@@ -357,7 +478,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     }
-  }, [])
+  }, [copy.imagePreviewFailed])
 
   const attachImageBlob = useCallback(
     async (blob: Blob) => {
@@ -367,6 +488,16 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       if (blob.type && !blob.type.startsWith('image/')) {
         return false
+      }
+
+      if (!window.hermesDesktop?.saveImageBuffer) {
+        const ext = blobExtension(blob)
+        const file = new File([blob], `pasted-image${ext}`, {
+          lastModified: Date.now(),
+          type: blob.type || `image/${ext.slice(1)}`
+        })
+
+        return attachBrowserFile(file)
       }
 
       try {
@@ -387,10 +518,20 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         return false
       }
     },
-    [attachImagePath, copy.imageAttach, copy.imageAttachFailed, copy.imageWriteFailed]
+    [attachBrowserFile, attachImagePath, copy.imageAttach, copy.imageAttachFailed, copy.imageWriteFailed]
   )
 
   const pickImages = useCallback(async () => {
+    if (!window.hermesDesktop?.selectPaths) {
+      const files = await pickBrowserFiles({ accept: 'image/*' })
+
+      for (const file of files) {
+        await attachBrowserFile(file)
+      }
+
+      return
+    }
+
     const paths = await window.hermesDesktop?.selectPaths({
       title: copy.attachImages,
       defaultPath: currentCwd || undefined,
@@ -409,7 +550,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     for (const path of paths) {
       await attachImagePath(path)
     }
-  }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
+  }, [attachBrowserFile, attachImagePath, copy.attachImages, currentCwd, t.composer.images])
 
   const pasteClipboardImage = useCallback(async () => {
     try {
@@ -508,6 +649,12 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const filePath = knownPath || fallbackPath || ''
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
+        if (!filePath && (await attachBrowserFile(file))) {
+          attached = true
+
+          continue
+        }
+
         if (isImage) {
           if ((filePath && (await attachImagePath(filePath))) || (await attachImageBlob(file))) {
             attached = true
@@ -526,6 +673,12 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           continue
         }
 
+        if (await attachBrowserFile(file, filePath)) {
+          attached = true
+
+          continue
+        }
+
         lastFailure = `Could not attach ${file.name || 'file'}`
       }
 
@@ -535,7 +688,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
+    [attachBrowserFile, attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
   )
 
   const removeAttachment = useCallback(
@@ -565,6 +718,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     attachContextFilePath,
     attachContextFolderPath,
     attachDroppedItems,
+    attachBrowserFile,
     attachImageBlob,
     attachImagePath,
     insertContextPathInlineRef,

@@ -161,16 +161,33 @@ function imageFilenameFromPath(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() || 'image.png'
 }
 
-// Remote gateway: the local composer-image file lives on THIS machine's disk,
-// not the gateway's, so read the bytes here and upload them via
-// image.attach_bytes. Returns null when the file can't be read.
-async function readImageForRemoteAttach(
-  filePath: string
-): Promise<{ contentBase64: string; filename: string } | null> {
-  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
-  const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
+// Browser dashboard drops/pickers hold a native File object instead of a stable
+// local path. Electron remote uploads can still read the local path through the
+// preload bridge. This helper covers both byte sources.
+async function dataUrlFromAttachment(attachment: ComposerAttachment): Promise<string | null> {
+  if (attachment.dataUrl) {
+    return attachment.dataUrl
+  }
 
-  return contentBase64 ? { contentBase64, filename: imageFilenameFromPath(filePath) } : null
+  if (attachment.file) {
+    return blobToDataUrl(attachment.file)
+  }
+
+  const filePath = attachment.path ?? ''
+
+  if (!filePath) {
+    return null
+  }
+
+  return readFileDataUrlForAttach(filePath)
+}
+
+async function readImageForAttach(attachment: ComposerAttachment): Promise<{ contentBase64: string; filename: string } | null> {
+  const dataUrl = await dataUrlFromAttachment(attachment)
+  const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
+  const filename = attachment.file?.name || imageFilenameFromPath(attachment.path || attachment.label || 'image.png')
+
+  return contentBase64 ? { contentBase64, filename } : null
 }
 
 // Read a non-image file as a data URL for upload via file.attach. Returns null
@@ -225,15 +242,16 @@ export async function uploadComposerAttachment(
   const { remote, requestGateway, sessionId } = opts
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
+  const hasHeldBytes = Boolean(attachment.file || attachment.dataUrl)
 
   if (attachment.kind === 'image') {
     let result: ImageAttachResponse
 
-    if (remote) {
-      let payload: Awaited<ReturnType<typeof readImageForRemoteAttach>>
+    if (remote || hasHeldBytes || !path) {
+      let payload: Awaited<ReturnType<typeof readImageForAttach>>
 
       try {
-        payload = await readImageForRemoteAttach(path)
+        payload = await readImageForAttach(attachment)
       } catch (err) {
         throw friendlyRemoteAttachError(err, label)
       }
@@ -272,9 +290,9 @@ export async function uploadComposerAttachment(
   // Non-image file.
   let dataUrl: string | null = null
 
-  if (remote) {
+  if (remote || hasHeldBytes || !path) {
     try {
-      dataUrl = await readFileDataUrlForAttach(path)
+      dataUrl = await dataUrlFromAttachment(attachment)
     } catch (err) {
       throw friendlyRemoteAttachError(err, label)
     }
@@ -460,7 +478,7 @@ export function usePromptActions({
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
         // A drop-time eager upload may already have staged this one (matching
         // attachedSessionId) — don't re-upload it.
-        if (!attachment.path || attachment.attachedSessionId === sessionId) {
+        if ((!attachment.path && !attachment.file && !attachment.dataUrl) || attachment.attachedSessionId === sessionId) {
           synced.push(attachment)
 
           continue
@@ -528,7 +546,7 @@ export function usePromptActions({
     for (const attachment of composerAttachments) {
       const needsUpload =
         attachment.kind === 'file' &&
-        Boolean(attachment.path) &&
+        Boolean(attachment.path || attachment.file || attachment.dataUrl) &&
         !attachment.attachedSessionId &&
         !attachment.uploadState &&
         !eagerUploadInFlight.current.has(attachment.id)
@@ -776,6 +794,11 @@ export function usePromptActions({
         return false
       }
     },
+    // activeSessionIdRef is a useRef mirror of the activeSessionId state above.
+    // It's intentionally omitted: refs are stable references and reading
+    // .current inside this callback always sees the latest value, so including
+    // it would just churn the callback identity without fixing anything.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       activeSessionId,
       busyRef,

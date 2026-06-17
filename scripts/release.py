@@ -96,6 +96,7 @@ AUTHOR_MAP = {
     "kdunn926@gmail.com": "kdunn926",
     "mvanhorn@MacBook-Pro.local": "mvanhorn",
     "470766206@qq.com": "youjunxiaji",
+    "2039222749@qq.com": "zhengyanglsun",
     "mharris@parallel.ai": "NormallyGaussian",
     "roger@roger.local": "mollusk",
     "ted.malone@outlook.com": "temalo",

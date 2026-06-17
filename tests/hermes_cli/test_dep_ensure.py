@@ -1,3 +1,4 @@
+import os
 from unittest.mock import patch
 
 
@@ -18,6 +19,60 @@ def test_ensure_dependency_returns_false_when_missing_noninteractive():
         with patch("hermes_cli.dep_ensure._find_install_script", return_value=(None, None)):
             result = ensure_dependency("node", interactive=False)
             assert result is False
+
+
+def test_ensure_dependency_accepts_private_hermes_node_when_not_on_path(tmp_path):
+    """Removing ~/.local/bin node/npm shims must not break lazy node ensure."""
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    node_bin = tmp_path / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    for name in ("node", "npm"):
+        binary = node_bin / name
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+
+    with patch("hermes_cli.dep_ensure.shutil.which", return_value=None), \
+         patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        assert ensure_dependency("node", interactive=False) is True
+
+
+def test_ensure_dependency_does_not_prepend_private_node_over_user_node(
+    tmp_path, monkeypatch
+):
+    """A private Hermes runtime must not shadow a user-managed node already on PATH."""
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    node_bin = tmp_path / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    private_node = node_bin / "node"
+    private_node.write_text("#!/bin/sh\n", encoding="utf-8")
+    private_node.chmod(0o755)
+
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+    with patch("hermes_cli.dep_ensure.shutil.which", return_value="/usr/local/bin/node"), \
+         patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        assert ensure_dependency("node", interactive=False) is True
+
+    assert os.environ["PATH"] == "/usr/local/bin:/usr/bin"
+
+
+def test_has_private_hermes_node_windows_layout(tmp_path):
+    """The Windows portable zip puts node.exe in node/ (root), not node/bin/.
+
+    Detection now defers to hermes_constants.find_hermes_node_executable, which
+    keys the per-platform layout off sys.platform; the node/bin-vs-node ordering
+    itself is covered directly in tests/test_hermes_constants.py.
+    """
+    from hermes_cli.dep_ensure import _has_private_hermes_node
+
+    node_dir = tmp_path / "node"
+    node_dir.mkdir(parents=True)
+    (node_dir / "node.exe").write_text("", encoding="utf-8")
+
+    with patch("hermes_constants.sys.platform", "win32"), \
+         patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        assert _has_private_hermes_node() is True
 
 
 def test_find_install_script_from_checkout(tmp_path):

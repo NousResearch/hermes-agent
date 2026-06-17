@@ -1044,6 +1044,50 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     assert "curl" in seen
 
 
+def test_post_setup_browser_uses_managed_node_when_path_has_none(tmp_path, monkeypatch):
+    """`hermes setup` must install browser deps via the Hermes-managed Node even
+    when no node/npm is on PATH.
+
+    Regression: the installer no longer symlinks node/npm/npx into ~/.local/bin,
+    so a bare ``shutil.which("npm")`` returns None on a Hermes-private-node box
+    and the browser-tool install was silently skipped. ``_run_post_setup`` now
+    resolves via ``find_node_executable()`` and runs npm with
+    ``with_hermes_node_path()`` so the managed Node is reachable.
+    """
+    import os
+
+    from hermes_cli import tools_config
+
+    hermes_home = tmp_path / ".hermes"
+    node_bin = hermes_home / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    for name in ("node", "npm", "npx"):
+        binary = node_bin / name
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(tools_config, "PROJECT_ROOT", repo)
+
+    # No node/npm/npx on PATH — the private-node-only box. On the pre-fix code
+    # this made npm_bin None and skipped the install entirely.
+    with patch("shutil.which", return_value=None), \
+         patch("subprocess.run") as run:
+        run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+        # "browserbase" runs the npm install then returns before the Chromium
+        # step, so exactly one subprocess (the install) is expected.
+        tools_config._run_post_setup("browserbase")
+
+    run.assert_called_once()
+    cmd = run.call_args.args[0]
+    assert cmd[0] == str(node_bin / "npm")
+    assert cmd[1] == "install"
+    env_path = run.call_args.kwargs.get("env", {}).get("PATH", "")
+    assert str(node_bin) in env_path.split(os.pathsep)
+
+
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
 

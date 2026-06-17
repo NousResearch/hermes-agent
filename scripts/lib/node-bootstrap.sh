@@ -44,30 +44,58 @@ _nb_is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
-# Where to symlink node/npm/npx so they land on PATH.
-# Mirrors get_command_link_dir() from install.sh: root FHS → /usr/local/bin,
-# Termux → $PREFIX/bin, otherwise ~/.local/bin.
-_nb_get_link_dir() {
-    if _nb_is_termux && [ -n "${PREFIX:-}" ]; then
-        echo "$PREFIX/bin"
-    elif [ "$(id -u)" = 0 ] && [ "$(uname -s)" = "Linux" ]; then
-        echo "/usr/local/bin"
-    else
-        echo "$HOME/.local/bin"
-    fi
-}
-
-# Redirect a Hermes-managed Node's `npm install -g` to the command link dir
-# (already on PATH) instead of the default $HERMES_HOME/node/bin, which is off
-# PATH and wiped on every Node upgrade. Scoped to the managed Node via its
-# prefix-local global npmrc; the user's other Node installs / ~/.npmrc are
-# untouched. Idempotent no-op when there's no managed npm.
+# Redirect a Hermes-managed Node's `npm install -g` into $HERMES_HOME/node so
+# global bins stay self-contained under $HERMES_HOME/node/bin, which Hermes
+# already uses for its own subprocess PATH, instead of shadowing the user's
+# node/npm/npx in ~/.local/bin. Scoped to the managed Node via its prefix-local
+# global npmrc; the user's other Node installs / ~/.npmrc are untouched.
+# Idempotent no-op when there's no managed npm.
 _nb_configure_npm_prefix() {
     [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
-    local _link_dir
-    _link_dir="$(_nb_get_link_dir)"
     mkdir -p "$HERMES_HOME/node/etc"
-    printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+    printf 'prefix=%s\n' "$HERMES_HOME/node" > "$HERMES_HOME/node/etc/npmrc"
+}
+
+_nb_link_points_into_hermes_node() {
+    local _link="$1" _target _target_abs _node_dir
+    [ -L "$_link" ] || return 1
+    _target="$(readlink "$_link" 2>/dev/null)" || return 1
+    case "$_target" in
+        /*) _target_abs="$_target" ;;
+        *)  _target_abs="$(dirname "$_link")/$_target" ;;
+    esac
+
+    _node_dir="$HERMES_HOME/node"
+    case "$_target_abs" in
+        "$_node_dir"|"$_node_dir"/*) return 0 ;;
+    esac
+
+    if [ -d "$_node_dir" ] && [ -e "$_target_abs" ]; then
+        local _resolved_target _resolved_node
+        _resolved_target="$(cd "$(dirname "$_target_abs")" 2>/dev/null && pwd -P)/$(basename "$_target_abs")"
+        _resolved_node="$(cd "$_node_dir" 2>/dev/null && pwd -P)"
+        case "$_resolved_target" in
+            "$_resolved_node"|"$_resolved_node"/*) return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+_nb_remove_legacy_node_links() {
+    local _dirs=() _dir _name _link
+    _dirs+=("$HOME/.local/bin")
+    [ -n "${PREFIX:-}" ] && _dirs+=("$PREFIX/bin")
+    _dirs+=("/usr/local/bin")
+
+    for _dir in "${_dirs[@]}"; do
+        [ -d "$_dir" ] || continue
+        for _name in node npm npx; do
+            _link="$_dir/$_name"
+            if _nb_link_points_into_hermes_node "$_link"; then
+                rm -f "$_link" || true
+            fi
+        done
+    done
 }
 
 _nb_node_major() {
@@ -79,6 +107,26 @@ _nb_node_major() {
 _nb_have_modern_node() {
     command -v node >/dev/null 2>&1 || return 1
     [ "$(_nb_node_major)" -ge "$HERMES_NODE_MIN_VERSION" ]
+}
+
+_nb_node_bin_major() {
+    local node_bin="$1" v
+    [ -x "$node_bin" ] || return 1
+    v=$("$node_bin" --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+    [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
+}
+
+_nb_activate_node_bin() {
+    local node_bin="$1" label="$2" major node_dir
+    major="$(_nb_node_bin_major "$node_bin")" || return 1
+    [ "$major" -ge "$HERMES_NODE_MIN_VERSION" ] || return 1
+    node_dir="$(dirname "$node_bin")"
+    case ":$PATH:" in
+        *":$node_dir:"*) ;;
+        *) export PATH="$node_dir:$PATH" ;;
+    esac
+    _nb_ok "Node $("$node_bin" --version) found ($label)"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -116,6 +164,31 @@ _nb_try_nvm() {
     _nb_have_modern_node || return 1
     _nb_ok "Node $(node --version) activated via nvm"
     return 0
+}
+
+_nb_try_existing_nvm() {
+    local nvm_root="${NVM_DIR:-$HOME/.nvm}" node_bin
+    for node_bin in "$nvm_root"/versions/node/*/bin/node; do
+        [ -e "$node_bin" ] || continue
+        _nb_activate_node_bin "$node_bin" "nvm" && return 0
+    done
+    return 1
+}
+
+_nb_try_existing_fnm() {
+    local fnm_root node_bin
+    for fnm_root in "${FNM_DIR:-$HOME/.local/share/fnm}" "$HOME/.fnm"; do
+        for node_bin in "$fnm_root"/node-versions/*/installation/bin/node "$fnm_root"/node-versions/*/bin/node; do
+            [ -e "$node_bin" ] || continue
+            _nb_activate_node_bin "$node_bin" "fnm" && return 0
+        done
+    done
+    return 1
+}
+
+_nb_try_existing_volta() {
+    local volta_root="${VOLTA_HOME:-$HOME/.volta}"
+    _nb_activate_node_bin "$volta_root/bin/node" "Volta"
 }
 
 # ---------------------------------------------------------------------------
@@ -213,13 +286,6 @@ _nb_install_bundled_node() {
     mv "$extracted" "$HERMES_HOME/node"
     rm -rf "$tmp"
 
-    local _link_dir
-    _link_dir="$(_nb_get_link_dir)"
-    mkdir -p "$_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
-
     _nb_configure_npm_prefix
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
@@ -236,8 +302,13 @@ _nb_install_bundled_node() {
 ensure_node() {
     HERMES_NODE_AVAILABLE=false
 
-    # Repair pre-existing managed installs where `npm install -g` lands off
-    # PATH. No-op when there's no managed Node, so it's safe to run first.
+    # Remove legacy node/npm/npx shims that older Hermes installers placed in
+    # ~/.local/bin or other command dirs. Only links into this HERMES_HOME are
+    # removed; user-managed nvm/fnm/Volta binaries are left untouched.
+    _nb_remove_legacy_node_links
+
+    # Keep pre-existing managed installs self-contained. No-op when there's no
+    # managed Node, so it's safe to run first.
     _nb_configure_npm_prefix
 
     if _nb_have_modern_node; then
@@ -245,6 +316,11 @@ ensure_node() {
         HERMES_NODE_AVAILABLE=true
         return 0
     fi
+
+    # Prefer explicit user version-manager installs over Hermes's private copy.
+    _nb_try_existing_fnm   && { HERMES_NODE_AVAILABLE=true; return 0; }
+    _nb_try_existing_volta && { HERMES_NODE_AVAILABLE=true; return 0; }
+    _nb_try_existing_nvm   && { HERMES_NODE_AVAILABLE=true; return 0; }
 
     if [ -x "$HERMES_HOME/node/bin/node" ]; then
         export PATH="$HERMES_HOME/node/bin:$PATH"

@@ -396,6 +396,40 @@ def test_termux_fast_cli_launch_version_skips_update_check(monkeypatch, main_mod
     assert captured == [False]
 
 
+def test_ensure_tui_node_prepends_private_node_without_local_bin(
+    tmp_path, monkeypatch, main_mod
+):
+    hermes_home = tmp_path / ".hermes"
+    node_bin = hermes_home / "node" / "bin"
+    local_bin = tmp_path / ".local" / "bin"
+    node_bin.mkdir(parents=True)
+    local_bin.mkdir(parents=True)
+
+    node = node_bin / "node"
+    node.write_text("#!/bin/sh\n", encoding="utf-8")
+    node.chmod(0o755)
+
+    import hermes_cli.uninstall as uninstall
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(uninstall, "remove_node_symlinks", lambda _home: [])
+    monkeypatch.setattr(main_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: main_mod.subprocess.CompletedProcess(
+            args[0], 0, stdout=f"{node}\n", stderr=""
+        ),
+    )
+
+    main_mod._ensure_tui_node()
+
+    path_entries = os.environ["PATH"].split(os.pathsep)
+    assert path_entries[0] == str(node_bin)
+    assert str(local_bin) not in path_entries
+
+
 def test_termux_ultrafast_version_runs_before_heavy_startup(
     monkeypatch, capsys, main_mod
 ):

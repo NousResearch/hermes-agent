@@ -831,11 +831,15 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
 
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
-    import shutil
+    from hermes_constants import find_node_executable, with_hermes_node_path
     if post_setup_key in {"agent_browser", "browserbase"}:
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        npm_bin = shutil.which("npm")
-        npx_bin = shutil.which("npx")
+        # Resolve Hermes-managed node tooling first so browser setup still works
+        # when the only Node is Hermes's private copy — after the installer
+        # stopped symlinking node/npm/npx onto PATH, a plain which() would miss
+        # it. Falls back to PATH for users with their own Node.
+        npm_bin = find_node_executable("npm")
+        npx_bin = find_node_executable("npx")
         # Step 1: install the agent-browser npm package into node_modules/
         if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
@@ -849,7 +853,8 @@ def _run_post_setup(post_setup_key: str):
                 # only, avoiding the apps/* glob which would pull in
                 # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
                 [npm_bin, "install", "--silent", "--workspaces=false"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+                env=with_hermes_node_path(),
             )
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
@@ -925,6 +930,7 @@ def _run_post_setup(post_setup_key: str):
             result = subprocess.run(
                 install_cmd,
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
+                env=with_hermes_node_path(),
             )
             if result.returncode == 0:
                 _print_success("    Chromium installed")
@@ -947,7 +953,7 @@ def _run_post_setup(post_setup_key: str):
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
-        _npm_bin = shutil.which("npm")
+        _npm_bin = find_node_executable("npm")
         if not camofox_dir.exists() and _npm_bin:
             _print_info("    Installing Camofox browser server...")
             import subprocess
@@ -955,7 +961,8 @@ def _run_post_setup(post_setup_key: str):
             result = subprocess.run(
                 # --workspaces=false avoids resolving apps/desktop. See #38772.
                 [_npm_bin, "install", "--silent", "--workspaces=false"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+                env=with_hermes_node_path(),
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")
@@ -966,7 +973,7 @@ def _run_post_setup(post_setup_key: str):
             _print_info("      npx @askjo/camofox-browser")
             _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
-        elif not shutil.which("npm"):
+        elif not find_node_executable("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 

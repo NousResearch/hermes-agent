@@ -134,19 +134,18 @@ def _node_symlink_candidate_dirs() -> "list[Path]":
 def remove_node_symlinks(hermes_home: Path) -> list:
     """Remove the node/npm/npx symlinks the installer placed on PATH.
 
-    The POSIX installer (``scripts/install.sh`` / ``scripts/lib/node-bootstrap.sh``)
-    symlinks node/npm/npx into the same directory as the ``hermes`` command:
+    Older POSIX installers (``scripts/install.sh`` /
+    ``scripts/lib/node-bootstrap.sh``) symlinked node/npm/npx into the same
+    directory as the ``hermes`` command:
 
     - ``/usr/local/bin/`` on root FHS installs (Linux, uid 0)
     - ``$PREFIX/bin/`` on Termux
     - ``~/.local/bin/`` otherwise (the common non-root case)
 
-    We check all candidate directories so that uninstall works regardless of
-    how the install was done (e.g. a root FHS install that placed links in
-    ``/usr/local/bin``, or an older install that used ``~/.local/bin`` before
-    the FHS fix).  Only symlinks that resolve into this Hermes home's ``node``
-    directory are removed — links the user has repointed elsewhere (nvm, fnm,
-    etc.) are left untouched.
+    We check all legacy candidate directories so that uninstall and migration
+    clean up whichever layout created the links. Only symlinks that resolve
+    into this Hermes home's ``node`` directory are removed — links the user has
+    repointed elsewhere (nvm, fnm, etc.) are left untouched.
     """
     node_dir = (hermes_home / "node").resolve()
     removed = []

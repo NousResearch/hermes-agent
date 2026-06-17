@@ -1,9 +1,9 @@
 """Tests for hermes_cli.uninstall.remove_node_symlinks.
 
-Regression for #34536: the POSIX installer drops node/npm/npx symlinks in
-~/.local/bin pointing into $HERMES_HOME/node and prepends ~/.local/bin to
-PATH, shadowing an existing nvm. Uninstall must remove those symlinks, but
-only when they still resolve into the Hermes-managed node dir.
+Regression for #34536: older POSIX installers dropped node/npm/npx symlinks in
+~/.local/bin pointing into $HERMES_HOME/node, shadowing an existing nvm.
+Uninstall and migration must remove those symlinks, but only when they still
+resolve into the Hermes-managed node dir.
 """
 
 import os

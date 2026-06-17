@@ -1596,6 +1596,13 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
+    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    try:
+        from hermes_cli.uninstall import remove_node_symlinks
+        remove_node_symlinks(Path(hermes_home))
+    except Exception:
+        pass
+
     if shutil.which("node") and shutil.which("npm"):
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
@@ -1605,7 +1612,6 @@ def _ensure_tui_node() -> None:
     if not helper.is_file():
         return
 
-    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
     try:
         # Helper writes logs to stderr; we ask bash to print `command -v node`
         # on stdout once ensure_node succeeds. Subshell PATH edits don't leak
@@ -1633,7 +1639,7 @@ def _ensure_tui_node() -> None:
     if resolved:
         extras.append(Path(resolved).resolve().parent)
 
-    extras.extend([Path(hermes_home) / "node" / "bin", Path.home() / ".local" / "bin"])
+    extras.append(Path(hermes_home) / "node" / "bin")
 
     for extra in extras:
         s = str(extra)
@@ -7754,8 +7760,26 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
+def _cleanup_legacy_node_symlinks() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.uninstall import remove_node_symlinks
+
+        hermes_home = get_hermes_home()
+        remove_node_symlinks(hermes_home)
+    except Exception:
+        hermes_home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+    return hermes_home
+
+
 def _update_node_dependencies() -> None:
     from hermes_constants import find_node_executable, with_hermes_node_path
+
+    # Older installs symlinked Hermes-managed node/npm/npx into PATH dirs
+    # (~/.local/bin etc.). Remove those legacy shims before resolving npm so a
+    # stale link can't win; find_node_executable() then prefers the managed
+    # copy and falls back to PATH. (Migration for the install-side fix.)
+    _cleanup_legacy_node_symlinks()
 
     npm = find_node_executable("npm")
     if not npm:
@@ -8737,6 +8761,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("⚕ Updating Hermes Agent...")
     print()
+
+    # Update is the common self-healing entrypoint for older installs. Clean up
+    # legacy Hermes-owned node/npm/npx PATH shims before any early return (for
+    # example the "Already up to date" path below).
+    _cleanup_legacy_node_symlinks()
 
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and

@@ -1,6 +1,7 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -175,6 +176,33 @@ class TestCmdUpdateBranchFallback:
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_already_up_to_date_migrates_legacy_node_symlinks(
+        self, mock_run, _mock_which, mock_args, tmp_path, monkeypatch
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        hermes_home = tmp_path / ".hermes"
+        node_bin = hermes_home / "node" / "bin"
+        local_bin = tmp_path / ".local" / "bin"
+        node_bin.mkdir(parents=True)
+        local_bin.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        for name in ("node", "npm", "npx"):
+            binary = node_bin / name
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary.chmod(0o755)
+            (local_bin / name).symlink_to(binary)
+
+        cmd_update(mock_args)
+
+        for name in ("node", "npm", "npx"):
+            assert not (local_bin / name).is_symlink()
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -802,6 +830,41 @@ def test_is_termux_env_false_for_non_termux_prefix():
     from hermes_cli import main as hm
 
     assert hm._is_termux_env({"PREFIX": "/usr/local"}) is False
+
+
+def test_update_node_dependencies_uses_private_hermes_npm_when_path_has_none(
+    tmp_path, monkeypatch
+):
+    """Update still refreshes Node deps after legacy node/npm PATH shims are gone."""
+    from hermes_cli import main as hm
+
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / "package.json").write_text("{}", encoding="utf-8")
+
+    hermes_home = tmp_path / ".hermes"
+    node_bin = hermes_home / "node" / "bin"
+    node_bin.mkdir(parents=True)
+    npm = node_bin / "npm"
+    npm.write_text("#!/bin/sh\n", encoding="utf-8")
+    npm.chmod(0o755)
+
+    calls = []
+
+    def fake_run_npm(npm_path, cwd, *, extra_args=(), capture_output=False, env=None):
+        calls.append((npm_path, Path(cwd), tuple(extra_args), capture_output, env))
+        return subprocess.CompletedProcess([npm_path], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(hm, "PROJECT_ROOT", project)
+    monkeypatch.setattr(hm.shutil, "which", lambda _name: None)
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(hm, "_run_npm_install_deterministic", fake_run_npm)
+    monkeypatch.setattr(hm, "_nixos_build_env", lambda: None)
+
+    hm._update_node_dependencies()
+
+    assert [call[0] for call in calls] == [str(npm), str(npm)]
+    assert [call[1] for call in calls] == [project, project]
 
 
 def test_load_installable_optional_extras_supports_termux_group(tmp_path, monkeypatch):

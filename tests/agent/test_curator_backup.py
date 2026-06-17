@@ -259,6 +259,62 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
 
 
+def test_is_unsafe_archive_path_variants(backup_env):
+    """The path guard must catch POSIX abs, Windows abs/drive/UNC, and ..."""
+    cb = backup_env["cb"]
+    unsafe = [
+        "",
+        "/etc/passwd",
+        "../escape",
+        "a/../../b",
+        "C:/Windows/System32/evil.dll",
+        "C:\\Windows\\evil.dll",
+        "\\\\server\\share\\evil",
+    ]
+    for p in unsafe:
+        assert cb._is_unsafe_archive_path(p), f"{p!r} should be unsafe"
+
+    safe = ["alpha/SKILL.md", "beta/scripts/run.py", "./gamma/x"]
+    for p in safe:
+        assert not cb._is_unsafe_archive_path(p), f"{p!r} should be safe"
+
+
+def test_rollback_rejects_symlink_escape(backup_env):
+    """A symlink member whose target escapes the tree must be refused.
+
+    The pre-3.12 fallback (no ``filter='data'``) would otherwise create the
+    link and let a later member write through it. The original name-only
+    guard never inspected ``linkname``.
+    """
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        info = tarfile.TarInfo(name="alpha/link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/cron.d"  # absolute escape target
+        tf.addfile(info)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert "unsafe" in msg.lower() or "link" in msg.lower() or "refus" in msg.lower()
+
+
+def test_assert_safe_member_allows_in_tree_symlink(backup_env):
+    """A relative, in-tree symlink target is allowed (no degradation)."""
+    cb = backup_env["cb"]
+    info = tarfile.TarInfo(name="alpha/link")
+    info.type = tarfile.SYMTYPE
+    info.linkname = "SKILL.md"
+    cb._assert_safe_member(info)  # must not raise
+
+
 # ---------------------------------------------------------------------------
 # Integration with run_curator_review
 # ---------------------------------------------------------------------------

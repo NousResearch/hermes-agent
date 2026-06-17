@@ -270,6 +270,96 @@ class TestSearchResult:
         assert d["truncated"] is True
 
 
+class TestSearchResultDensify:
+    """Path-grouped densification of content-mode matches (lossless)."""
+
+    def _matches(self, n, paths=None):
+        # Real ripgrep output is path-ordered: all matches in a file are
+        # consecutive (verified against live search_files corpus). The fixture
+        # mirrors that — group by path, then enumerate lines within each.
+        paths = paths or ["a.py"]
+        out = []
+        per = max(1, n // len(paths))
+        ln = 0
+        for p in paths:
+            for _ in range(per):
+                ln += 1
+                out.append(SearchMatch(path=p, line_number=ln,
+                                       content=f"line content {ln}"))
+        # pad remainder onto the last path
+        while len(out) < n:
+            ln += 1
+            out.append(SearchMatch(path=paths[-1], line_number=ln,
+                                   content=f"line content {ln}"))
+        return out
+
+    def test_densify_off_by_default(self):
+        # The model-facing default must be unchanged for callers that don't
+        # opt in: verbose array, no matches_text key.
+        r = SearchResult(matches=self._matches(10), total_count=10)
+        d = r.to_dict()
+        assert "matches" in d
+        assert "matches_text" not in d
+
+    def test_densify_below_threshold_keeps_verbose(self):
+        # Too few matches: the grouping header would cost more than it saves,
+        # so we fall back to the verbose array even with densify=True.
+        r = SearchResult(matches=self._matches(4), total_count=4)
+        d = r.to_dict(densify=True)
+        assert "matches" in d
+        assert "matches_text" not in d
+
+    def test_densify_emits_path_grouped_text(self):
+        r = SearchResult(matches=self._matches(6, paths=["a.py", "b.py"]),
+                         total_count=6)
+        d = r.to_dict(densify=True)
+        assert "matches" not in d
+        assert "matches_text" in d
+        assert "matches_format" in d  # self-describing
+        text = d["matches_text"]
+        # Each path appears once as a group header, not repeated per match.
+        assert text.count("a.py") == 1
+        assert text.count("b.py") == 1
+
+    def test_densify_is_lossless(self):
+        # Every path, line number, and content byte must be recoverable from
+        # the dense form.
+        import re
+        matches = [
+            SearchMatch(path="src/x.py", line_number=12, content="    def foo():"),
+            SearchMatch(path="src/x.py", line_number=45, content="        return bar"),
+            SearchMatch(path="src/y.py", line_number=3, content="import os"),
+            SearchMatch(path="src/y.py", line_number=99, content="x = 1  # tail"),
+            SearchMatch(path="src/z.py", line_number=7, content="class Z:"),
+        ]
+        r = SearchResult(matches=matches, total_count=5)
+        text = r.to_dict(densify=True)["matches_text"]
+        # Reconstruct (path, line, content) triples from the grouped text.
+        recovered = []
+        cur = None
+        for ln in text.split("\n"):
+            row = re.match(r"^  (\d+): (.*)$", ln)
+            if row:
+                recovered.append((cur, int(row.group(1)), row.group(2)))
+            else:
+                cur = ln
+        assert len(recovered) == 5
+        for orig, rec in zip(matches, recovered):
+            assert rec[0] == orig.path
+            assert rec[1] == orig.line_number
+            # content is rstrip'd in the dense form; originals here have no
+            # trailing whitespace, so they must match exactly.
+            assert rec[2] == orig.content
+
+    def test_densify_smaller_than_verbose(self):
+        import json
+        matches = self._matches(40, paths=["pkg/module_one.py", "pkg/module_two.py"])
+        r = SearchResult(matches=matches, total_count=40)
+        verbose = json.dumps(r.to_dict(densify=False), ensure_ascii=False)
+        dense = json.dumps(r.to_dict(densify=True), ensure_ascii=False)
+        assert len(dense) < len(verbose)
+
+
 class TestLintResult:
     def test_skipped(self):
         r = LintResult(skipped=True, message="No linter for .md files")

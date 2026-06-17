@@ -3806,6 +3806,26 @@ def resolve_codex_runtime_credentials(
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
             }
+        pool_rate_limit = _codex_pool_rate_limit_status()
+        if pool_rate_limit:
+            reset_at = pool_rate_limit.get("reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                remaining = int(reset_at - time.time())
+                message = (
+                    f"Codex provider quota exhausted (429); retry after {remaining}s. "
+                    "Credentials are still valid."
+                )
+            else:
+                message = (
+                    "Codex provider quota exhausted (429). Credentials are still valid; "
+                    "retry after the usage limit resets."
+                )
+            raise AuthError(
+                message,
+                provider="openai-codex",
+                code=CODEX_RATE_LIMITED_CODE,
+                relogin_required=False,
+            )
         if read_error is not None:
             raise read_error
         raise AuthError(
@@ -3850,6 +3870,79 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
+    """Return metadata for a pool-only Codex credential in quota cooldown."""
+    def _parse_reset_at(value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric <= 0:
+                return None
+            return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                numeric = float(raw)
+            except ValueError:
+                numeric = None
+            if numeric is not None:
+                return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+        return None
+
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return None
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return None
+        now = time.time()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                continue
+            if entry.get("last_status") != "exhausted":
+                continue
+            code = entry.get("last_error_code")
+            reason = str(entry.get("last_error_reason") or "").lower()
+            message = str(entry.get("last_error_message") or "").lower()
+            is_rate_limited = (
+                code == 429
+                or "rate_limit" in reason
+                or "usage_limit" in reason
+                or "quota" in reason
+                or "rate limit" in message
+                or "usage limit" in message
+                or "quota" in message
+            )
+            if not is_rate_limited:
+                continue
+            reset_at = _parse_reset_at(entry.get("last_error_reset_at"))
+            if reset_at is not None and reset_at <= now:
+                continue
+            return {
+                "label": entry.get("label"),
+                "last_refresh": entry.get("last_refresh"),
+                "reset_at": reset_at,
+                "reason": entry.get("last_error_reason"),
+                "message": entry.get("last_error_message"),
+            }
+    except Exception:
+        logger.debug("Codex pool rate-limit lookup failed", exc_info=True)
+    return None
 
 
 def _pool_codex_access_token() -> str:
@@ -5763,18 +5856,24 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 # subscription-feature checks) call it many times per render — `hermes tools` → "All Platforms"
 # was firing the refresh ~31× during one menu paint, racking up >13s of HTTP and burning
 # single-use refresh tokens. Cache the snapshot for a few seconds, keyed on the auth.json
-# mtime so that `hermes auth login/logout/add/remove` invalidate naturally on the next call.
+# path + mtime so that profile switches do not share a process memo and
+# `hermes auth login/logout/add/remove` invalidate naturally on the next call.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[Tuple[float, Optional[float], Dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
 
 
-def _auth_file_mtime() -> Optional[float]:
+def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
+    auth_file = _auth_file_path()
     try:
-        return _auth_file_path().stat().st_mtime
-    except FileNotFoundError:
-        return None
+        auth_file_key = str(auth_file.resolve(strict=False))
     except Exception:
-        return None
+        auth_file_key = str(auth_file)
+    try:
+        return auth_file_key, auth_file.stat().st_mtime
+    except FileNotFoundError:
+        return auth_file_key, None
+    except Exception:
+        return auth_file_key, None
 
 
 def invalidate_nous_auth_status_cache() -> None:
@@ -5806,18 +5905,19 @@ def get_nous_auth_status() -> Dict[str, Any]:
     """
     global _nous_auth_status_cache
     now = time.monotonic()
-    mtime = _auth_file_mtime()
+    auth_file_key, mtime = _auth_file_cache_key()
     cached = _nous_auth_status_cache
     if cached is not None:
-        cached_at, cached_mtime, cached_status = cached
+        cached_at, cached_auth_file_key, cached_mtime, cached_status = cached
         if (
-            cached_mtime == mtime
+            cached_auth_file_key == auth_file_key
+            and cached_mtime == mtime
             and (now - cached_at) < _NOUS_AUTH_STATUS_CACHE_TTL
         ):
             return dict(cached_status)
 
     status = _compute_nous_auth_status()
-    _nous_auth_status_cache = (now, mtime, dict(status))
+    _nous_auth_status_cache = (now, auth_file_key, mtime, dict(status))
     return status
 
 
@@ -5900,6 +6000,22 @@ def get_codex_auth_status() -> Dict[str, Any]:
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                         "api_key": api_key,
                     }
+            rate_limit = _codex_pool_rate_limit_status()
+            if rate_limit:
+                return {
+                    "logged_in": True,
+                    "auth_store": str(_auth_file_path()),
+                    "last_refresh": rate_limit.get("last_refresh"),
+                    "auth_mode": "chatgpt",
+                    "source": f"pool:{rate_limit.get('label') or 'unknown'}",
+                    "rate_limited": True,
+                    "error_code": CODEX_RATE_LIMITED_CODE,
+                    "error": (
+                        rate_limit.get("message")
+                        or "Codex provider quota exhausted; retry after the usage limit resets."
+                    ),
+                    "reset_at": rate_limit.get("reset_at"),
+                }
     except Exception:
         pass
 

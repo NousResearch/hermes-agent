@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { runInTerminal } from '@/app/right-sidebar/store'
 import {
   FEATURED_ID,
   FeaturedProviderRow,
@@ -22,6 +24,20 @@ import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
+
+// The embedded terminal (and thus the "run disconnect command" path) only
+// exists in the Electron desktop shell, not the web dashboard.
+const canRunInTerminal = () => typeof window !== 'undefined' && Boolean(window.hermesDesktop?.terminal)
+
+// Parallel group headers ("Connected", "Other providers") so the expanded list
+// reads as its own section instead of bleeding into the connected group.
+function GroupLabel({ children }: { children: ReactNode }) {
+  return (
+    <p className="mt-3 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
+      {children}
+    </p>
+  )
+}
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
 export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
@@ -90,11 +106,13 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 function OAuthPicker({
   disconnecting,
   onDisconnect,
+  onTerminalDisconnect,
   onWantApiKey,
   providers
 }: {
   disconnecting: null | string
   onDisconnect: (provider: OAuthProvider) => void
+  onTerminalDisconnect: (provider: OAuthProvider) => void
   onWantApiKey: () => void
   providers: OAuthProvider[]
 }) {
@@ -138,15 +156,14 @@ function OAuthPicker({
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {connected.length > 0 && (
         <>
-          <p className="mt-1 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
-            {p.connected}
-          </p>
+          <GroupLabel>{p.connected}</GroupLabel>
           {connected.map(p => (
             <ConnectedProviderRow
               disconnecting={disconnecting === p.id}
               key={p.id}
               onDisconnect={onDisconnect}
               onSelect={select}
+              onTerminalDisconnect={onTerminalDisconnect}
               provider={p}
             />
           ))}
@@ -154,6 +171,7 @@ function OAuthPicker({
       )}
       {showOthers && (
         <>
+          {connected.length > 0 && <GroupLabel>{p.otherProviders}</GroupLabel>}
           {others.map(p => (
             <ProviderRow key={p.id} onSelect={select} provider={p} />
           ))}
@@ -180,21 +198,26 @@ function ConnectedProviderRow({
   disconnecting,
   onDisconnect,
   onSelect,
+  onTerminalDisconnect,
   provider
 }: {
   disconnecting: boolean
   onDisconnect: (provider: OAuthProvider) => void
   onSelect: (provider: OAuthProvider) => void
+  onTerminalDisconnect: (provider: OAuthProvider) => void
   provider: OAuthProvider
 }) {
   const { t } = useI18n()
+  const copy = t.settings.providers
   const title = providerTitle(provider)
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
+  // Hermes can clear this provider's creds via the API.
   const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
-
-  const disconnectHint = provider.flow === 'external'
-    ? t.settings.providers.removeExternal(title, provider.cli_command)
-    : t.settings.providers.removeKeyManaged(title)
+  // External (CLI-managed) provider Hermes can't clear via the API, but ships a
+  // command we can run in the embedded terminal (Electron shell only).
+  const terminalDisconnect = !canDisconnect && Boolean(provider.disconnect_command) && canRunInTerminal()
+  // Only fall back to a static "remove it elsewhere" hint when we offer no button.
+  const showHint = !canDisconnect && !terminalDisconnect
 
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
@@ -203,13 +226,13 @@ function ConnectedProviderRow({
           <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
           <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
             <Check className="size-3" />
-            {t.settings.providers.connected}
+            {copy.connected}
           </span>
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
-        {!canDisconnect && (
+        {showHint && (
           <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
-            {disconnectHint}
+            {provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title)}
           </p>
         )}
       </button>
@@ -228,6 +251,18 @@ function ConnectedProviderRow({
             {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
           </Button>
         )}
+        {terminalDisconnect && (
+          <Button
+            aria-label={`${copy.disconnect} ${title}`}
+            onClick={() => onTerminalDisconnect(provider)}
+            size="icon-xs"
+            title={copy.disconnectInTerminal}
+            type="button"
+            variant="ghost"
+          >
+            <Trash2 className="size-3" />
+          </Button>
+        )}
       </div>
     </div>
   )
@@ -243,7 +278,7 @@ function NoProviderKeys() {
   )
 }
 
-export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
+export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSettingsProps) {
   const { t } = useI18n()
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
@@ -281,6 +316,29 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
 
     return () => void (cancelled = true)
   }, [onboardingActive])
+
+  // External (CLI-managed) providers can't be cleared via the API by design —
+  // Hermes never deletes creds another tool owns behind a silent API call.
+  // Instead we run the documented removal command in the embedded terminal so
+  // the user sees exactly what executes, then return them to chat to watch it.
+  function handleTerminalDisconnect(provider: OAuthProvider) {
+    const command = provider.disconnect_command
+
+    if (!command) {
+      return
+    }
+
+    const name = providerTitle(provider)
+
+    if (!window.confirm(t.settings.providers.removeTerminalConfirm(name, command))) {
+      return
+    }
+
+    // Leave the settings overlay so the terminal pane (chat-only) is visible.
+    onClose()
+    runInTerminal(command)
+    notify({ kind: 'info', title: t.settings.providers.removedTitle, message: t.settings.providers.removeTerminalRunning(name) })
+  }
 
   async function handleDisconnect(provider: OAuthProvider) {
     const name = providerTitle(provider)
@@ -341,6 +399,7 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
       <OAuthPicker
         disconnecting={disconnecting}
         onDisconnect={provider => void handleDisconnect(provider)}
+        onTerminalDisconnect={handleTerminalDisconnect}
         onWantApiKey={() => onViewChange('keys')}
         providers={oauthProviders}
       />
@@ -359,6 +418,7 @@ interface ProviderKeyGroup {
 }
 
 interface ProvidersSettingsProps {
+  onClose: () => void
   onViewChange: (view: ProviderView) => void
   view: ProviderView
 }

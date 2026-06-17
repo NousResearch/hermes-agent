@@ -4,12 +4,22 @@ import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { persistString, storedString } from '@/lib/storage'
+import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
+
+// The composer's model/effort/fast is sticky UI state, NOT the profile default
+// (that lives in Settings → Model). Persisting it in localStorage makes a pick
+// follow across Cmd+N and app restarts instead of snapping back to the default.
+// It's deliberately global (not per-profile): a profile switch force-reseeds to
+// that profile's default, while within a profile new chats keep your last pick.
+const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
+const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
+const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
+const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
 let configuredDefaultProjectDir = ''
 
@@ -208,11 +218,11 @@ export const $lastVisibleMessageIsUser = computed($messages, lastVisibleMessageI
 export const $freshDraftReady = atom(false)
 export const $busy = atom(false)
 export const $awaitingResponse = atom(false)
-export const $currentModel = atom('')
-export const $currentProvider = atom('')
-export const $currentReasoningEffort = atom('')
+export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
+export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
+export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
-export const $currentFastMode = atom(false)
+export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -254,11 +264,29 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
-export const setCurrentModel = (next: Updater<string>) => updateAtom($currentModel, next)
-export const setCurrentProvider = (next: Updater<string>) => updateAtom($currentProvider, next)
-export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
+
+export const setCurrentModel = (next: Updater<string>) => {
+  updateAtom($currentModel, next)
+  persistString(COMPOSER_MODEL_KEY, $currentModel.get() || null)
+}
+
+export const setCurrentProvider = (next: Updater<string>) => {
+  updateAtom($currentProvider, next)
+  persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
+}
+
+export const setCurrentReasoningEffort = (next: Updater<string>) => {
+  updateAtom($currentReasoningEffort, next)
+  persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+}
+
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
-export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+
+export const setCurrentFastMode = (next: Updater<boolean>) => {
+  updateAtom($currentFastMode, next)
+  persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
+}
+
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 
 export const setCurrentCwd = (next: Updater<string>) => {

@@ -1653,6 +1653,37 @@ class TestAuxiliaryFallbackLayering:
         exc.status_code = 402
         return exc
 
+    def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
+        """Auto aux call failures try per-task then top-level fallback before built-ins."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        main_chain_client = MagicMock()
+        main_chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main fallback chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "qwen/qwen3.5-122b-a10b")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_task_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(main_chain_client, "inclusionai/ring-2.6-1t:free", "openrouter")) as mock_main_chain, \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_builtin_chain:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert main_chain_client.chat.completions.create.called
+        mock_task_chain.assert_called_once_with(
+            "title_generation", "auto", reason="payment error")
+        mock_main_chain.assert_called_once_with(
+            "title_generation", "auto", reason="payment error")
+        mock_builtin_chain.assert_not_called()
+
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

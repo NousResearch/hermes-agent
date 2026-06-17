@@ -1873,6 +1873,15 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         token = _get_env_prefer_dotenv(env_var)
         if not token:
             continue
+        # Copilot rejects classic PATs (ghp_*) — skip them so a
+        # GITHUB_TOKEN / GH_TOKEN set for `gh` / git doesn't create a
+        # permanently-failing fallback in the credential pool.  (#47708)
+        if provider == "copilot" and token.startswith("ghp_"):
+            logger.debug(
+                "Skipping env:%s for copilot — classic PAT (ghp_*) is not supported",
+                env_var,
+            )
+            continue
         source = f"env:{env_var}"
         if _is_source_suppressed(provider, source):
             continue

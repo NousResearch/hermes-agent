@@ -15,14 +15,28 @@ import tools.approval as approval_module
 from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
+    _get_approval_timeout,
+    _get_cron_approval_mode,
     _normalize_approval_mode,
     _smart_approve,
     approve_session,
+    check_dangerous_command,
+    clear_session,
     detect_dangerous_command,
     detect_hardline_command,
+    disable_session_yolo,
+    enable_session_yolo,
+    has_blocking_approval,
     is_approved,
+    is_session_yolo_enabled,
     load_permanent,
+    load_permanent_allowlist,
     prompt_dangerous_approval,
+    register_gateway_notify,
+    resolve_gateway_approval,
+    save_permanent_allowlist,
+    submit_pending,
+    unregister_gateway_notify,
 )
 
 
@@ -336,6 +350,255 @@ class TestApproveAndCheckSession:
         assert is_approved(key, "rm") is False
         approve_session(key, "rm")
         assert is_approved(key, "rm") is True
+
+
+class TestApprovalStateHelpers:
+    def test_session_yolo_lifecycle_ignores_empty_keys(self):
+        disable_session_yolo("session-yolo")
+        enable_session_yolo("")
+        assert is_session_yolo_enabled("") is False
+
+        enable_session_yolo("session-yolo")
+        assert is_session_yolo_enabled("session-yolo") is True
+
+        disable_session_yolo("session-yolo")
+        assert is_session_yolo_enabled("session-yolo") is False
+
+    def test_clear_session_resolves_blocking_gateway_entries(self):
+        session = "clear-session-test"
+        resolved = []
+
+        register_gateway_notify(session, lambda approval: resolved.append(approval))
+        try:
+            # Queue an entry through the shared gateway wait helper, then clear
+            # the session while the waiter is blocked. This pins the cleanup
+            # contract that old runs cannot hang until timeout.
+            import threading
+
+            result = {}
+
+            def waiter():
+                result.update(
+                    approval_module._await_gateway_decision(
+                        session,
+                        lambda approval: resolved.append(approval),
+                        {
+                            "command": "rm -rf tmp",
+                            "description": "recursive delete",
+                            "pattern_key": "recursive delete",
+                        },
+                    )
+                )
+
+            thread = threading.Thread(target=waiter)
+            with mock_patch.object(approval_module, "_get_approval_config", return_value={"gateway_timeout": 30}):
+                thread.start()
+                for _ in range(50):
+                    if has_blocking_approval(session):
+                        break
+                    time.sleep(0.01)
+                assert has_blocking_approval(session) is True
+                clear_session(session)
+                thread.join(timeout=2)
+
+            assert thread.is_alive() is False
+            assert result == {"resolved": True, "choice": "deny"}
+            assert has_blocking_approval(session) is False
+        finally:
+            unregister_gateway_notify(session)
+
+    def test_resolve_gateway_approval_fifo_and_all(self):
+        session = "resolve-session-test"
+        entries = [
+            approval_module._ApprovalEntry({"command": "one"}),
+            approval_module._ApprovalEntry({"command": "two"}),
+        ]
+        with mock_patch.object(approval_module, "_gateway_queues", {session: list(entries)}):
+            assert resolve_gateway_approval(session, "once") == 1
+            assert entries[0].result == "once"
+            assert entries[0].event.is_set() is True
+            assert has_blocking_approval(session) is True
+
+            assert resolve_gateway_approval(session, "session", resolve_all=True) == 1
+            assert entries[1].result == "session"
+            assert entries[1].event.is_set() is True
+            assert has_blocking_approval(session) is False
+
+    def test_submit_pending_stores_latest_request(self):
+        session = "pending-session-test"
+        with mock_patch.object(approval_module, "_pending", {}):
+            submit_pending(session, {"command": "rm -rf tmp"})
+            assert approval_module._pending[session]["command"] == "rm -rf tmp"
+
+
+class TestApprovalConfigHelpers:
+    def test_timeout_invalid_value_falls_back_to_default(self):
+        with mock_patch.object(
+            approval_module,
+            "_get_approval_config",
+            return_value={"timeout": "not-an-int"},
+        ):
+            assert _get_approval_timeout() == 60
+
+    def test_cron_approval_mode_aliases(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"cron_mode": "allow"}}):
+            assert _get_cron_approval_mode() == "approve"
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"cron_mode": "deny"}}):
+            assert _get_cron_approval_mode() == "deny"
+
+    def test_load_permanent_allowlist_syncs_config_patterns(self):
+        with mock_patch.object(approval_module, "_permanent_approved", set()), \
+             mock_patch("hermes_cli.config.load_config", return_value={"command_allowlist": ["recursive delete"]}):
+            assert load_permanent_allowlist() == {"recursive delete"}
+            assert is_approved("any-session", "recursive delete") is True
+
+    def test_load_permanent_allowlist_fails_closed_on_config_error(self):
+        with mock_patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            assert load_permanent_allowlist() == set()
+
+    def test_save_permanent_allowlist_writes_config(self):
+        saved = {}
+
+        def fake_save(config):
+            saved.update(config)
+
+        with mock_patch("hermes_cli.config.load_config", return_value={"existing": True}), \
+             mock_patch("hermes_cli.config.save_config", side_effect=fake_save):
+            save_permanent_allowlist({"recursive delete"})
+
+        assert saved["existing"] is True
+        assert saved["command_allowlist"] == ["recursive delete"]
+
+    def test_save_permanent_allowlist_swallows_config_error(self):
+        with mock_patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            save_permanent_allowlist({"recursive delete"})
+
+
+class TestPromptDangerousApprovalCallbacks:
+    def test_approval_callback_success_is_used(self):
+        calls = []
+
+        def callback(command, description, *, allow_permanent=True):
+            calls.append((command, description, allow_permanent))
+            return "session"
+
+        assert prompt_dangerous_approval(
+            "rm -rf tmp",
+            "recursive delete",
+            approval_callback=callback,
+            allow_permanent=False,
+        ) == "session"
+        assert calls == [("rm -rf tmp", "recursive delete", False)]
+
+    def test_approval_callback_exception_denies(self):
+        def callback(*args, **kwargs):
+            raise RuntimeError("no prompt")
+
+        assert prompt_dangerous_approval(
+            "rm -rf tmp",
+            "recursive delete",
+            approval_callback=callback,
+        ) == "deny"
+
+
+class TestCheckDangerousCommandOrchestration:
+    def test_container_backends_skip_approval_checks(self):
+        result = check_dangerous_command("rm -rf /", env_type="docker")
+        assert result == {"approved": True, "message": None}
+
+    def test_hardline_command_blocks_before_yolo(self):
+        session = "hardline-before-yolo"
+        token = approval_module.set_current_session_key(session)
+        try:
+            enable_session_yolo(session)
+            result = check_dangerous_command("rm -rf /", env_type="local")
+        finally:
+            disable_session_yolo(session)
+            approval_module.reset_current_session_key(token)
+
+        assert result["approved"] is False
+        assert result["hardline"] is True
+        assert "BLOCKED" in result["message"]
+
+    def test_cron_session_denies_dangerous_command_by_default(self):
+        with mock_patch.dict("os.environ", {"HERMES_CRON_SESSION": "1"}, clear=False), \
+             mock_patch.object(approval_module, "_get_cron_approval_mode", return_value="deny"):
+            result = check_dangerous_command("rm -rf tmp", env_type="local")
+
+        assert result["approved"] is False
+        assert "cron jobs run without a user present" in result["message"]
+
+    def test_cron_session_can_auto_approve_when_configured(self):
+        with mock_patch.dict("os.environ", {"HERMES_CRON_SESSION": "1"}, clear=False), \
+             mock_patch.object(approval_module, "_get_cron_approval_mode", return_value="approve"):
+            result = check_dangerous_command("rm -rf tmp", env_type="local")
+
+        assert result == {"approved": True, "message": None}
+
+    def test_gateway_context_returns_approval_required_payload(self):
+        session = "gateway-dangerous-command"
+        token = approval_module.set_current_session_key(session)
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False), \
+                 mock_patch.object(approval_module, "_pending", {}):
+                result = check_dangerous_command("rm -rf tmp", env_type="local")
+                pending = dict(approval_module._pending)
+        finally:
+            approval_module.reset_current_session_key(token)
+
+        assert result["approved"] is False
+        assert result["status"] == "approval_required"
+        assert pending[session]["command"] == "rm -rf tmp"
+        assert pending[session]["description"]
+
+    def test_cli_callback_session_choice_persists_session_approval(self):
+        session = "cli-session-choice"
+        token = approval_module.set_current_session_key(session)
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+                result = check_dangerous_command(
+                    "rm -rf tmp",
+                    env_type="local",
+                    approval_callback=lambda *args, **kwargs: "session",
+                )
+            _, pattern_key, _ = detect_dangerous_command("rm -rf tmp")
+            assert result == {"approved": True, "message": None}
+            assert is_approved(session, pattern_key) is True
+        finally:
+            clear_session(session)
+            approval_module.reset_current_session_key(token)
+
+    def test_cli_callback_always_choice_persists_permanent_allowlist(self):
+        session = "cli-always-choice"
+        token = approval_module.set_current_session_key(session)
+        saved = []
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False), \
+                 mock_patch.object(approval_module, "_permanent_approved", set()), \
+                 mock_patch.object(approval_module, "save_permanent_allowlist", side_effect=lambda patterns: saved.append(set(patterns))):
+                result = check_dangerous_command(
+                    "rm -rf tmp",
+                    env_type="local",
+                    approval_callback=lambda *args, **kwargs: "always",
+                )
+            _, pattern_key, _ = detect_dangerous_command("rm -rf tmp")
+            assert result == {"approved": True, "message": None}
+            assert is_approved(session, pattern_key) is True
+            assert saved and pattern_key in saved[0]
+        finally:
+            clear_session(session)
+            approval_module.reset_current_session_key(token)
+
+    def test_cli_callback_deny_returns_retry_guard_message(self):
+        with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+            result = check_dangerous_command(
+                "rm -rf tmp",
+                env_type="local",
+                approval_callback=lambda *args, **kwargs: "deny",
+            )
+
+        assert result["approved"] is False
+        assert "Do NOT retry" in result["message"]
 
 
 class TestSessionKeyContext:

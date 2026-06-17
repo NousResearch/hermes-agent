@@ -134,6 +134,25 @@ def test_install_ps1_clears_unmerged_index_before_stash() -> None:
     assert idx_reset < idx_stash, "`git reset` must run before `git stash push`"
 
 
+def test_install_ps1_stops_venv_python_processes_before_removing_venv() -> None:
+    """The Windows venv-recreate path must also stop leftover python(.w)
+    interpreters rooted in the old venv before Remove-Item deletes it."""
+    text = INSTALL_PS1.read_text()
+    assert "function Stop-VenvPythonProcesses" in text, (
+        "install.ps1 must define a helper that targets venv-bound python processes"
+    )
+    assert "Name = 'python.exe' OR Name = 'pythonw.exe'" in text, (
+        "the helper must target both python.exe and pythonw.exe"
+    )
+    idx_taskkill = text.index("& taskkill /F /T /IM hermes.exe")
+    idx_stop_python = text.index("Stop-VenvPythonProcesses -VenvDir $venvDir")
+    idx_remove_venv = text.index('Remove-Item -Recurse -Force "venv"')
+    assert idx_taskkill < idx_stop_python < idx_remove_venv, (
+        "venv-bound python processes must be stopped after hermes.exe and before "
+        "the venv directory is deleted"
+    )
+
+
 def test_install_sh_clears_unmerged_index_before_stash_source_order() -> None:
     """Same ordering contract for install.sh's source."""
     text = INSTALL_SH.read_text()

@@ -214,6 +214,35 @@ function Show-NpmCertHint {
     return $true
 }
 
+# Stop python.exe/pythonw.exe only when they are still executing from the old
+# venv's Scripts\ directory. This avoids clobbering unrelated system Pythons
+# while releasing loaded .pyd DLL locks before Remove-Item venv.
+function Stop-VenvPythonProcesses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VenvDir,
+        [int]$ExcludePid = 0
+    )
+
+    $scriptsDir = [System.IO.Path]::GetFullPath((Join-Path $VenvDir "Scripts"))
+    $scriptsPrefix = $scriptsDir.TrimEnd('\') + '\'
+    $pythonProcs = Get-CimInstance -ClassName Win32_Process `
+        -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" `
+        -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessId -ne $ExcludePid -and
+            $_.ExecutablePath -and
+            ([System.IO.Path]::GetFullPath($_.ExecutablePath) -like "$scriptsPrefix*")
+        }
+
+    if (@($pythonProcs).Count -eq 0) { return }
+
+    Write-Info "Stopping python processes still running from the old venv..."
+    foreach ($proc in $pythonProcs) {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- Ensure-mode helpers ---
 
 function Resolve-NpmCmd {
@@ -1432,12 +1461,15 @@ function Install-Venv {
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
-        # DLLs by any running hermes process. Windows denies deletion of loaded
-        # DLLs, so kill any hermes.exe tree before removing the venv.
+        # DLLs by any running hermes.exe / pythonw.exe from that same venv.
+        # Windows denies deletion of loaded DLLs, so stop both the launcher
+        # tree and any leftover python(.w) interpreters rooted in venv\Scripts.
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
+            $venvDir = Join-Path $InstallDir "venv"
             Write-Info "Stopping any running hermes processes before recreating venv..."
             & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
+            Stop-VenvPythonProcesses -VenvDir $venvDir -ExcludePid $myPid
             Start-Sleep -Milliseconds 800
         }
         Remove-Item -Recurse -Force "venv"

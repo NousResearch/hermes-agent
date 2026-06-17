@@ -1664,6 +1664,14 @@ def list_authenticated_providers(
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
+        # If this slug is defined in user_providers (config's providers:), skip
+        # so section 3 can provide the models list from config. This takes
+        # precedence over any curated models from _PROVIDER_MODELS — the user's
+        # explicit base_url / api_key / models: config always wins.
+        if user_providers and isinstance(user_providers, dict):
+            _slug_lower = _cp.slug.lower()
+            if any(k.lower() == _slug_lower for k in user_providers):
+                continue
         _cp_top = _cp_model_ids[:max_models]
 
         results.append({

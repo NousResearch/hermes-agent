@@ -901,6 +901,17 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    # Self-parent reroute inversion: an orchestrator rerouting its OWN card
+    # must not gate the spawned child on that (parked / re-dispatched) card.
+    # The parent never reaches 'done' while it waits on the child, so a literal
+    # parents=[self] edge deadlocks the child in 'todo'. Mirror
+    # decompose_triage_task: drop the self-edge (child becomes immediately
+    # promotable) and instead make the spawning task a CHILD of the new task,
+    # so it wakes only after the new task completes.
+    _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+    _self_parent_inverted = bool(_self_tid) and _self_tid in parents
+    if _self_parent_inverted:
+        parents = [p for p in parents if p != _self_tid]
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -945,11 +956,39 @@ def _handle_create(args: dict, **kw) -> str:
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
+            note = None
+            if _self_parent_inverted:
+                # Invert the self-edge: make the new task a parent of the
+                # spawning task so the spawner wakes only after it completes.
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                    "VALUES (?, ?)",
+                    (new_tid, _self_tid),
+                )
+                conn.commit()
+                try:
+                    kb._append_event(
+                        conn, _self_tid, "self_parent_inverted",
+                        {"child_id": new_tid},
+                    )
+                    conn.commit()
+                except Exception:
+                    logger.debug(
+                        "self-parent inversion audit event failed", exc_info=True
+                    )
+                note = (
+                    f"Self-parent edge inverted: your task {_self_tid} now wakes "
+                    f"AFTER {new_tid} completes (you became its parent), and "
+                    f"{new_tid} was created with no blocking parent so it can "
+                    f"promote immediately. A literal parents=[self] edge would "
+                    f"have deadlocked it."
+                )
             subscribed = _maybe_auto_subscribe(conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
                 subscribed=subscribed,
+                **({"note": note} if note else {}),
             )
         finally:
             conn.close()

@@ -220,9 +220,17 @@ def live_worker_workspace_snapshot(task) -> dict[str, str]:
     The dispatcher writes the intended workspace state into the DB, but for the
     currently running worker we prefer the live checkout on disk as the source
     of truth. We only expose live metadata for actual worktree tasks so scratch
-    and dir workspaces never get an invented branch name.
+    and dir workspaces never get an invented branch name -- EXCEPT for the
+    worker's own currently-running task (``HERMES_KANBAN_TASK`` matches the row
+    id), where the live checkout on disk is authoritative even if the persisted
+    ``workspace_kind`` is stale/scratch. The git-worktree probe below still
+    gates any branch name on the workspace actually being a linked worktree, so
+    a non-worktree active workspace still returns no overrides.
     """
-    if getattr(task, "workspace_kind", None) != "worktree":
+    is_active_task = (
+        os.environ.get("HERMES_KANBAN_TASK", "").strip() == getattr(task, "id", None)
+    )
+    if not is_active_task and getattr(task, "workspace_kind", None) != "worktree":
         return {}
 
     workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()

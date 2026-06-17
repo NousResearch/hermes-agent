@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_REACTIONS
+    description: "Add 👀/✅/❌ progress reactions to messages the bot is handling (default true). Set false to disable."
+    prompt: "Progress reactions? (true/false)"
+    password: false

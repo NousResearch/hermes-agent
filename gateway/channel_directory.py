@@ -125,6 +125,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.MATTERMOST:
+                platforms["mattermost"] = await _build_mattermost(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -269,6 +271,69 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
     # Merge in DM/group entries discovered from session history.
     for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
+        if entry.get("id") not in seen_ids:
+            channels.append(entry)
+            seen_ids.add(entry.get("id"))
+
+    return channels
+
+
+async def _build_mattermost(adapter) -> List[Dict[str, Any]]:
+    """List the Mattermost channels the bot is a member of, across all teams.
+
+    Walks ``GET users/me/teams`` → ``GET users/me/teams/{team_id}/channels``
+    via the adapter's ``_api_get`` helper (no Mattermost SDK required) and maps
+    the channel ``type`` codes (O/P/D/G) through the adapter's
+    ``_CHANNEL_TYPE_MAP`` so the directory uses the same vocabulary as the rest
+    of the adapter. DMs discovered from session history are merged in afterward,
+    deduped by id (the API entry wins). Modeled on ``_build_slack``.
+    """
+    from plugins.platforms.mattermost.adapter import _CHANNEL_TYPE_MAP
+
+    api_get = getattr(adapter, "_api_get", None)
+    if api_get is None:
+        return _build_from_sessions("mattermost")
+
+    channels: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
+    try:
+        teams = await api_get("users/me/teams")
+    except Exception as e:
+        logger.warning("Channel directory: failed to list Mattermost teams: %s", e)
+        teams = []
+
+    for team in teams or []:
+        team_id = team.get("id") if isinstance(team, dict) else None
+        if not team_id:
+            continue
+        try:
+            team_channels = await api_get(f"users/me/teams/{team_id}/channels")
+        except Exception as e:
+            logger.warning(
+                "Channel directory: failed to list Mattermost channels for team %s: %s",
+                team_id, e,
+            )
+            continue
+        for ch in team_channels or []:
+            if not isinstance(ch, dict):
+                continue
+            cid = ch.get("id")
+            if not cid or cid in seen_ids:
+                continue
+            # Prefer the human-facing display_name; fall back to the slug name.
+            name = ch.get("display_name") or ch.get("name")
+            if not name:
+                continue
+            seen_ids.add(cid)
+            channels.append({
+                "id": cid,
+                "name": name,
+                "type": _CHANNEL_TYPE_MAP.get(ch.get("type", "O"), "channel"),
+            })
+
+    # Merge in DM/group entries discovered from session history.
+    for entry in _build_from_sessions("mattermost"):
         if entry.get("id") not in seen_ids:
             channels.append(entry)
             seen_ids.add(entry.get("id"))

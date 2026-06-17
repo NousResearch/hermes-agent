@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -1084,3 +1085,436 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+# ---------------------------------------------------------------------------
+# Channel discovery — _build_mattermost
+# ---------------------------------------------------------------------------
+
+class TestMattermostBuildChannelDirectory:
+    """``_build_mattermost`` enumerates the bot's team channels via the REST API
+    and the ``Platform.MATTERMOST`` branch of ``build_channel_directory`` uses
+    it (instead of falling through to session-only discovery)."""
+
+    def _adapter_with_api(self, api_responses):
+        """Build an adapter whose ``_api_get`` is an AsyncMock returning the
+        mapped payload for each path."""
+        adapter = _make_adapter()
+
+        async def _fake_api_get(path):
+            return api_responses.get(path, {})
+
+        adapter._api_get = AsyncMock(side_effect=_fake_api_get)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_build_mattermost_lists_team_channels(self, tmp_path):
+        from gateway import channel_directory as cd
+
+        adapter = self._adapter_with_api({
+            "users/me/teams": [{"id": "team1", "name": "engineering"}],
+            "users/me/teams/team1/channels": [
+                {"id": "chan_pub", "name": "general", "display_name": "General", "type": "O"},
+                {"id": "chan_prv", "name": "secret", "display_name": "Secret", "type": "P"},
+                {"id": "chan_dm", "name": "dm1", "display_name": "", "type": "D"},
+            ],
+        })
+
+        with patch.object(cd, "_build_from_sessions", return_value=[]):
+            entries = await cd._build_mattermost(adapter)
+
+        by_id = {e["id"]: e for e in entries}
+        assert by_id["chan_pub"]["type"] == "channel"
+        assert by_id["chan_pub"]["name"] == "General"
+        # P (private channel) maps to "group" per _CHANNEL_TYPE_MAP.
+        assert by_id["chan_prv"]["type"] == "group"
+        assert by_id["chan_dm"]["type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_build_mattermost_merges_session_dms_dedup(self, tmp_path):
+        from gateway import channel_directory as cd
+
+        adapter = self._adapter_with_api({
+            "users/me/teams": [{"id": "team1", "name": "eng"}],
+            "users/me/teams/team1/channels": [
+                {"id": "chan_pub", "name": "general", "display_name": "General", "type": "O"},
+            ],
+        })
+
+        session_entries = [
+            {"id": "chan_pub", "name": "dup", "type": "dm", "thread_id": None},  # dup by id
+            {"id": "dm_only", "name": "Alice", "type": "dm", "thread_id": None},
+        ]
+        with patch.object(cd, "_build_from_sessions", return_value=session_entries):
+            entries = await cd._build_mattermost(adapter)
+
+        ids = [e["id"] for e in entries]
+        assert ids.count("chan_pub") == 1  # deduped — API entry wins
+        assert "dm_only" in ids
+
+    @pytest.mark.asyncio
+    async def test_build_mattermost_handles_multiple_teams(self, tmp_path):
+        from gateway import channel_directory as cd
+
+        adapter = self._adapter_with_api({
+            "users/me/teams": [
+                {"id": "t1", "name": "a"},
+                {"id": "t2", "name": "b"},
+            ],
+            "users/me/teams/t1/channels": [
+                {"id": "c1", "name": "town", "display_name": "Town", "type": "O"},
+            ],
+            "users/me/teams/t2/channels": [
+                {"id": "c2", "name": "ops", "display_name": "Ops", "type": "O"},
+            ],
+        })
+        with patch.object(cd, "_build_from_sessions", return_value=[]):
+            entries = await cd._build_mattermost(adapter)
+        ids = {e["id"] for e in entries}
+        assert ids == {"c1", "c2"}
+
+    @pytest.mark.asyncio
+    async def test_build_channel_directory_uses_mattermost_branch(self, tmp_path):
+        """``build_channel_directory`` should route Platform.MATTERMOST through
+        ``_build_mattermost`` rather than the session-only fallback."""
+        from gateway import channel_directory as cd
+        from gateway.config import Platform
+
+        adapter = self._adapter_with_api({
+            "users/me/teams": [{"id": "team1", "name": "eng"}],
+            "users/me/teams/team1/channels": [
+                {"id": "chan_pub", "name": "general", "display_name": "General", "type": "O"},
+            ],
+        })
+
+        with patch.object(cd, "DIRECTORY_PATH", tmp_path / "dir.json"), \
+             patch.object(cd, "_build_from_sessions", return_value=[]):
+            directory = await cd.build_channel_directory({Platform.MATTERMOST: adapter})
+
+        mm = directory["platforms"]["mattermost"]
+        assert any(e["id"] == "chan_pub" for e in mm)
+
+    @pytest.mark.asyncio
+    async def test_teams_fetch_error_returns_empty(self, tmp_path):
+        """If the ``users/me/teams`` fetch raises, discovery degrades to the
+        (empty) session list rather than propagating the error."""
+        from gateway import channel_directory as cd
+
+        adapter = _make_adapter()
+        adapter._api_get = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(cd, "_build_from_sessions", return_value=[]):
+            entries = await cd._build_mattermost(adapter)
+        assert entries == []
+
+    @pytest.mark.asyncio
+    async def test_per_team_channel_error_continues(self, tmp_path):
+        """A failing per-team channels fetch is skipped; other teams still
+        contribute their channels."""
+        from gateway import channel_directory as cd
+
+        async def _fake_api_get(path):
+            if path == "users/me/teams":
+                return [{"id": "t1", "name": "a"}, {"id": "t2", "name": "b"}]
+            if path == "users/me/teams/t1/channels":
+                raise RuntimeError("team1 channels down")
+            if path == "users/me/teams/t2/channels":
+                return [{"id": "c2", "name": "ops", "display_name": "Ops", "type": "O"}]
+            return {}
+
+        adapter = _make_adapter()
+        adapter._api_get = AsyncMock(side_effect=_fake_api_get)
+
+        with patch.object(cd, "_build_from_sessions", return_value=[]):
+            entries = await cd._build_mattermost(adapter)
+        ids = {e["id"] for e in entries}
+        assert ids == {"c2"}  # t1 skipped, t2 survived
+
+    @pytest.mark.asyncio
+    async def test_no_api_get_falls_back_to_sessions(self, tmp_path):
+        """When the adapter has no ``_api_get`` (e.g. not connected), discovery
+        falls back to the session-derived list."""
+        from gateway import channel_directory as cd
+
+        adapter = _make_adapter()
+        # Remove the bound method so getattr(adapter, "_api_get", None) is None.
+        adapter._api_get = None
+
+        with patch.object(
+            cd, "_build_from_sessions",
+            return_value=[{"id": "dm1", "name": "Alice", "type": "dm"}],
+        ):
+            entries = await cd._build_mattermost(adapter)
+        assert [e["id"] for e in entries] == ["dm1"]
+
+
+# ---------------------------------------------------------------------------
+# Target-ref parsing
+# ---------------------------------------------------------------------------
+
+class TestMattermostParseTargetRef:
+    """``_parse_target_ref('mattermost', ...)`` resolves raw 26-char IDs and
+    the optional ``:<thread_root>`` suffix, without colliding with Slack
+    (uppercase) IDs."""
+
+    def test_raw_channel_id(self):
+        from tools.send_message_tool import _parse_target_ref
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "mattermost", "abcdefghijklmnopqrstuvwxyz"
+        )
+        assert chat_id == "abcdefghijklmnopqrstuvwxyz"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_channel_id_with_thread_root(self):
+        from tools.send_message_tool import _parse_target_ref
+        chan = "abcdefghijklmnopqrstuvwxyz"
+        root = "0123456789abcdefghijklmnop"
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "mattermost", f"{chan}:{root}"
+        )
+        assert chat_id == chan
+        assert thread_id == root
+        assert is_explicit is True
+
+    def test_surrounding_whitespace_tolerated(self):
+        from tools.send_message_tool import _parse_target_ref
+        chat_id, _, is_explicit = _parse_target_ref(
+            "mattermost", "  abcdefghijklmnopqrstuvwxyz  "
+        )
+        assert chat_id == "abcdefghijklmnopqrstuvwxyz"
+        assert is_explicit is True
+
+    def test_channel_name_is_not_explicit(self):
+        """A human-friendly name (not a 26-char id) falls through to name
+        resolution, so it is NOT explicit here."""
+        from tools.send_message_tool import _parse_target_ref
+        _, _, is_explicit = _parse_target_ref("mattermost", "general")
+        assert is_explicit is False
+
+    def test_wrong_length_id_is_not_explicit(self):
+        from tools.send_message_tool import _parse_target_ref
+        # 25 chars and 27 chars both fail the exact-26 rule.
+        assert _parse_target_ref("mattermost", "a" * 25)[2] is False
+        assert _parse_target_ref("mattermost", "a" * 27)[2] is False
+
+    def test_no_collision_with_slack_uppercase_ids(self):
+        """A Slack id (uppercase) must NOT be parsed as a Mattermost id."""
+        from tools.send_message_tool import _parse_target_ref
+        # Slack ids are uppercase [CGDU]... — uppercase fails the lowercase
+        # MM regex, so MM does not claim it.
+        _, _, is_explicit = _parse_target_ref("mattermost", "C0B0QV5434G")
+        assert is_explicit is False
+        # And the Slack platform still resolves its own id.
+        assert _parse_target_ref("slack", "C0B0QV5434G")[2] is True
+
+
+# ---------------------------------------------------------------------------
+# delete + reactions
+# ---------------------------------------------------------------------------
+
+class TestMattermostDeleteAndReactions:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user"
+
+    @pytest.mark.asyncio
+    async def test_delete_message_success(self):
+        self.adapter._api_delete = AsyncMock(return_value=True)
+        ok = await self.adapter.delete_message("chan_1", "post_1")
+        assert ok is True
+        self.adapter._api_delete.assert_awaited_once()
+        assert "posts/post_1" in self.adapter._api_delete.await_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_delete_message_failure(self):
+        self.adapter._api_delete = AsyncMock(return_value=False)
+        ok = await self.adapter.delete_message("chan_1", "post_1")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_delete_message_empty_id(self):
+        self.adapter._api_delete = AsyncMock(return_value=True)
+        ok = await self.adapter.delete_message("chan_1", "")
+        assert ok is False
+        self.adapter._api_delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_success(self):
+        self.adapter._api_post = AsyncMock(return_value={"emoji_name": "thumbsup"})
+        ok = await self.adapter._add_reaction("post_1", "thumbsup")
+        assert ok is True
+        path = self.adapter._api_post.await_args[0][0]
+        payload = self.adapter._api_post.await_args[0][1]
+        assert path == "reactions"
+        assert payload == {
+            "user_id": "bot_user",
+            "post_id": "post_1",
+            "emoji_name": "thumbsup",
+        }
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_strips_colons(self):
+        """Slack-style ``:emoji:`` input is normalized to a bare name."""
+        self.adapter._api_post = AsyncMock(return_value={"emoji_name": "tada"})
+        ok = await self.adapter._add_reaction("post_1", ":tada:")
+        assert ok is True
+        assert self.adapter._api_post.await_args[0][1]["emoji_name"] == "tada"
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_failure(self):
+        self.adapter._api_post = AsyncMock(return_value={})
+        ok = await self.adapter._add_reaction("post_1", "thumbsup")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_remove_reaction_success(self):
+        self.adapter._api_delete = AsyncMock(return_value=True)
+        ok = await self.adapter._remove_reaction("post_1", ":thumbsup:")
+        assert ok is True
+        path = self.adapter._api_delete.await_args[0][0]
+        assert path == "users/bot_user/posts/post_1/reactions/thumbsup"
+
+    @pytest.mark.asyncio
+    async def test_remove_reaction_failure(self):
+        self.adapter._api_delete = AsyncMock(return_value=False)
+        ok = await self.adapter._remove_reaction("post_1", "thumbsup")
+        assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# reaction lifecycle hooks are actually WIRED
+# ---------------------------------------------------------------------------
+
+class TestMattermostReactionHooks:
+    """``on_processing_start`` / ``on_processing_complete`` must be overridden on
+    the MM adapter (the base class no-ops), env-gated by ``MATTERMOST_REACTIONS``,
+    and only fire for posts registered in ``_reacting_message_ids``."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user"
+        self.adapter._api_post = AsyncMock(return_value={"emoji_name": "eyes"})
+        self.adapter._api_delete = AsyncMock(return_value=True)
+
+    def _event(self, message_id):
+        return SimpleNamespace(message_id=message_id, source=SimpleNamespace(chat_id="chan_1"))
+
+    @pytest.mark.asyncio
+    async def test_on_processing_start_adds_reaction(self, monkeypatch):
+        """The hook is wired: a registered post gets an 👀 add-reaction via the
+        REST API (``_api_post`` to ``reactions``)."""
+        monkeypatch.setenv("MATTERMOST_REACTIONS", "true")
+        self.adapter._reacting_message_ids.add("post_1")
+
+        await self.adapter.on_processing_start(self._event("post_1"))
+
+        self.adapter._api_post.assert_awaited_once()
+        path = self.adapter._api_post.await_args.args[0]
+        payload = self.adapter._api_post.await_args.args[1]
+        assert path == "reactions"
+        assert payload["post_id"] == "post_1"
+        assert payload["emoji_name"] == "eyes"
+
+    @pytest.mark.asyncio
+    async def test_on_processing_start_skips_unregistered_post(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_REACTIONS", "true")
+        # post_1 NOT registered.
+        await self.adapter.on_processing_start(self._event("post_1"))
+        self.adapter._api_post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reactions_disabled_by_env_gate(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_REACTIONS", "false")
+        self.adapter._reacting_message_ids.add("post_1")
+        await self.adapter.on_processing_start(self._event("post_1"))
+        self.adapter._api_post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_success_swaps_to_checkmark(self, monkeypatch):
+        from gateway.platforms.base import ProcessingOutcome
+        monkeypatch.setenv("MATTERMOST_REACTIONS", "true")
+        self.adapter._reacting_message_ids.add("post_1")
+
+        await self.adapter.on_processing_complete(
+            self._event("post_1"), ProcessingOutcome.SUCCESS
+        )
+
+        # 👀 removed, ✅ added; the post is no longer tracked.
+        self.adapter._api_delete.assert_awaited_once()
+        assert self.adapter._api_post.await_args.args[1]["emoji_name"] == "white_check_mark"
+        assert "post_1" not in self.adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_failure_adds_x(self, monkeypatch):
+        from gateway.platforms.base import ProcessingOutcome
+        monkeypatch.setenv("MATTERMOST_REACTIONS", "true")
+        self.adapter._reacting_message_ids.add("post_1")
+
+        await self.adapter.on_processing_complete(
+            self._event("post_1"), ProcessingOutcome.FAILURE
+        )
+        assert self.adapter._api_post.await_args.args[1]["emoji_name"] == "x"
+
+    def test_hooks_are_overridden_not_base_noop(self):
+        """Guard against the dead-code regression: the MM adapter must NOT inherit
+        the base no-op hooks."""
+        from gateway.platforms.base import BasePlatformAdapter
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        assert MattermostAdapter.on_processing_start is not BasePlatformAdapter.on_processing_start
+        assert MattermostAdapter.on_processing_complete is not BasePlatformAdapter.on_processing_complete
+
+
+# ---------------------------------------------------------------------------
+# Standalone sender — canonical (path, is_voice) tuple support
+# ---------------------------------------------------------------------------
+
+class TestMattermostStandaloneSenderTuple:
+    """The MM standalone (out-of-process / cron) sender must accept the
+    canonical ``(path, is_voice)`` tuple and upload it, rather than passing the
+    tuple whole into ``os.path.exists`` (which raises and silently drops it)."""
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_accepts_canonical_tuple(self, tmp_path):
+        from plugins.platforms.mattermost.adapter import _standalone_send
+
+        f = tmp_path / "pic.png"
+        f.write_bytes(b"\x89PNG fake")
+        pconfig = SimpleNamespace(token="tok", extra={"url": "https://mm.example.com"})
+
+        upload_resp = AsyncMock()
+        upload_resp.status = 201
+        upload_resp.json = AsyncMock(return_value={"file_infos": [{"id": "fid1"}]})
+        upload_resp.text = AsyncMock(return_value="")
+        upload_resp.__aenter__ = AsyncMock(return_value=upload_resp)
+        upload_resp.__aexit__ = AsyncMock(return_value=False)
+
+        post_resp = AsyncMock()
+        post_resp.status = 201
+        post_resp.json = AsyncMock(return_value={"id": "post_xyz"})
+        post_resp.text = AsyncMock(return_value="")
+        post_resp.__aenter__ = AsyncMock(return_value=post_resp)
+        post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        posts = []
+
+        def _fake_post(url, **kwargs):
+            posts.append((url, kwargs))
+            return upload_resp if url.endswith("/files") else post_resp
+
+        session = MagicMock()
+        session.post = MagicMock(side_effect=_fake_post)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await _standalone_send(
+                pconfig, "chan_1", "hi", media_files=[(str(f), False)],
+            )
+
+        assert result.get("success") is True
+        # The upload endpoint was hit (tuple was NOT dropped) ...
+        assert any(u.endswith("/files") for u, _ in posts)
+        # ... and the final post carried the uploaded file_id.
+        final = next(kw["json"] for u, kw in posts if u.endswith("/posts"))
+        assert final["file_ids"] == ["fid1"]

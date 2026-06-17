@@ -29,6 +29,12 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
+# Mattermost IDs are 26-char lowercase base32 (a-z0-9). The optional second
+# group is a thread-root target: "mattermost:<channel_id>:<root_post_id>".
+# Constrained to lowercase so it can NOT collide with Slack conversation IDs,
+# which are uppercase ([CGDU][A-Z0-9]...). Without this gate a raw MM channel
+# id falls through to name resolution and fails with "Could not resolve".
+_MATTERMOST_TARGET_RE = re.compile(r"^\s*([a-z0-9]{26})(?::([a-z0-9]{26}))?\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -563,6 +569,11 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # resolution path in send_message() can run.
             is_explicit = chat_id[0] not in {"U", "W"}
             return chat_id, None, is_explicit
+    if platform_name == "mattermost":
+        match = _MATTERMOST_TARGET_RE.fullmatch(target_ref)
+        if match:
+            # group(1) = channel id, group(2) = optional thread-root post id.
+            return match.group(1), match.group(2), True
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")

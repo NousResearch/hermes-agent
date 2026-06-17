@@ -4942,6 +4942,12 @@ _PLATFORMS = [
                 "password": False,
                 "help": "off = flat channel messages, thread = replies nest under your message.",
             },
+            {
+                "name": "MATTERMOST_REACTIONS",
+                "prompt": "Add progress reactions (👀/✅/❌) to handled messages? (true/false, default: true)",
+                "password": False,
+                "help": "true = react 👀 while working, ✅ on success, ❌ on failure; false = no reactions.",
+            },
         ],
     },
     # WhatsApp moved to plugins/platforms/whatsapp/ — setup metadata discovered

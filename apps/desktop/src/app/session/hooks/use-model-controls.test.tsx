@@ -59,6 +59,7 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
@@ -67,6 +68,7 @@ describe('useModelControls', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.useRealTimers()
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
@@ -194,5 +196,66 @@ describe('useModelControls', () => {
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+  })
+
+  it('retries forced profile-default refreshes after a transient backend miss', async () => {
+    vi.useFakeTimers()
+    vi.mocked(getGlobalModelInfo).mockRejectedValueOnce(new Error('backend not ready')).mockResolvedValueOnce({
+      model: 'anthropic/claude-sonnet-4.6',
+      provider: 'anthropic'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const pending = result.current.refreshCurrentModel(true)
+
+    await vi.advanceTimersByTimeAsync(250)
+    await pending
+
+    expect(getGlobalModelInfo).toHaveBeenCalledTimes(2)
+    expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('anthropic')
+  })
+
+  it('keeps the latest forced profile-default refresh from being clobbered', async () => {
+    let resolveFirst!: (value: { model: string; provider: string }) => void
+    let resolveSecond!: (value: { model: string; provider: string }) => void
+    const first = new Promise<{ model: string; provider: string }>(resolve => {
+      resolveFirst = resolve
+    })
+    const second = new Promise<{ model: string; provider: string }>(resolve => {
+      resolveSecond = resolve
+    })
+
+    vi.mocked(getGlobalModelInfo).mockReturnValueOnce(first).mockReturnValueOnce(second)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    const staleRefresh = result.current.refreshCurrentModel(true)
+    const latestRefresh = result.current.refreshCurrentModel(true)
+
+    resolveSecond({ model: 'current-profile-model', provider: 'current-provider' })
+    await latestRefresh
+
+    expect($currentModel.get()).toBe('current-profile-model')
+    expect($currentProvider.get()).toBe('current-provider')
+
+    resolveFirst({ model: 'stale-profile-model', provider: 'stale-provider' })
+    await staleRefresh
+
+    expect($currentModel.get()).toBe('current-profile-model')
+    expect($currentProvider.get()).toBe('current-provider')
   })
 })

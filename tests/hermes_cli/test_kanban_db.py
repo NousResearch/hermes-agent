@@ -30,12 +30,16 @@ def kanban_home(tmp_path, monkeypatch):
 
 def _init_git_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
+    origin = repo.parent / f"{repo.name}-origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True, text=True)
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
 
 
 def _make_git_worktree(tmp_path: Path) -> Path:
@@ -2347,7 +2351,7 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
 def test_dispatch_worktree_task_persists_materialized_workspace_and_branch(kanban_home, tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _init_git_repo(repo)
-    kb.create_board("worktree-board", default_workdir=str(repo))
+    kb.create_board("worktree-board", default_workdir=str(repo), worktree_base_ref="origin/main")
     import hermes_cli.profiles as profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
     spawns: list[tuple[str, str]] = []
@@ -2441,6 +2445,157 @@ def test_dispatch_worktree_task_rerun_reuses_existing_linked_worktree_and_branch
     assert listed.count(f"worktree {expected}\n") == 1
     assert f"worktree {expected}/.worktrees/{tid}" not in listed
     assert f"branch refs/heads/{actual_branch}" in listed
+
+
+def test_dispatch_worktree_task_branches_from_local_main_by_default(kanban_home, tmp_path, monkeypatch):
+    # Default base ref is local `main`: no remote is contacted, and the worktree
+    # is branched from the local default branch (the source of truth for
+    # patch-maintained installs whose public origin must not be touched).
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "k@example.com"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "K"], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    local_main = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "main"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    kb.create_board("local-main-board", default_workdir=str(repo))  # no worktree_base_ref -> default "main"
+    import hermes_cli.profiles as profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+
+    def fake_spawn(task, workspace, board=None):
+        return None
+
+    with kb.connect(board="local-main-board") as conn:
+        tid = kb.create_task(
+            conn, title="ship", assignee="sentinel", workspace_kind="worktree", board="local-main-board"
+        )
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, board="local-main-board")
+        task = kb.get_task(conn, tid)
+
+    expected = repo / ".worktrees" / tid
+    assert task is not None
+    assert task.workspace_path == str(expected)
+    assert task.branch_name == f"wt/{tid}"
+    assert task.workspace_base_ref == "main"
+    assert task.workspace_base_commit == local_main
+    assert kb._git_remotes(repo) == set()  # no remote exists; nothing was fetched
+    branch_tip = subprocess.run(
+        ["git", "-C", str(expected), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert branch_tip == local_main
+
+
+def test_dispatch_worktree_task_fetches_fresh_origin_main_before_materializing_workspace(
+    kanban_home, tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    kb.create_board("fresh-worktree-board", default_workdir=str(repo), worktree_base_ref="origin/main")
+    import hermes_cli.profiles as profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    spawns: list[tuple[str, str]] = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append((task.id, workspace))
+        return None
+
+    (repo / "fresh.txt").write_text("fresh\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "fresh.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "fresh upstream"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "push", "origin", "main"], check=True, capture_output=True, text=True)
+    fresh_head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with kb.connect(board="fresh-worktree-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship",
+            assignee="sentinel",
+            board="fresh-worktree-board",
+        )
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn, board="fresh-worktree-board")
+        task = kb.get_task(conn, tid)
+
+    expected = repo / ".worktrees" / tid
+    assert result.spawned == [(tid, "sentinel", str(expected))]
+    assert spawns == [(tid, str(expected))]
+    assert task is not None
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(expected)
+    assert task.branch_name == f"wt/{tid}"
+    assert task.workspace_base_ref == "origin/main"
+    assert task.workspace_base_commit == fresh_head
+    fetched_origin = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "origin/main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    branch_tip = subprocess.run(
+        ["git", "-C", str(expected), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert fetched_origin == fresh_head
+    assert branch_tip == fresh_head
+
+
+def test_dispatch_worktree_task_rejects_stale_existing_branch(
+    kanban_home, tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    kb.create_board("stale-worktree-board", default_workdir=str(repo), worktree_base_ref="origin/main")
+    import hermes_cli.profiles as profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+    spawns: list[tuple[str, str]] = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append((task.id, workspace))
+        return None
+
+    with kb.connect(board="stale-worktree-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship",
+            assignee="sentinel",
+            board="stale-worktree-board",
+        )
+        first = kb.dispatch_once(conn, spawn_fn=fake_spawn, board="stale-worktree-board")
+        expected = repo / ".worktrees" / tid
+        assert first.spawned == [(tid, "sentinel", str(expected))]
+        (repo / "stale.txt").write_text("stale\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "stale.txt"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "fresh origin"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repo), "push", "origin", "main"], check=True, capture_output=True, text=True)
+        conn.execute(
+            "UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL, worker_pid=NULL WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+        second = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            board="stale-worktree-board",
+            failure_limit=1,
+        )
+        task = kb.get_task(conn, tid)
+
+    assert spawns == [(tid, str(expected))]
+    assert second.spawned == []
+    assert second.auto_blocked == [tid]
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.workspace_kind == "worktree"
 
 
 # ---------------------------------------------------------------------------

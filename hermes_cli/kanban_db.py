@@ -704,6 +704,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "worktree_base_ref": None,
         "created_at": None,
         "archived": False,
     }
@@ -731,6 +732,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    worktree_base_ref: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -754,6 +756,8 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if worktree_base_ref is not None:
+        meta["worktree_base_ref"] = str(worktree_base_ref) if worktree_base_ref else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -774,6 +778,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    worktree_base_ref: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -791,6 +796,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        worktree_base_ref=worktree_base_ref,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -5639,6 +5645,260 @@ def set_branch_name(
             "UPDATE tasks SET branch_name = ? WHERE id = ?",
             (str(branch_name), task_id),
         )
+
+
+def set_workspace_base(
+    conn: sqlite3.Connection,
+    task_id: str,
+    base_ref: Optional[str],
+    base_commit: Optional[str],
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_base_ref = ?, workspace_base_commit = ? WHERE id = ?",
+            (base_ref, base_commit, task_id),
+        )
+
+
+def _git_ref_commit(path: Path, ref: str) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", ref],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    commit = (result.stdout or "").strip()
+    return commit or None
+
+
+def _git_is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _git_remotes(repo_root: Path) -> set:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "remote"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()}
+
+
+def _resolve_worktree_base_commit(repo_root: Path, base_ref: str) -> str:
+    """Resolve ``base_ref`` to a commit, fetching FIRST only if it is a
+    remote-tracking ref (``<remote>/<branch>`` for a configured remote).
+
+    A local ref (e.g. ``main``) is used as-is and NEVER triggers a network
+    fetch. This is deliberate: for installs whose source of truth is local
+    ``main`` and whose ``origin`` is a public fork the fleet must not contact,
+    the base ref stays ``main`` and no remote is ever touched. Boards that
+    genuinely track a remote can opt into ``origin/main`` via board config.
+    """
+    remote = base_ref.split("/", 1)[0] if "/" in base_ref else None
+    if remote and remote in _git_remotes(repo_root):
+        branch = base_ref.split("/", 1)[1]
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "fetch", remote, branch],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"git fetch {remote} {branch} failed in {repo_root}: {stderr}")
+    commit = _git_ref_commit(repo_root, base_ref)
+    if not commit:
+        raise RuntimeError(f"worktree base ref {base_ref!r} is unavailable in {repo_root}")
+    return commit
+
+
+def _worktree_base_ref(board: Optional[str]) -> str:
+    """The git ref new worktrees branch from. Per-board ``worktree_base_ref``
+    config, defaulting to local ``main`` — workers build on the local default
+    branch (the source of truth for patch-maintained installs), not a remote.
+    """
+    if board is not None:
+        ref = (read_board_metadata(board).get("worktree_base_ref") or "").strip()
+        if ref:
+            return ref
+    return "main"
+
+
+def _git_toplevel(path: Path) -> Optional[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    top = (result.stdout or "").strip()
+    return Path(top).resolve(strict=False) if top else None
+
+
+def _git_current_branch(path: Path) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    branch = (result.stdout or "").strip()
+    return branch or None
+
+
+def _is_linked_worktree_checkout(path: Path) -> bool:
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        return False
+    try:
+        return git_dir.is_file() and git_dir.read_text(encoding="utf-8").startswith("gitdir:")
+    except OSError:
+        return False
+
+
+def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
+    cur = path.resolve(strict=False)
+    result = subprocess.run(
+        ["git", "-C", str(cur), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode == 0:
+        common_dir = (result.stdout or "").strip()
+        if common_dir:
+            common_path = Path(common_dir)
+            if not common_path.is_absolute():
+                common_path = (cur / common_path).resolve(strict=False)
+            return common_path.parent.resolve(strict=False)
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str, base_ref: str) -> None:
+    base_commit = _resolve_worktree_base_commit(repo_root, base_ref)
+    if target.exists():
+        if _is_linked_worktree_checkout(target):
+            actual_branch = _git_current_branch(target)
+            if actual_branch != branch_name:
+                raise RuntimeError(
+                    f"existing worktree {target} is on branch {actual_branch or '(detached)'} "
+                    f"but expected {branch_name}"
+                )
+            if not _git_is_ancestor(repo_root, base_ref, branch_name):
+                raise RuntimeError(
+                    f"existing branch {branch_name} is not based on fresh {base_ref} {base_commit}"
+                )
+            return
+        raise RuntimeError(f"worktree target {target} already exists but is not a linked git worktree")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _git_ref_commit(repo_root, branch_name):
+        if not _git_is_ancestor(repo_root, base_ref, branch_name):
+            raise RuntimeError(
+                f"existing branch {branch_name} is not based on fresh {base_ref} {base_commit}"
+            )
+        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+    else:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name, str(target), base_ref
+        ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"git worktree add failed for {target} on branch {branch_name}: {stderr}")
+
+
+def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> tuple[Path, str, str, str]:
+    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    base_ref = _worktree_base_ref(board)
+
+    def _finish(target_path: Path, resolved_branch: str, repo_root: Path) -> tuple[Path, str, str, str]:
+        base_commit = _git_ref_commit(repo_root, base_ref)
+        if not base_commit:
+            raise RuntimeError(f"worktree base ref {base_ref!r} is unavailable in {repo_root}")
+        return target_path, resolved_branch, base_ref, base_commit
+
+    if not task.workspace_path:
+        repo_root = None
+        if board is not None:
+            board_meta = read_board_metadata(board)
+            board_default = board_meta.get("default_workdir")
+            if board_default:
+                repo_root = _repo_root_for_worktree_target(Path(str(board_default)).expanduser())
+        if repo_root is None:
+            repo_root = _git_toplevel(Path.cwd())
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but no workspace_path, "
+                "and no git repo could be discovered from the board default_workdir or cwd"
+            )
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref)
+        return _finish(target, branch_name, repo_root)
+
+    requested = Path(task.workspace_path).expanduser()
+    if not requested.is_absolute():
+        raise ValueError(
+            f"task {task.id} has non-absolute worktree path {task.workspace_path!r}; use an absolute path"
+        )
+    requested_resolved = requested.resolve(strict=False)
+    if requested.exists() and _is_linked_worktree_checkout(requested):
+        actual_branch = _git_current_branch(requested)
+        if actual_branch != branch_name:
+            raise ValueError(
+                f"task {task.id} worktree path {task.workspace_path!r} is already on branch {actual_branch or '(detached)'} but expected {branch_name}"
+            )
+        repo_root = _repo_root_for_worktree_target(requested.parent)
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo"
+            )
+        _ensure_git_worktree(repo_root, requested, branch_name, base_ref)
+        return _finish(requested_resolved, actual_branch or branch_name, repo_root)
+    repo_root = _git_toplevel(requested)
+    if repo_root is not None and requested_resolved == repo_root:
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref)
+        return _finish(target, branch_name, repo_root)
+    repo_root = _repo_root_for_worktree_target(requested.parent)
+    if repo_root is None:
+        raise ValueError(
+            f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo and does not point at a git repo root"
+        )
+    _ensure_git_worktree(repo_root, requested, branch_name, base_ref)
+    return _finish(requested_resolved, branch_name, repo_root)
 
 
 # ---------------------------------------------------------------------------

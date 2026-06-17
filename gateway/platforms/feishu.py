@@ -228,9 +228,9 @@ def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, A
             if dw > col_max[i]:
                 col_max[i] = dw
 
-    # Convert display width to pixel width, clamp to [80, 400]
+    # Convert display width to pixel width, clamp to [80, 350]
     for i in range(num_cols):
-        px = max(80, min(400, col_max[i] * 16 + 30))
+        px = max(80, min(350, col_max[i] * 10 + 20))
         col_defs[i]["width"] = f"{px}px"
 
     return {

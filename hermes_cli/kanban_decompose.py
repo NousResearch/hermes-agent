@@ -20,7 +20,7 @@ Design notes
 
 * The system prompt sees the *configured* profile roster — names plus
   descriptions plus the default fallback. Profiles without a
-  description are still listed (with a note) so the orchestrator can
+  description are still listed (with a note) so the decomposer can
   match on name as a fallback, but the user has an obvious incentive
   to describe them.
 
@@ -178,7 +178,7 @@ def _load_config() -> dict:
 
 
 def _resolve_orchestrator_profile(cfg: dict) -> str:
-    """Resolve which profile owns decomposition.
+    """Resolve which profile owns the root/orchestration task after fan-out.
 
     Falls back to the active default profile when ``kanban.orchestrator_profile``
     is unset, so a task is never stranded for lack of an orchestrator.

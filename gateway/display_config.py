@@ -32,6 +32,7 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
+    "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -123,6 +124,12 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
     "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
+    # WhatsApp Cloud API: Meta added message editing in 2023 but the
+    # Hermes Cloud adapter doesn't implement edit_message yet, so we
+    # stay on TIER_LOW (tool_progress off) to avoid spamming each
+    # status update as a separate message. Promote to TIER_MEDIUM once
+    # Cloud's edit_message lands.
+    "whatsapp_cloud":  _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
     "wecom":           _TIER_LOW,
@@ -232,6 +239,9 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
+    if setting == "tool_progress_grouping":
+        val = str(value).lower()
+        return val if val in ("accumulate", "separate") else "accumulate"
     if setting == "tool_preview_length":
         try:
             return int(value)

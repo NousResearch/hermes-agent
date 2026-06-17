@@ -4,17 +4,33 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 
 NousAccountInfoSource = Literal["jwt", "account_api", "inference_key", "none", "error"]
 
+# Free tool-pool coverage categories. Kept byte-for-byte aligned with the
+# Portal's TOOL_COVERAGE_CATEGORIES (nous-account-service
+# src/server/tool-pool-eligibility.ts). The Portal mints these into the
+# `tool_access.coverage` map on the JWT and /api/oauth/account; FAL video gen
+# (`fal-video`) is intentionally excluded from the pool.
+TOOL_COVERAGE_CATEGORIES = (
+    "firecrawl",
+    "fal",
+    "fal-video",
+    "openai-audio",
+    "browser-use",
+    "modal",
+)
+
 _ACCOUNT_INFO_CACHE_TTL = 60
 _account_info_cache: tuple[str, float, "NousPortalAccountInfo"] | None = None
+_ACCOUNT_INFO_CACHE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -22,6 +38,7 @@ class NousPortalSubscriptionInfo:
     plan: Optional[str] = None
     tier: Optional[int] = None
     monthly_charge: Optional[float] = None
+    monthly_credits: Optional[float] = None
     current_period_end: Optional[str] = None
     credits_remaining: Optional[float] = None
     rollover_credits: Optional[float] = None
@@ -44,12 +61,27 @@ class NousPaidServiceAccessInfo:
 
 
 @dataclass(frozen=True)
+class NousToolAccessInfo:
+    """Free tool-pool entitlement, decoupled from paid/billing access.
+
+    Mirrors the Portal's ``tool_access`` claim/field: ``enabled`` is true when a
+    positive tool-pool balance is live and not gated off; ``coverage`` maps each
+    tool category to whether the pool funds it (FAL video is excluded).
+    """
+
+    enabled: bool = False
+    coverage: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class NousPortalAccountInfo:
     logged_in: bool
     source: NousAccountInfoSource
     fresh: bool
     user_id: Optional[str] = None
     org_id: Optional[str] = None
+    org_slug: Optional[str] = None
+    org_name: Optional[str] = None
     client_id: Optional[str] = None
     product_id: Optional[str] = None
     nous_client: Optional[str] = None
@@ -63,6 +95,7 @@ class NousPortalAccountInfo:
     subscription: Optional[NousPortalSubscriptionInfo] = None
     paid_service_access: Optional[bool] = None
     paid_service_access_info: Optional[NousPaidServiceAccessInfo] = None
+    tool_access: Optional[NousToolAccessInfo] = None
     raw_claims: Optional[dict[str, Any]] = None
     raw_account: Optional[dict[str, Any]] = None
     error: Optional[str] = None
@@ -77,7 +110,21 @@ class NousPortalAccountInfo:
 
     @property
     def tool_gateway_entitled(self) -> bool:
-        return self.paid_service_access is True
+        """Coarse "entitled to any managed tool" gate: paid access OR a live
+        free tool pool. Use :meth:`tool_gateway_entitled_for` to gate a specific
+        tool category (the pool does not cover every category)."""
+        if self.paid_service_access is True:
+            return True
+        return self.tool_access is not None and self.tool_access.enabled
+
+    def tool_gateway_entitled_for(self, category: str) -> bool:
+        """Whether a specific tool category is entitled. Paid users are entitled
+        everywhere; free tool-pool users only where ``coverage[category]`` is
+        true (e.g. image but not video)."""
+        if self.paid_service_access is True:
+            return True
+        ta = self.tool_access
+        return bool(ta and ta.enabled and ta.coverage.get(category) is True)
 
 
 def nous_portal_billing_url(account_info: Optional[NousPortalAccountInfo] = None) -> str:
@@ -95,24 +142,66 @@ def nous_portal_billing_url(account_info: Optional[NousPortalAccountInfo] = None
     return f"{base.rstrip('/')}/billing"
 
 
+def nous_portal_topup_url(account_info: Optional[NousPortalAccountInfo] = None) -> str:
+    """Return the portal top-up URL that auto-opens the top-up modal.
+
+    Prefers the org-pinned page ``{base}/orgs/{slug}/billing?topup=open`` (skips
+    the legacy shim's re-resolution + multi-org disambiguation). Falls back to the
+    legacy ``{base}/billing?topup=open`` when the account has no ``org_slug`` (the
+    portal's ``slug`` is nullable; the legacy page forwards the param through to
+    the org-pinned page). Never builds ``/orgs/None/billing``.
+
+    The ``?topup=open`` query is the NAS enabler that lands the user in the
+    top-up flow rather than just on the billing page.
+    """
+    base_billing = nous_portal_billing_url(account_info)  # {base}/billing
+    base = base_billing[: -len("/billing")]  # strip the trailing /billing
+
+    slug = getattr(account_info, "org_slug", None) if account_info is not None else None
+    if isinstance(slug, str) and slug.strip():
+        from urllib.parse import quote
+
+        return f"{base}/orgs/{quote(slug.strip(), safe='')}/billing?topup=open"
+    return f"{base}/billing?topup=open"
+
+
 def format_nous_portal_entitlement_message(
     account_info: Optional[NousPortalAccountInfo],
     *,
     capability: str = "this feature",
     include_refresh_hint: bool = True,
+    coverage_category: Optional[str] = None,
 ) -> Optional[str]:
-    """Return user-facing guidance for a missing Nous paid entitlement.
+    """Return user-facing guidance for a missing Nous tool-gateway entitlement.
 
-    ``None`` means the account is known to have paid service access.  The
-    message intentionally works from normalized entitlement fields rather than
-    subscription price alone: purchased credits without a subscription still
-    count as paid access, while a paid subscription with exhausted usable
-    credits does not.
+    ``None`` means the account is entitled to use the capability — via paid
+    service access OR a live free tool pool that covers it. The message works
+    from normalized entitlement fields rather than subscription price alone:
+    purchased credits without a subscription still count as paid access, while a
+    paid subscription with exhausted usable credits does not.
+
+    ``coverage_category`` scopes the check to a single tool category (e.g.
+    ``"fal-video"``). When given, a user who is entitled overall but whose
+    access does not fund that category gets a neutral billing nudge instead of a
+    message implying their credits are exhausted. The pool-vs-paid distinction is
+    never surfaced to the user.
     """
     billing_url = nous_portal_billing_url(account_info)
 
-    if account_info is not None and account_info.paid_service_access is True:
-        return None
+    if account_info is not None:
+        if coverage_category is not None:
+            if account_info.tool_gateway_entitled_for(coverage_category):
+                return None
+            if account_info.tool_gateway_entitled:
+                # Entitled overall (e.g. via the managed tool pool), but this
+                # specific capability isn't covered. Surface a neutral billing
+                # nudge without exposing pool-vs-paid internals to the user.
+                return (
+                    f"{capability} isn't included with your current Nous Portal "
+                    f"access. Add credits or a subscription to enable it at {billing_url}."
+                )
+        elif account_info.tool_gateway_entitled:
+            return None
 
     if account_info is None:
         return (
@@ -302,10 +391,11 @@ def _fresh_account_info(
         portal_base_url = _portal_base_url(refreshed_state) or portal_base_url
         cache_key = _cache_key(access_token, portal_base_url)
 
-        if not force_fresh and _account_info_cache is not None:
-            cached_key, cached_at, cached_info = _account_info_cache
-            if cached_key == cache_key and (time.monotonic() - cached_at) < _ACCOUNT_INFO_CACHE_TTL:
-                return cached_info
+        with _ACCOUNT_INFO_CACHE_LOCK:
+            if not force_fresh and _account_info_cache is not None:
+                cached_key, cached_at, cached_info = _account_info_cache
+                if cached_key == cache_key and (time.monotonic() - cached_at) < _ACCOUNT_INFO_CACHE_TTL:
+                    return cached_info
 
         payload = _fetch_nous_account_info(access_token, portal_base_url)
         if not payload:
@@ -327,7 +417,8 @@ def _fresh_account_info(
             state=refreshed_state,
             portal_base_url=portal_base_url,
         )
-        _account_info_cache = (cache_key, time.monotonic(), info)
+        with _ACCOUNT_INFO_CACHE_LOCK:
+            _account_info_cache = (cache_key, time.monotonic(), info)
         return info
     except Exception as exc:
         return _error_info(
@@ -530,6 +621,7 @@ def _info_from_valid_jwt(
         expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
         paid_service_access=paid_access,
         paid_service_access_info=access_info,
+        tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
     )
 
@@ -540,12 +632,10 @@ def _info_from_account_payload(
     state: dict[str, Any],
     portal_base_url: Optional[str],
 ) -> NousPortalAccountInfo:
-    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
-    organisation = (
-        payload.get("organisation")
-        if isinstance(payload.get("organisation"), dict)
-        else {}
-    )
+    raw_user = payload.get("user")
+    user: dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
+    raw_org = payload.get("organisation")
+    organisation: dict[str, Any] = raw_org if isinstance(raw_org, dict) else {}
     subscription = _subscription_from_payload(payload.get("subscription"))
     access = _paid_service_access_from_payload(payload.get("paid_service_access"))
     paid_access = access.allowed if access else None
@@ -557,6 +647,8 @@ def _info_from_account_payload(
         source="account_api",
         fresh=True,
         org_id=_coerce_str(organisation.get("id")) or (access.organisation_id if access else None),
+        org_slug=_coerce_str(organisation.get("slug")),
+        org_name=_coerce_str(organisation.get("name")),
         client_id=_coerce_str(state.get("client_id")),
         portal_base_url=portal_base_url,
         inference_base_url=_coerce_str(state.get("inference_base_url")),
@@ -567,8 +659,26 @@ def _info_from_account_payload(
         subscription=subscription,
         paid_service_access=paid_access,
         paid_service_access_info=access,
+        tool_access=_tool_access_from_value(payload.get("tool_access")),
         raw_account=dict(payload),
     )
+
+
+def _tool_access_from_value(value: Any) -> Optional[NousToolAccessInfo]:
+    """Parse a Portal ``tool_access`` object (from the JWT claim or the account
+    API) into :class:`NousToolAccessInfo`. Fails closed: a non-object value
+    yields ``None``, and only literal ``true`` counts for ``enabled`` and each
+    coverage entry."""
+    if not isinstance(value, dict):
+        return None
+    enabled = _coerce_bool(value.get("enabled")) is True
+    raw_coverage = value.get("coverage")
+    coverage: dict[str, bool] = {}
+    if isinstance(raw_coverage, dict):
+        for key, val in raw_coverage.items():
+            if isinstance(key, str):
+                coverage[key] = val is True
+    return NousToolAccessInfo(enabled=enabled, coverage=coverage)
 
 
 def _subscription_from_payload(value: Any) -> Optional[NousPortalSubscriptionInfo]:
@@ -578,6 +688,7 @@ def _subscription_from_payload(value: Any) -> Optional[NousPortalSubscriptionInf
         plan=_coerce_str(value.get("plan")),
         tier=_coerce_int(value.get("tier")),
         monthly_charge=_coerce_float(value.get("monthly_charge")),
+        monthly_credits=_coerce_float(value.get("monthly_credits")),
         current_period_end=_coerce_str(value.get("current_period_end")),
         credits_remaining=_coerce_float(value.get("credits_remaining")),
         rollover_credits=_coerce_float(value.get("rollover_credits")),

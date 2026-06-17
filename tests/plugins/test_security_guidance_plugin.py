@@ -16,9 +16,7 @@ Covers ``plugins/security-guidance/``:
   * Bundled-plugin discovery via ``PluginManager.discover_and_load``.
 """
 
-import importlib
 import importlib.util
-import json
 import sys
 import types
 from pathlib import Path

@@ -252,9 +252,24 @@ def run_dump(args):
     except Exception:
         profile = "(default)"
 
-    # Terminal backend
+    # Terminal backend — report the EFFECTIVE backend, not just config.yaml.
+    # ``terminal.backend`` in config.yaml is bridged to the TERMINAL_ENV env var,
+    # but a TERMINAL_ENV set directly in .env / the shell overrides config and is
+    # what terminal_tool actually uses (tools/terminal_tool.py reads TERMINAL_ENV).
+    # Reporting only the config value hides that override and sends users chasing
+    # the wrong cause when the agent runs in a docker/podman sandbox even though
+    # config says "local" (and vice-versa). run_dump() has already loaded .env,
+    # so os.environ reflects the real override here.
     terminal_cfg = config.get("terminal", {})
-    backend = terminal_cfg.get("backend", "local")
+    config_backend = terminal_cfg.get("backend", "local")
+    env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if env_backend and env_backend != str(config_backend).strip().lower():
+        backend = (
+            f"{env_backend}  (TERMINAL_ENV overrides config.yaml "
+            f"terminal.backend={config_backend})"
+        )
+    else:
+        backend = config_backend
 
     # OpenAI SDK version
     try:
@@ -318,6 +333,17 @@ def run_dump(args):
             display = _redact(val)
         else:
             display = "set" if val else "not set"
+        # A credential added via `hermes auth add openrouter` lives in the
+        # credential pool, not as an env var — surface it so the dump doesn't
+        # misleadingly read "not set" while `hermes auth list` shows it (#42130).
+        if not val and label == "openrouter":
+            try:
+                from agent.credential_pool import load_pool as _load_pool
+
+                if _load_pool("openrouter").has_credentials():
+                    display = "set (auth pool)"
+            except Exception:
+                pass
         lines.append(f"  {label:<20} {display}")
 
     # Features summary

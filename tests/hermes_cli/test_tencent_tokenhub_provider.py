@@ -10,7 +10,6 @@ from hermes_cli.auth import (
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
-    AuthError,
 )
 
 

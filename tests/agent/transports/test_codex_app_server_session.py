@@ -7,7 +7,6 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
-import threading
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -17,7 +16,6 @@ import pytest
 import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
-    TurnResult,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
     _coerce_turn_input_text,
@@ -197,6 +195,40 @@ class TestRunTurn:
                    for m in r.projected_messages)
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
+
+    def test_token_usage_notification_is_captured(self):
+        client = FakeClient()
+        client.queue_notification(
+            "thread/tokenUsage/updated",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            tokenUsage={
+                "last": {
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+                "total": {
+                    "totalTokens": 500,
+                    "inputTokens": 300,
+                    "cachedInputTokens": 75,
+                    "outputTokens": 100,
+                    "reasoningOutputTokens": 25,
+                },
+                "modelContextWindow": 200000,
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        r = make_session(client).run_turn("hi", turn_timeout=2.0)
+        assert r.token_usage_last["totalTokens"] == 130
+        assert r.token_usage_total["totalTokens"] == 500
+        assert r.model_context_window == 200000
 
     def test_rich_content_turn_is_collapsed_to_text_payload(self):
         client = FakeClient()

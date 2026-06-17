@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,19 @@ _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
     "user": "preferences",
     "memory": "patterns",
 }
+
+
+def _derive_openviking_user_text(content: Any) -> str:
+    """Strip Hermes slash-skill scaffolding before sending content to OpenViking.
+
+    Defense-in-depth: MemoryManager already strips skill scaffolding for the
+    whole provider fan-out (see ``MemoryManager._strip_skill_scaffolding``), so
+    in normal operation this receives already-clean text and passes it through
+    unchanged. It stays here so OpenViking is correct if its hooks are ever
+    invoked outside the manager. Delegates to the canonical extractor in
+    ``agent.skill_commands`` — no duplicated marker literals, no drift risk.
+    """
+    return extract_user_instruction_from_skill_message(content) or ""
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +545,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""
+        query = _derive_openviking_user_text(query)
         if not self._client or not query:
             return
 
@@ -568,6 +583,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in OpenViking's session (non-blocking)."""
         if not self._client:
+            return
+
+        user_content = _derive_openviking_user_text(user_content)
+        if not user_content:
             return
 
         self._turn_count += 1
@@ -627,9 +646,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("OpenViking session commit failed: %s", e)
 
     def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured user/subdir."""
+        """Build a viking:// memory URI under the configured user/agent/subdir."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/{self._user}/memories/{subdir}/mem_{slug}.md"
+        return f"viking://user/{self._user}/agent/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,

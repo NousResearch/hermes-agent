@@ -11,8 +11,8 @@ import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
+import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
-import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
 
 const COMPLETION_WINDOW = 16
@@ -30,7 +30,7 @@ export function PromptZone({
   if (overlay.approval) {
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
-        <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
       </Box>
     )
   }
@@ -101,7 +101,7 @@ export function FloatingOverlays({
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
-  onPickerSelect,
+  onResumeSelect,
   pagerPageSize
 }: Pick<
   AppOverlaysProps,
@@ -113,7 +113,7 @@ export function FloatingOverlays({
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
-  | 'onPickerSelect'
+  | 'onResumeSelect'
   | 'pagerPageSize'
 >) {
   const { gw } = useGateway()
@@ -124,9 +124,9 @@ export function FloatingOverlays({
   const hasAny =
     overlay.modelPicker ||
     overlay.pager ||
-    overlay.picker ||
     overlay.sessions ||
     overlay.skillsHub ||
+    overlay.pluginsHub ||
     completions.length
 
   if (!hasAny) {
@@ -142,17 +142,6 @@ export function FloatingOverlays({
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      {overlay.picker && (
-        <FloatBox color={theme.color.border}>
-          <SessionPicker
-            gw={gw}
-            onCancel={() => patchOverlayState({ picker: false })}
-            onSelect={onPickerSelect}
-            t={theme}
-          />
-        </FloatBox>
-      )}
-
       {overlay.sessions && (
         <FloatBox color={theme.color.border}>
           <ActiveSessionSwitcher
@@ -162,6 +151,7 @@ export function FloatingOverlays({
             onClose={onActiveSessionClose}
             onNew={onNewLiveSession}
             onNewPrompt={onNewPromptSession}
+            onResume={onResumeSelect}
             onSelect={onActiveSessionSelect}
             t={theme}
           />
@@ -183,6 +173,12 @@ export function FloatingOverlays({
       {overlay.skillsHub && (
         <FloatBox color={theme.color.border}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={theme} />
+        </FloatBox>
+      )}
+
+      {overlay.pluginsHub && (
+        <FloatBox color={theme.color.border}>
+          <PluginsHub gw={gw} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
         </FloatBox>
       )}
 

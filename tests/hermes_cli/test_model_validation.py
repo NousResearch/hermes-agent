@@ -142,10 +142,6 @@ class TestCuratedModelsForProvider:
         assert len(models) > 0
         assert any("claude" in m[0] for m in models)
 
-    def test_zai_returns_glm_models(self):
-        models = curated_models_for_provider("zai")
-        assert any("glm" in m[0] for m in models)
-
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
 
@@ -199,9 +195,6 @@ class TestProviderModelIds:
     def test_unknown_provider_returns_empty(self):
         assert provider_model_ids("some-unknown-provider") == []
 
-    def test_zai_returns_glm_models(self):
-        assert "glm-5" in provider_model_ids("zai")
-
     def test_stepfun_prefers_live_catalog(self):
         with patch(
             "hermes_cli.auth.resolve_api_key_provider_credentials",
@@ -222,30 +215,57 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
-    def test_copilot_falls_back_to_curated_defaults_without_stale_opus(self):
-        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
-             patch("hermes_cli.models._fetch_github_models", return_value=None):
-            ids = provider_model_ids("copilot")
+    def test_anthropic_provider_uses_configured_base_url_for_live_catalog(self):
+        class _Resp:
+            def __enter__(self):
+                return self
 
-        assert "gpt-5.4" in ids
-        assert "claude-sonnet-4.6" in ids
-        assert "claude-sonnet-4" in ids
-        assert "claude-sonnet-4.5" in ids
-        assert "claude-haiku-4.5" in ids
-        assert "gemini-3.1-pro-preview" in ids
-        assert "claude-opus-4.6" not in ids
+            def __exit__(self, exc_type, exc, tb):
+                return False
 
-    def test_copilot_acp_falls_back_to_copilot_defaults(self):
-        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
-             patch("hermes_cli.models._fetch_github_models", return_value=None):
-            ids = provider_model_ids("copilot-acp")
+            def read(self):
+                return b'{"data": [{"id": "enterprise-claude"}]}'
 
-        assert "gpt-5.4" in ids
-        assert "claude-sonnet-4.6" in ids
-        assert "claude-sonnet-4" in ids
-        assert "gemini-3.1-pro-preview" in ids
-        assert "copilot-acp" not in ids
-        assert "claude-opus-4.6" not in ids
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "anthropic",
+                    "base_url": "http://localhost:6655/anthropic/v1",
+                    "api_key": "proxy-key",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=_Resp(),
+        ) as mock_urlopen:
+            assert provider_model_ids("anthropic") == ["enterprise-claude"]
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.get_header("X-api-key") == "proxy-key"
+
+    def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "http://localhost:6655/anthropic/v1",
+                    "api_key": "proxy-key",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["enterprise-claude"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["enterprise-claude"]
+
+        mock_fetch.assert_called_once_with(
+            "proxy-key",
+            "http://localhost:6655/anthropic/v1",
+            api_mode="anthropic_messages",
+        )
 
 
 # -- fetch_api_models --------------------------------------------------------

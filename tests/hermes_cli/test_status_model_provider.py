@@ -88,7 +88,9 @@ def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path
             features={
                 "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
                 "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                 "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
                 "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                 "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
             },

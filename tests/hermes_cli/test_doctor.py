@@ -493,6 +493,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
+        ("nvidia", "qwen/qwen3.5-122b-a10b"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -533,11 +534,59 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"opencode-zen", "kilocode"}:
+    if provider in {"opencode-zen", "kilocode", "nvidia"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
         )
+
+
+def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: custom:hpc-ai\n"
+        "  default: deepseek/deepseek-v4-flash\n"
+        "custom_providers:\n"
+        "  - name: hpc-ai\n"
+        "    base_url: https://hpc-ai.example/v1\n"
+        "    api_key: test-key\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'custom:hpc-ai' is not a recognised provider" not in out
+    assert "model.provider 'custom:hpc-ai' is unknown" not in out
+    assert (
+        "model.default 'deepseek/deepseek-v4-flash' uses a vendor/model slug but provider is "
+        "'custom:hpc-ai'"
+        not in out
+    )
+    assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
 
 
 
@@ -792,7 +841,7 @@ class TestGitHubTokenCheck:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
 
-        from hermes_cli.doctor import run_doctor, _DHH
+        from hermes_cli.doctor import run_doctor
         import io, contextlib
 
         buf = io.StringIO()
@@ -1274,3 +1323,156 @@ class TestDoctorCodexCliHintPlacement:
         minimax_idx = next(i for i, l in enumerate(lines) if "MiniMax OAuth" in l)
         assert self._hint_line() not in lines[minimax_idx - 1]
         assert minimax_idx + 1 >= len(lines) or self._hint_line() not in lines[minimax_idx + 1]
+
+
+class TestDoctorStaleMaxIterationsDrift:
+    """Regression for #17534: a stale HERMES_MAX_ITERATIONS in .env shadows
+    agent.max_turns in config.yaml. The repro symptom is config.yaml saying
+    400 while the gateway activity line reads N/90. Doctor must detect the
+    drift, and `--fix` must remove the .env ghost (config.yaml wins).
+
+    The detector reads the .env FILE directly, NOT os.environ — the gateway
+    startup bridge can already have overridden os.environ to the config value,
+    so the ghost is only visible in the file.
+    """
+
+    def _run_config_section(self, monkeypatch, tmp_path, *, fix, ghost, cfg_turns,
+                            os_environ_value=None):
+        import pathlib
+        import contextlib
+        import io
+        from argparse import Namespace
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            f"agent:\n  max_turns: {cfg_turns}\n", encoding="utf-8"
+        )
+        env_lines = ["OPENAI_API_KEY=sk-test\n"]
+        if ghost is not None:
+            env_lines.append(f"HERMES_MAX_ITERATIONS={ghost}\n")
+        (hermes_home / ".env").write_text("".join(env_lines), encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(doctor_mod, "get_hermes_home", lambda: hermes_home)
+        # Point the config helpers at the temp home.
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        if os_environ_value is not None:
+            # Simulate the gateway bridge having already overridden os.environ.
+            monkeypatch.setenv("HERMES_MAX_ITERATIONS", str(os_environ_value))
+        else:
+            monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
+
+        # Short-circuit at the Tool Availability stage — the drift check runs
+        # well before it in the Configuration Files section.
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=fix))
+        return buf.getvalue(), hermes_home
+
+    def test_detects_drift_warn_only(self, monkeypatch, tmp_path):
+        out, hermes_home = self._run_config_section(
+            monkeypatch, tmp_path, fix=False, ghost=90, cfg_turns=400,
+            os_environ_value=400,  # bridge contaminated os.environ
+        )
+        assert "HERMES_MAX_ITERATIONS=90" in out
+        assert "shadows" in out
+        # Warn-only must NOT mutate .env.
+        assert "HERMES_MAX_ITERATIONS=90" in (hermes_home / ".env").read_text(encoding="utf-8")
+
+    def test_fix_removes_ghost(self, monkeypatch, tmp_path):
+        out, hermes_home = self._run_config_section(
+            monkeypatch, tmp_path, fix=True, ghost=90, cfg_turns=400,
+            os_environ_value=400,
+        )
+        assert "Removed stale HERMES_MAX_ITERATIONS" in out
+        env_after = (hermes_home / ".env").read_text(encoding="utf-8")
+        assert "HERMES_MAX_ITERATIONS" not in env_after
+        assert "OPENAI_API_KEY=sk-test" in env_after  # other keys preserved
+
+    def test_no_drift_when_values_match(self, monkeypatch, tmp_path):
+        out, _ = self._run_config_section(
+            monkeypatch, tmp_path, fix=False, ghost=400, cfg_turns=400,
+        )
+        assert "shadows" not in out
+
+    def test_no_drift_when_ghost_absent(self, monkeypatch, tmp_path):
+        out, _ = self._run_config_section(
+            monkeypatch, tmp_path, fix=False, ghost=None, cfg_turns=400,
+        )
+        assert "shadows" not in out
+
+
+def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path):
+    """`hermes doctor` must not hand users `npm audit fix --workspace <name>`:
+    that exact form crashes npm with "Cannot read properties of null (reading
+    'edgesOut')" (an arborist bug with workspace-filtered audit fix).
+
+    It must not recommend root-level `npm audit fix` for workspace advisories
+    either: current npm can crash there too with "Cannot read properties of null
+    (reading 'isDescendantOf')" on this tree. The safe guidance is that these
+    build-tool advisories clear via the lockfile/package bump.
+
+    Regression for user reports where doctor flagged the web/ui-tui workspaces
+    and the suggested fix command errored out.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    project = tmp_path / "project"
+    (project / "node_modules").mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+
+    # Only npm is "installed" — keeps the rest of run_doctor's external checks
+    # quiet without affecting the npm-audit branch under test.
+    monkeypatch.setattr(
+        doctor_mod.shutil, "which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None
+    )
+
+    def mock_run(cmd, **kwargs):
+        if "audit" in cmd and "--workspace" in cmd:
+            payload = (
+                '{"metadata": {"vulnerabilities": '
+                '{"critical": 0, "high": 2, "moderate": 0}}}'
+            )
+            return SimpleNamespace(returncode=1, stdout=payload, stderr="")
+        if "audit" in cmd:
+            payload = (
+                '{"metadata": {"vulnerabilities": '
+                '{"critical": 0, "high": 0, "moderate": 0}}}'
+            )
+            return SimpleNamespace(returncode=0, stdout=payload, stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    # The workspace vulnerability is still reported ...
+    assert "web workspace" in out
+    # ... but the remediation must NOT use the npm-crashing per-workspace form
+    # (`npm audit fix --workspace web` / `--workspace ui-tui`).
+    assert "npm audit fix --workspace web" not in out
+    assert "npm audit fix --workspace ui-tui" not in out
+    # ... and it must not point at the root-level form either: npm can crash
+    # there too with `isDescendantOf` on this monorepo tree.
+    assert "npm audit fix" not in out
+    # ... and explains the workspace advisories are build-time tooling whose
+    # manual remediation may hit a known npm arborist crash, so the user isn't
+    # left thinking a crashing command means a broken Hermes install.
+    assert "build-time tooling" in out
+    assert "known npm bug" in out
+    assert "lockfile bump" in out

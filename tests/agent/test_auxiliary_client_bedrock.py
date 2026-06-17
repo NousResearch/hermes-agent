@@ -78,6 +78,67 @@ def test_bedrock_bearer_token_routes_to_converse_client(monkeypatch):
     assert client.base_url == "https://bedrock-runtime.us-east-1.amazonaws.com"
 
 
+def test_bedrock_bearer_token_async_routes_to_converse_client(monkeypatch):
+    """With async_mode=True, bearer-token auth must resolve to
+    AsyncBedrockConverseAuxiliaryClient — NOT AsyncOpenAI pointed at the
+    Bedrock runtime URL. The latter would reintroduce the OpenAI-wire/Bedrock
+    mismatch and return empty completions for async auxiliary callers."""
+    from openai import AsyncOpenAI
+
+    from agent.auxiliary_client import (
+        resolve_provider_client,
+        AsyncBedrockConverseAuxiliaryClient,
+    )
+
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-api-key-test123")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+    client, model = resolve_provider_client(
+        "bedrock", "us.anthropic.claude-opus-4-7", async_mode=True
+    )
+
+    assert client is not None, "async bearer-token auth should resolve to a client"
+    assert isinstance(client, AsyncBedrockConverseAuxiliaryClient), (
+        f"async bearer-token auth should pick AsyncBedrockConverseAuxiliaryClient, "
+        f"got {type(client).__name__}"
+    )
+    assert not isinstance(client, AsyncOpenAI), (
+        "async bearer-token auth must NOT fall through to AsyncOpenAI against "
+        "the Bedrock runtime URL — that speaks the OpenAI wire to a Converse "
+        "endpoint and returns empty completions"
+    )
+    assert model == "us.anthropic.claude-opus-4-7"
+    assert client.api_key == "aws-sdk"
+    assert client.base_url == "https://bedrock-runtime.us-east-1.amazonaws.com"
+
+
+def test_to_async_client_wraps_bedrock_converse(monkeypatch):
+    """_to_async_client must have an explicit Bedrock branch so a sync
+    BedrockConverseAuxiliaryClient becomes AsyncBedrockConverseAuxiliaryClient
+    rather than falling through to the AsyncOpenAI base-URL path."""
+    from openai import AsyncOpenAI
+
+    from agent.auxiliary_client import (
+        _to_async_client,
+        BedrockConverseAuxiliaryClient,
+        AsyncBedrockConverseAuxiliaryClient,
+    )
+
+    sync_client = BedrockConverseAuxiliaryClient(
+        region="us-east-1",
+        model="us.anthropic.claude-opus-4-7",
+        base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+    )
+
+    async_client, model = _to_async_client(
+        sync_client, "us.anthropic.claude-opus-4-7"
+    )
+
+    assert isinstance(async_client, AsyncBedrockConverseAuxiliaryClient)
+    assert not isinstance(async_client, AsyncOpenAI)
+    assert model == "us.anthropic.claude-opus-4-7"
+
+
 def test_bedrock_iam_credentials_route_to_anthropic_client(monkeypatch):
     """IAM credentials should pick AnthropicAuxiliaryClient (AnthropicBedrock
     SDK), preserving the legacy path for SSO / instance-profile / IAM-key

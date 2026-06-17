@@ -28,6 +28,7 @@ Requires: ``boto3`` (optional dependency — only needed when using the Bedrock 
 """
 
 import base64
+import binascii
 import json
 import logging
 import os
@@ -535,10 +536,16 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # double-encodes the payload and the model returns
                     # ``ValidationException: Could not process image``.
                     try:
-                        image_bytes = base64.b64decode(data, validate=False)
-                    except Exception:
+                        image_bytes = base64.b64decode(data, validate=True)
+                    except (binascii.Error, ValueError):
                         # Malformed data URL — skip the image rather than
-                        # blowing up the whole request.
+                        # blowing up the whole request.  ``validate=True`` makes
+                        # b64decode reject payloads containing characters outside
+                        # the base64 alphabet (e.g. ``====!!notvalid``) instead of
+                        # silently discarding them and returning junk bytes.
+                        continue
+                    if not image_bytes:
+                        # Empty payload after decode — nothing to send.
                         continue
                     blocks.append({
                         "image": {

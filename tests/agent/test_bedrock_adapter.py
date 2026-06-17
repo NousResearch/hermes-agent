@@ -426,8 +426,13 @@ class TestConvertMessagesToConverse:
         assert image_block["image"]["source"]["bytes"] == jpeg_bytes
 
     def test_malformed_data_url_image_skipped(self):
-        """Malformed base64 should skip the image gracefully rather than
-        crashing the whole request — non-image parts must still come through."""
+        """Malformed base64 must skip the image entirely (no image block)
+        rather than crashing the request or smuggling junk bytes through —
+        non-image parts must still come through.
+
+        With ``validate=True`` the ``!`` characters (outside the base64
+        alphabet) reliably raise ``binascii.Error``, so the image is dropped.
+        """
         from agent.bedrock_adapter import convert_messages_to_converse
 
         messages = [{
@@ -435,18 +440,17 @@ class TestConvertMessagesToConverse:
             "content": [
                 {"type": "text", "text": "describe"},
                 {"type": "image_url", "image_url": {
-                    # Not valid base64 (`!` is not in the alphabet and
-                    # validate=False ignores it, so we use a payload that
-                    # truly cannot be decoded as base64 even loosely).
-                    # An odd-length truncated string with a pad in the
-                    # middle reliably raises binascii.Error.
+                    # `!` is outside the base64 alphabet; strict validation
+                    # rejects this payload instead of silently dropping the
+                    # bad characters and returning garbage bytes.
                     "url": "data:image/png;base64,====!!notvalid",
                 }},
             ],
         }]
         _, msgs = convert_messages_to_converse(messages)
-        # Either no image block (skipped) or — if it didn't raise — at most
-        # one block, and the text block must still be present.
+        # The malformed image must be skipped — no image block at all.
+        assert not any("image" in b for b in msgs[0]["content"])
+        # The text block must still be present.
         assert any(b.get("text") == "describe" for b in msgs[0]["content"])
 
 

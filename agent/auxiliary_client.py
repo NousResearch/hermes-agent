@@ -4427,6 +4427,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, BedrockConverseAuxiliaryClient):
+        # Bedrock Converse (bearer-token auth) has no OpenAI-wire equivalent —
+        # wrap the sync client so async callers run it via
+        # asyncio.to_thread, never AsyncOpenAI against the Bedrock URL.
+        return AsyncBedrockConverseAuxiliaryClient(sync_client), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 

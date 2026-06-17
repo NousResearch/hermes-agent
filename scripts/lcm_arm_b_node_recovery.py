@@ -43,6 +43,21 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Interpreter guard: this harness imports the LCM engine IN-PROCESS, and the
+# engine uses py3.9+ syntax (e.g. `list[str]` annotations in config.py). On this
+# fleet `python3` resolves to anaconda 3.7.4 (PATH-poison), which cannot even
+# import the engine — the import raises "'type' object is not subscriptable",
+# which a broad except previously stringified into a fake per-trial recovery
+# error and scored 0/N. Fail LOUD and early instead of producing fake-fails.
+if sys.version_info < (3, 9):
+    sys.stderr.write(
+        f"FATAL: lcm_arm_b_node_recovery needs Python >=3.9 to import the LCM "
+        f"engine in-process; got {sys.version.split()[0]} at {sys.executable}. "
+        f"Run it with the venv interpreter: "
+        f"~/.hermes/hermes-agent/venv/bin/python scripts/lcm_arm_b_node_recovery.py ...\n"
+    )
+    raise SystemExit(3)
+
 WILSON_Z = 1.96
 
 # Distinct semantic owners — the DAG must preserve MEANING (which owner) through
@@ -347,7 +362,15 @@ class ArmBHarness:
             if depth1_id is not None:
                 try:
                     node_answer = self._node_served_recovery_semantic(sess, depth1_id, p)
-                except Exception as exc:  # noqa: BLE001
+                except (ImportError, SyntaxError, ModuleNotFoundError) as exc:
+                    # Structural failure (wrong interpreter, broken import) is NOT
+                    # a per-trial recovery miss — it would silently score 0/N as a
+                    # fake-fail. Abort the whole run loudly instead.
+                    raise RuntimeError(
+                        f"FATAL structural error importing/using the LCM engine "
+                        f"(not a recovery miss): {type(exc).__name__}: {exc}"
+                    ) from exc
+                except Exception as exc:  # noqa: BLE001 — genuine per-trial failure
                     node_answer = f"[recovery error: {exc}]"
             # SEMANTIC scoring: the owner name recovered from the node is the win
             # condition, not exact-string survival of the whole sentence.

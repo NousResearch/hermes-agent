@@ -230,7 +230,7 @@ def _markdown_table_to_card(title: str, table_text: str) -> Optional[Dict[str, A
 
     # Convert display width to pixel width, clamp to [80, 350]
     for i in range(num_cols):
-        px = max(80, min(350, col_max[i] * 10 + 20))
+        px = max(80, min(350, col_max[i] * 8 + 20))
         col_defs[i]["width"] = f"{px}px"
 
     return {

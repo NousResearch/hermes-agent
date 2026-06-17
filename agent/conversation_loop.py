@@ -34,6 +34,7 @@ from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
+from agent.usage_guard import active_valid_tool_names
 from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
@@ -532,6 +533,7 @@ def run_conversation(
     current_turn_user_idx = _ctx.current_turn_user_idx
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
+    _usage_guard_context = _ctx.usage_guard_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
     # Main conversation loop counters (pure locals consumed by the loop below).
@@ -726,6 +728,8 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                if _usage_guard_context:
+                    _injections.append(_usage_guard_context)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
@@ -3719,22 +3723,23 @@ def run_conversation(
                 
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
+                _active_tool_names = active_valid_tool_names(agent)
                 for tc in assistant_message.tool_calls:
-                    if tc.function.name not in agent.valid_tool_names:
+                    if tc.function.name not in _active_tool_names:
                         repaired = agent._repair_tool_call(tc.function.name)
-                        if repaired:
+                        if repaired and repaired in _active_tool_names:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
-                    if tc.function.name not in agent.valid_tool_names
+                    if tc.function.name not in _active_tool_names
                 ]
                 if invalid_tool_calls:
                     # Track retries for invalid tool calls
                     agent._invalid_tool_retries += 1
 
                     # Return helpful error to model — model can agent-correct next turn
-                    available = ", ".join(sorted(agent.valid_tool_names))
+                    available = ", ".join(sorted(_active_tool_names))
                     invalid_name = invalid_tool_calls[0]
                     invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
                     agent._buffer_vprint(f"⚠️  Unknown tool '{invalid_preview}' — sending error to model for agent-correction ({agent._invalid_tool_retries}/3)")
@@ -3756,7 +3761,7 @@ def run_conversation(
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)
                     for tc in assistant_message.tool_calls:
-                        if tc.function.name not in agent.valid_tool_names:
+                        if tc.function.name not in _active_tool_names:
                             content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                         else:
                             content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."

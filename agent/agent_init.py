@@ -1098,6 +1098,18 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
     try:
+        from agent.usage_guard import load_usage_guard_config
+        agent._usage_guard_config = load_usage_guard_config(_agent_cfg)
+        agent._usage_guard_last_decision = None
+        agent._usage_guard_last_notice_key = None
+        agent._usage_guard_safe_tool_names = None
+    except Exception as _ug_err:
+        _ra().logger.warning("Usage guard config ignored: %s", _ug_err)
+        agent._usage_guard_config = None
+        agent._usage_guard_last_decision = None
+        agent._usage_guard_last_notice_key = None
+        agent._usage_guard_safe_tool_names = None
+    try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
                 _agent_cfg.get("tool_loop_guardrails", {})

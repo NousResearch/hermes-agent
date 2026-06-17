@@ -809,6 +809,19 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # Usage-limit guardrails for providers with account-window visibility.
+    # Disabled by default. When enabled, Hermes warns before quota exhaustion,
+    # discourages broad new work near configured thresholds, prompts safe
+    # wind-down, and can block silent fallback-provider switches.
+    "usage_guard": {
+        "enabled": False,
+        "provider": "openai-codex",
+        "warn_at_percent": 75,
+        "wind_down_at_percent": 90,
+        "block_new_long_tasks_at_percent": 85,
+        "fallback_requires_user_confirmation": True,
+        "safe_mode_toolsets": ["file", "terminal", "messaging"],
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
@@ -4158,7 +4171,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "usage_guard", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",

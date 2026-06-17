@@ -1066,6 +1066,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
 
+    try:
+        from agent.usage_guard import should_require_fallback_confirmation
+
+        _blocked, _message = should_require_fallback_confirmation(agent)
+    except Exception:
+        logger.debug("usage_guard: fallback confirmation check failed", exc_info=True)
+        _blocked, _message = False, ""
+    if _blocked:
+        if _message:
+            try:
+                agent._buffer_status(f"🛑 {_message}")
+            except Exception:
+                pass
+        logger.warning("Fallback blocked by usage_guard confirmation requirement")
+        return False
+
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()

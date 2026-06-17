@@ -57,6 +57,8 @@ class TurnContext:
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
     plugin_user_context: str = ""
+    # Context contributed by usage guard threshold checks (appended to user message).
+    usage_guard_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
 
@@ -342,6 +344,16 @@ def build_turn_context(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    # Usage guard: API-time-only context plus optional runtime safe-mode checks.
+    usage_guard_context = ""
+    try:
+        from agent.usage_guard import evaluate_usage_guard_for_turn
+
+        _usage_decision = evaluate_usage_guard_for_turn(agent)
+        usage_guard_context = _usage_decision.context or ""
+    except Exception as exc:
+        logger.warning("usage_guard check failed: %s", exc)
+
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
 
@@ -386,5 +398,6 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
+        usage_guard_context=usage_guard_context,
         ext_prefetch_cache=ext_prefetch_cache,
     )

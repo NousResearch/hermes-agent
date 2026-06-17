@@ -43,8 +43,35 @@ Each entry requires both `provider` and `model`. Entries missing either field ar
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
 
-### Supported Providers
+### Usage Guard: warning before quota exhaustion
 
+For subscription-style providers that expose account usage windows, such as
+`openai-codex`, you can opt into a usage guard that warns before exhaustion,
+discourages new long-running work near the limit, and prompts safe wind-down at
+high usage. It can also require explicit confirmation before Hermes switches to
+a configured fallback provider, so a long-running session does not silently
+continue under a different model family.
+
+```yaml
+usage_guard:
+  enabled: true
+  provider: openai-codex
+  warn_at_percent: 75
+  block_new_long_tasks_at_percent: 85
+  wind_down_at_percent: 90
+  fallback_requires_user_confirmation: true
+  safe_mode_toolsets:
+    - file
+    - terminal
+    - messaging
+```
+
+The guard is disabled by default. When enabled, Hermes checks usage once at the
+start of each user turn for the configured provider. Safe-mode toolsets are
+enforced at runtime during wind-down without changing the tool schema sent to
+the model mid-conversation, preserving prompt-cache stability.
+
+### Supported Providers
 | Provider | Value | Requirements |
 |----------|-------|-------------|
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |

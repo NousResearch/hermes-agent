@@ -30,7 +30,8 @@ Music promotion and AI media production from Suede Labs AI. Two fulfillment trac
 ## Prerequisites
 
 ```bash
-pip install suede-ai          # Python 3.10+
+pip3 install suede-ai         # Python 3.10+
+# or: python3 -m pip install suede-ai
 ```
 
 Authentication uses a funded Ethereum wallet — no API keys or subscriptions. Set your private key as an environment variable:

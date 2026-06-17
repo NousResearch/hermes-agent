@@ -266,6 +266,7 @@ from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.agent_spec import build_agent_spec_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 from hermes_cli.subcommands.postinstall import build_postinstall_parser
@@ -300,6 +301,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.agent_spec import cmd_agent_spec
 
 
 def _require_tty(command_name: str) -> None:
@@ -404,6 +406,16 @@ def _apply_profile_override() -> None:
             break
         if arg == "--args" and _inside_mcp_add_args(i):
             break
+        # ``hermes agent-spec preview --profile <id>`` uses --profile as the
+        # preview target, not as a process-wide HERMES_HOME selector. Keep this
+        # local so the documented read-only CLI shape survives the broad legacy
+        # profile pre-parser.
+        if arg in {"--profile", "-p"} and "agent-spec" in argv[:i]:
+            i += 2 if i + 1 < len(argv) else 1
+            continue
+        if arg.startswith("--profile=") and "agent-spec" in argv[:i]:
+            i += 1
+            continue
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
             consume = 2
@@ -12034,6 +12046,11 @@ def main():
         computer_use_parser.print_help()
 
     computer_use_parser.set_defaults(func=cmd_computer_use)
+    # =========================================================================
+    # agent-spec command  (read-only typed-agent spec validation/preview)
+    # =========================================================================
+    build_agent_spec_parser(subparsers, cmd_agent_spec=cmd_agent_spec)
+
     # =========================================================================
     # mcp command  (parser built in hermes_cli/subcommands/mcp.py)
     # =========================================================================

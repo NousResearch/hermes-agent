@@ -1,0 +1,4 @@
+schema_version: hermes.agent_spec/v1alpha1
+id: yaml-import
+profile_id: default
+reasoning_effort: none

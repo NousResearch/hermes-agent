@@ -1,0 +1,10 @@
+servers:
+  context7:
+    allowed_tools: null
+    owner: docs
+  github:
+    allowed_tools: [get_issue, list_issues]
+    owner: dev
+  design_source:
+    allowed_tools: []
+    owner: runtime

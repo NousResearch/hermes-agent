@@ -204,12 +204,14 @@ def _get_extract_backend() -> str:
 def _get_capability_backend(capability: str) -> str:
     """Shared helper for per-capability backend selection.
 
-    Reads ``web.{capability}_backend`` from config; if set and available,
-    uses it. Otherwise falls through to the shared ``_get_backend()``.
+    Reads ``web.{capability}_backend`` from config. Explicit config wins even
+    before an availability check so plugin-provided backend names can route to
+    the registry and unavailable built-ins can surface precise setup errors.
+    Otherwise falls through to the shared ``_get_backend()`` auto-detection.
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific and _is_backend_available(specific):
+    if specific:
         return specific
     return _get_backend()
 

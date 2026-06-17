@@ -35,6 +35,7 @@ services:
     network_mode: host
     volumes:
       - /home/admin/.hermes:/opt/data
+      - /home/admin/files/backup:/home/admin/files/backup
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}

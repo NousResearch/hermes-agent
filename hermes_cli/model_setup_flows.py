@@ -2831,6 +2831,231 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     else:
         print("No change.")
 
+
+# Xiaomi MiMo Token Plan endpoints (regional clusters):
+#   CN:  https://token-plan-cn.xiaomimimo.com/v1
+#   SGP: https://token-plan-sgp.xiaomimimo.com/v1
+#   EU:  https://token-plan-ams.xiaomimimo.com/v1
+# Anthropic-compatible variants use /anthropic instead of /v1.
+# Token Plan API keys use the ``tp-`` prefix.
+_XIAOMI_TOKEN_PLAN_ENDPOINTS = {
+    "cn": "https://token-plan-cn.xiaomimimo.com/v1",
+    "sgp": "https://token-plan-sgp.xiaomimimo.com/v1",
+    "eu": "https://token-plan-ams.xiaomimimo.com/v1",
+}
+_XIAOMI_TOKEN_PLAN_ANTHROPIC_ENDPOINTS = {
+    "cn": "https://token-plan-cn.xiaomimimo.com/anthropic",
+    "sgp": "https://token-plan-sgp.xiaomimimo.com/anthropic",
+    "eu": "https://token-plan-ams.xiaomimimo.com/anthropic",
+}
+_XIAOMI_PAYG_URL = "https://api.xiaomimimo.com/v1"
+
+
+def _model_flow_xiaomi(config, current_model=""):
+    """Flow for Xiaomi MiMo — supports Pay As You Go and Token Plan endpoints.
+
+    Token Plan keys (``tp-`` prefix) require a regional cluster-specific
+    endpoint instead of the default Pay As You Go URL.  This flow asks the
+    user which plan type they have, auto-detecting from the key prefix when
+    possible, and then selects the correct base URL.
+    """
+    from hermes_cli.main import _prompt_api_key
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import (
+        get_env_value,
+        save_env_value,
+        load_config,
+        save_config,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+
+    pconfig = PROVIDER_REGISTRY["xiaomi"]
+    key_env = "XIAOMI_API_KEY"
+    base_url_env = "XIAOMI_BASE_URL"
+
+    # ── Check / prompt for API key ────────────────────────────────────
+    existing_key = get_env_value(key_env) or os.getenv(key_env, "")
+
+    existing_key, abort = _prompt_api_key(
+        pconfig, existing_key, provider_id="xiaomi"
+    )
+    if abort:
+        return
+
+    # ── Auto-detect plan type from key prefix ─────────────────────────
+    is_token_plan_key = existing_key.startswith("tp-")
+
+    # ── Load current configuration ────────────────────────────────────
+    current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+    if not current_base:
+        try:
+            _m = load_config().get("model") or {}
+            if str(_m.get("provider") or "").strip().lower() == "xiaomi":
+                current_base = str(_m.get("base_url") or "").strip()
+        except Exception:
+            pass
+
+    # ── Plan type selection ───────────────────────────────────────────
+    print()
+    print("Xiaomi MiMo Plan Type")
+    print("=" * 50)
+    print()
+    print("  Xiaomi MiMo offers two billing plans with different endpoints:")
+    print()
+    print("  [1] Pay As You Go — standard per-request billing")
+    print("      Endpoint: https://api.xiaomimimo.com/v1")
+    print("      API keys: regular format")
+    print()
+    print("  [2] Token Plan — pre-purchased token allocation (regional clusters)")
+    print("      API keys: tp-xxxxx format")
+    print()
+
+    if is_token_plan_key:
+        print("  ℹ  Detected Token Plan key (tp- prefix)")
+        print()
+
+    # Determine default choice based on key prefix
+    default_choice = "2" if is_token_plan_key else "1"
+
+    try:
+        choice = input(f"Plan type [{default_choice}]: ").strip() or default_choice
+    except (KeyboardInterrupt, EOFError):
+        print()
+        choice = default_choice
+
+    if choice == "2":
+        # Token Plan: select regional cluster
+        print()
+        print("Token Plan Regional Cluster")
+        print("=" * 50)
+        print()
+        print("  [1] CN  — China (token-plan-cn.xiaomimimo.com)")
+        print("  [2] SGP — Singapore (token-plan-sgp.xiaomimimo.com)")
+        print("  [3] EU  — Amsterdam (token-plan-ams.xiaomimimo.com)")
+        print()
+
+        try:
+            cluster_input = input("Cluster [2]: ").strip() or "2"
+        except (KeyboardInterrupt, EOFError):
+            print()
+            cluster_input = "2"
+
+        cluster_map = {"1": "cn", "2": "sgp", "3": "eu"}
+        cluster = cluster_map.get(cluster_input, "sgp")
+
+        # Default to OpenAI-compatible endpoint
+        effective_base = _XIAOMI_TOKEN_PLAN_ENDPOINTS[cluster]
+    else:
+        # Pay As You Go
+        effective_base = _XIAOMI_PAYG_URL
+
+    # ── Allow manual override ─────────────────────────────────────────
+    print()
+    try:
+        override = input(f"Base URL [{effective_base}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        override = ""
+    if override:
+        if not override.startswith(("http://", "https://")):
+            print(
+                "  Invalid URL — must start with http:// or https://. "
+                "Keeping current value."
+            )
+        else:
+            effective_base = override
+
+    # Save base URL to env var
+    if effective_base != _XIAOMI_PAYG_URL:
+        save_env_value(base_url_env, effective_base)
+    else:
+        # Clear override when using the default PAYG URL
+        from hermes_cli.config import remove_env_value
+        remove_env_value(base_url_env)
+
+    # ── Model selection ───────────────────────────────────────────────
+    print()
+    curated = _PROVIDER_MODELS.get("xiaomi", [])
+
+    # Try models.dev first
+    mdev_models: list = []
+    try:
+        from agent.models_dev import list_agentic_models
+        mdev_models = list_agentic_models("xiaomi")
+    except Exception:
+        pass
+
+    if mdev_models:
+        if curated:
+            seen = {m.lower() for m in mdev_models}
+            merged = list(mdev_models)
+            for m in curated:
+                if m.lower() not in seen:
+                    merged.append(m)
+                    seen.add(m.lower())
+            model_list = merged
+        else:
+            model_list = mdev_models
+        print(f"  Found {len(model_list)} model(s) from models.dev registry")
+    elif curated:
+        model_list = curated
+        print(
+            f'  Showing {len(model_list)} curated models — '
+            'use "Enter custom model name" for others.'
+        )
+    else:
+        # Live probe fallback
+        api_key_for_probe = existing_key or (get_env_value(key_env) or "")
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
+        if live_models:
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from Xiaomi MiMo API")
+        else:
+            model_list = curated
+            if model_list:
+                print(
+                    f'  Showing {len(model_list)} curated models — '
+                    'use "Enter custom model name" for others.'
+                )
+
+    if model_list:
+        selected = _prompt_model_selection(
+            model_list,
+            current_model=current_model,
+            confirm_provider="xiaomi",
+            confirm_base_url=effective_base,
+            confirm_api_key=existing_key,
+        )
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        # Update config with provider, base URL
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "xiaomi"
+        model["base_url"] = effective_base
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via Xiaomi MiMo)")
+    else:
+        print("No change.")
+
+
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     from hermes_cli.main import _run_anthropic_oauth_flow

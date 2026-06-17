@@ -2861,11 +2861,22 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
+            # Check if the MCP tool itself returned an error.
+            #
+            # IMPORTANT: an "error" key in the JSON response comes from
+            # ``result.isError == true`` (the MCP protocol's business-error
+            # signal, see lines 2813-2822).  This is NOT a transport failure —
+            # the server is healthy and the model should retry with corrected
+            # arguments.  Bumping the circuit-breaker counter here would treat
+            # a validation error the same as a network outage (#47851).
+            #
+            # Only transport/auth failures (caught as exceptions in the outer
+            # ``except Exception`` block at line ~2876) should increment the
+            # error counter and trip the circuit breaker.
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _bump_server_error(server_name)
+                    _reset_server_error(server_name)  # business error — server healthy
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):

@@ -891,10 +891,13 @@ def _apply_main_model_assignment(
     model_cfg["default"] = model
     if base_url.strip():
         model_cfg["base_url"] = base_url.strip()
-    elif model_cfg.get("base_url") and new_provider != prev_provider:
-        # Switching providers: the old URL belonged to the old provider, drop
-        # it so the new provider's default endpoint is used. Same-provider
-        # re-assignment keeps the user's configured base_url intact.
+    elif new_provider != prev_provider:
+        # Switching providers: always clear any stale base_url that
+        # belonged to the old provider so the new provider's default
+        # endpoint is used.  Removes the previous gating on
+        # ``model_cfg.get("base_url")`` which left a stale URL intact
+        # when the Desktop model picker sent no base_url at all
+        # (the common case).
         model_cfg["base_url"] = ""
     # The endpoint key follows the same lifecycle as base_url: an explicit key
     # is always persisted; an existing key is dropped only when switching to a

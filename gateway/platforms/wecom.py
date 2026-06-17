@@ -94,6 +94,7 @@ HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
 DEDUP_MAX_SIZE = 1000
+PENDING_REPLY_ACK_GRACE_SECONDS = max(REQUEST_TIMEOUT_SECONDS * 2, 60.0)
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -183,6 +184,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._pending_reply_acks: Dict[str, float] = {}
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -454,6 +456,10 @@ class WeComAdapter(BasePlatformAdapter):
         if not normalized_req_id:
             raise ValueError("reply_req_id is required")
 
+        message_id = self._message_id_for_reply_req_id(normalized_req_id)
+        if message_id:
+            self._mark_pending_reply_ack(message_id)
+
         future = asyncio.get_running_loop().create_future()
         self._pending_responses[normalized_req_id] = future
         try:
@@ -461,7 +467,19 @@ class WeComAdapter(BasePlatformAdapter):
                 {"cmd": cmd, "headers": {"req_id": normalized_req_id}, "body": body}
             )
             response = await asyncio.wait_for(future, timeout=timeout)
+            if message_id:
+                self._clear_pending_reply_ack(message_id)
             return response
+        except asyncio.TimeoutError:
+            if message_id:
+                logger.warning(
+                    "[%s] Reply ACK timeout for message %s (req_id=%s); suppressing redelivery for %.1fs",
+                    self.name,
+                    message_id,
+                    normalized_req_id,
+                    PENDING_REPLY_ACK_GRACE_SECONDS,
+                )
+            raise
         finally:
             self._pending_responses.pop(normalized_req_id, None)
 
@@ -496,6 +514,13 @@ class WeComAdapter(BasePlatformAdapter):
             return
 
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
+        if self._has_pending_reply_ack(msg_id):
+            logger.info(
+                "[%s] Duplicate callback for %s suppressed while reply ACK is pending",
+                self.name,
+                msg_id,
+            )
+            return
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
@@ -899,6 +924,50 @@ class WeComAdapter(BasePlatformAdapter):
         self._reply_req_ids[normalized_message_id] = normalized_req_id
         while len(self._reply_req_ids) > DEDUP_MAX_SIZE:
             self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
+
+    def _message_id_for_reply_req_id(self, reply_req_id: str) -> Optional[str]:
+        normalized_req_id = str(reply_req_id or "").strip()
+        if not normalized_req_id:
+            return None
+        for message_id, stored_req_id in reversed(tuple(self._reply_req_ids.items())):
+            if stored_req_id == normalized_req_id:
+                return message_id
+        return None
+
+    def _prune_pending_reply_acks(self, now: Optional[float] = None) -> None:
+        current = time.monotonic() if now is None else now
+        expired = [
+            message_id
+            for message_id, deadline in self._pending_reply_acks.items()
+            if deadline <= current
+        ]
+        for message_id in expired:
+            self._pending_reply_acks.pop(message_id, None)
+        while len(self._pending_reply_acks) > DEDUP_MAX_SIZE:
+            self._pending_reply_acks.pop(next(iter(self._pending_reply_acks)))
+
+    def _mark_pending_reply_ack(self, message_id: str) -> None:
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return
+        self._pending_reply_acks[normalized_message_id] = (
+            time.monotonic() + PENDING_REPLY_ACK_GRACE_SECONDS
+        )
+        self._prune_pending_reply_acks()
+
+    def _clear_pending_reply_ack(self, message_id: Optional[str]) -> None:
+        normalized_message_id = str(message_id or "").strip()
+        if normalized_message_id:
+            self._pending_reply_acks.pop(normalized_message_id, None)
+
+    def _has_pending_reply_ack(self, message_id: str) -> bool:
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return False
+        now = time.monotonic()
+        self._prune_pending_reply_acks(now)
+        deadline = self._pending_reply_acks.get(normalized_message_id)
+        return bool(deadline and deadline > now)
 
     def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
         """Cache the most recent inbound req_id per chat.

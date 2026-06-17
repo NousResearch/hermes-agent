@@ -274,6 +274,75 @@ class TestCallbackDispatch:
 
         adapter._on_message.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_on_message_skips_callback_while_reply_ack_is_pending(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._pending_reply_acks["msg-1"] = 10**9
+
+        await adapter._on_message(
+            {
+                "cmd": "aibot_msg_callback",
+                "headers": {"req_id": "req-1"},
+                "body": {
+                    "msgid": "msg-1",
+                    "chatid": "chat-1",
+                    "from": {"userid": "user-1"},
+                    "msgtype": "text",
+                    "text": {"content": "hello"},
+                },
+            }
+        )
+
+        adapter.handle_message.assert_not_awaited()
+
+
+class TestWeComAckTracking:
+    @pytest.mark.asyncio
+    async def test_send_reply_request_clears_pending_ack_after_success(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._reply_req_ids["msg-1"] = "req-1"
+
+        async def complete_request(_payload):
+            adapter._pending_responses["req-1"].set_result(
+                {"headers": {"req_id": "req-1"}, "errcode": 0}
+            )
+
+        adapter._send_json = AsyncMock(side_effect=complete_request)
+
+        response = await adapter._send_reply_request(
+            "req-1",
+            {"msgtype": "markdown", "markdown": {"content": "hello"}},
+            timeout=0.1,
+        )
+
+        assert response["headers"]["req_id"] == "req-1"
+        assert "msg-1" not in adapter._pending_reply_acks
+
+    @pytest.mark.asyncio
+    async def test_send_reply_request_keeps_pending_ack_after_timeout(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await adapter._send_reply_request(
+                "req-1",
+                {"msgtype": "markdown", "markdown": {"content": "hello"}},
+                timeout=0.01,
+            )
+
+        assert "msg-1" in adapter._pending_reply_acks
+
 
 class TestPolicyHelpers:
     def test_dm_allowlist(self):

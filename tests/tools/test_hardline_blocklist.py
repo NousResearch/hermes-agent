@@ -342,7 +342,7 @@ def test_sudo_stdin_guard_bypassed_when_password_configured(monkeypatch):
     """When SUDO_PASSWORD is set, sudo -S is legitimate (injected by transform)."""
     import tools.approval as approval_mod
 
-    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    monkeypatch.setattr(approval_mod, '_SUDO_PASSWORD_CONFIGURED', True)
     for cmd in _SUDO_STDIN_BLOCK:
         is_blocked, _ = approval_mod._check_sudo_stdin_guard(cmd)
         assert not is_blocked, f"with SUDO_PASSWORD set, {cmd!r} should NOT be blocked"

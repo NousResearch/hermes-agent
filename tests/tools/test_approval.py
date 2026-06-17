@@ -15,6 +15,7 @@ from tools.approval import (
     _smart_approve,
     approve_session,
     detect_dangerous_command,
+    detect_hardline_command,
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
@@ -58,6 +59,166 @@ class TestDetectDangerousRm:
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
+
+
+class TestDenylistShellEscapeBypass:
+    """Regression: shell-level encodings of a blocked keyword must not slip
+    past the denylist. bash performs backslash/quote removal, command
+    substitution, brace expansion, ANSI-C quoting, and variable expansion
+    before exec — all of which can hide a blocked keyword from a literal
+    regex on the raw command string.
+    """
+
+    # Commands that use shell escapes to hide rm — must be detected.
+    DETECTED_BYPASSES = [
+        (r"r\m -rf /home/victim", "backslash escape"),
+        (r"\r\m -rf /home/victim", "double backslash escape"),
+        ("r''m -rf /home/victim", "empty single quotes"),
+        ('r""m -rf /home/victim', "empty double quotes"),
+        ("r'm' -rf /home/victim", "non-empty single quotes"),
+        ('r"m" -rf /home/victim', "non-empty double quotes"),
+        ("'rm' -rf /home/victim", "fully single-quoted"),
+        ('"rm" -rf /home/victim', "fully double-quoted"),
+        ("$(echo rm) -rf /home/victim", "command substitution"),
+        ("`echo rm` -rf /home/victim", "backtick substitution"),
+        ("$(echo $(echo rm)) -rf /home/victim", "nested command substitution"),
+        ('$(python3 -c "print(\'rm\')") -rf /home/victim', "parens in quoted string"),
+        (r"$'r\155' -rf /home/victim", "ANSI-C octal escape"),
+        (r"$'r\x6d' -rf /home/victim", "ANSI-C hex escape"),
+        ("r\u200bm -rf /home/victim", "zero-width space"),
+        ("r\u200b\u200cm -rf /home/victim", "multiple zero-width chars"),
+        ("{r,R}{m,M} -rf /home/victim", "brace expansion"),
+        ("{rm,cp} -rf /home/victim", "brace expansion direct"),
+        ("X=r; ${X}m -rf /home/victim", "inline var assignment"),
+        ("R=rm; $R -rf /home/victim", "inline var direct"),
+    ]
+
+    # Commands with unresolvable indirection — must be flagged suspicious.
+    SUSPICIOUS_BYPASSES = [
+        ("${0/x/r}m -rf /", "parameter expansion substitution"),
+        ("${VAR:-rm} -rf /", "default value expansion"),
+        ("!rm", "history expansion at command position"),
+        ("sudo !rm", "history expansion after wrapper"),
+        ("ls; !rm", "history expansion after separator"),
+        ("$(echo rm) -rf /", "command sub at command position"),
+        ("sudo $(echo rm) -rf /", "command sub after wrapper"),
+        ("ls; $(echo rm) -rf /", "command sub after separator"),
+        ("ls && $(echo rm) -rf /", "command sub after &&"),
+        ("`echo rm` -rf /", "backtick at command position"),
+        ("гm -rf /", "Cyrillic homoglyph at command position"),
+        ("sudo гm -rf /", "Cyrillic homoglyph after wrapper"),
+        # Double-quoted command-position indirection — double quotes do NOT
+        # suppress expansion in bash, so these must be blocked.
+        ('"${VAR:-rm}" -rf /', "double-quoted param-expansion command word"),
+        ('"${VAR:-shutdown}" now', "double-quoted param-expansion shutdown"),
+        ('"$(echo rm)" -rf /', "double-quoted command-sub command word"),
+        ("sudo \"${VAR:-rm}\" -rf /", "double-quoted indirection after wrapper"),
+        ("ls; \"${VAR:-rm}\" -rf /", "double-quoted indirection after separator"),
+    ]
+
+    # Benign commands that must NOT be flagged.
+    BENIGN_COMMANDS = [
+        "ls -la",
+        'echo "hello world"',
+        "git status",
+        "cat file.txt",
+        "echo $HOME",
+        "echo ${HOME}",
+        "echo ${PATH}",
+        "export VAR=value",
+        # Command substitution in argument position — benign
+        "echo $(pwd)",
+        'mkdir -p "$(dirname /tmp/example/file.txt)"',
+        "printf '%s\\n' `pwd`",
+        "VAR=$(pwd)",
+        "for f in $(ls); do echo $f; done",
+        # Quoted separators — ; inside quotes is literal, not a command separator
+        "echo '; $(pwd)'",
+        'echo "; $(pwd)"',
+        "printf '%s\\n' '; $(pwd)'",
+        "grep '; $(pwd)' file.txt",
+        "echo 'hello; world'",
+        'echo "hello; world"',
+        # Heredoc bodies — content is stdin data, not commands
+        "cat <<'EOF'\n$(pwd)\nEOF",
+        "cat <<EOF\n$(pwd)\nEOF",
+        "cat <<-EOF\n\t$(pwd)\nEOF",
+        "tee /tmp/out <<'HEREDOC'\nresult: $(date)\nHEREDOC",
+        # Parameter expansion in quotes — single quotes prevent expansion
+        "echo '${VAR:-rm}'",
+        'echo "${VAR:-default}"',
+        "grep '${VAR:-rm}' file.txt",
+        # History expansion in quotes and argument position
+        "echo '!rm'",
+        'echo "!rm"',
+        "echo !rm",
+        # Non-Latin in quotes and argument position
+        "echo 'гm'",
+        'echo "гm"',
+        "echo гm",
+        "cat файл.txt",
+        # Heredoc bodies with dangerous-looking content — stdin, not commands
+        "cat <<'EOF'\nshutdown now\nEOF",
+        "cat <<'EOF'\nsudo -S\nEOF",
+        "cat <<'EOF'\nrm -rf /\nEOF",
+    ]
+
+    def test_escaped_rm_is_still_detected(self):
+        from tools.approval import detect_hardline_command
+
+        for cmd, desc in self.DETECTED_BYPASSES:
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"denylist bypass not caught ({desc}): {cmd!r}"
+
+        # Hardline root-delete guard must also survive escaping
+        is_hardline, _ = detect_hardline_command(r"r\m -rf /")
+        assert is_hardline is True
+
+    def test_suspicious_indirection_is_blocked(self):
+        from tools.approval import _has_suspicious_indirection
+
+        for cmd, desc in self.SUSPICIOUS_BYPASSES:
+            assert _has_suspicious_indirection(cmd) is True, (
+                f"suspicious indirection not flagged ({desc}): {cmd!r}"
+            )
+
+    def test_benign_commands_not_false_flagged(self):
+        from tools.approval import _has_suspicious_indirection
+
+        for cmd in self.BENIGN_COMMANDS:
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"false positive on benign command: {cmd!r}"
+            assert _has_suspicious_indirection(cmd) is False, (
+                f"false suspicious flag on benign command: {cmd!r}"
+            )
+
+
+class TestSudoStdinGuardShellEscapeBypass:
+    """The sudo stdin guard must also survive shell escapes — su\\do -S
+    and su''do -S must be caught by the guard directly. $(echo sudo) -S
+    is a two-level indirection (command substitution) that is caught by
+    the suspicious indirection guard instead."""
+
+    SUDO_BYPASSES = [
+        (r"su\do -S", "backslash escape"),
+        ("su''do -S", "empty quote escape"),
+    ]
+
+    def test_sudo_stdin_guard_catches_escapes(self):
+        from tools.approval import _check_sudo_stdin_guard
+
+        for cmd, desc in self.SUDO_BYPASSES:
+            is_blocked, block_desc = _check_sudo_stdin_guard(cmd)
+            assert is_blocked is True, (
+                f"sudo stdin guard bypass not caught ({desc}): {cmd!r}"
+            )
+            assert "sudo" in block_desc.lower()
+
+    def test_command_substitution_sudo_is_suspicious(self):
+        """$(echo sudo) -S uses command substitution — caught by suspicious guard."""
+        from tools.approval import _has_suspicious_indirection
+
+        assert _has_suspicious_indirection("$(echo sudo) -S") is True
 
 
 class TestDetectDangerousSudo:
@@ -1026,6 +1187,52 @@ class TestHeredocScriptExecution:
         cmd = "python3 my_script.py"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+
+class TestHeredocStripDoesNotHidePostHeredocCommand:
+    """Regression: the heredoc-body stripper must NOT consume the newline that
+    separates the closing delimiter from the command on the next line.
+
+    Bug: _HEREDOC_BODY_RE matched the trailing ``\n`` after the closing
+    delimiter and replaced the whole span with just the opener (``\1``). That
+    glued the closing delim onto the next command — ``...EOF\nshutdown`` became
+    ``eofshutdown`` — destroying the _CMDPOS / \b anchor so the real
+    post-heredoc command slipped past hardline detection. Fixed by matching the
+    trailing newline with a lookahead instead of consuming it.
+    """
+
+    def test_shutdown_after_heredoc_is_hardline_blocked(self):
+        cmd = "cat <<EOF\nhello\nEOF\nshutdown now"
+        is_hardline, _ = detect_hardline_command(cmd)
+        assert is_hardline is True, f"post-heredoc shutdown slipped past: {cmd!r}"
+
+    def test_rm_root_between_two_heredocs_is_blocked(self):
+        cmd = "cat <<EOF\nfoo\nEOF\nrm -rf /\ncat <<EOF\nbar\nEOF"
+        is_hardline, _ = detect_hardline_command(cmd)
+        assert is_hardline is True, f"rm -rf / between heredocs slipped past: {cmd!r}"
+
+    def test_rm_after_quoted_heredoc_is_blocked(self):
+        cmd = "cat <<'EOF'\ndata\nEOF\nrm -rf /"
+        is_hardline, _ = detect_hardline_command(cmd)
+        assert is_hardline is True
+
+    def test_rm_after_dash_heredoc_is_blocked(self):
+        cmd = "cat <<-EOF\n\tdata\nEOF\nrm -rf /"
+        is_hardline, _ = detect_hardline_command(cmd)
+        assert is_hardline is True
+
+    def test_heredoc_opener_still_preserved(self):
+        """The << opener must survive so script-execution patterns still match."""
+        from tools.approval import _HEREDOC_BODY_RE
+
+        stripped = _HEREDOC_BODY_RE.sub(r"\1", "python3 <<'EOF'\nimport os\nEOF")
+        assert "<<" in stripped
+
+    def test_benign_heredoc_body_not_flagged(self):
+        """A dangerous keyword that lives ONLY in the heredoc body stays benign."""
+        cmd = "cat <<'EOF'\nshutdown now\nEOF"
+        is_hardline, _ = detect_hardline_command(cmd)
+        assert is_hardline is False
 
 
 class TestPgrepKillExpansion:

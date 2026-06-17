@@ -664,6 +664,35 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 
 
+def _action_status_file(name: str) -> Path:
+    """Return the path to the persisted status file for an action."""
+    return _ACTION_LOG_DIR / f"{name}.status.json"
+
+
+def _persist_action_status(name: str, exit_code: int) -> None:
+    """Write exit code to a status file so a restarted gateway can serve it."""
+    import json as _json
+    status_path = _action_status_file(name)
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        _json.dumps({"exit_code": exit_code, "timestamp": time.time()}),
+        encoding="utf-8",
+    )
+
+
+def _load_persisted_status(name: str) -> Optional[int]:
+    """Load a previously-persisted exit code, or None if unavailable."""
+    import json as _json
+    status_path = _action_status_file(name)
+    if not status_path.exists():
+        return None
+    try:
+        data = _json.loads(status_path.read_text(encoding="utf-8"))
+        return data.get("exit_code")
+    except Exception:
+        return None
+
+
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
@@ -757,12 +786,18 @@ async def get_action_status(name: str, lines: int = 200):
     proc = _ACTION_PROCS.get(name)
     if proc is None:
         running = False
-        exit_code: Optional[int] = None
+        # After a gateway restart the in-memory Popen handle is gone.
+        # Fall back to the persisted exit code from the previous run.
+        exit_code: Optional[int] = _load_persisted_status(name)
         pid: Optional[int] = None
     else:
         exit_code = proc.poll()
         running = exit_code is None
         pid = proc.pid
+        # Persist exit code once the process finishes so a restarted
+        # gateway can still report it.  See #47864.
+        if not running and exit_code is not None:
+            _persist_action_status(name, exit_code)
 
     return {
         "name": name,

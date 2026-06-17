@@ -2,7 +2,7 @@
 name: graphify
 description: "any input (code, docs, papers, images) - knowledge graph - clustered communities - HTML + JSON + audit report"
 version: 1.0.0
-author: community
+author: Suede Labs AI
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:

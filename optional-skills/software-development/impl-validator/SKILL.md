@@ -7,7 +7,7 @@ description: >
   subagent by other skills to self-check their outputs before presenting to the user. Returns a structured
   pass/warn/fail verdict with specific actionable issues.
 version: 1.0.0
-author: community
+author: Suede Labs AI
 license: MIT
 platforms: [linux, macos, windows]
 metadata:

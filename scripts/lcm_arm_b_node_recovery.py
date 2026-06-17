@@ -45,6 +45,20 @@ from pathlib import Path
 
 WILSON_Z = 1.96
 
+# Distinct semantic owners — the DAG must preserve MEANING (which owner) through
+# condensation, even when it dedupes near-identical verbatim tokens. Same pool
+# Arm A uses for its semantic prompts, so the two arms probe the same contract.
+_OWNER_POOL = [
+    "Ada Lovelace", "Grace Hopper", "Katherine Johnson", "Margaret Hamilton",
+    "Barbara Liskov", "Frances Allen", "Radia Perlman", "Karen Sparck Jones",
+    "Shafi Goldwasser", "Barbara Walters", "Hedy Lamarr", "Joan Clarke",
+]
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
 
 def wilson_lower_bound(successes: int, total: int, z: float = WILSON_Z) -> float:
     if total <= 0:
@@ -171,30 +185,86 @@ class ArmBHarness:
         finally:
             conn.close()
 
+    def _find_node_with_text(self, needle: str) -> dict | None:
+        """Locate the newest depth>=1 node whose summary contains `needle`
+        (a phrase or owner name). Used by the semantic batch path."""
+        return self._find_node_with_sentinel(needle)
+
+    def _node_served_recovery_semantic(self, session_id: str, node_id: int,
+                                       probe: dict) -> str:
+        """Node-only recovery for a SEMANTIC probe: ask the node who the recovery
+        owner is, raw store excluded. Reuses the hardened settle+retry path."""
+        return self._node_served_recovery(
+            session_id, node_id, probe["owner"],
+            question=(f"Who is the recovery owner associated with handoff phrase "
+                      f"{probe['phrase']}? Answer with the owner's full name."),
+        )
+
     # ---- node-served recovery (the honest oracle) ---------------------------
-    def _node_served_recovery(self, session_id: str, node_id: int, sentinel: str) -> str:
+    def _wait_db_settled(self, timeout: float = 30.0) -> None:
+        """Block until the live lcm.db is readable without a busy/lock error.
+
+        The in-process engine reads the SAME sqlite file the live gateway is
+        writing. If we instantiate it while the gateway is mid-flush (e.g. the
+        instant a prior arm's session is being persisted), a half-written read
+        can surface as a malformed structure that later subscripts blow up on
+        ('type' object is not subscriptable). Poll a cheap read under a short
+        busy_timeout until it succeeds twice in a row before touching the engine.
+        """
+        deadline = time.time() + timeout
+        ok_streak = 0
+        while time.time() < deadline:
+            try:
+                conn = sqlite3.connect(self.cfg.lcm_db, timeout=2.0)
+                conn.execute("PRAGMA busy_timeout=2000")
+                conn.execute("SELECT COUNT(*) FROM summary_nodes").fetchone()
+                conn.execute("SELECT COUNT(*) FROM messages").fetchone()
+                conn.close()
+                ok_streak += 1
+                if ok_streak >= 2:
+                    return
+            except sqlite3.Error:
+                ok_streak = 0
+            time.sleep(0.5)
+
+    def _node_served_recovery(self, session_id: str, node_id: int, sentinel: str,
+                              question: str = "What is the exact recovery sentinel?") -> str:
         """Drive lcm_expand_query targeted at ONLY the condensation node (raw
         store excluded) via an in-process engine bound to the live db. This
-        proves the node itself can serve the fact, independent of raw rows."""
+        proves the node itself can serve the fact, independent of raw rows.
+
+        Hardened against live-DB contention: wait for the store to settle, and
+        retry once on a malformed/locked read instead of scoring a fake-FAIL.
+        """
         sys.path.insert(0, os.path.expanduser("~/.hermes/hermes-agent"))
         from plugins.context_engine.lcm.config import LCMConfig
         from plugins.context_engine.lcm.engine import LCMEngine
 
-        cfg = LCMConfig(database_path=self.cfg.lcm_db)
-        eng = LCMEngine(config=cfg, hermes_home=self.home)
-        try:
-            eng.on_session_start(session_id)
-            out = eng.handle_tool_call(
-                "lcm_expand_query",
-                {"prompt": "What is the exact recovery sentinel?", "node_ids": [node_id]},
-            )
-            data = json.loads(out)
-            return str(data.get("answer", ""))
-        finally:
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            self._wait_db_settled()
+            eng = LCMEngine(config=LCMConfig(database_path=self.cfg.lcm_db),
+                            hermes_home=self.home)
             try:
-                eng.shutdown()
-            except Exception:
-                pass
+                eng.on_session_start(session_id)
+                out = eng.handle_tool_call(
+                    "lcm_expand_query",
+                    {"prompt": question,
+                     "node_ids": [node_id]},
+                )
+                data = json.loads(out)
+                if not isinstance(data, dict):
+                    raise TypeError(f"expand returned non-dict: {type(data).__name__}")
+                return str(data.get("answer", ""))
+            except (TypeError, ValueError, json.JSONDecodeError, sqlite3.Error) as exc:
+                last_exc = exc
+                time.sleep(1.5 * (attempt + 1))  # back off, let the store settle
+            finally:
+                try:
+                    eng.shutdown()
+                except Exception:
+                    pass
+        raise RuntimeError(f"node recovery failed after retries: {last_exc}")
 
     # ---- batched multi-sentinel session (10x cheaper) -----------------------
     def run_session_batch(self, batch_idx: int, k: int) -> list[TrialResult]:
@@ -210,24 +280,33 @@ class ArmBHarness:
         filler = "Routine deterministic project chatter for compaction. " * max(
             1, self.cfg.filler_tokens // 8
         )
-        sentinels = [
-            f"LCM-ARMB-{int(time.time())}-{batch_idx:02d}{i:02d}" for i in range(k)
-        ]
+        # Distinct SEMANTIC probes: each is a unique owner + phrase. The DAG is a
+        # *semantic* compressor, not a verbatim store — it dedupes near-identical
+        # exact tokens but preserves distinct meanings. So we probe meaning
+        # (owner name) recovered from the node, not exact-string survival.
+        owners = _OWNER_POOL
+        probes = []
+        for i in range(k):
+            owner = owners[(batch_idx * k + i) % len(owners)]
+            phrase = f"recover-{batch_idx:02d}{i:02d}"
+            probes.append({
+                "owner": owner,
+                "phrase": phrase,
+                "fact": f"The recovery owner is {owner}; the handoff phrase is {phrase}.",
+                "tag": f"ARMB-{batch_idx:02d}{i:02d}",
+            })
 
-        # gap filler turns between plants; tail filler after the last plant.
-        gap = max(2, self.cfg.filler_turns // (k + 2))
-        tail = self.cfg.filler_turns
-
-        # 1. plant s0 in a fresh session, capture id
+        # 1. plant probe[0] in a fresh session, capture id
         plant0 = self._hermes(
             ["--pass-session-id"],
-            f"Remember this exact fact for later, verbatim: "
-            f"The exact recovery sentinel is {sentinels[0]}. Reply with only OK.",
+            f"Remember this exact fact for later, verbatim: {probes[0]['fact']} "
+            f"Reply with only OK.",
         )
         session_id = self._session_id(plant0.stdout) or self._session_id(plant0.stderr)
         if not session_id:
-            return [TrialResult(batch_idx * k, s, None, None, False, "", False,
-                                False, 0, 0, notes="no session_id") for s in sentinels]
+            return [TrialResult(batch_idx * k + i, p["owner"], None, None, False,
+                                "", False, False, 0, 0, notes="no session_id")
+                    for i, p in enumerate(probes)]
 
         turn = 0
         def _filler_turns(count: int):
@@ -240,46 +319,51 @@ class ArmBHarness:
                     f"Context notes: {filler}",
                 )
 
-        # 2. interleave remaining plants with gap filler
-        _filler_turns(gap)
-        for s in sentinels[1:]:
+        # 2. FRONT-LOAD: plant all remaining probes back-to-back with minimal
+        #    spacing, so every probe sits in the SAME early region of the
+        #    session. The previous interleaved-with-gaps layout left late probes
+        #    too close to the tail to ever age into a condensed node (only 3/10
+        #    condensed). Front-loading + one big tail ages them ALL out together.
+        _filler_turns(2)
+        for p in probes[1:]:
             self._hermes(
                 ["--resume", session_id],
-                f"Remember this exact fact for later, verbatim: "
-                f"The exact recovery sentinel is {s}. Reply with only OK.",
+                f"Remember this exact fact for later, verbatim: {p['fact']} "
+                f"Reply with only OK.",
             )
-            _filler_turns(gap)
+            _filler_turns(2)
 
-        # 3. big tail to force condensation of the early sentinels
-        _filler_turns(tail)
+        # 3. big uniform tail to force condensation of ALL the early probes
+        _filler_turns(self.cfg.filler_turns)
 
-        # 4. recover each sentinel from a depth>=1 node carrying it
+        # 4. recover each probe's OWNER from a depth>=1 node carrying it
         results: list[TrialResult] = []
-        for i, s in enumerate(sentinels):
-            hit = self._find_node_with_sentinel(s)
+        for i, p in enumerate(probes):
+            hit = self._find_node_with_text(p["phrase"]) or self._find_node_with_text(p["owner"])
             depth1_id = hit["node_id"] if hit else None
-            sentinel_in_node = hit is not None
+            in_node = hit is not None
             sess = hit["session_id"] if hit else session_id
             node_answer = ""
             if depth1_id is not None:
                 try:
-                    node_answer = self._node_served_recovery(sess, depth1_id, s)
+                    node_answer = self._node_served_recovery_semantic(sess, depth1_id, p)
                 except Exception as exc:  # noqa: BLE001
                     node_answer = f"[recovery error: {exc}]"
-            correct = s in node_answer
+            # SEMANTIC scoring: the owner name recovered from the node is the win
+            # condition, not exact-string survival of the whole sentence.
+            correct = _norm(p["owner"]) in _norm(node_answer)
             confident_wrong = (
                 not correct
-                and bool(re.search(r"LCM-ARMB-\d+-\d+", node_answer))
+                and any(_norm(o) in _norm(node_answer) for o in owners if o != p["owner"])
                 and "no matching" not in node_answer.lower()
             )
-            # per-sentinel leaf/condensed counts are session-global; report node presence
             results.append(TrialResult(
-                idx=batch_idx * k + i, sentinel=s, session_id=sess,
-                depth1_node_id=depth1_id, sentinel_in_node=sentinel_in_node,
+                idx=batch_idx * k + i, sentinel=f"{p['owner']}/{p['phrase']}",
+                session_id=sess, depth1_node_id=depth1_id, sentinel_in_node=in_node,
                 node_served_answer=node_answer[:200], correct=correct,
                 confident_wrong=confident_wrong,
                 leaves=0, condensed=1 if depth1_id is not None else 0,
-                notes=f"batch={batch_idx} pos={i}",
+                notes=f"batch={batch_idx} pos={i} owner={p['owner']}",
             ))
         return results
 

@@ -837,7 +837,7 @@ def _make_mm_adapter():
     adapter = MattermostAdapter(config)
     adapter._session = MagicMock()
     adapter._upload_file = AsyncMock(return_value="file-id-123")
-    adapter._api_post = AsyncMock(return_value={"id": "post-id-abc"})
+    adapter._api_post = AsyncMock(return_value=({"id": "post-id-abc"}, 200, ""))
     adapter.send = AsyncMock(return_value=MagicMock(success=True))
     return adapter
 

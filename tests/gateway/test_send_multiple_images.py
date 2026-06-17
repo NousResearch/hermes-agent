@@ -356,7 +356,7 @@ class TestMattermostMultiImage:
         a._token = "fake"
         a._session = MagicMock()
         a._reply_mode = "thread"
-        a._api_post = AsyncMock(return_value={"id": "post123"})
+        a._api_post = AsyncMock(return_value=({"id": "post123"}, 200, ""))
         a._upload_file = AsyncMock(side_effect=lambda *args, **kwargs: f"fid_{a._upload_file.await_count}")
         return a
 

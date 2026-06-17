@@ -361,7 +361,7 @@ class TestMattermostSend:
         """Progress/status messages pass Mattermost thread context via metadata."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "root_post_123", "root_id": ""})
-        self.adapter._api_post = AsyncMock(return_value={"id": "progress_post"})
+        self.adapter._api_post = AsyncMock(return_value=({"id": "progress_post"}, 200, ""))
 
         result = await self.adapter.send(
             "channel_1",
@@ -380,7 +380,7 @@ class TestMattermostSend:
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._last_post_status = 400
         self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value=({}, 0, ""))
 
         result = await self.adapter.send(
             "channel_1",
@@ -400,7 +400,7 @@ class TestMattermostSend:
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._last_post_status = 400
         self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(side_effect=[{}, {"id": "flat_final"}])
+        self.adapter._api_post = AsyncMock(side_effect=[({}, 400, "api.context.invalid_param.app_error: invalid root_id"), ({"id": "flat_final"}, 200, "")])
 
         result = await self.adapter.send(
             "channel_1",
@@ -427,7 +427,7 @@ class TestMattermostSend:
         self.adapter._api_get = AsyncMock(return_value={"id": "root_post", "root_id": ""})
         self.adapter._last_post_status = 500
         self.adapter._last_post_error = "Internal Server Error"
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value=({}, 0, ""))
 
         result = await self.adapter.send(
             "channel_1",
@@ -446,7 +446,7 @@ class TestMattermostSend:
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value=({}, 0, ""))
 
         result = await self.adapter.send(
             "channel_1",

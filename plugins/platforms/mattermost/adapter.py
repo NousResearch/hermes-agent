@@ -96,8 +96,6 @@ class MattermostAdapter(BasePlatformAdapter):
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
 
-        self._last_post_status: Optional[int] = None
-        self._last_post_error: str = ""
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
@@ -129,28 +127,29 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def _api_post(
         self, path: str, payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """POST /api/v4/{path} with JSON body."""
+    ) -> Tuple[Dict[str, Any], int, str]:
+        """POST /api/v4/{path} with JSON body.
+
+        Returns a (data, status, error) tuple so callers can inspect the
+        HTTP status without relying on a shared instance variable, which
+        would be clobbered under concurrent async sends.
+        """
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
-        self._last_post_status = None
-        self._last_post_error = ""
         try:
             async with self._session.post(
                 url, headers=self._headers(), json=payload,
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
-                self._last_post_status = resp.status
+                status = resp.status
                 if resp.status >= 400:
                     body = await resp.text()
-                    self._last_post_error = body or ""
                     logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+                    return {}, status, body or ""
+                return await resp.json(), status, ""
         except aiohttp.ClientError as exc:
-            self._last_post_error = str(exc)
             logger.error("MM API POST %s network error: %s", path, exc)
-            return {}
+            return {}, 0, str(exc)
 
     async def _thread_root_for_send(
         self,
@@ -167,11 +166,12 @@ class MattermostAdapter(BasePlatformAdapter):
             return None
         return await self._resolve_root_id(str(candidate))
 
-    def _last_post_failure_is_broken_thread_root(self) -> bool:
+    @staticmethod
+    def _is_broken_thread_root_error(status: int, error: str) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
-        if self._last_post_status not in {400, 404}:
+        if status not in {400, 404}:
             return False
-        body = (self._last_post_error or "").lower()
+        body = (error or "").lower()
         if not body:
             return False
         rootish = any(marker in body for marker in ("root_id", "rootid", "root id", "thread", "post"))
@@ -185,12 +185,12 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Post once, optionally falling back flat for final notify content."""
-        data = await self._api_post("posts", payload)
+        data, status, error = await self._api_post("posts", payload)
         if data or "root_id" not in payload:
             return data
         if not (isinstance(metadata, dict) and metadata.get("notify")):
             return data
-        if not self._last_post_failure_is_broken_thread_root():
+        if not self._is_broken_thread_root_error(status, error):
             return data
 
         flat_payload = dict(payload)
@@ -204,7 +204,8 @@ class MattermostAdapter(BasePlatformAdapter):
             "Mattermost: falling back to flat channel delivery for notify-worthy post in %s",
             chat_id,
         )
-        return await self._api_post("posts", flat_payload)
+        data, _, _ = await self._api_post("posts", flat_payload)
+        return data
 
     async def _api_put(
         self, path: str, payload: Dict[str, Any]
@@ -381,7 +382,7 @@ class MattermostAdapter(BasePlatformAdapter):
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
             {"channel_id": chat_id},
-        )
+        )  # return value intentionally ignored; typing indicators are fire-and-forget
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False

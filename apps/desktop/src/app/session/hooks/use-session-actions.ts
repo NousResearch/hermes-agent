@@ -686,7 +686,10 @@ export function useSessionActions({
           ...current,
           input: stored.input_tokens || 0,
           output: stored.output_tokens || 0,
-          total: (stored.input_tokens || 0) + (stored.output_tokens || 0)
+          total: (stored.input_tokens || 0) + (stored.output_tokens || 0),
+          ...(stored.last_prompt_tokens
+            ? { context_used: stored.last_prompt_tokens }
+            : {})
         }))
       }
 
@@ -1012,7 +1015,10 @@ export function useSessionActions({
               ...current,
               input: stored.input_tokens || 0,
               output: stored.output_tokens || 0,
-              total: (stored.input_tokens || 0) + (stored.output_tokens || 0)
+              total: (stored.input_tokens || 0) + (stored.output_tokens || 0),
+              ...(stored.last_prompt_tokens
+                ? { context_used: stored.last_prompt_tokens }
+                : {})
             }))
           }
 

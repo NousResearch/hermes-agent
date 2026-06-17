@@ -137,6 +137,15 @@ class TestSessionLifecycle:
         assert session["input_tokens"] == 300
         assert session["output_tokens"] == 150
 
+    def test_update_token_counts_persists_latest_prompt_tokens(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=200, output_tokens=100, last_prompt_tokens=180)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, last_prompt_tokens=260)
+
+        session = db.get_session("s1")
+        assert session["input_tokens"] == 300
+        assert session["last_prompt_tokens"] == 260
+
     def test_update_token_counts_tracks_api_call_count(self, db):
         """api_call_count increments with each update_token_counts call."""
         db.create_session(session_id="s1", source="cli")
@@ -157,6 +166,21 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["api_call_count"] == 5
         assert session["input_tokens"] == 300
+
+    def test_update_token_counts_last_prompt_tokens_absolute(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, last_prompt_tokens=90)
+        db.update_token_counts(
+            "s1",
+            input_tokens=300,
+            output_tokens=150,
+            last_prompt_tokens=240,
+            absolute=True,
+        )
+
+        session = db.get_session("s1")
+        assert session["input_tokens"] == 300
+        assert session["last_prompt_tokens"] == 240
 
     def test_update_token_counts_backfills_model_when_null(self, db):
         db.create_session(session_id="s1", source="telegram")

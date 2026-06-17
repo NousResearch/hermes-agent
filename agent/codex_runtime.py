@@ -146,6 +146,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 cache_read_tokens=canonical_usage.cache_read_tokens,
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
+                last_prompt_tokens=prompt_tokens,
                 estimated_cost_usd=float(cost_result.amount_usd)
                 if cost_result.amount_usd is not None else None,
                 cost_status=cost_result.status,

@@ -293,6 +293,7 @@ export interface SessionInfo {
   _lineage_root_id?: null | string
   input_tokens: number
   is_active: boolean
+  last_prompt_tokens?: number
   last_active: number
   message_count: number
   model: null | string

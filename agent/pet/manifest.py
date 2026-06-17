@@ -21,6 +21,7 @@ Read-only and unauthenticated; no credentials involved.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,20 @@ logger = logging.getLogger(__name__)
 MANIFEST_URL = "https://petdex.dev/api/manifest"
 
 _DEFAULT_TIMEOUT = 20.0
+
+# In-process cache for the (large, slow, identical-per-call) manifest. The list
+# is a static CDN object that barely changes, yet a single session can ask for
+# it many times — every gallery open, plus a full re-fetch per install/select
+# (``find_entry``). A short TTL collapses those into one network hit without
+# going stale for long. Cleared by :func:`clear_cache` (tests).
+_MANIFEST_TTL = 300.0
+_cache: tuple[float, list[ManifestEntry]] | None = None
+
+
+def clear_cache() -> None:
+    """Drop the cached manifest (forces the next fetch to hit the network)."""
+    global _cache
+    _cache = None
 
 
 @dataclass(frozen=True)
@@ -59,12 +74,18 @@ class ManifestError(RuntimeError):
     """Raised when the manifest can't be fetched or parsed."""
 
 
-def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT) -> list[ManifestEntry]:
+def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) -> list[ManifestEntry]:
     """Return every approved pet from the public manifest.
 
-    Follows the 307 redirect to R2.  Raises :class:`ManifestError` on any
-    network/parse failure so callers can surface a clean message.
+    Cached in-process for ``_MANIFEST_TTL`` seconds (pass ``force=True`` to
+    bypass). Follows the 307 redirect to R2.  Raises :class:`ManifestError` on
+    any network/parse failure so callers can surface a clean message.
     """
+    global _cache
+
+    if not force and _cache is not None and time.monotonic() - _cache[0] < _MANIFEST_TTL:
+        return _cache[1]
+
     try:
         import httpx
     except ImportError as exc:  # pragma: no cover - httpx is a core dep
@@ -93,6 +114,8 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT) -> list[ManifestEntry]:
         entry = ManifestEntry.from_dict(raw)
         if entry.slug and entry.spritesheet_url:
             entries.append(entry)
+
+    _cache = (time.monotonic(), entries)
     return entries
 
 

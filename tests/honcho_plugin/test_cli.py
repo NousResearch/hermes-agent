@@ -389,6 +389,9 @@ class TestSetupWizardDeploymentShape:
         # Scripted _prompt: pop answers in order. Default-return for unconsumed prompts.
         answer_iter = iter(answers)
         def _scripted_prompt(label, default=None, secret=False):
+            # Auth-method prompt is orthogonal to shape; auto-answer apikey so the answer lists stay shape-only.
+            if "OAuth" in label:
+                return "apikey"
             try:
                 return next(answer_iter)
             except StopIteration:

@@ -46,7 +46,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import parse_qs, urlparse
 from hermes_constants import secure_parent_dir
 
@@ -56,8 +56,9 @@ logger = logging.getLogger(__name__)
 # Lazy imports -- MCP SDK with OAuth support is optional
 # ---------------------------------------------------------------------------
 
-_OAUTH_AVAILABLE=False
-try:
+_OAUTH_AVAILABLE: bool = False
+
+if TYPE_CHECKING:
     from mcp.client.auth import OAuthClientProvider
     from mcp.shared.auth import (
         OAuthClientInformationFull,
@@ -65,10 +66,60 @@ try:
         OAuthMetadata,
         OAuthToken,
     )
+else:
+    _OAUTH_AVAILABLE=False
+    try:
+        from mcp.client.auth import OAuthClientProvider
+        from mcp.shared.auth import (
+            OAuthClientInformationFull,
+            OAuthClientMetadata,
+            OAuthMetadata,
+            OAuthToken,
+        )
 
-    _OAUTH_AVAILABLE=True
-except ImportError:
-    logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+        _OAUTH_AVAILABLE=True
+    except ImportError:
+        logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+
+        class OAuthClientProvider:
+            """Placeholder when the optional MCP OAuth SDK surface is absent."""
+
+            def __init__(self, *_: Any, **__: Any) -> None:
+                raise RuntimeError("MCP OAuth SDK support is not available")
+
+        class _FallbackOAuthModel:
+            """Tiny pydantic-shaped stand-in used when MCP OAuth is unavailable.
+
+            Token storage helpers and unit tests still need to round-trip cached
+            JSON even in environments without the optional SDK auth types.
+            Runtime OAuth remains disabled through ``_OAUTH_AVAILABLE=False``.
+            """
+
+            def __init__(self, **data: Any) -> None:
+                self._data = dict(data)
+                for key, value in data.items():
+                    setattr(self, key, value)
+
+            @classmethod
+            def model_validate(cls, data: dict[str, Any]) -> Self:
+                return cls(**dict(data))
+
+            def model_dump(self, *, exclude_none: bool = False, **_: Any) -> dict[str, Any]:
+                if exclude_none:
+                    return {k: v for k, v in self._data.items() if v is not None}
+                return dict(self._data)
+
+        class OAuthClientInformationFull(_FallbackOAuthModel):
+            pass
+
+        class OAuthClientMetadata(_FallbackOAuthModel):
+            pass
+
+        class OAuthMetadata(_FallbackOAuthModel):
+            pass
+
+        class OAuthToken(_FallbackOAuthModel):
+            pass
 
 try:
     from pydantic import AnyUrl

@@ -3891,7 +3891,7 @@ class TestAuxiliaryMaxTokensParam:
             assert auxiliary_max_tokens_param(4096) == {"max_tokens": 4096}
 
     def test_openrouter_api_key_present_keeps_max_tokens_without_model_hint(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "***")
         with (
             patch("agent.auxiliary_client._current_custom_base_url",
                   return_value="https://openrouter.ai/api/v1"),
@@ -3913,7 +3913,7 @@ class TestAuxiliaryMaxTokensParam:
             }
 
     def test_openrouter_serving_gpt4o_uses_max_completion_tokens(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "***")
         with (
             patch("agent.auxiliary_client._current_custom_base_url",
                   return_value="https://openrouter.ai/api/v1"),
@@ -3942,3 +3942,169 @@ class TestAuxiliaryMaxTokensParam:
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
+
+
+class TestResolveTaskProviderModelWithBaseUrl:
+    """Regression tests for the double-resolution trap in
+    _resolve_task_provider_model.
+
+    When both provider (explicit) and base_url (explicit) are set, and
+    provider is a known PROVIDER_REGISTRY entry, the function must preserve
+    the provider name instead of routing to "custom". This prevents the
+    double-resolution bug where call_llm resolves once (getting base_url
+    from config), passes it as explicit arg to resolve_vision_provider_client,
+    which resolves again and incorrectly demotes a known provider to "custom"
+    — losing its API key env var (e.g. DASHSCOPE_API_KEY for alibaba).
+    """
+
+    def test_known_provider_with_explicit_base_url_preserved(self, monkeypatch):
+        """alibaba + explicit base_url should stay 'alibaba', not become 'custom'."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        # Mock config to avoid disk reads
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task=None,
+            provider="alibaba",
+            model="qwen3.7-plus",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key=None,
+        )
+        assert provider == "alibaba"
+        assert model == "qwen3.7-plus"
+        assert base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    def test_auto_provider_with_base_url_becomes_custom(self, monkeypatch):
+        """auto + explicit base_url should become 'custom' (no known provider)."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task=None,
+            provider="auto",
+            model="some-model",
+            base_url="http://localhost:8000/v1",
+            api_key=None,
+        )
+        assert provider == "custom"
+
+    def test_no_provider_with_base_url_becomes_custom(self, monkeypatch):
+        """No provider + explicit base_url should become 'custom'."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task=None,
+            provider=None,
+            model="some-model",
+            base_url="http://localhost:8000/v1",
+            api_key=None,
+        )
+        assert provider == "custom"
+
+    def test_direct_api_alias_still_becomes_custom(self, monkeypatch):
+        """Providers in _AUX_DIRECT_API_BASE_URLS (e.g. 'openai') should
+        still be rewritten to 'custom' — the alias table explicitly opts in."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task=None,
+            provider="openai",
+            model="gpt-4o",
+            base_url=None,
+            api_key=None,
+        )
+        # openai is in _AUX_DIRECT_API_BASE_URLS → rewritten to custom
+        assert provider == "custom"
+
+    def test_config_provider_with_config_base_url_preserved(self, monkeypatch):
+        """Config-derived provider + base_url (no explicit args) should
+        preserve the provider name via the cfg_provider path."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {
+                "provider": "alibaba",
+                "model": "qwen3.7-plus",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            },
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task="vision",
+        )
+        assert provider == "alibaba"
+        assert model == "qwen3.7-plus"
+
+    def test_named_custom_provider_with_base_url_preserved(self, monkeypatch):
+        """custom:<name> + explicit base_url should stay 'custom:<name>',
+        not collapse to bare 'custom'. Regression: sacwooky's scenario."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task=None,
+            provider="custom:my-provider",
+            model="some-model",
+            base_url="https://my-api.example.com/v1",
+            api_key=None,
+        )
+        assert provider == "custom:my-provider"
+
+    def test_empty_provider_with_base_url_becomes_custom(self, monkeypatch):
+        """Empty string provider + base_url should become 'custom'."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task=None,
+            provider="",
+            model="some-model",
+            base_url="http://localhost:8000/v1",
+            api_key=None,
+        )
+        assert provider == "custom"
+
+    def test_bare_custom_provider_with_base_url_stays_custom(self, monkeypatch):
+        """Bare 'custom' (no :<name>) + base_url should stay 'custom'."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {},
+        )
+
+        provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+            task=None,
+            provider="custom",
+            model="some-model",
+            base_url="http://localhost:8000/v1",
+            api_key=None,
+        )
+        assert provider == "custom"

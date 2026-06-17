@@ -4848,6 +4848,18 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
+        # When provider is explicitly set (not "auto") and survived
+        # _expand_direct_api_alias (i.e. it's a known PROVIDER_REGISTRY entry
+        # or a custom:* provider), preserve it. resolve_provider_client already
+        # handles explicit_base_url for known providers via its explicit_base_url
+        # parameter (line ~3746). Only route to "custom" when no provider was
+        # specified or it's "auto" — this avoids the double-resolution trap
+        # where call_llm resolves once, gets base_url, passes it as explicit
+        # arg to resolve_vision_provider_client, which resolves again and
+        # incorrectly demotes a known provider to "custom" (losing its
+        # API key env var, e.g. DASHSCOPE_API_KEY for alibaba).
+        if provider and provider not in {"", "auto", "custom"}:
+            return provider, resolved_model, base_url, api_key, resolved_api_mode
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode

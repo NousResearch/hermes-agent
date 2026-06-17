@@ -338,9 +338,17 @@ def _profile_name_for_home(home: Path) -> str:
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
-    """Assemble the system prompt as three ordered cache tiers.
+    """Assemble the system prompt as ordered cache tiers.
 
-    Returns a dict with three keys:
+    Returns a dict with these keys:
+      * ``prelude``  — optional operator-supplied prelude resolved per model
+        via the ``system_prompt_prelude`` config map. Injected as the VERY
+        FIRST system content (ahead of ``stable``) so a model receives a full
+        model-appropriate operating prompt before Hermes' own layers. Empty
+        string when no prelude is configured or no rule matches. It is stable
+        for the life of the conversation (re-resolved only when the cached
+        prompt is rebuilt), so it joins the ``stable`` tier as part of the
+        cacheable static prefix and never threatens prompt caching.
       * ``stable``   — the cross-session-stable prefix, through the coding
         operating brief when a workspace snapshot follows.
       * ``context``  — the workspace snapshot followed by the remaining
@@ -359,6 +367,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
+
+    # ── Prelude tier (operator-supplied, per-model) ────────────────
+    # An optional operator-supplied system prompt resolved per-model from the
+    # ``system_prompt_prelude`` config map and placed ahead of everything
+    # Hermes adds, so a model receives a full model-appropriate operating
+    # prompt before Hermes' own identity/tools/memory layers. Fail-soft: any
+    # error yields an empty prelude and never breaks prompt build.
+    prelude_text = ""
+    try:
+        from agent.system_prompt_prelude import resolve_prelude
+
+        _pre = resolve_prelude(
+            getattr(agent, "model", None), getattr(agent, "provider", None)
+        )
+        prelude_text = _pre.text
+    except Exception:  # pragma: no cover - defensive; resolver logs internally
+        prelude_text = ""
 
     # Resolve the model's context window once so context-file caps can scale
     # to it (dynamic cap — see prompt_builder._dynamic_context_file_max_chars).
@@ -894,6 +919,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts.append(timestamp_line)
 
     return {
+        "prelude":  prelude_text.strip() if prelude_text else "",
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
@@ -918,8 +944,17 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     the change stays in the reused prefix.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
-    agent._cached_system_prompt_static = parts["stable"]
+    # The prelude is stable for the life of the conversation (re-resolved only
+    # when this cached prompt is rebuilt), so it belongs in the static prefix
+    # ahead of ``stable``. Keeping it inside ``_cached_system_prompt_static``
+    # means the cache_control marker still covers the whole stable scaffold and
+    # the two-block [static, volatile] layout is preserved — the prelude never
+    # busts prompt caching.
+    static = "\n\n".join(p for p in (parts.get("prelude", ""), parts["stable"]) if p)
+    joined = "\n\n".join(
+        p for p in (static, parts["context"], parts["volatile"]) if p
+    )
+    agent._cached_system_prompt_static = static
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.
@@ -980,7 +1015,9 @@ def reconstruct_static_prefix(
     if getattr(agent, "_static_rebuild_failed_for", None) == stored:
         return
     try:
-        static = build_system_prompt_parts(agent, system_message=system_message)["stable"]
+        _parts = build_system_prompt_parts(agent, system_message=system_message)
+        # Mirror build_system_prompt: the static prefix is prelude + stable.
+        static = "\n\n".join(p for p in (_parts.get("prelude", ""), _parts["stable"]) if p)
         if static and stored.startswith(static):
             agent._cached_system_prompt_static = static
             agent._static_rebuild_failed_for = None

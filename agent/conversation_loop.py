@@ -153,6 +153,22 @@ def _ra():
     return run_agent
 
 
+def _should_preemptively_summarize(agent, api_call_count: int) -> bool:
+    """Stop Feishu diagnostics before the last budget unit is spent searching."""
+    platform_key = (
+        getattr(agent, "_platform_budget_key", None)
+        or getattr(agent, "platform", "")
+        or ""
+    ).strip().lower()
+    if platform_key not in {"feishu", "feishu_deep"}:
+        return False
+    if api_call_count <= 0:
+        return False
+    remaining = getattr(agent.iteration_budget, "remaining", 0)
+    threshold = 2 if platform_key == "feishu_deep" else 1
+    return remaining <= threshold
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -4175,6 +4191,16 @@ def run_conversation(
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).
                     conversation_history = None
+
+                if _should_preemptively_summarize(agent, api_call_count):
+                    _turn_exit_reason = (
+                        f"budget_preemptive_summary({api_call_count}/{agent.max_iterations})"
+                    )
+                    agent._emit_status(
+                        "本轮诊断接近预算上限，已停止继续搜索，正在基于当前证据收口。"
+                    )
+                    final_response = agent._handle_max_iterations(messages, api_call_count)
+                    break
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

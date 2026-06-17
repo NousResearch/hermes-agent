@@ -57,6 +57,51 @@ def _looks_like_today_token_usage_request(text: str) -> bool:
     return bool(has_token and has_today and has_usage)
 
 
+def _looks_like_agent_loop_diagnostic_request(text: str) -> bool:
+    """Detect repeated asks about Hermes/OpenClaw diagnosis loops themselves."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_agent = "hermes" in normalized or "openclaw" in normalized
+    has_loop = any(
+        marker in normalized
+        for marker in (
+            "死循环",
+            "循环",
+            "卡住",
+            "无法答复",
+            "不能答复",
+            "没有答复",
+            "预算",
+            "限额",
+            "进展",
+            "查故障",
+            "故障诊断",
+            "虚幻",
+        )
+    )
+    has_diagnosis = any(
+        marker in normalized
+        for marker in ("为什么", "原因", "分析", "查", "诊断", "不正常", "无法结束")
+    )
+    return bool(has_agent and has_loop and has_diagnosis)
+
+
+def _render_agent_loop_diagnostic_report(text: str) -> str:
+    return "\n".join(
+        [
+            "Hermes/OpenClaw 故障诊断循环快照：",
+            "",
+            "- 已识别为诊断循环类问题，先走确定性报告，避免再次进入通用 Agent 探索循环。",
+            "- 当前已知风险点：普通 Feishu 诊断预算较低，深诊断只是扩大轮次；如果没有预算前收口，仍可能继续发散。",
+            "- 已知有效保护：Feishu 普通/深诊断预算分流、工具结果压缩、压缩低收益停止、工具循环 guardrail、known ops 快路径。",
+            "- 仍需看代码/日志时，请只查一个明确缺口：预算前收口、连续探索 guardrail、known ops 覆盖，避免重新大范围搜索历史归档。",
+            "",
+            "建议下一步：如果你是在排查“为什么上轮没答复”，先看最近一次 trajectory 的 finalStatus、toolMetas 数量、turn_exit_reason；如果只是要继续修复 Hermes，请直接指定一个缺口继续。",
+        ]
+    )
+
+
 def _parse_top_n(text: str, default: int = 3) -> int:
     match = re.search(r"(?:前|top)\s*([0-9一二三四五六七八九十]+)", text or "", re.IGNORECASE)
     if not match:
@@ -98,6 +143,22 @@ def _render_today_token_usage_report(text: str) -> str:
 
 
 KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
+    KnownOpsTask(
+        name="agent_loop_diagnostic_report",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_agent_loop_diagnostic_request,
+        handler=_render_agent_loop_diagnostic_report,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: send a Feishu diagnostic-loop question and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Repeated questions about Hermes/OpenClaw diagnostic loops should get a "
+            "bounded deterministic status report first; only the named missing gap "
+            "should be handed to the general agent."
+        ),
+        description="Explain Hermes/OpenClaw diagnostic-loop state without starting another broad diagnostic turn.",
+    ),
     KnownOpsTask(
         name="today_token_usage_report",
         platforms=frozenset({"feishu"}),
@@ -155,4 +216,3 @@ def known_ops_task_metadata(platform: str | None = None) -> list[dict[str, objec
         }
         for task in tasks
     ]
-

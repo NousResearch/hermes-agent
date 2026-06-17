@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # merge-tool regression tests read historical blobs via git show
 
       - name: Restore duration cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -166,6 +168,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # merge-tool regression tests read historical blobs via git show
 
       - name: Install ripgrep (prebuilt binary)
         run: |

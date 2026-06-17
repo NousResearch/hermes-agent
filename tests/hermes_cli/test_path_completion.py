@@ -59,6 +59,27 @@ class TestExtractPathWord:
     def test_just_tilde_slash(self):
         assert SlashCommandCompleter._extract_path_word("~/") == "~/"
 
+    def test_http_url_is_not_a_path(self):
+        # URLs contain "/" but must not be treated as local paths — otherwise
+        # the completer runs os.listdir on every keystroke while typing a link.
+        assert SlashCommandCompleter._extract_path_word("see http://example.com/a") is None
+
+    def test_https_url_is_not_a_path(self):
+        assert (
+            SlashCommandCompleter._extract_path_word("log https://paste.rs/B3Xws") is None
+        )
+
+    def test_scheme_url_without_slash_yet_is_not_a_path(self):
+        # As soon as "://" is typed the token is a URL, even before the path part.
+        assert SlashCommandCompleter._extract_path_word("ftp://host") is None
+
+    def test_real_path_still_works_after_url_guard(self):
+        # The URL guard must not regress ordinary path detection.
+        assert (
+            SlashCommandCompleter._extract_path_word("open src/utils/helpers.py")
+            == "src/utils/helpers.py"
+        )
+
 
 class TestPathCompletions:
     def test_lists_current_directory(self, tmp_path):
@@ -162,6 +183,27 @@ class TestIntegration:
         names = _display_names(completions)
         # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
+
+    def test_url_yields_no_completions_and_no_fs_access(self, completer, monkeypatch):
+        """Typing a URL must not run filesystem completion.
+
+        Regression for laggy typing: a URL token contains "/", so it used to
+        reach `_path_completions` and call `os.listdir` on every keystroke.
+        Assert both that no completions are produced and that the filesystem is
+        never touched for a URL.
+        """
+        import hermes_cli.commands as commands_mod
+
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("os.listdir must not be called for a URL token")
+
+        monkeypatch.setattr(commands_mod.os, "listdir", _boom)
+
+        text = "check https://paste.rs/B3Xws"
+        doc = Document(text, cursor_position=len(text))
+        event = MagicMock()
+        completions = list(completer.get_completions(doc, event))
+        assert completions == []
 
 
 class TestFileSizeLabel:

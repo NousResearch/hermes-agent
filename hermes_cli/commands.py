@@ -308,12 +308,16 @@ for _cmd in COMMAND_REGISTRY:
 # Set of all command names + aliases recognized by the gateway.
 # Includes config-gated commands so the gateway can dispatch them
 # (the handler checks the config gate at runtime).
+# Set of platform-specific commands that are handled by the gateway but do not
+# belong in the cross-platform COMMAND_REGISTRY menus (Slack/Telegram/etc.).
+_PLATFORM_SPECIFIC_GATEWAY_COMMANDS: frozenset[str] = frozenset({"server-users"})
+
 GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     name
     for cmd in COMMAND_REGISTRY
     if not cmd.cli_only or cmd.gateway_config_gate
     for name in (cmd.name, *cmd.aliases)
-)
+) | _PLATFORM_SPECIFIC_GATEWAY_COMMANDS
 
 
 def is_gateway_known_command(name: str | None) -> bool:
@@ -362,7 +366,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:
-    """Return True for any resolvable slash command.
+    """Return True for any gateway-known slash command.
 
     Rationale: every gateway-registered slash command either has a
     specific Level-2 handler in gateway/run.py (/stop, /new, /model,
@@ -381,7 +385,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    return is_gateway_known_command(command_name) if command_name else False
 
 
 def _resolve_config_gates() -> set[str]:

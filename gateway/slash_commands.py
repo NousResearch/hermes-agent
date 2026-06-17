@@ -293,6 +293,103 @@ class GatewaySlashCommandsMixin:
             f"Slash commands you can run: {runnable_str}"
         )
 
+    async def _handle_server_users_command(self, event: MessageEvent) -> str:
+        """Handle /server-users — list Discord guild members as CSV names."""
+        source = event.source
+        if not source or source.platform != Platform.DISCORD:
+            return "/server-users is only available from a Discord server channel or thread."
+
+        raw = event.raw_message
+        raw_channel = getattr(raw, "channel", None)
+        guild = getattr(raw, "guild", None) or getattr(raw_channel, "guild", None)
+
+        guild_id = (
+            getattr(source, "guild_id", None)
+            or getattr(raw, "guild_id", None)
+            or getattr(guild, "id", None)
+        )
+        if not guild_id:
+            return "Run /server-users from a Discord server channel or thread, not a DM."
+
+        adapters: Any = getattr(self, "adapters", {}) or {}
+        adapter = adapters.get(Platform.DISCORD)
+        client = getattr(adapter, "_client", None)
+        if guild is None and client is not None:
+            try:
+                guild = client.get_guild(int(guild_id))
+            except Exception:
+                guild = None
+        if guild is None and client is not None and hasattr(client, "fetch_guild"):
+            try:
+                maybe_guild = client.fetch_guild(int(guild_id))
+                guild = await maybe_guild if inspect.isawaitable(maybe_guild) else maybe_guild
+            except Exception as exc:
+                logger.debug("Discord /server-users fetch_guild failed: %s", exc)
+
+        if guild is None:
+            return "Could not resolve the Discord server for this command."
+
+        members: list[Any] = []
+        fetch_error: Exception | None = None
+        fetch_members = getattr(guild, "fetch_members", None)
+        if callable(fetch_members):
+            try:
+                fetched = fetch_members(limit=None)
+                aiter_factory = getattr(fetched, "__aiter__", None)
+                if callable(aiter_factory):
+                    async_iterator = aiter_factory()
+                    next_member = getattr(async_iterator, "__anext__")
+                    while True:
+                        try:
+                            members.append(await next_member())
+                        except StopAsyncIteration:
+                            break
+                else:
+                    if inspect.isawaitable(fetched):
+                        fetched = await fetched
+                    if fetched:
+                        if isinstance(fetched, (list, tuple, set)):
+                            members.extend(fetched)
+                        else:
+                            members.append(fetched)
+            except Exception as exc:
+                fetch_error = exc
+                logger.debug("Discord /server-users fetch_members failed: %s", exc)
+
+        used_cache = False
+        if not members:
+            cached = list(getattr(guild, "members", []) or [])
+            if cached:
+                members = cached
+                used_cache = True
+
+        if not members:
+            if fetch_error is not None:
+                return (
+                    "I could not fetch the Discord member list. The bot likely needs "
+                    "the Server Members intent enabled in the Discord Developer Portal "
+                    "and requested by the gateway."
+                )
+            return "No Discord members were found for this server."
+
+        def _member_name(member: Any) -> str:
+            raw_name = (
+                getattr(member, "display_name", None)
+                or getattr(member, "global_name", None)
+                or getattr(member, "name", None)
+                or getattr(member, "id", None)
+                or "unknown"
+            )
+            name = re.sub(r"[,\r\n]+", " ", str(raw_name)).strip()
+            return name or str(getattr(member, "id", "unknown"))
+
+        names = [_member_name(member) for member in members]
+        names.sort(key=str.casefold)
+        output = ", ".join(names)
+        if used_cache and fetch_error is not None:
+            return "⚠️ Full member fetch failed; using the cached member list.\n" + output
+        return output
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
 

@@ -51,8 +51,8 @@ class TestResolveDisplaySetting:
         from gateway.display_config import resolve_display_setting
 
         config = {}
-        # Unknown platform, no config → global default "all"
-        assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
+        # Unknown platform, no config → quiet final-answer-first default.
+        assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "off"
 
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
@@ -179,13 +179,21 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all'; Telegram defaults quiet for mobile."""
+        """Discord defaults to concise progress; Telegram defaults quiet for mobile."""
         from gateway.display_config import resolve_display_setting
 
         # Telegram: tier_high transport, but quiet mobile default.
         assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
-        # Discord: pure tier_high.
-        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+        # Discord: pure tier_high, but only when the tool changes by default.
+        assert resolve_display_setting({}, "discord", "tool_progress") == "new"
+
+    def test_verbose_detail_remains_opt_in(self):
+        """Explicit config can still request full tool/runtime detail."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress": "verbose"}}
+        assert resolve_display_setting(config, "discord", "tool_progress") == "verbose"
+        assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "verbose"
 
     def test_medium_tier_platforms(self):
         """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""

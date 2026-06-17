@@ -31,7 +31,10 @@ from typing import Any
 # and don't participate in per-platform resolution.
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
-    "tool_progress": "all",
+    # Default unknown/non-classified gateway surfaces to final-answer-first.
+    # Known rich/editable platforms opt into concise progress below; users can
+    # still request full detail with display.tool_progress=verbose or /verbose.
+    "tool_progress": "off",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
     "tool_preview_length": 0,
@@ -58,7 +61,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 # Tier 4 (minimal): Batch/non-interactive delivery
 
 _TIER_HIGH = {
-    "tool_progress": "all",
+    # Rich/editable chat surfaces should show useful progress without logging
+    # every repeated tool invocation. Full argument/detail output remains an
+    # explicit opt-in via /verbose or display.tool_progress=verbose.
+    "tool_progress": "new",
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global

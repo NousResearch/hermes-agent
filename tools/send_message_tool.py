@@ -97,8 +97,11 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
             return 1.0
 
     text = str(exc).lower()
+    # [KAKACO PATCH] Telegram timeout errors should also retry
+    # (previously returned None as non-retryable, which caused messages to be
+    # lost on transient timeouts). Aligns with the 502/503/504 retry logic below.
     if "timed out" in text or "timeout" in text:
-        return None
+        return float(2 ** attempt)
     if (
         "bad gateway" in text
         or "502" in text

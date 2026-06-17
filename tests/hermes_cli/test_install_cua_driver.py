@@ -4,12 +4,12 @@ The cua-driver upstream installer always pulls the latest release tag, so
 re-running it is the canonical upgrade path. ``install_cua_driver(upgrade=True)``
 must:
 
-* Be macOS-only — no-op silently on Linux/Windows so ``hermes update`` can
-  call it unconditionally without warning every non-macOS user.
+* Be supported-platform-only — no-op silently elsewhere so ``hermes update``
+  can call it unconditionally without warning unsupported-platform users.
 * Re-run the installer even when the binary is already on PATH (this is the
   fix for the "we only pulled cua-driver once on enable" complaint).
 * Preserve original ``upgrade=False`` behaviour for the toolset-enable flow:
-  skip if installed, install otherwise, warn on non-macOS.
+  skip if installed, install otherwise, warn on unsupported platforms.
 
 The pre-install arch probe that used to live alongside this function was
 deleted (see top-of-file comment in tools_config.py) — the upstream
@@ -66,6 +66,41 @@ class TestInstallCuaDriverUpgrade:
                           return_value=True) as runner:
             assert tools_config.install_cua_driver(upgrade=True) is True
             runner.assert_called_once()
+
+    def test_upgrade_on_macos_non_writable_applications_skips_refresh(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n in {"cua-driver", "curl"} else None), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=False), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(tools_config, "_print_info") as info:
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            runner.assert_not_called()
+            assert any(
+                "/Applications is not writable" in call.args[0]
+                for call in info.call_args_list
+            )
+
+    def test_fresh_install_on_macos_non_writable_applications_skips_install(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=False), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch.object(tools_config, "_print_info") as info:
+            assert tools_config.install_cua_driver(upgrade=False) is False
+            runner.assert_not_called()
+            assert any(
+                "/Applications is not writable" in call.args[0]
+                for call in info.call_args_list
+            )
 
     def test_non_upgrade_on_macos_with_binary_skips_install(self):
         from hermes_cli import tools_config

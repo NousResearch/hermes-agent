@@ -1427,9 +1427,15 @@ class SessionDB:
                 "try_acquire_compression_lock(%s) failed: %s",
                 session_id, exc,
             )
-            # Fail open: returning False makes the caller skip compression,
-            # which is the safe behaviour when the lock subsystem is broken.
-            return False
+            # Fail open: ``False`` means "another live compressor owns the
+            # lock" to callers, so returning it here makes every compression
+            # attempt look like a legitimate contention event and the session
+            # never compacts.  When SQLite's lock table is unavailable (for
+            # example a transient ``disk I/O error`` while the session store is
+            # still otherwise usable), proceed without the lock.  This risks a
+            # rare concurrent-compression fork, but a permanently uncompressible
+            # session is worse.
+            return True
 
     def release_compression_lock(self, session_id: str, holder: str) -> None:
         """Release the compression lock for ``session_id`` iff we own it.

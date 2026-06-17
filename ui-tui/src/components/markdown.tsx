@@ -751,8 +751,8 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         const highlighted = !isDiff && isHighlightable(lang)
 
         nodes.push(
-          <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
+          <Box backgroundColor={isDiff ? undefined : t.color.codeBackground} flexDirection="column" key={key} paddingLeft={2}>
+            {lang && !isDiff && <Text backgroundColor={t.color.codeBackground} color={t.color.syntaxComment}>{'─ ' + lang}</Text>}
 
             {block.map((l, j) => {
               if (highlighted) {

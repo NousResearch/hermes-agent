@@ -60,6 +60,29 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('clears queued messages locally via /queue clear', () => {
+    const ctx = buildCtx()
+
+    ctx.composer.queueRef.current.push('first', 'second')
+
+    expect(createSlashHandler(ctx)('/queue clear')).toBe(true)
+    expect(ctx.composer.queueRef.current).toEqual([])
+    expect(ctx.composer.syncQueue).toHaveBeenCalledTimes(1)
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('cleared 2 queued message(s)')
+  })
+
+  it('removes queued messages by index via /queue rm N', () => {
+    const ctx = buildCtx()
+
+    ctx.composer.queueRef.current.push('first', 'second')
+
+    expect(createSlashHandler(ctx)('/queue rm 1')).toBe(true)
+    expect(ctx.composer.queueRef.current).toEqual(['second'])
+    expect(ctx.composer.syncQueue).toHaveBeenCalledTimes(1)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('removed queued #1: "first"')
+  })
+
   it('exits locally for /quit', () => {
     const ctx = buildCtx()
 
@@ -791,7 +814,8 @@ const buildComposer = () => ({
   paste: vi.fn(),
   queueRef: { current: [] as string[] },
   selection: { copySelection: vi.fn(async () => '') },
-  setInput: vi.fn()
+  setInput: vi.fn(),
+  syncQueue: vi.fn()
 })
 
 const buildGateway = () => ({

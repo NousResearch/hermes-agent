@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -106,6 +107,24 @@ def test_non_expired_lock_is_held(db: SessionDB) -> None:
 
 def test_acquire_empty_session_id_returns_false(db: SessionDB) -> None:
     assert db.try_acquire_compression_lock("", "holder1") is False
+
+
+def test_acquire_fails_open_when_lock_store_errors(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Broken lock storage must not permanently disable compression.
+
+    Callers treat ``False`` as real lock contention and skip compression.  If
+    SQLite itself errors, return ``True`` so the compressor proceeds unlocked
+    instead of growing the session forever.
+    """
+
+    def fail_write(_fn):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(db, "_execute_write", fail_write)
+
+    assert db.try_acquire_compression_lock("sess1", "holder1") is True
 
 
 def test_release_empty_session_id_is_noop(db: SessionDB) -> None:

@@ -359,6 +359,21 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
     return false
   }
 
+  // tmux sits between Hermes' diff renderer and the real terminal. Direct
+  // stdout fast-echo writes can leave tmux's virtual screen out of sync with
+  // Ink's next full render, which shows up as scattered stale letters in the
+  // open composer. Keep all typing on the normal Ink path under tmux unless a
+  // developer explicitly opts back in for profiling.
+  if ((env.TMUX ?? '').trim() || (env.TERM_PROGRAM ?? '').trim() === 'tmux') {
+    const override = String(env.HERMES_TUI_TMUX_FAST_ECHO ?? '').trim().toLowerCase()
+
+    if (override) {
+      return /^(?:1|true|yes|on)$/i.test(override)
+    }
+
+    return false
+  }
+
   // Termux terminals are especially sensitive to bypass-path cursor drift and
   // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
   // off by default in Termux mode; allow explicit opt-in for local debugging.
@@ -434,6 +449,13 @@ const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
+function padLastRenderedLine(rendered: string, columns: number) {
+  const tail = rendered.slice(rendered.lastIndexOf('\n') + 1)
+  const pad = Math.max(0, columns - stringWidth(tail))
+
+  return pad ? rendered + ' '.repeat(pad) : rendered
+}
+
 export function TextInput({
   columns = 80,
   value,
@@ -444,7 +466,8 @@ export function TextInput({
   mouseApiRef,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
-  focus = true
+  focus = true,
+  color
 }: TextInputProps) {
   const [cur, setCur] = useState(value.length)
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
@@ -1254,7 +1277,9 @@ export function TextInput({
       ref={boxRef}
       width={columns}
     >
-      <Text wrap="wrap">{rendered}</Text>
+      <Text color={color} wrap="wrap">
+        {padLastRenderedLine(rendered, columns)}
+      </Text>
     </Box>
   )
 }
@@ -1275,6 +1300,7 @@ export interface PasteEvent {
 }
 
 interface TextInputProps {
+  color?: string
   columns?: number
   focus?: boolean
   mask?: string

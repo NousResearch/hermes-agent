@@ -294,6 +294,7 @@ export interface SlashHandlerContext {
     queueRef: MutableRefObject<string[]>
     selection: SelectionApi
     setInput: StateSetter<string>
+    syncQueue: () => void
   }
   gateway: GatewayServices
   local: {

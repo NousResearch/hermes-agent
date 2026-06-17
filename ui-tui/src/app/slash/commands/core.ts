@@ -536,15 +536,55 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['q'],
-    help: 'inspect or enqueue a message',
+    help: 'inspect, enqueue, or clear queued messages',
     name: 'queue',
     run: (arg, ctx) => {
-      if (!arg) {
-        return ctx.transcript.sys(`${ctx.composer.queueRef.current.length} queued message(s)`)
+      const payload = arg.trim()
+      const q = ctx.composer.queueRef.current
+
+      if (!payload) {
+        return ctx.transcript.sys(`${q.length} queued message(s)`)
       }
 
-      ctx.composer.enqueue(arg)
-      ctx.transcript.sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+      if (payload === 'clear' || payload === 'cancel' || payload === 'empty') {
+        const count = q.length
+
+        q.length = 0
+        ctx.composer.syncQueue()
+        ctx.composer.setInput('')
+
+        return ctx.transcript.sys(`cleared ${count} queued message(s)`)
+      }
+
+      if (payload === 'pop' || payload === 'delete' || payload === 'rm') {
+        const removed = q.pop()
+
+        ctx.composer.syncQueue()
+        ctx.composer.setInput('')
+
+        return ctx.transcript.sys(
+          removed ? `removed queued: "${removed.slice(0, 50)}${removed.length > 50 ? '…' : ''}"` : 'queue is empty'
+        )
+      }
+
+      const removeMatch = /^(?:rm|delete)\s+(\d+)$/.exec(payload)
+
+      if (removeMatch) {
+        const index = Number(removeMatch[1]) - 1
+        const removed = index >= 0 && index < q.length ? q.splice(index, 1)[0] : undefined
+
+        ctx.composer.syncQueue()
+        ctx.composer.setInput('')
+
+        return ctx.transcript.sys(
+          removed
+            ? `removed queued #${index + 1}: "${removed.slice(0, 50)}${removed.length > 50 ? '…' : ''}"`
+            : `no queued message #${index + 1}`
+        )
+      }
+
+      ctx.composer.enqueue(payload)
+      ctx.transcript.sys(`queued: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`)
     }
   },
 

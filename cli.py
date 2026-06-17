@@ -453,7 +453,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_skip_tool_only": True,
             "show_reasoning": False,
             "streaming": True,
-            "busy_input_mode": "interrupt",
+            "busy_input_mode": "queue",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
             # Print a one-line summary of resolved modal prompts (approval /
@@ -11573,6 +11573,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             Matches the universal bash/zsh/fish/vim/htop convention.
             """
             self._force_full_redraw()
+
+        @kb.add('escape', 'escape', filter=_normal_input)
+        def handle_double_escape(event):
+            """ESC ESC: stop the running agent without making busy Enter interrupt.
+
+            This mirrors the user's preferred Claude Code-style flow: normal
+            mid-run Enter submits are queued by config, while an explicit
+            double-Escape remains the quick stop gesture. When idle, keep the
+            binding non-destructive: clear draft text/attachments if present,
+            otherwise do nothing.
+            """
+            if self._agent_running and self.agent:
+                print("\n⚡ Interrupting agent...")
+                self.agent.interrupt()
+                event.app.invalidate()
+                return
+            if event.app.current_buffer.text or self._attached_images:
+                event.app.current_buffer.reset()
+                self._attached_images.clear()
+                event.app.invalidate()
 
         @kb.add('c-c')
         def handle_ctrl_c(event):

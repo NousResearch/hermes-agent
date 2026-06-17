@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
+from plugins.memory.openviking import (
+    OpenVikingMemoryProvider,
+    _DEFERRED_COMMIT_TIMEOUT,
+    _VikingClient,
+)
 
 
 def _clear_openviking_tenant_env(monkeypatch):
@@ -744,6 +748,22 @@ def test_end_then_switch_with_pending_tokens_does_not_double_commit():
     assert provider._turn_count == 0
 
 
+def test_session_needs_commit_guard_wins_over_stale_turn_count():
+    """Regression for hermes-agent#28296 review (M3): once a session is marked
+    committed, _session_needs_commit must return False even if turn_count is
+    still positive. A racing sync_turn can re-increment _turn_count after the
+    commit+reset; without the guard ordering, a follow-up finalizer would
+    double-commit the same session. The committed-guard must be checked BEFORE
+    the turn_count>0 shortcut."""
+    provider = _make_provider_with_session("old-sid", turn_count=5)
+    provider._mark_session_committed("old-sid")
+
+    # turn_count is a (stale) 5 but the session is already committed.
+    assert provider._session_needs_commit("old-sid", 5) is False
+    # An uncommitted session with turns still needs a commit.
+    assert provider._session_needs_commit("fresh-sid", 5) is True
+
+
 def test_on_session_switch_swallows_commit_failure():
     """Commit-on-switch must not propagate exceptions: a failing commit on the
     old session must still allow the rotate to the new session to complete,
@@ -831,7 +851,54 @@ def test_on_session_switch_waits_for_all_writers_not_just_latest():
     assert provider._turn_count == 0
 
 
-def test_on_session_switch_defers_old_commit_when_writers_finish_after_initial_drain():
+def test_on_session_switch_does_not_block_caller_on_slow_drain():
+    """Regression for hermes-agent#28296 review (H1): on_session_switch must
+    NOT run the old-session drain/commit on the caller's thread. /new, /branch,
+    /resume, /undo call this synchronously on the command thread, so a slow
+    writer drain (up to _SESSION_DRAIN_TIMEOUT/_DEFERRED_COMMIT_TIMEOUT) or a
+    wedged commit POST must not stall the user-facing command. The rotation is
+    cheap and synchronous; the commit is offloaded. Mirrors the #41945
+    'do not block the turn thread' contract."""
+    import threading
+    import time
+
+    provider = _make_provider_with_session("old-sid", turn_count=2)
+
+    drain_entered = threading.Event()
+    release_drain = threading.Event()
+
+    def slow_drain(sid, timeout):
+        drain_entered.set()
+        # Simulate a writer that takes a long time to drain.
+        release_drain.wait(timeout=10.0)
+        return True
+
+    provider._drain_writers = slow_drain
+
+    start = time.monotonic()
+    provider.on_session_switch("new-sid")
+    elapsed = time.monotonic() - start
+
+    # The caller returned promptly with state already rotated, even though the
+    # drain is still parked on the finalizer thread.
+    assert elapsed < 1.0, f"on_session_switch blocked the caller for {elapsed:.2f}s"
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+    assert drain_entered.wait(timeout=2.0), "finalizer never started draining"
+    # No commit yet — drain is still blocked off-thread.
+    provider._client.post.assert_not_called()
+    # Let the finalizer finish so it doesn't leak past the test.
+    release_drain.set()
+    assert provider._drain_finalizers(timeout=5.0)
+    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+
+
+def test_on_session_switch_defers_old_commit_to_finalizer_thread():
+    """The switch path rotates session state synchronously (cheap, in-memory)
+    but offloads the old-session drain + commit onto a daemon finalizer so the
+    caller's command thread (/new, /branch, /resume) never blocks on the up-to
+    -_DEFERRED_COMMIT_TIMEOUT drain or the commit POST. See hermes-agent#28296
+    review (the #41945 'do not block the turn thread' contract)."""
     import threading
 
     provider = _make_provider_with_session("old-sid", turn_count=2)
@@ -844,19 +911,21 @@ def test_on_session_switch_defers_old_commit_when_writers_finish_after_initial_d
 
     def fake_drain(sid, timeout):
         drain_timeouts.append(timeout)
-        return len(drain_timeouts) > 1
+        return True
 
     provider._client.post.side_effect = fake_post
     provider._drain_writers = fake_drain
 
     provider.on_session_switch("new-sid")
 
+    # Rotation is synchronous and immediate — the new session is live at once.
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
-    assert committed.wait(timeout=2.0), "old session was not finalized after writers drained"
+    # The old-session commit lands on the finalizer thread, not inline.
+    assert committed.wait(timeout=5.0), "old session was not finalized off-thread"
     provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
-    assert drain_timeouts[0] == 10.0
-    assert drain_timeouts[1] > 10.0
+    # The finalizer drains with the deferred (longer) budget, not inline 10s.
+    assert drain_timeouts == [_DEFERRED_COMMIT_TIMEOUT]
 
 
 def test_sync_turn_tracks_writer_under_session_id():

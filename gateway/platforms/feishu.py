@@ -1877,23 +1877,35 @@ class FeishuAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
 
         # --- Auto-convert Markdown tables to interactive cards ---
-        table_match = _MARKDOWN_TABLE_RE.search(formatted)
-        logger.info("[Feishu] Table detection: match=%s, content=%r", bool(table_match), formatted[:200])
-        if table_match:
-            table_text = table_match.group(0)
-            before = formatted[: table_match.start()].rstrip("\n")
-            after = formatted[table_match.end():].lstrip("\n")
+        # Extract ALL tables from content, send each as card, then send remaining text
+        tables: list[tuple[str, str, str]] = []  # (before, table_text, after)
+        remaining_content = formatted
 
-            # Extract title from preceding text (first line or heading)
+        for match in _MARKDOWN_TABLE_RE.finditer(remaining_content):
+            table_text = match.group(0)
+            # Check if this is a valid table (has data rows, not just header+separator)
+            test_card = _markdown_table_to_card("test", table_text)
+            if test_card is None:
+                continue  # Skip invalid tables
+
+            before = remaining_content[: match.start()].rstrip("\n")
+            after = remaining_content[match.end():].lstrip("\n")
+            tables.append((before, table_text, after))
+            remaining_content = after  # Continue searching in the rest
+            break  # Process one table at a time to handle nested content
+
+        if tables:
+            before, table_text, after = tables[0]
+
+            # Extract title from preceding text
             title = "📊 表格"
             if before:
                 first_line = before.split("\n")[0].strip()
-                # Strip markdown heading markers
                 title = first_line.lstrip("#").strip() or "📊 表格"
                 if len(title) > 40:
                     title = title[:37] + "..."
 
-            # Parse the Markdown table into card JSON
+            # Parse and send the table as card
             card = _markdown_table_to_card(title, table_text)
             card_sent = False
             card_result = SendResult(success=False, error="card parse failed")
@@ -1912,10 +1924,18 @@ class FeishuAdapter(BasePlatformAdapter):
             else:
                 logger.warning("[Feishu] Table parse returned None — falling through")
 
-            # Send remaining text (before + after the table)
-            remaining = "\n\n".join(filter(None, [before, after]))
-            if remaining.strip():
-                chunks = self.truncate_message(remaining, self.MAX_MESSAGE_LENGTH)
+            # Recursively process remaining content (may contain more tables)
+            if after.strip():
+                await self.send(
+                    chat_id=chat_id,
+                    content=after,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+
+            # Send the "before" text if any
+            if before.strip():
+                chunks = self.truncate_message(before, self.MAX_MESSAGE_LENGTH)
                 last_response = None
                 try:
                     for chunk in chunks:
@@ -1939,29 +1959,14 @@ class FeishuAdapter(BasePlatformAdapter):
                                 reply_to=reply_to,
                                 metadata=metadata,
                             )
-                        if (
-                            msg_type == "post"
-                            and not self._response_succeeded(response)
-                            and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                        ):
-                            logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                            response = await self._feishu_send_with_retry(
-                                chat_id=chat_id,
-                                msg_type="text",
-                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                                reply_to=reply_to,
-                                metadata=metadata,
-                            )
                         last_response = response
                     return self._finalize_send_result(last_response, "send failed")
                 except Exception as exc:
                     logger.error("[Feishu] Send error: %s", exc, exc_info=True)
                     return SendResult(success=False, error=str(exc))
             else:
-                # Only table, no other text — return card result or fallback
                 if card_sent:
                     return card_result
-                # card parsing failed — fall through to normal text path
 
         # --- Normal path (no Markdown table detected) ---
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)

@@ -715,3 +715,81 @@ def test_xai_registered_in_registry():
     # (the dynamic ``_PROVIDERS`` registration is verified by the
     # other tests indirectly, since they instantiate via the class).
     assert issubclass(tts_streaming.XAIStreamingProvider, tts_streaming.StreamingTTSProvider)
+
+
+# --- Edge streaming provider ---
+
+
+def test_edge_audio_format():
+    """sample_rate/channels/sample_width match the edge-tts contract (24kHz mono int16)."""
+    from tools.tts_streaming import EdgeStreamingProvider
+    p = EdgeStreamingProvider.__new__(EdgeStreamingProvider)  # skip __init__
+    assert p.sample_rate == 24000
+    assert p.channels == 1
+    assert p.sample_width == 2
+
+
+def test_edge_accumulates_mp3_and_yields(monkeypatch):
+    """Provider accumulates mp3 chunks from edge_tts.Communicate.stream() and yields them."""
+    from tools.tts_streaming import EdgeStreamingProvider
+    import tempfile, os
+
+    fake_mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x00fake_mp3_data"
+
+    class _FakeStream:
+        def __init__(self):
+            self._emitted = False
+        def __aiter__(self):
+            return self
+        async def __anext__(self):
+            if self._emitted:
+                raise StopAsyncIteration
+            self._emitted = True
+            return ("audio", fake_mp3)
+
+    class _FakeCommunicate:
+        def __init__(self, text, voice, **kwargs):
+            self.text = text
+            self.voice = voice
+        def stream(self):
+            return _FakeStream()
+
+    class _FakeEdgeTtsModule:
+        Communicate = _FakeCommunicate
+
+    monkeypatch.setattr("tools.tts_streaming._import_edge_tts",
+                        lambda: _FakeEdgeTtsModule)
+
+    provider = EdgeStreamingProvider({})
+    out = list(provider.stream("hello"))
+    # The provider should yield the accumulated bytes (in one or more chunks)
+    assert b"".join(out) == fake_mp3
+
+
+def test_edge_respects_stop_event(monkeypatch):
+    from tools.tts_streaming import EdgeStreamingProvider
+    import threading
+
+    class _FakeStream:
+        async def __aiter__(self):
+            return self
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeCommunicate:
+        def __init__(self, *args, **kwargs):
+            pass
+        def stream(self):
+            return _FakeStream()
+
+    class _FakeEdgeTtsModule:
+        Communicate = _FakeCommunicate
+
+    monkeypatch.setattr("tools.tts_streaming._import_edge_tts",
+                        lambda: _FakeEdgeTtsModule)
+
+    stop = threading.Event()
+    stop.set()
+    provider = EdgeStreamingProvider({}, stop_event=stop)
+    out = list(provider.stream("hello"))
+    assert out == []  # iteration aborts

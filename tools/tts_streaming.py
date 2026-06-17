@@ -28,10 +28,12 @@ dispatcher.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import tempfile
 import threading
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional, Type
@@ -223,6 +225,34 @@ def _import_openai_client():
             "openai package not installed. Run: pip install openai"
         ) from e
     return openai
+
+
+def _import_edge_tts():
+    """Lazy import the ``edge_tts`` SDK module.
+
+    Returns the ``edge_tts`` *module* (not a ``Communicate`` instance)
+    so the caller can build its own ``Communicate(text, voice=...)``
+    exactly like the real production code does. The module-level
+    lookup also means tests can monkeypatch the helper to return a
+    stub module exposing a fake ``Communicate`` class without
+    installing the real package.
+
+    This mirrors the lazy-import shape used by
+    ``tools.tts_tool.py:_import_edge_tts`` so the two import sites
+    stay consistent — the streaming dispatcher and the legacy
+    ``_generate_edge_tts`` path both treat a missing package the same
+    way. ``edge-tts`` is already an optional dependency tracked in
+    ``tools.lazy_deps.py``; the ImportError branch here is the
+    canonical "user must install it" message when running on a lean
+    venv.
+    """
+    try:
+        import edge_tts  # type: ignore
+    except ImportError as e:
+        raise ImportError(
+            "edge-tts package not installed. Run: pip install edge-tts"
+        ) from e
+    return edge_tts
 
 
 @register("elevenlabs")
@@ -865,6 +895,193 @@ class XAIStreamingProvider(StreamingTTSProvider):
                 return
 
 
+# TODO(real-time-mp3-decode): edge-tts yields mp3 chunks, not PCM. The MVP
+# below accumulates the full mp3 blob, writes it to a temp file, and yields
+# the bytes in one chunk — matching the shape of ``_play_via_tempfile`` at
+# tools/tts_tool.py:2586. A future optimization is to decode the mp3 in
+# real time (e.g. via pydub) and yield 4096-sample PCM chunks so the
+# dispatcher can start playback before edge-tts has finished the full
+# response. The MVP keeps the provider simple and avoids adding pydub as
+# a dep, at the cost of higher time-to-first-audio.
+@register("edge")
+class EdgeStreamingProvider(StreamingTTSProvider):
+    """Streaming TTS provider for Microsoft Edge TTS (free, public endpoint).
+
+    Edge TTS is the only no-auth provider in this module — Microsoft's
+    public ``wss://api.edge.microsoft.com`` endpoint requires no API
+    key, just a voice ID. The audio format returned is **mp3** at 24
+    kHz mono, which is not what the dispatcher's
+    ``sounddevice.OutputStream`` expects (it wants raw PCM), so the
+    MVP wires the contract end-to-end but yields the raw mp3 bytes
+    in a single chunk rather than decoding on the fly.
+
+    MVP impl using temp-file accumulation. Real-time mp3→PCM decode is
+    a future optimization.
+
+    The async-to-sync bridge mirrors the xAI provider: ``stream()`` is
+    a sync generator, but the actual work happens inside
+    ``_collect_async`` (runs ``Communicate.stream()`` under
+    ``asyncio.run()`` and returns the full concatenated mp3 blob).
+    The list-vs-blob difference is intentional — edge-tts yields
+    variable-size chunks and we always need the full mp3 to write to
+    a file before yielding, so accumulating into a single ``bytes`` is
+    simpler than the chunk-list shape xAI uses.
+
+    Audio format declared on the class is 24 kHz, mono, 16-bit (the
+    format edge-tts decodes to internally and the format the
+    dispatcher's ``OutputStream`` is opened with). The yielded bytes
+    are raw mp3, not PCM — see the TODO at the top of the class and
+    the docstring above for the rationale and the future-optimization
+    plan.
+    """
+
+    # edge-tts returns 24 kHz mono mp3; we declare the decoded PCM
+    # format here so the dispatcher opens the ``OutputStream`` with
+    # the right shape. The yielded bytes are mp3 in the MVP, but the
+    # class-level attrs are PCM metadata for the (future) decoded
+    # path.
+    sample_rate = 24000
+    channels = 1
+    sample_width = 2
+
+    def __init__(self, config: dict, *, stop_event: Optional[threading.Event] = None):
+        # Config keys mirror the ``tts.edge`` block from config.yaml.
+        # Defaults match the user's current config (Andrew Multilingual)
+        # and the standard edge-tts rate/volume/pitch string shapes
+        # (``+0%``, ``+0%``, ``+0Hz``) — these are passed straight
+        # through to ``Communicate(..., rate=..., volume=..., pitch=...)``
+        # so the user can fine-tune the output without code changes.
+        self._voice = config.get("voice", "en-US-AndrewMultilingualNeural")
+        self._rate = config.get("rate", "+0%")
+        self._volume = config.get("volume", "+0%")
+        self._pitch = config.get("pitch", "+0Hz")
+        # The stop event is optional so this class is usable outside
+        # the dispatcher (e.g. one-off scripts). When None, the
+        # ``stream()`` loop simply skips the stop check.
+        self._stop_event = stop_event
+
+        # Lazy SDK import — wrapped in a helper so the test suite can
+        # monkeypatch it without installing the real package. We
+        # surface the import error loudly because silently disabling
+        # the provider would mask config bugs the user can fix. No
+        # API key is required: edge-tts uses a public Microsoft
+        # endpoint that does its own (lightweight) authentication.
+        try:
+            self._edge_tts = _import_edge_tts()
+        except ImportError as e:
+            logger.warning("edge-tts package not installed: %s", e)
+            raise
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        """Yield the mp3 audio for *text* as a single chunk.
+
+        The MVP collects the full mp3 blob from ``Communicate.stream()``
+        via ``_collect_async`` (which runs the async iterator under
+        ``asyncio.run()``), writes it to a temp ``.mp3`` file, reads
+        the file back, and yields the bytes once. The temp-file round
+        trip is deliberate — it mirrors ``_play_via_tempfile`` at
+        ``tools.tts_tool.py:2586`` and sets up a clean upgrade path
+        to a real-time mp3→PCM decode later. The dispatcher treats
+        the chunk opaquely, so a single ``yield`` is enough for the
+        MVP contract.
+
+        The ``try/except`` is deliberately broad (same shape as the
+        ElevenLabs, Gemini, OpenAI, and xAI providers above): a
+        streaming response that fails halfway through should log a
+        warning and stop yielding rather than crash the dispatcher's
+        audio callback.
+        """
+        # Honour the stop event *before* doing any work — if the
+        # dispatcher has already given up, the asyncio.run() call
+        # (and the network round-trip it implies) is wasted effort.
+        if self._stop_event is not None and self._stop_event.is_set():
+            return
+        try:
+            mp3_bytes = self._collect_async(text)
+            if not mp3_bytes:
+                # Edge-tts returned no audio (e.g. an empty response or
+                # an unsupported voice). Yield nothing and let the
+                # dispatcher move on.
+                return
+            # Write the accumulated mp3 to a temp file, read it back
+            # as bytes, yield the bytes, then delete the file. The
+            # temp-file indirection mirrors ``_play_via_tempfile`` at
+            # tools/tts_tool.py:2586 and sets up a clean upgrade path
+            # to a real-time mp3→PCM decode (see the class-level
+            # TODO). Using ``delete=False`` + manual ``os.unlink`` in
+            # ``finally`` is the same pattern the legacy code uses —
+            # ``NamedTemporaryFile(delete=True)`` would race with the
+            # read-back on Windows because the file would be closed
+            # (and unlinked) as soon as the ``with`` block exits.
+            tmp_path = None
+            try:
+                tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                tmp_path = tmp.name
+                tmp.write(mp3_bytes)
+                tmp.close()
+                with open(tmp_path, "rb") as fh:
+                    yield fh.read()
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        # Best-effort cleanup; the temp dir gets
+                        # reaped on reboot anyway.
+                        pass
+        except Exception as exc:
+            logger.warning("Edge streaming TTS failed: %s", exc)
+            return
+
+    def _collect_async(self, text: str) -> bytes:
+        """Run ``_drain_async`` under a fresh event loop and return the
+        concatenated mp3 blob.
+
+        This is the sync seam the test suite monkeypatches — keeping
+        it as a separate method (rather than inlining the
+        ``asyncio.run()`` call into ``stream()``) means unit tests can
+        substitute a canned ``bytes`` blob without ever spinning up
+        an event loop or a fake ``edge_tts`` module. The E2E test in a
+        later task exercises the real path.
+        """
+        return asyncio.run(self._drain_async(text))
+
+    async def _drain_async(self, text: str) -> bytes:
+        """Coroutine-friendly wrapper that drains ``Communicate.stream()``.
+
+        ``asyncio.run`` doesn't accept async generators directly; it
+        needs a coroutine that returns a concrete value. This coroutine
+        runs the async generator to completion and concatenates every
+        ``("audio", chunk)`` tuple into a single ``bytes`` blob. Any
+        non-audio event types (``WordBoundary``, ``SentenceBoundary``,
+        etc.) are skipped — they're metadata the dispatcher doesn't
+        care about.
+
+        Keeping the WebSocket lifecycle inside the coroutine means
+        the connection is closed deterministically when ``asyncio.run``
+        returns.
+        """
+        communicate = self._edge_tts.Communicate(
+            text,
+            voice=self._voice,
+            rate=self._rate,
+            volume=self._volume,
+            pitch=self._pitch,
+        )
+        buf = bytearray()
+        async for chunk_type, chunk_bytes in communicate.stream():
+            if chunk_type != "audio":
+                # ``WordBoundary`` / ``SentenceBoundary`` / etc. are
+                # metadata events edge-tts uses for word/phrase
+                # timing; the dispatcher doesn't consume them, so we
+                # skip them here. This is the same filter the legacy
+                # ``_generate_edge_tts`` path applies.
+                continue
+            if chunk_bytes:
+                buf.extend(chunk_bytes)
+        return bytes(buf)
+
+
 __all__ = [
     "StreamingTTSProvider",
     "register",
@@ -874,4 +1091,5 @@ __all__ = [
     "GeminiStreamingProvider",
     "OpenAIStreamingProvider",
     "XAIStreamingProvider",
+    "EdgeStreamingProvider",
 ]

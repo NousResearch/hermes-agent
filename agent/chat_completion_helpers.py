@@ -1340,8 +1340,29 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
+        _ephemeral_parts = []
         if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+            _ephemeral_parts.append(str(agent.ephemeral_system_prompt).strip())
+        try:
+            from agent.working_memory import build_working_memory_ephemeral_prompt
+            _working_memory_prompt = build_working_memory_ephemeral_prompt(agent)
+        except Exception:
+            _working_memory_prompt = ""
+        if _working_memory_prompt:
+            _ephemeral_parts.append(_working_memory_prompt.strip())
+        try:
+            from agent.semantic_memory_overlay import build_semantic_memory_ephemeral_overlay
+            _semantic_memory_prompt = build_semantic_memory_ephemeral_overlay(
+                agent,
+                base_system_prompt=agent._cached_system_prompt or "",
+            )
+        except Exception:
+            _semantic_memory_prompt = ""
+        if _semantic_memory_prompt:
+            _ephemeral_parts.append(_semantic_memory_prompt.strip())
+        _request_time_ephemeral = "\n\n".join(part for part in _ephemeral_parts if part)
+        if _request_time_ephemeral:
+            effective_system = (effective_system + "\n\n" + _request_time_ephemeral).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
         if agent.prefill_messages:

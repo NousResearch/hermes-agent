@@ -251,6 +251,39 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _build_request_time_ephemeral_system_prompt(agent, base_system_prompt: str | None = None) -> str:
+    """Render API-call-time system prompt additions.
+
+    These additions are intentionally kept out of agent/system_prompt.py and
+    agent._cached_system_prompt. They may change while a session is running
+    without rewriting the stored system-prompt snapshot.
+    """
+    parts = []
+    if getattr(agent, "ephemeral_system_prompt", None):
+        parts.append(str(agent.ephemeral_system_prompt).strip())
+
+    try:
+        from agent.working_memory import build_working_memory_ephemeral_prompt
+        working_memory_prompt = build_working_memory_ephemeral_prompt(agent)
+    except Exception:
+        working_memory_prompt = ""
+    if working_memory_prompt:
+        parts.append(working_memory_prompt.strip())
+
+    try:
+        from agent.semantic_memory_overlay import build_semantic_memory_ephemeral_overlay
+        semantic_memory_prompt = build_semantic_memory_ephemeral_overlay(
+            agent,
+            base_system_prompt=base_system_prompt,
+        )
+    except Exception:
+        semantic_memory_prompt = ""
+    if semantic_memory_prompt:
+        parts.append(semantic_memory_prompt.strip())
+
+    return "\n\n".join(part for part in parts if part)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -770,8 +803,12 @@ def run_conversation(
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
         effective_system = active_system_prompt or ""
-        if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        request_time_ephemeral = _build_request_time_ephemeral_system_prompt(
+            agent,
+            base_system_prompt=active_system_prompt,
+        )
+        if request_time_ephemeral:
+            effective_system = (effective_system + "\n\n" + request_time_ephemeral).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

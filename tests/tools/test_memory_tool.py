@@ -390,6 +390,148 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestTypedSemanticRecords:
+    def test_load_migrates_legacy_entries_to_sidecar_records(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text(
+            "Project uses pytest.\n§\nUse Australian English.",
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        records_path = tmp_path / "MEMORY.records.json"
+        payload = json.loads(records_path.read_text(encoding="utf-8"))
+        assert payload["version"] == 1
+        assert [r["text"] for r in payload["records"]] == [
+            "Project uses pytest.",
+            "Use Australian English.",
+        ]
+        assert {r["kind"] for r in payload["records"]} == {"semantic_fact"}
+        assert {r["source"] for r in payload["records"]} == {"legacy"}
+
+    def test_add_replace_remove_keep_sidecar_in_sync(self, store):
+        store.add("memory", "Project uses pytest.")
+        first_record = store.semantic_records["memory"][0]
+        assert first_record["text"] == "Project uses pytest."
+        assert first_record["kind"] == "semantic_fact"
+        assert first_record["source"] == "tool"
+
+        original_id = first_record["id"]
+        store.replace("memory", "pytest", "Project uses pytest with xdist.")
+        assert store.semantic_records["memory"][0]["id"] == original_id
+        assert store.semantic_records["memory"][0]["text"] == "Project uses pytest with xdist."
+
+        store.remove("memory", "xdist")
+        assert store.semantic_records["memory"] == []
+
+    def test_user_records_use_user_profile_kind(self, store):
+        store.add("user", "User prefers direct feedback.")
+
+        record = store.semantic_records["user"][0]
+
+        assert record["target"] == "user"
+        assert record["kind"] == "user_profile_fact"
+        assert record["text"] == "User prefers direct feedback."
+
+    def test_sidecar_metadata_does_not_change_system_prompt_text(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text("Stable fact.", encoding="utf-8")
+        (tmp_path / "MEMORY.records.json").write_text(
+            json.dumps({
+                "version": 1,
+                "records": [{
+                    "id": "custom",
+                    "target": "memory",
+                    "kind": "semantic_fact",
+                    "text": "Stable fact.",
+                    "salience": 0.9,
+                    "confidence": 0.8,
+                    "source": "test",
+                    "created_at": 1,
+                    "updated_at": 2,
+                }],
+            }),
+            encoding="utf-8",
+        )
+
+        store = MemoryStore()
+        store.load_from_disk()
+        snapshot = store.format_for_system_prompt("memory")
+
+        assert "Stable fact." in snapshot
+        assert "salience" not in snapshot
+        assert "confidence" not in snapshot
+
+    def test_consolidation_metadata_attached_to_tool_response_and_record(self, store):
+        result = store.add("memory", "When deploying, first run pytest, then check logs.")
+
+        assert result["success"] is True
+        assert result["consolidation"]["action"] == "procedural_skill_candidate"
+        assert result["consolidation"]["warnings"]
+        record = store.semantic_records["memory"][0]
+        assert record["kind"] == "procedural_candidate"
+        assert record["consolidation_action"] == "procedural_skill_candidate"
+        assert record["consolidation_warnings"]
+
+    def test_replace_refreshes_consolidation_metadata(self, store):
+        store.add("memory", "Project uses pytest.")
+
+        result = store.replace("memory", "Project", "Fixed PR #123 today.")
+
+        assert result["success"] is True
+        assert result["consolidation"]["action"] == "episodic_only"
+        record = store.semantic_records["memory"][0]
+        assert record["text"] == "Fixed PR #123 today."
+        assert record["kind"] == "episodic_note"
+        assert record["consolidation_action"] == "episodic_only"
+
+    def test_forgetting_audit_is_read_only_and_sees_consolidation_metadata(self, store):
+        store.add("memory", "When deploying, first run pytest, then check logs.")
+        before_entries = list(store.memory_entries)
+        before_records = [dict(r) for r in store.semantic_records["memory"]]
+
+        report = store.audit_forgetting("memory")
+
+        assert report["success"] is True
+        assert report["read_only"] is True
+        assert report["target"] == "memory"
+        assert report["findings"][0]["suggested_action"] == "promote_to_skill"
+        assert "procedural_candidate" in report["findings"][0]["signals"]
+        assert store.memory_entries == before_entries
+        assert store.semantic_records["memory"] == before_records
+
+    def test_forgetting_audit_all_combines_targets_without_public_tool_action(self, store):
+        store.add("memory", "Fixed PR #123 today.")
+        store.add("user", "User prefers concise direct replies.")
+
+        report = store.audit_forgetting("all")
+
+        assert report["success"] is True
+        assert report["target"] == "all"
+        assert report["summary"]["total_records"] == 2
+        assert report["summary"]["total_findings"] == 1
+        assert report["findings"][0]["target"] == "memory"
+
+    def test_forgetting_audit_findings_do_not_change_system_prompt_text(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text("Fixed PR #123 today.", encoding="utf-8")
+
+        store = MemoryStore()
+        store.load_from_disk()
+        snapshot_before = store.format_for_system_prompt("memory")
+
+        report = store.audit_forgetting("memory")
+        snapshot_after = store.format_for_system_prompt("memory")
+
+        assert report["findings"]
+        assert snapshot_after == snapshot_before
+        assert "Fixed PR #123 today." in snapshot_after
+        assert "suggested_action" not in snapshot_after
+        assert "episodic_or_task_local" not in snapshot_after
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

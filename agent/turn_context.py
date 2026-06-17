@@ -224,6 +224,15 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
+    # Refresh explicit working memory from the latest user turn. The rendered
+    # block is injected later through the request-time ephemeral system prompt,
+    # not the cached system_prompt.py assembly path.
+    try:
+        if getattr(agent, "_working_memory", None) is not None:
+            agent._working_memory.observe_user_turn(user_message)
+    except Exception:
+        logger.debug("working-memory observe_user_turn failed", exc_info=True)
+
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
         agent._safe_print(

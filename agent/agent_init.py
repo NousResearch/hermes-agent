@@ -1090,6 +1090,12 @@ def init_agent(
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
+
+    # Explicit working memory for active task state. This is rendered through
+    # the request-time ephemeral system prompt path, not agent/system_prompt.py,
+    # so it never rewrites the cached/stored system prompt snapshot.
+    from agent.working_memory import WorkingMemory
+    agent._working_memory = WorkingMemory()
     
     # Load config once for memory, skills, and compression sections
     try:

@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -34,6 +35,11 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
+from agent.memory_consolidation import (
+    classify_memory_candidate,
+    semantic_record_fields_from_decision,
+)
+from agent.memory_forgetting import audit_memory_record_sets, audit_memory_records
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -126,6 +132,11 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Typed semantic records are persisted as sidecar metadata. The
+        # MEMORY.md / USER.md files remain the compatibility and UX source of
+        # truth for entry text; records add structure without changing prompt
+        # rendering or the memory tool's public interface.
+        self.semantic_records: Dict[str, List[Dict[str, Any]]] = {"memory": [], "user": []}
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -156,6 +167,9 @@ class MemoryStore:
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+
+        self._load_and_sync_semantic_records("memory")
+        self._load_and_sync_semantic_records("user")
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
@@ -271,6 +285,8 @@ class MemoryStore:
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
+        self._sync_semantic_records(target)
+        self._write_records_file(self._records_path_for(target), self.semantic_records[target])
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -294,6 +310,130 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    @staticmethod
+    def _records_path_for(target: str) -> Path:
+        mem_dir = get_memory_dir()
+        if target == "user":
+            return mem_dir / "USER.records.json"
+        return mem_dir / "MEMORY.records.json"
+
+    @staticmethod
+    def _record_id(target: str, text: str) -> str:
+        digest = hashlib.sha256(f"{target}\0{text}".encode("utf-8")).hexdigest()
+        return digest[:16]
+
+    @staticmethod
+    def _record_kind(target: str) -> str:
+        return "user_profile_fact" if target == "user" else "semantic_fact"
+
+    def _new_semantic_record(
+        self,
+        target: str,
+        text: str,
+        *,
+        source: str = "tool",
+        consolidation: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now = int(time.time())
+        decision = classify_memory_candidate(target, text)
+        record = {
+            "id": self._record_id(target, text),
+            "target": target,
+            "kind": self._record_kind(target),
+            "text": text,
+            "salience": 0.5,
+            "confidence": 0.7,
+            "source": source,
+            "created_at": now,
+            "updated_at": now,
+        }
+        record.update(
+            consolidation
+            or semantic_record_fields_from_decision(decision, target)
+        )
+        return record
+
+    def _load_and_sync_semantic_records(self, target: str) -> None:
+        records = self._read_records_file(self._records_path_for(target))
+        self.semantic_records[target] = records
+        self._sync_semantic_records(target)
+        # Persist the sidecar once loaded so legacy MEMORY.md / USER.md files
+        # gain structured metadata on first read without changing their text.
+        self._write_records_file(self._records_path_for(target), self.semantic_records[target])
+
+    def _sync_semantic_records(self, target: str) -> None:
+        """Keep typed records aligned with the legacy entry list.
+
+        The markdown files remain source-of-truth for text/order. Existing
+        records keep their metadata when text still exists; missing entries get
+        a legacy-migration record; removed entries drop from the live sidecar.
+        """
+        entries = self._entries_for(target)
+        existing_by_text = {
+            r.get("text"): r
+            for r in self.semantic_records.get(target, [])
+            if isinstance(r, dict) and isinstance(r.get("text"), str)
+        }
+        synced: List[Dict[str, Any]] = []
+        seen_ids = set()
+        for entry in entries:
+            record = dict(existing_by_text.get(entry) or self._new_semantic_record(target, entry, source="legacy"))
+            record["target"] = target
+            record.setdefault("kind", self._record_kind(target))
+            record.setdefault("salience", 0.5)
+            record.setdefault("confidence", 0.7)
+            record.setdefault("source", "legacy")
+            record.setdefault("created_at", int(time.time()))
+            record["updated_at"] = int(record.get("updated_at") or record.get("created_at") or int(time.time()))
+            record["text"] = entry
+            record.setdefault("id", self._record_id(target, entry))
+            if record["id"] in seen_ids:
+                record["id"] = self._record_id(target, entry + f"\0{len(seen_ids)}")
+            seen_ids.add(record["id"])
+            synced.append(record)
+        self.semantic_records[target] = synced
+
+    @staticmethod
+    def _read_records_file(path: Path) -> List[Dict[str, Any]]:
+        if not path.exists():
+            return []
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, IOError, json.JSONDecodeError):
+            return []
+        records = raw.get("records", raw) if isinstance(raw, dict) else raw
+        if not isinstance(records, list):
+            return []
+        return [r for r in records if isinstance(r, dict) and isinstance(r.get("text"), str)]
+
+    @staticmethod
+    def _write_records_file(path: Path, records: List[Dict[str, Any]]):
+        payload = {"version": 1, "records": records}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), suffix=".tmp", prefix=".mem_records_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+                    f.write("\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                atomic_replace(tmp_path, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except (OSError, IOError) as e:
+            raise RuntimeError(f"Failed to write memory records file {path}: {e}")
+
+    @staticmethod
+    def _consolidation_response(decision) -> Dict[str, Any]:
+        return decision.to_dict()
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -304,6 +444,9 @@ class MemoryStore:
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        decision = classify_memory_candidate(target, content, explicit=True)
+        consolidation_fields = semantic_record_fields_from_decision(decision, target)
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
@@ -319,7 +462,11 @@ class MemoryStore:
 
             # Reject exact duplicates
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(
+                    target,
+                    "Entry already exists (no duplicate added).",
+                    consolidation=decision,
+                )
 
             # Calculate what the new total would be
             new_entries = entries + [content]
@@ -338,13 +485,22 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
+                    "consolidation": self._consolidation_response(decision),
                 }
 
             entries.append(content)
+            self.semantic_records[target].append(
+                self._new_semantic_record(
+                    target,
+                    content,
+                    source="tool",
+                    consolidation=consolidation_fields,
+                )
+            )
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(target, "Entry added.", consolidation=decision)
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -359,6 +515,11 @@ class MemoryStore:
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        decision = classify_memory_candidate(
+            target, new_content, explicit=True, replace=True
+        )
+        consolidation_fields = semantic_record_fields_from_decision(decision, target)
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -403,13 +564,19 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
+                    "consolidation": self._consolidation_response(decision),
                 }
 
             entries[idx] = new_content
+            if idx < len(self.semantic_records[target]):
+                record = self.semantic_records[target][idx]
+                record["text"] = new_content
+                record.update(consolidation_fields)
+                record["updated_at"] = int(time.time())
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        return self._success_response(target, "Entry replaced.", consolidation=decision)
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -442,6 +609,8 @@ class MemoryStore:
 
             idx = matches[0][0]
             entries.pop(idx)
+            if idx < len(self.semantic_records[target]):
+                self.semantic_records[target].pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
@@ -460,9 +629,41 @@ class MemoryStore:
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
+    def audit_forgetting(self, target: str = "all") -> Dict[str, Any]:
+        """Return a read-only forgetting/decay audit for typed memory records.
+
+        The audit is deliberately non-destructive: it syncs the in-memory
+        sidecar view to the current markdown entries but does not write files,
+        remove entries, change prompt snapshots, or expose findings through the
+        normal system prompt path.
+        """
+        if target not in {"memory", "user", "all"}:
+            return {
+                "success": False,
+                "error": "target must be 'memory', 'user', or 'all'.",
+            }
+
+        self._sync_semantic_records("memory")
+        self._sync_semantic_records("user")
+
+        if target == "all":
+            report = audit_memory_record_sets(self.semantic_records)
+        else:
+            report = audit_memory_records(self.semantic_records[target], target=target)
+
+        payload = report.to_dict()
+        payload["success"] = True
+        payload["read_only"] = True
+        return payload
+
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(
+        self,
+        target: str,
+        message: str = None,
+        consolidation = None,
+    ) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -477,6 +678,8 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
+        if consolidation is not None:
+            resp["consolidation"] = self._consolidation_response(consolidation)
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:

@@ -110,3 +110,107 @@ def test_build_timeline_context_includes_current_time_gap_and_cross_platform_eve
     assert "CLI" in context
     assert "한 단어로 답" in context
     assert "Avoid saying" in context
+
+
+def test_get_recent_events_filters_gateway_synthetic_user_messages(tmp_path):
+    from agent.timeline_sync import get_recent_events
+
+    db_path = tmp_path / "state.db"
+    _make_state_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        (
+            "slack-1",
+            "user",
+            "[System note: Your previous turn in this session was interrupted by a gateway restart.]",
+            1_700_000_300.0,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        (
+            "slack-1",
+            "user",
+            "[Your active task list was preserved across context compression]\n- [>] verify",
+            1_700_000_301.0,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        ("slack-1", "user", "실제 사용자가 보낸 말", 1_700_000_302.0),
+    )
+    conn.commit()
+    conn.close()
+
+    events = get_recent_events(db_path=db_path, since_ts=1_700_000_250.0, limit=5)
+
+    previews = [event["preview"] for event in events]
+    assert "실제 사용자가 보낸 말" in previews
+    assert not any("System note" in preview for preview in previews)
+    assert not any("active task list" in preview for preview in previews)
+
+
+def test_get_recent_events_collapses_same_second_replay_clusters(tmp_path):
+    from agent.timeline_sync import get_recent_events
+
+    db_path = tmp_path / "state.db"
+    _make_state_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO sessions (id, source, title, started_at, message_count) VALUES (?, ?, ?, ?, ?)",
+        ("telegram-replay", "telegram", "Replay cluster", 1_700_000_250.0, 4),
+    )
+    for idx, content in enumerate(["예전 첫 메시지", "예전 둘째 메시지", "예전 셋째 메시지", "최신 대표 메시지"]):
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("telegram-replay", "user", content, 1_700_000_300.0 + idx * 0.1),
+        )
+    conn.commit()
+    conn.close()
+
+    events = get_recent_events(db_path=db_path, since_ts=1_700_000_250.0, limit=8)
+
+    previews = [event["preview"] for event in events]
+    assert "최신 대표 메시지" in previews
+    assert "예전 첫 메시지" not in previews
+    assert "예전 둘째 메시지" not in previews
+    assert "예전 셋째 메시지" not in previews
+
+
+def test_get_recent_events_filters_thread_context_wrappers(tmp_path):
+    from agent.timeline_sync import get_recent_events
+
+    db_path = tmp_path / "state.db"
+    _make_state_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        (
+            "slack-1",
+            "user",
+            '[Replying to: "새 어시스턴트 스레드"] [Thread context — prior messages in this thread (not yet in conversation history):] [thread noise]',
+            1_700_000_300.0,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        ("slack-1", "user", "슬랙에서 실제로 한 말", 1_700_000_301.0),
+    )
+    conn.commit()
+    conn.close()
+
+    events = get_recent_events(db_path=db_path, since_ts=1_700_000_250.0, limit=5)
+
+    previews = [event["preview"] for event in events]
+    assert "슬랙에서 실제로 한 말" in previews
+    assert not any("Thread context" in preview for preview in previews)
+
+
+def test_decode_preview_removes_local_image_paths():
+    from agent.timeline_sync import _decode_preview
+
+    preview = _decode_preview("이미지 봐줘 [Image attached at: /Users/artifact/.hermes/image_cache/img_abc.jpg]")
+
+    assert "/Users/artifact" not in preview
+    assert "Image attached" in preview

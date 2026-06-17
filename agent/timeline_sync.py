@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -121,7 +122,68 @@ def _decode_preview(content: Any, max_chars: int = 120) -> str:
         except Exception:
             pass
     text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+    text = re.sub(r"\[Image attached at: [^\]]+\]", "[Image attached]", text)
     return text[: max(0, max_chars - 1)] + "…" if len(text) > max_chars else text
+
+
+def _is_synthetic_gateway_preview(preview: str) -> bool:
+    """Return True for gateway-maintenance text that should not shape time sense."""
+    text = " ".join(str(preview or "").strip().split()).lower()
+    if not text:
+        return True
+    synthetic_prefixes = (
+        "[system note:",
+        "[your active task list was preserved across context compression]",
+        "[context compaction",
+        "[timeline sync]",
+        "[rhythm context]",
+        "[expression context]",
+    )
+    if any(text.startswith(prefix) for prefix in synthetic_prefixes):
+        return True
+    synthetic_markers = (
+        "[thread context — prior messages in this thread",
+        "[thread context - prior messages in this thread",
+    )
+    return any(marker in text for marker in synthetic_markers)
+
+
+def _collapse_replay_clusters(
+    events: list[dict[str, Any]],
+    *,
+    max_span_seconds: float = 1.0,
+    min_cluster_size: int = 3,
+) -> list[dict[str, Any]]:
+    """Collapse same-source replay bursts caused by compression/session restore."""
+    if len(events) < min_cluster_size:
+        return events
+
+    ordered = sorted(events, key=lambda event: float(event.get("timestamp") or 0.0), reverse=True)
+    result: list[dict[str, Any]] = []
+    index = 0
+    while index < len(ordered):
+        first = ordered[index]
+        cluster = [first]
+        first_ts = float(first.get("timestamp") or 0.0)
+        source = str(first.get("source") or "")
+        role = str(first.get("role") or "")
+        next_index = index + 1
+        while next_index < len(ordered):
+            candidate = ordered[next_index]
+            candidate_ts = float(candidate.get("timestamp") or 0.0)
+            if source != str(candidate.get("source") or "") or role != str(candidate.get("role") or ""):
+                break
+            if abs(first_ts - candidate_ts) > max_span_seconds:
+                break
+            cluster.append(candidate)
+            next_index += 1
+
+        if len(cluster) >= min_cluster_size:
+            result.append(cluster[0])
+        else:
+            result.extend(cluster)
+        index = next_index
+    return result
 
 
 def get_last_user_message_time(*, db_path: str | Path | None = None, session_id: str) -> Optional[float]:
@@ -166,7 +228,8 @@ def get_recent_events(
     if exclude_session_id:
         exclude_sql = "AND m.session_id != ?"
         params.append(exclude_session_id)
-    params.append(int(limit))
+    query_limit = max(int(limit), int(limit) * 4)
+    params.append(query_limit)
     try:
         conn = sqlite3.connect(str(path))
         conn.row_factory = sqlite3.Row
@@ -188,17 +251,20 @@ def get_recent_events(
         return []
     events: list[dict[str, Any]] = []
     for row in rows:
+        preview = _decode_preview(row["content"])
+        if _is_synthetic_gateway_preview(preview):
+            continue
         events.append(
             {
                 "timestamp": float(row["timestamp"]),
                 "source": row["source"] or "unknown",
                 "session_id": row["session_id"],
                 "role": row["role"],
-                "preview": _decode_preview(row["content"]),
+                "preview": preview,
                 "title": row["title"] or "",
             }
         )
-    return events
+    return _collapse_replay_clusters(events)[: int(limit)]
 
 
 def _format_time(ts: float, now: datetime) -> str:

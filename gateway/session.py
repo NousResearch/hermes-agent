@@ -391,6 +391,23 @@ def build_session_context_prompt(
             "their user_id). Your normal reply is delivered to the group you "
             "are responding in."
         )
+    elif context.source.platform == Platform.TELEGRAM:
+        src = context.source
+        if src.chat_type in ("group", "channel") or (
+            src.chat_id and str(src.chat_id).startswith("-")
+        ):
+            _tg_chat_id = _hash_chat_id(src.chat_id) if redact_pii else src.chat_id
+            _tg_chat_name = src.chat_name or _tg_chat_id
+            lines.append("")
+            lines.append(f"**Telegram current chat:** {_tg_chat_name} (ID: `{_tg_chat_id}`)")
+            lines.append(
+                f"  - To deliver files/media **into this group**, "
+                f"use `send_message('telegram:{_tg_chat_id}', ...)`. "
+                "Prefer this over the home channel when the user made the request here."
+            )
+            if src.thread_id:
+                _tg_thread_id = _hash_chat_id(src.thread_id) if redact_pii else src.thread_id
+                lines.append(f"  - Thread ID: `{_tg_thread_id}` (pass as `thread_id` for threaded replies)")
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

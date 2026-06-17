@@ -7230,6 +7230,11 @@ def _(rid, params: dict) -> dict:
         agent = session.get("agent") if session else None
         if agent is not None:
             current_fast = getattr(agent, "service_tier", None) == "priority"
+        elif session and session.get("create_service_tier_override") is not None:
+            # Session-scoped: a value parked before the agent built is this
+            # session's state; status/toggle must reflect it, not the global
+            # default. ``None`` means "no explicit pick" — fall through.
+            current_fast = session.get("create_service_tier_override") == "priority"
         else:
             current_fast = _load_service_tier() == "priority"
 
@@ -7269,7 +7274,17 @@ def _(rid, params: dict) -> dict:
                     "fast mode is not available for this model",
                 )
 
-        _write_config_key("agent.service_tier", nv)
+        if not session:
+            _write_config_key("agent.service_tier", nv)
+        else:
+            # Session-scoped: never write global config. Park the pick on the
+            # session's existing ``create_service_tier_override`` (the same key
+            # session.create seeds and _start_agent_build applies at build time,
+            # mirroring ``model_override``). A pre-build value lands at build; a
+            # live agent is updated below.
+            session["create_service_tier_override"] = (
+                "priority" if nv == "fast" else None
+            )
         if agent is not None:
             agent.service_tier = "priority" if nv == "fast" else None
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
@@ -7442,15 +7457,23 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
-            if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
-                _persist_live_session_runtime(session)
-                _emit(
-                    "session.info",
-                    params.get("session_id", ""),
-                    _session_info(session["agent"], session),
-                )
+            if not session:
+                _write_config_key("agent.reasoning_effort", arg)
+            else:
+                # Session-scoped: never write global config. Park the pick on
+                # the session's existing ``create_reasoning_override`` (the same
+                # key session.create seeds and _start_agent_build applies at
+                # build time, mirroring ``model_override``). A pre-build value
+                # lands at build; a live agent is updated below.
+                session["create_reasoning_override"] = parsed
+                if session.get("agent") is not None:
+                    session["agent"].reasoning_config = parsed
+                    _persist_live_session_runtime(session)
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(session["agent"], session),
+                    )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -7693,9 +7716,27 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(
-            (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
-        )
+        # Prefer the session's own reasoning state (live agent, then a value
+        # parked before the agent built) over the global default — /reasoning
+        # is session-scoped, so config.get must read back the session's pick.
+        session = _sessions.get(params.get("session_id", ""))
+        reasoning_cfg = None
+        if session is not None:
+            agent = session.get("agent")
+            if agent is not None and getattr(agent, "reasoning_config", None):
+                reasoning_cfg = agent.reasoning_config
+            elif isinstance(session.get("create_reasoning_override"), dict):
+                reasoning_cfg = session.get("create_reasoning_override")
+        if isinstance(reasoning_cfg, dict):
+            effort = (
+                "none"
+                if reasoning_cfg.get("enabled") is False
+                else str(reasoning_cfg.get("effort") or "medium")
+            )
+        else:
+            effort = str(
+                (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
+            )
         display = (
             "show"
             if bool((cfg.get("display") or {}).get("show_reasoning", False))
@@ -7703,18 +7744,15 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"value": effort, "display": display})
     if key == "fast":
-        return _ok(
-            rid,
-            {
-                "value": (
-                    "fast"
-                    if (session := _sessions.get(params.get("session_id", "")))
-                    and getattr(session.get("agent"), "service_tier", None)
-                    == "priority"
-                    else ("fast" if _load_service_tier() == "priority" else "normal")
-                ),
-            },
-        )
+        session = _sessions.get(params.get("session_id", ""))
+        if session and session.get("agent") is not None:
+            current_fast = getattr(session["agent"], "service_tier", None) == "priority"
+        elif session and session.get("create_service_tier_override") is not None:
+            # A value parked before the agent built is this session's state.
+            current_fast = session.get("create_service_tier_override") == "priority"
+        else:
+            current_fast = _load_service_tier() == "priority"
+        return _ok(rid, {"value": "fast" if current_fast else "normal"})
     if key == "busy":
         return _ok(rid, {"value": _load_busy_input_mode()})
     if key == "details_mode":

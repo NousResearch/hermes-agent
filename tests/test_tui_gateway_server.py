@@ -2348,7 +2348,11 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
             "foo": "bar",
             "service_tier": "priority",
         }
-        assert ("agent.service_tier", "fast") in writes
+        # Session-scoped (with a session_id): the toggle updates the live agent
+        # and parks on the session's build-time override, but NEVER writes global
+        # config — a per-session /fast must not clobber the profile default.
+        assert writes == []
+        assert server._sessions["sid"]["create_service_tier_override"] == "priority"
         assert ("session.info", "sid", {"model": "x"}) in emits
 
         resp_normal = server.handle_request(
@@ -2361,7 +2365,8 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
         assert resp_normal["result"]["value"] == "normal"
         assert agent.service_tier is None
         assert agent.request_overrides == {"foo": "bar"}
-        assert ("agent.service_tier", "normal") in writes
+        assert writes == []
+        assert server._sessions["sid"]["create_service_tier_override"] is None
     finally:
         server._sessions.pop("sid", None)
 

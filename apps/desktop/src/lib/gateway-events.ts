@@ -27,6 +27,54 @@ export function gatewayEventRequiresSessionId(eventType: string | undefined): bo
   return eventType?.startsWith('subagent.') ?? false
 }
 
+export interface GatewaySessionBusyState {
+  awaitingResponse?: boolean
+  busy?: boolean
+}
+
+/**
+ * Resolve which runtime session owns an unscoped gateway event.
+ *
+ * Background sessions are stamped with their id server-side; a missing id
+ * usually means the focused turn. When multiple sessions are still busy
+ * (e.g. user opened a new chat while the previous turn streams), prefer the
+ * active session if it is busy, otherwise the sole busy session, and drop
+ * ambiguous unscoped events rather than attributing them to a quiet session.
+ */
+export function resolveGatewayEventSessionId(
+  explicitSid: string | undefined | null,
+  activeSessionId: string | null,
+  sessionStates: ReadonlyMap<string, GatewaySessionBusyState>
+): string | null {
+  const normalizedExplicit = (explicitSid || '').trim()
+
+  if (normalizedExplicit) {
+    return normalizedExplicit
+  }
+
+  const busySessions: string[] = []
+
+  for (const [runtimeId, state] of sessionStates.entries()) {
+    if (state.busy || state.awaitingResponse) {
+      busySessions.push(runtimeId)
+    }
+  }
+
+  if (busySessions.length === 1) {
+    return busySessions[0]
+  }
+
+  if (busySessions.length > 1) {
+    if (activeSessionId && busySessions.includes(activeSessionId)) {
+      return activeSessionId
+    }
+
+    return null
+  }
+
+  return activeSessionId
+}
+
 export function gatewayEventCompletedFileDiff(event: RpcEventLike): boolean {
   if (event.type !== 'tool.complete') {
     return false

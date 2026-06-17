@@ -17,7 +17,7 @@ import {
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
+import { gatewayEventRequiresSessionId, resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import {
   dedupeGeneratedImageEchoesInParts,
   generatedImageEchoSources,
@@ -715,7 +715,12 @@ export function useMessageStream({
         return
       }
 
-      const sessionId = explicitSid || activeSessionIdRef.current
+      const sessionId = resolveGatewayEventSessionId(
+        explicitSid,
+        activeSessionIdRef.current,
+        sessionStateByRuntimeIdRef.current
+      )
+
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       if (event.type === 'gateway.ready') {
@@ -1126,6 +1131,7 @@ export function useMessageStream({
       queryClient,
       refreshHermesConfig,
       sessionInterrupted,
+      sessionStateByRuntimeIdRef,
       updateSessionState,
       upsertToolCall
     ]

@@ -855,16 +855,52 @@ class SlackAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Slack message."""
+        """Edit a previously sent Slack message.
+
+        Slack's chat.update rejects payloads beyond MAX_MESSAGE_LENGTH with
+        ``msg_too_long``, which would otherwise abort the entire edit and
+        freeze the streamed message at whatever content was last accepted.
+        Truncate to the first chunk so the edit always succeeds; on the
+        finalize edit, post any overflow chunks as follow-up messages so
+        no content is dropped.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            head = chunks[0] if chunks else formatted
+            overflow = chunks[1:] if len(chunks) > 1 else []
+
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=formatted,
+                text=head,
             )
+
+            if overflow and finalize:
+                logger.warning(
+                    "[Slack] edit_message finalize: content (%d chars) "
+                    "exceeds %d limit; posting %d follow-up chunk(s).",
+                    len(formatted),
+                    self.MAX_MESSAGE_LENGTH,
+                    len(overflow),
+                )
+                for chunk in overflow:
+                    try:
+                        await self._get_client(chat_id).chat_postMessage(
+                            channel=chat_id,
+                            text=chunk,
+                            mrkdwn=True,
+                        )
+                    except Exception as post_err:
+                        logger.error(
+                            "[Slack] Follow-up chunk post failed in %s: %s",
+                            chat_id,
+                            post_err,
+                            exc_info=True,
+                        )
+
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)

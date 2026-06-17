@@ -2161,18 +2161,10 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
-# Public Electron mirror used as a last-resort fallback when GitHub's release
-# host is blocked/throttled (#47266). npmmirror.com (Alibaba) is the de-facto
-# Electron community mirror; only reached AFTER the canonical download fails and
-# never when the user has pinned their own ELECTRON_MIRROR.
+# Last-resort Electron mirror after GitHub download fails (#47266).
 $script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
 
-# Return the Electron package directory the desktop workspace installs. npm may
-# nest workspace-only dev dependencies under apps\desktop\node_modules instead
-# of hoisting them to the repo root; which layout you get depends on the npm
-# version and what else is installed. apps\desktop\package.json points
-# electron-builder's electronDist there, so prefer the workspace-local package
-# and fall back to the root hoist.
+# Electron package dir — workspace-local nest first, then root hoist.
 function Get-ElectronDir {
     param([string]$InstallDir)
     $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
@@ -2180,11 +2172,7 @@ function Get-ElectronDir {
     return (Join-Path $InstallDir 'node_modules\electron')
 }
 
-# True when the desktop workspace electronDist holds a usable Electron binary.
-# electron-builder reads the binary from build.electronDist since #38673, so
-# this is the exact file whose absence makes a pack fail with "The specified
-# electronDist does not exist". A dist dir that exists but is missing
-# electron.exe (partial extraction / aborted postinstall) is NOT ok.
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
 function Test-ElectronDist {
     param([string]$InstallDir)
     $electronDir = Get-ElectronDir -InstallDir $InstallDir
@@ -2192,22 +2180,7 @@ function Test-ElectronDist {
     return (Test-Path -LiteralPath $distExe)
 }
 
-# (Re)populate the desktop Electron dist via electron's own downloader.
-#
-# Since #38673 the desktop build reuses the electron package's already-unpacked
-# dist (resolved dynamically by scripts\run-electron-builder.cjs) to dodge
-# electron-builder 26.8.x's missing-binary re-unpack bug. That dist tree is
-# produced by the electron package's postinstall (install.js) during `npm ci`.
-# When that download is blocked/throttled (GitHub's release host is unreachable
-# in some regions - #47266), dist is missing. Pre-fetching it here gives the
-# build a dist to reuse; if it can't, the build lets electron-builder fetch
-# Electron itself, so this is best-effort.
-#
-# No-op (returns $true) when the dist binary is already present. Otherwise drops a
-# partial dist + version marker (electron's install.js short-circuits when
-# path.txt already matches) and runs the downloader once, optionally via a
-# mirror. Best-effort: never throws. Returns $true iff the dist binary exists
-# afterward.
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
 function Restore-ElectronDist {
     param([string]$InstallDir, [string]$Mirror)
     if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
@@ -2238,6 +2211,23 @@ function Restore-ElectronDist {
         $env:ELECTRON_MIRROR = $prevMirror
     }
     return (Test-Path -LiteralPath $distExe)
+}
+
+function Test-ElectronPkgStagedMissingDist {
+    param([string]$InstallDir)
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    return (
+        (Test-Path -LiteralPath (Join-Path $electronDir 'package.json')) -and
+        (Test-Path -LiteralPath (Join-Path $electronDir 'install.js')) -and
+        (-not (Test-ElectronDist -InstallDir $InstallDir))
+    )
+}
+
+function Try-RestoreElectronDist {
+    param([string]$InstallDir)
+    if (Restore-ElectronDist -InstallDir $InstallDir) { return $true }
+    if ($env:ELECTRON_MIRROR) { return $false }
+    return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
 }
 
 function Install-Desktop {
@@ -2335,22 +2325,9 @@ function Install-Desktop {
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
-            # npm runs postinstall scripts after staging package files. For the
-            # blocked Electron download case, package.json + install.js exist but
-            # dist is missing. Heal that specific shape and continue; otherwise
-            # fail fast so unrelated install failures aren't mislabeled.
-            $electronDir = Get-ElectronDir -InstallDir $InstallDir
-            $electronPkg = Join-Path $electronDir 'package.json'
-            $electronInstaller = Join-Path $electronDir 'install.js'
-            if ((Test-Path -LiteralPath $electronPkg) -and
-                (Test-Path -LiteralPath $electronInstaller) -and
-                (-not (Test-ElectronDist -InstallDir $InstallDir))) {
+            if (Test-ElectronPkgStagedMissingDist -InstallDir $InstallDir) {
                 Write-Warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
-                if (-not (Restore-ElectronDist -InstallDir $InstallDir)) {
-                    if (-not $env:ELECTRON_MIRROR) {
-                        Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror | Out-Null
-                    }
-                }
+                Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null
             } else {
                 Show-NpmCertHint ($npmOut -join "`n") | Out-Null
                 throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
@@ -2400,16 +2377,6 @@ function Install-Desktop {
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
-            # A corrupt cached Electron zip makes `pack` fail with an opaque
-            # ENOENT on the final `electron` -> `Hermes` rename: app-builder's
-            # unpack-electron extracted a partial tree (missing the binary) from
-            # the bad zip, and re-running reuses the poisoned cache forever.
-            # Purge the cached download + any stale unpacked output and retry
-            # once; @electron/get re-downloads with its own SHASUM check. Without
-            # this a corrupt download hard-fails the whole installer.
-            # Only run Electron cache repair when dist is actually missing/corrupt.
-            # This avoids retrying unrelated build failures (tsc/vite) under an
-            # Electron-specific narrative.
             $purged = @()
             $restored = $false
             if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
@@ -2423,24 +2390,11 @@ function Install-Desktop {
                 $code = $LASTEXITCODE
             }
         }
-        # Still failing and the user hasn't pinned their own mirror: GitHub's
-        # Electron release host is likely blocked/throttled (the repeating
-        # "retrying" log). Retry once via npmmirror.com — the de-facto Electron
-        # community mirror (Alibaba). @electron/get SHASUM-checks the download,
-        # but the SHASUMS come from the same mirror, so that guards against a
-        # corrupt/partial download, NOT a compromised mirror: an explicit trust
-        # trade-off we only make AFTER the canonical GitHub download has failed,
-        # and we never override a user-pinned ELECTRON_MIRROR.
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
             $mirror = $script:DesktopElectronFallbackMirror
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
             Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
             Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-            # Pre-fetch the binary through the mirror via electron's own downloader
-            # so the retry has a dist to reuse. If that can't be populated, still
-            # retry the pack under ELECTRON_MIRROR: the build resolves electronDist
-            # dynamically and, when the dist is absent, lets electron-builder fetch
-            # Electron itself via @electron/get, which honors ELECTRON_MIRROR (#47266).
             if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
                 Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
             }

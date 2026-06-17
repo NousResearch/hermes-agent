@@ -591,7 +591,7 @@ def test_gui_install_failure_self_heals_electron_and_continues(tmp_path, monkeyp
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._electron_dist_ok", return_value=False), \
-         patch("hermes_cli.main._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main._try_redownload_electron_dist", return_value=True) as mock_dl, \
          patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())

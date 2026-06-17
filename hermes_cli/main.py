@@ -5110,12 +5110,8 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
-# Public Electron mirror used as a last-resort fallback when the canonical
-# GitHub release host is blocked/throttled (#47266). npmmirror.com (Alibaba) is
-# the de-facto Electron community mirror. @electron/get SHASUM-checks the
-# download, but the SHASUMS come from the same mirror, so reaching for it is an
-# explicit trust trade-off we only make AFTER the canonical download fails, and
-# never when the user has pinned their own ELECTRON_MIRROR.
+# Last-resort Electron mirror after GitHub download fails (#47266). Only used
+# when the user hasn't pinned ELECTRON_MIRROR.
 _ELECTRON_FALLBACK_MIRROR = "https://npmmirror.com/mirrors/electron/"
 
 
@@ -5168,12 +5164,7 @@ def _electron_dist_ok(project_root: Path) -> bool:
 
 
 def _electron_pkg_staged_missing_dist(project_root: Path) -> bool:
-    """True when electron package staged but its dist is missing.
-
-    npm runs postinstall scripts after staging package files on disk. For the
-    blocked-download failure mode, ``electron/package.json`` + ``install.js``
-    exist but ``dist/`` is missing because ``install.js`` failed.
-    """
+    """electron staged (package.json + install.js) but dist missing — blocked postinstall."""
     electron_dir = _electron_dir(project_root)
     return (
         (electron_dir / "package.json").is_file()
@@ -5188,25 +5179,7 @@ def _redownload_electron_dist(
     *,
     mirror: Optional[str] = None,
 ) -> bool:
-    """(Re)populate the electron package's ``dist`` via electron's own downloader.
-
-    Since #38673 the desktop build reuses the ``electron`` package's already
-    unpacked ``dist`` (resolved dynamically at pack time by
-    ``scripts/run-electron-builder.cjs``) to dodge electron-builder 26.8.x's
-    missing-binary re-unpack bug. That dist tree is produced by the ``electron``
-    package's postinstall (``install.js``) during ``npm ci``. When that download
-    is blocked or throttled (GitHub's release host is unreachable in some
-    regions — #47266), the dist is missing. Pre-fetching it here — optionally via
-    a mirror — gives the build a dist to reuse; if it can't, the build falls back
-    to letting electron-builder fetch Electron itself, so this is best-effort.
-
-    No-op (returns True) when the dist binary is already present, so an unrelated
-    build failure doesn't trigger a needless ~200 MB re-download. Otherwise drops
-    any partial dist + version marker (electron's install.js short-circuits when
-    ``path.txt`` already matches) and runs the downloader once, optionally via a
-    mirror. Best-effort: never raises. Returns True iff the dist binary exists
-    afterward.
-    """
+    """Best-effort: run electron's install.js to populate dist/ (optional mirror)."""
     if _electron_dist_ok(project_root):
         return True
 
@@ -5233,6 +5206,15 @@ def _redownload_electron_dist(
     except OSError:
         return False
     return _electron_dist_ok(project_root)
+
+
+def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
+    """Canonical download, then fallback mirror unless the user pinned one."""
+    if _redownload_electron_dist(project_root, env):
+        return True
+    if env.get("ELECTRON_MIRROR"):
+        return False
+    return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
@@ -5457,21 +5439,11 @@ def cmd_gui(args: argparse.Namespace):
             nixos_env = _nixos_build_env()
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
-                # npm runs postinstall scripts LAST. When Electron's binary
-                # download is blocked/throttled (#47266/#47917/#48021), the
-                # package files are staged (package.json + install.js) but dist/
-                # is missing. In that specific shape, attempt a best-effort
-                # dist repair and continue to pack; otherwise, fail fast so
-                # unrelated install errors aren't mislabeled as Electron issues.
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
                     print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
                     sys.exit(install_result.returncode or 1)
-                repaired = _redownload_electron_dist(PROJECT_ROOT, env)
-                if not repaired and not env.get("ELECTRON_MIRROR"):
-                    repaired = _redownload_electron_dist(
-                        PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR
-                    )
+                repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)
                 if repaired:
                     print("  ⚠ Dependency install failed with a missing Electron dist; "
                           "repopulated it and continuing.")
@@ -5494,22 +5466,9 @@ def cmd_gui(args: argparse.Namespace):
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
-                # A corrupt cached Electron zip makes `pack` fail with an ENOENT
-                # on the final `electron` -> `Hermes` rename: unpack-electron
-                # extracted a partial tree (missing the 193 MB binary) from the
-                # bad zip. We do NOT try to prove the zip is corrupt ourselves —
-                # stdlib zipfile silently tolerates the prepended/concatenated
-                # junk that is the most common corruption (a partial download
-                # resumed into the same file), so a `testzip()` gate would pass
-                # and never self-heal. Instead, on any packaged-build failure we
-                # purge the version's cached zip + the half-written unpacked dir
-                # and retry once: @electron/get re-downloads with its own SHASUM
-                # verification, which is the real source of truth. If the
-                # failure was something else, the clean re-download is harmless
-                # and the retry fails the same way.
-                # Only run the Electron cache repair path when Electron dist is
-                # actually missing/corrupt. This avoids retrying unrelated build
-                # failures (e.g., tsc/vite) under an Electron-specific narrative.
+                # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
+                # stdlib zipfile won't catch the common concat-junk case, so purge
+                # and retry once; @electron/get SHASUM is the real gate.
                 purged: list[Path] = []
                 restored = False
                 if not _electron_dist_ok(PROJECT_ROOT):
@@ -5524,27 +5483,12 @@ def cmd_gui(args: argparse.Namespace):
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
-                # Still failing and the user hasn't pinned a mirror: GitHub's
-                # Electron release host is likely blocked/throttled (the repeating
-                # "retrying" download log). Retry once via npmmirror.com — the
-                # de-facto Electron community mirror (Alibaba). @electron/get
-                # SHASUM-checks the download, but the SHASUMS come from the same
-                # mirror, so that guards against a corrupt/partial download, NOT
-                # a compromised mirror: reaching for it is an explicit trust
-                # trade-off we only make AFTER the canonical GitHub download has
-                # failed, and we never override a user-pinned ELECTRON_MIRROR.
                 print("  ⚠ Desktop build still failing; the Electron download from "
                       "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
                 mirror = _ELECTRON_FALLBACK_MIRROR
                 mirror_env = dict(env)
                 mirror_env["ELECTRON_MIRROR"] = mirror
-                # Pre-fetch the binary through the mirror via electron's own
-                # downloader so the retry has a dist to reuse. If that can't be
-                # populated, still retry the pack under ELECTRON_MIRROR: the
-                # build now resolves electronDist dynamically and, when the dist
-                # is absent, lets electron-builder fetch Electron itself through
-                # @electron/get — which honors ELECTRON_MIRROR (#47266).
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)

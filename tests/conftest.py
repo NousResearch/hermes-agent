@@ -556,6 +556,27 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_webbrowser(monkeypatch):
+    """Prevent tests from opening a real browser or OAuth window.
+
+    Tests that need to assert browser-launch behavior can still install their
+    own monkeypatch; this fixture only supplies the hermetic default.
+    """
+    import webbrowser as _webbrowser
+
+    opened: list[object] = []
+
+    def _record(url=None, *args, **kwargs):
+        opened.append(url)
+        return True
+
+    for name in ("open", "open_new", "open_new_tab"):
+        monkeypatch.setattr(_webbrowser, name, _record, raising=False)
+
+    yield opened
+
+
+@pytest.fixture(autouse=True)
 def _live_system_guard(request, monkeypatch):
     """Block real os.kill / systemctl / gateway-pid scans during tests.
 

@@ -151,10 +151,6 @@ function normalizeVisibleProse(text: string): string {
     .join('')
 }
 
-// `out.push(...lines)` spreads every element as a separate call argument, so a
-// single fenced block with tens of thousands of lines (a logged minified
-// bundle, base64 blob, huge tool dump) overflows V8's argument-count limit and
-// throws `RangeError: Maximum call stack size exceeded`. Append iteratively.
 function extend(out: string[], lines: string[]) {
   for (const line of lines) {
     out.push(line)

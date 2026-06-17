@@ -4788,10 +4788,22 @@ function stopPoolBackend(profile) {
   if (!entry) return
   backendPool.delete(profile)
   if (entry.process && !entry.process.killed) {
+    const pid = entry.process.pid
     try {
       entry.process.kill('SIGTERM')
     } catch {
       // Already gone.
+    }
+    // Mirror the update-path teardown (see line ~1721) and the primary backend
+    // teardown (teardownPrimaryBackendAndWait): SIGTERM alone is not enough.
+    // If the Python child stalls during graceful shutdown (e.g. mid-cron-tick),
+    // it gets reparented to launchd when the desktop app exits, leaking a
+    // dashboard process per reap cycle. Tree-kill after 5s catches it.
+    if (typeof pid === 'number') {
+      const timer = setTimeout(() => {
+        try { forceKillProcessTree(pid) } catch { void 0 }
+      }, 5000)
+      timer.unref?.()
     }
   }
 }
@@ -6564,10 +6576,29 @@ app.on('before-quit', () => {
   flushDesktopLogBufferSync()
   closePreviewWatchers()
 
+  // Collect PIDs before signalling so we can synchronously tree-kill any
+  // children that don't honour SIGTERM in time — Electron's before-quit does
+  // not wait for async cleanup, so the setTimeout escalation in
+  // stopPoolBackend won't fire before the app exits. Mirror the update path
+  // (line ~1721) which already does this correctly.
+  const dyingPids = []
   if (hermesProcess && !hermesProcess.killed) {
-    hermesProcess.kill('SIGTERM')
+    dyingPids.push(hermesProcess.pid)
+    try {
+      hermesProcess.kill('SIGTERM')
+    } catch {
+      void 0
+    }
+  }
+  for (const [, entry] of backendPool.entries()) {
+    if (entry.process && !entry.process.killed && typeof entry.process.pid === 'number') {
+      dyingPids.push(entry.process.pid)
+    }
   }
   stopAllPoolBackends()
+  for (const pid of dyingPids) {
+    try { forceKillProcessTree(pid) } catch { void 0 }
+  }
 })
 
 app.on('window-all-closed', () => {

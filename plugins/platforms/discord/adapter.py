@@ -4286,10 +4286,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     tree.add_command(auto_cmd)
                     already_registered.add(discord_name)
-                except Exception:
-                    # Silently skip commands that fail registration (e.g.
-                    # name conflict with a subcommand group).
-                    pass
+                except Exception as e:
+                    # Don't swallow this silently — the next debugging session
+                    # needs to know why a built-in command failed to register.
+                    # Most common causes: name conflict with a subcommand group,
+                    # or a discord.py validation error on the auto-built Command
+                    # object.
+                    logger.warning(
+                        "[%s] Built-in slash command %r failed to register: %s: %s",
+                        self.name, discord_name, type(e).__name__, e,
+                    )
 
             logger.debug(
                 "Discord auto-registered %d commands from COMMAND_REGISTRY",
@@ -4321,10 +4327,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     tree.add_command(auto_cmd)
                     already_registered.add(discord_name)
-                except Exception:
-                    # Silently skip commands that fail registration (e.g.
-                    # name conflict with a subcommand group).
-                    pass
+                except Exception as e:
+                    # Don't swallow this silently — the next debugging session
+                    # needs to know why a plugin command failed to register.
+                    # Most common causes: name conflict with a built-in or
+                    # subcommand group, or a discord.py validation error on
+                    # the auto-built Command object.
+                    logger.warning(
+                        "[%s] Plugin slash command %r failed to register: %s: %s",
+                        self.name, discord_name, type(e).__name__, e,
+                    )
         except Exception as e:
             logger.warning(
                 "Discord auto-register from plugin commands failed: %s", e

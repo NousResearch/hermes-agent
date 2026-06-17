@@ -1238,6 +1238,28 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
         return False
 
+    @staticmethod
+    def _is_discord_command_cap_error(exc: Any) -> bool:
+        """True iff ``exc`` is the Discord 100-global-commands cap error.
+
+        Discord rejects the batch with HTTP 400 / error code 30032 when an
+        app already has the maximum number of global application commands.
+        Mirrors the precision of ``_is_discord_rate_limit``: prefers
+        ``exc.code == 30032`` set by discord.py's HTTPException, falls back
+        to status + text matching for older discord.py forks, mocks, and
+        exotic transports. Never swallows arbitrary 400s — only the specific
+        cap message — so unrelated bugs keep producing stack traces.
+        """
+        code = getattr(exc, "code", None)
+        if code == 30032:
+            return True
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status", None) or getattr(response, "status_code", None)
+        if status != 400:
+            return False
+        text = (getattr(exc, "text", "") or str(exc) or "")
+        return "Maximum number of application commands reached" in text
+
     def _command_sync_mutation_interval_seconds(self) -> float:
         return _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS
 
@@ -1282,6 +1304,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 # persist Discord's retry-after when it refuses the batch.
                 summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
             except Exception as e:
+                # Discord's hard 100-global-command cap (HTTP 400 / code 30032)
+                # is the one known cause of intermittent sync failures on
+                # loaded installs. Detect it BEFORE the rate-limit fallback so
+                # the operator gets a clear, actionable message instead of
+                # either the generic "sync failed" stack trace from the outer
+                # except or a misrouted rate-limit cooldown.
+                if self._is_discord_command_cap_error(e):
+                    logger.warning(
+                        "[%s] Discord slash command cap reached (HTTP 30032); "
+                        "sync aborted. Disable unused plugins or trim "
+                        "COMMAND_REGISTRY to free slots before the next reconnect.",
+                        self.name,
+                    )
+                    return
                 if not self._is_discord_rate_limit(e):
                     raise
                 retry_after = self._extract_discord_retry_after(e)

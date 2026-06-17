@@ -2653,8 +2653,11 @@ def build_anthropic_kwargs(
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+            # Specific tool name. On the OAuth wire the named tool must match
+            # the encoded name in ``tools`` (step 3 above), otherwise Anthropic
+            # rejects the call with 400 "tool_choice not in tools".
+            name = _to_oauth_wire_name(tool_choice) if is_oauth else tool_choice
+            kwargs["tool_choice"] = {"type": "tool", "name": name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.

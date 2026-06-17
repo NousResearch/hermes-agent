@@ -1779,6 +1779,83 @@ class TestBuildAnthropicKwargs:
         # Under non-OAuth, system stays a plain string.
         assert kwargs["system"] == text
 
+    def test_oauth_concrete_tool_choice_gets_wire_name_encoding(self):
+        """When tool_choice names a specific tool on the OAuth path, the name
+        must go through the same ``_to_oauth_wire_name`` transform applied to
+        the tools list — otherwise Anthropic 400s with
+        ``tool_choice not in tools``.
+        """
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="read_file",
+        )
+        # Bare name → mcp__read_file on the wire.
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+        # And matches the encoded name in tools (this is the invariant).
+        assert kwargs["tools"][0]["name"] == "mcp__read_file"
+
+    def test_oauth_concrete_tool_choice_promotes_single_mcp_underscore(self):
+        """A single-underscore native MCP tool name passed as ``tool_choice``
+        must be promoted to the double-underscore wire form, matching what
+        upstream PR #47723 does for the tools list.
+        """
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "mcp_linear_get_issue", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="mcp_linear_get_issue",
+        )
+        assert kwargs["tool_choice"] == {
+            "type": "tool",
+            "name": "mcp__linear_get_issue",
+        }
+        assert kwargs["tools"][0]["name"] == "mcp__linear_get_issue"
+
+    def test_oauth_concrete_tool_choice_idempotent_when_already_encoded(self):
+        """Double-underscore-encoded names passed as ``tool_choice`` must not
+        be double-prefixed."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "mcp__read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="mcp__read_file",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+
+    def test_non_oauth_concrete_tool_choice_is_raw(self):
+        """Non-OAuth callers (API key, third-party Anthropic-compatible) must
+        get the raw ``tool_choice`` name — the wire encoding is OAuth-only."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+            tool_choice="read_file",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "read_file"}
+        assert kwargs["tools"][0]["name"] == "read_file"
+
 # ---------------------------------------------------------------------------
 # Model output limit lookup
 # ---------------------------------------------------------------------------

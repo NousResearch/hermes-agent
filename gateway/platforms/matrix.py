@@ -1406,9 +1406,21 @@ class MatrixAdapter(BasePlatformAdapter):
         # Without this the INVITE handler below never fires.
         client.add_dispatcher(MembershipEventDispatcher)
 
-        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
-        client.add_event_handler(EventType.REACTION, self._on_reaction)
-        client.add_event_handler(IntEvt.INVITE, self._on_invite)
+        client.add_event_handler(
+            EventType.ROOM_MESSAGE,
+            self._on_room_message,
+            wait_sync=True,
+        )
+        client.add_event_handler(
+            EventType.REACTION,
+            self._on_reaction,
+            wait_sync=True,
+        )
+        client.add_event_handler(
+            IntEvt.INVITE,
+            self._on_invite,
+            wait_sync=True,
+        )
 
         # Initial sync to catch up, then start background sync.
         self._startup_ts = time.time()

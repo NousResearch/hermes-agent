@@ -2627,6 +2627,19 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
             self._clarify_state[clarify_id] = session_key
+
+            # Enable text-capture so the gateway's text-intercept picks up
+            # typed replies as a fallback for button taps.  Without this,
+            # a user who types a response (e.g. "2" or the choice text)
+            # instead of tapping a button has their message silently
+            # dropped from the clarify flow.  See #47566.
+            if choices:
+                try:
+                    from tools.clarify_gateway import mark_awaiting_text
+                    mark_awaiting_text(clarify_id)
+                except Exception:
+                    pass
+
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, e)

@@ -47,6 +47,10 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     "taylor.d.obrian@gmail.com": "punchtaylor",
     "punchtaylor@users.noreply.github.com": "punchtaylor",
+    "59806492+sitkarev@users.noreply.github.com": "sitkarev",
+    "zheng@omegasys.eu": "omegazheng",
+    "220877172+james47kjv@users.noreply.github.com": "james47kjv",
+    "yuhanglin@YuhangdeMac-mini.local": "1960697431",
     "despitemeguru@gmail.com": "definitelynotguru",
     "chaslui@outlook.com": "ChasLui",
     "rio.jeong@thebytesize.ai": "rio-jeong",

@@ -4801,7 +4801,6 @@ def _(rid, params: dict) -> dict:
             session["pending_title"] = None
             return _ok(rid, {"pending": False, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
-        # Queue only when the session row truly does not exist yet.
         existing_row = db.get_session(key)
         if existing_row:
             session["pending_title"] = None
@@ -4812,6 +4811,23 @@ def _(rid, params: dict) -> dict:
                     "title": (existing_row.get("title") or title),
                 },
             )
+        # No row yet (the DB write is deferred to the first prompt so empty
+        # drafts don't litter the sidebar). An explicit /title is clear user
+        # intent, not an abandoned draft — so persist the row NOW and set the
+        # title, mirroring the messaging gateway's _handle_title_command. The
+        # old behavior only queued pending_title and relied on the post-turn
+        # apply block; if that turn never landed under this session_key the
+        # title was silently lost and the sidebar fell back to the message
+        # preview. Creating the row up front removes that race entirely. The
+        # min-messages sidebar filter keeps a titled 0-message row hidden, so
+        # a /title'd-but-never-used draft still doesn't clutter the list.
+        _ensure_session_db_row(session)
+        with _session_db(session) as scoped_db:
+            if scoped_db is not None and scoped_db.set_session_title(key, title):
+                session["pending_title"] = None
+                return _ok(rid, {"pending": False, "title": title})
+        # Row creation didn't take (DB unavailable, or a concurrent writer) —
+        # fall back to queuing so the post-turn apply block can still recover.
         session["pending_title"] = title
         return _ok(rid, {"pending": True, "title": title})
     except ValueError as e:

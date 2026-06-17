@@ -1,6 +1,6 @@
 ---
 name: ui-ux-pro-max
-description: "UI/UX design intelligence covering 67 styles, 96 palettes, 57 font pairings, and 25 chart types across 13 stacks (React, Next.js, Vue, Svelte, SwiftUI, Flutter, Tailwind, shadcn/ui, and more)."
+description: "UI/UX design intelligence covering 67 styles, 96 palettes, 57 font pairings, and 25 chart types across 10 stacks (React, Next.js, Vue, Svelte, SwiftUI, Flutter, Tailwind, shadcn/ui, and more)."
 version: 1.0.0
 author: Jason Colapietro
 license: MIT
@@ -14,7 +14,7 @@ metadata:
 ---
 # UI/UX Pro Max - Design Intelligence
 
-Comprehensive design guide for web and mobile applications. Contains 67 styles, 96 color palettes, 57 font pairings, 99 UX guidelines, and 25 chart types across 13 technology stacks. Searchable database with priority-based recommendations.
+Comprehensive design guide for web and mobile applications. Contains 67 styles, 96 color palettes, 57 font pairings, 99 UX guidelines, and 25 chart types across 10 technology stacks. Searchable database with priority-based recommendations.
 
 ## When to Use
 
@@ -144,6 +144,8 @@ Extract key information from user request:
 
 **Always start with `--design-system`** to get comprehensive recommendations with reasoning:
 
+> `${HERMES_SKILL_DIR}` is set by the Hermes runtime to this skill's installed directory. If running commands manually, replace it with the absolute path to the `ui-ux-pro-max` skill folder.
+
 ```bash
 python3 ${HERMES_SKILL_DIR}/scripts/search.py "<product_type> <industry> <keywords>" --design-system [-p "Project Name"]
 ```
@@ -229,7 +231,7 @@ Available stacks: `html-tailwind`, `react`, `nextjs`, `vue`, `svelte`, `swiftui`
 | `ux` | Best practices, anti-patterns | animation, accessibility, z-index, loading |
 | `react` | React/Next.js performance | waterfall, bundle, suspense, memo, rerender, cache |
 | `web` | Web interface guidelines | aria, focus, keyboard, semantic, virtualize |
-| `prompt` | AI prompts, CSS keywords | (style name) |
+| `prompt` | AI prompts, CSS keywords | glassmorphism, brutalism, neomorphism |
 
 ### Available Stacks
 

@@ -533,7 +533,7 @@ print('graph.graphml written - open in Gephi or yEd')
 ## Step 7d — MCP server (only if --mcp)
 
 ```bash
-python3 -m graphify.serve graphify-out/graph.json
+$(cat graphify-out/.graphify_python) -m graphify.serve graphify-out/graph.json
 ```
 
 Exposes tools: `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`.
@@ -593,7 +593,7 @@ cost_path.write_text(json.dumps(cost, indent=2))
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
-rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_labels.json graphify-out/.graphify_chunk_*.json
+rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_labels.json graphify-out/.graphify_chunk_*.json graphify-out/.graphify_transcripts.json
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 

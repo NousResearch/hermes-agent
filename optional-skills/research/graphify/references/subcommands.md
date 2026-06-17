@@ -4,13 +4,17 @@ Full implementation for all subcommands. Before running any of these, check that
 
 ```bash
 if [ ! -f graphify-out/.graphify_python ]; then
+    PYTHON=""
     GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-    if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
+    if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
+        _UV_PY=$(uv tool run graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+        if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
     fi
+    if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
+        _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
+        case "$_SHEBANG" in *[!a-zA-Z0-9/_.-]*) ;; *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;; esac
+    fi
+    if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
     mkdir -p graphify-out
     "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w').write(sys.executable)"
 fi
@@ -126,6 +130,15 @@ Cleanup: `rm -f graphify-out/.graphify_old.json`
 ## --cluster-only
 
 Skip Steps 1–3. Load the existing graph and re-run clustering:
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+from pathlib import Path
+if not Path('graphify-out/graph.json').exists():
+    print('ERROR: No graph found. Run /graphify <path> first.')
+    raise SystemExit(1)
+"
+```
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -260,6 +273,15 @@ Find the shortest path between two named concepts.
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
+from pathlib import Path
+if not Path('graphify-out/graph.json').exists():
+    print('ERROR: No graph found. Run /graphify <path> first.')
+    raise SystemExit(1)
+"
+```
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
 import json, sys
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -305,6 +327,15 @@ $(cat graphify-out/.graphify_python) -m graphify save-result --question "Path fr
 ## explain
 
 Explain a single node and everything connected to it.
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+from pathlib import Path
+if not Path('graphify-out/graph.json').exists():
+    print('ERROR: No graph found. Run /graphify <path> first.')
+    raise SystemExit(1)
+"
+```
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "

@@ -86,7 +86,7 @@ All calls settle pay-per-use in USDC on Base. Prices shown per call.
 | `analyze(audio_url)` | Audio analysis (BPM, key, energy, danceability) | $0.003 |
 | `prompt_analyze(prompt)` | Extract genre, mood, instrumentation from a prompt | $0.003 |
 | `chain_chat(question, assetHash)` | Plain-language Q&A about on-chain rights/royalties | $0.02 |
-| `rig_analyze(audioUrl)` | Infer guitar signal chain from audio (pedal order, drive, FX) | $0.10 |
+| `rig_analyze(audio_url)` | Infer guitar signal chain from audio (pedal order, drive, FX) | $0.10 |
 | `rig_oracle(goal, genre, budgetUsd)` | Recommend a full guitar rig for a target tone | $0.10 |
 | `rig_roast(pedals, amp, guitar)` | Roast a gear list for laughs | $0.05 |
 
@@ -120,23 +120,23 @@ EOF
 
 ### Direct endpoint access
 
-For endpoints not yet exposed as named methods:
+For inspecting raw responses or calling future endpoints not yet wrapped as named methods:
 
 ```bash
 uv run --with suede-ai python3 -c "
 from suede_ai import SuedeClient; import os
 with SuedeClient(wallet_private_key=os.environ['SUEDE_WALLET_KEY']) as suede:
-    print(suede.request('POST', '/v1/style-coach', json={'tags': 'lofi, rainy'}))
+    print(suede.request('POST', '/v1/voice-effects', json={'audio_url': 'https://...', 'effect': 'reverb'}))
 "
 ```
 
 ### Response structure
 
-Audio and video generation endpoints (`create_music`, `agent_generate`, `agent_video`, `extend`, `cover`, `voice_cover`, `continue_track`, `stems_pro`, `stems_basic`, `vox`, `midi`, `wav_master`, `lyric_sync`) return:
+Asset-returning endpoints (`create_music`, `agent_generate`, `agent_video`, `extend`, `cover`, `voice_cover`, `continue_track`, `stems_pro`, `stems_basic`, `vox`, `wav_master`, `lyric_sync`) return:
 - `assetUrl` — CDN URL to the generated asset
 - `provenance` — on-chain fingerprint/attestation via Suede's IP registry
 
-Text and analysis endpoints (`lyrics`, `style_coach`, `analyze`, `prompt_analyze`, `chain_chat`, `rig_analyze`, `rig_oracle`, `rig_roast`, `rights_lookup`) return structured data specific to each endpoint — no `assetUrl`.
+Data endpoints (`midi`, `lyrics`, `style_coach`, `analyze`, `prompt_analyze`, `chain_chat`, `rig_analyze`, `rig_oracle`, `rig_roast`, `rights_lookup`) return structured data specific to each endpoint — no `assetUrl`.
 
 ---
 

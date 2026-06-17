@@ -110,3 +110,16 @@ describe('ModelEditSubmenu no-session guard', () => {
     expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'fast', session_id: 'sess1', value: 'fast' })
   })
 })
+
+describe('ModelEditSubmenu reasoning descriptions', () => {
+  it('shows an explanation for every reasoning effort level', () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    renderSubmenu({ fastControl: { kind: 'none' }, reasoning: true, requestGateway })
+
+    expect(screen.getByText('Fastest responses with the least reasoning.')).toBeTruthy()
+    expect(screen.getByText('Fast answers with lighter reasoning.')).toBeTruthy()
+    expect(screen.getByText('Balanced reasoning for most prompts.')).toBeTruthy()
+    expect(screen.getByText('Deeper reasoning for complex work.')).toBeTruthy()
+    expect(screen.getByText('Maximum reasoning depth when supported.')).toBeTruthy()
+  })
+})

@@ -22,13 +22,13 @@ import { sessionTileDelegate } from '@/store/session-states'
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
 // by the Thinking toggle, not the radio.
 const EFFORT_OPTIONS = [
-  { value: 'minimal', labelKey: 'minimal' },
-  { value: 'low', labelKey: 'low' },
-  { value: 'medium', labelKey: 'medium' },
-  { value: 'high', labelKey: 'high' },
-  { value: 'xhigh', labelKey: 'xhigh' },
-  { value: 'max', labelKey: 'max' },
-  { value: 'ultra', labelKey: 'ultra' }
+  { value: 'minimal', labelKey: 'minimal', descriptionKey: 'minimalDescription' },
+  { value: 'low', labelKey: 'low', descriptionKey: 'lowDescription' },
+  { value: 'medium', labelKey: 'medium', descriptionKey: 'mediumDescription' },
+  { value: 'high', labelKey: 'high', descriptionKey: 'highDescription' },
+  { value: 'xhigh', labelKey: 'xhigh', descriptionKey: 'xhighDescription' },
+  { value: 'max', labelKey: 'max', descriptionKey: 'maxDescription' },
+  { value: 'ultra', labelKey: 'ultra', descriptionKey: 'ultraDescription' }
 ] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:
@@ -212,7 +212,7 @@ export function ModelEditSubmenu({
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on
 
   return (
-    <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
+    <DropdownMenuSubContent className="w-64 p-0" sideOffset={4}>
       {!hasFast && !reasoning ? (
         <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
       ) : (
@@ -247,7 +247,12 @@ export function ModelEditSubmenu({
                     onSelect={event => event.preventDefault()}
                     value={option.value}
                   >
-                    {copy[option.labelKey]}
+                    <span className="min-w-0 flex-1">
+                      <span className="block">{copy[option.labelKey]}</span>
+                      <span className="block text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">
+                        {copy[option.descriptionKey]}
+                      </span>
+                    </span>
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>

@@ -638,6 +638,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._text_batch_lock = asyncio.Lock()
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -5287,7 +5288,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the Discord client.
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
-            self._enqueue_text_event(event)
+            await self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
 
@@ -5304,33 +5305,37 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
 
-    def _enqueue_text_event(self, event: MessageEvent) -> None:
+    async def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
 
         When Discord splits a long user message at 2000 chars, the chunks
         arrive within a few hundred milliseconds.  This merges them into
         a single event before dispatching.
-        """
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        chunk_len = len(event.text or "")
-        if existing is None:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending_text_batches[key] = event
-        else:
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
 
-        prior_task = self._pending_text_batch_tasks.get(key)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        self._pending_text_batch_tasks[key] = asyncio.create_task(
-            self._flush_text_batch(key)
-        )
+        Protected by ``_text_batch_lock`` so two concurrent on_message
+        events from different channels don't race on the dict operations.
+        """
+        async with self._text_batch_lock:
+            key = self._text_batch_key(event)
+            existing = self._pending_text_batches.get(key)
+            chunk_len = len(event.text or "")
+            if existing is None:
+                event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+                self._pending_text_batches[key] = event
+            else:
+                if event.text:
+                    existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+                existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+                if event.media_urls:
+                    existing.media_urls.extend(event.media_urls)
+                    existing.media_types.extend(event.media_types)
+
+            prior_task = self._pending_text_batch_tasks.get(key)
+            if prior_task and not prior_task.done():
+                prior_task.cancel()
+            self._pending_text_batch_tasks[key] = asyncio.create_task(
+                self._flush_text_batch(key)
+            )
 
     async def _flush_text_batch(self, key: str) -> None:
         """Wait for the quiet period then dispatch the aggregated text.

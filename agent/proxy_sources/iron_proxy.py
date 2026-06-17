@@ -553,11 +553,26 @@ def iron_proxy_version(binary: Path) -> str:
         return cached
 
     try:
-        res = subprocess.run(  # noqa: S603 — binary path is trusted
+        # Build a minimal env: only PATH, HOME, and locale vars.
+        # The version probe is a one-shot subprocess — forwarding
+        # the full host env (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+        # to a PATH-resolved or unverified binary is an unnecessary
+        # credential leak.  Reuse the same allowlist the daemon
+        # subprocess uses (see _build_proxy_subprocess_env).
+        minimal_env: Dict[str, str] = {}
+        parent = os.environ
+        for name in _PROXY_SUBPROCESS_ENV_ALLOWLIST:
+            if name in parent:
+                minimal_env[name] = parent[name]
+        # The S603 warning is legitimate for the PATH-fallback case
+        # (find_iron_proxy → shutil.which), but --version with a
+        # scrubbed env is safe regardless of binary provenance.
+        res = subprocess.run(  # noqa: S603
             [str(binary), "--version"],
             capture_output=True,
             text=True,
             timeout=_RUN_TIMEOUT,
+            env=minimal_env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -1859,12 +1874,25 @@ def _build_proxy_subprocess_env(
                     "(allow_env_fallback=true).",
                 )
         except (ImportError,) as exc:
-            # Truly unrecoverable import failure: log + fall through to
-            # the env path so we don't completely block start.  Callers
-            # that want strict mode can pre-check at the wizard layer.
+            # The BWS module or one of its runtime deps isn't importable.
+            # Mirror the sibling branches: if allow_env_fallback isn't
+            # explicitly enabled, fail closed — credential_source=bitwarden
+            # with a unavailable module should not silently degrade to host
+            # env.  A wizard-time check can't catch a dependency that goes
+            # missing between setup and a later restart.
+            if not (bitwarden_config or {}).get("allow_env_fallback"):
+                raise RuntimeError(
+                    "Bitwarden refresh module unavailable at proxy start "
+                    "(credential_source=bitwarden with "
+                    "proxy.allow_env_fallback: false).  Either fix the "
+                    "import, switch to credential_source: env, or set "
+                    "`proxy.allow_env_fallback: true` to opt into the "
+                    "legacy fallback behaviour."
+                ) from exc
             logger.warning(
                 "Bitwarden refresh module unavailable at proxy start, "
-                "falling back to parent env: %s", exc,
+                "falling back to parent env (allow_env_fallback=true): %s",
+                exc,
             )
 
     # Caller-supplied overrides win.  This is intentionally last so the

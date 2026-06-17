@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1620,3 +1621,79 @@ def test_partial_bitwarden_secrets_raise_without_fallback(
         ip._build_proxy_subprocess_env(
             refresh_from_bitwarden=True, bitwarden_config=bw_cfg,
         )
+
+
+def test_bitwarden_importerror_raise_without_fallback(
+    hermes_home, monkeypatch,
+):
+    """Strict default: ImportError on BWS module raises when
+    allow_env_fallback is unset, matching the sibling branches."""
+
+    ip.write_mappings([_sample_mapping("OPENROUTER_API_KEY")])
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-host")
+
+    # Simulate the BWS SDK not being installed.  The lazy import
+    # ``from agent.secret_sources import bitwarden`` inside
+    # _build_proxy_subprocess_env resolves through the parent package's
+    # cached attribute; deleting both the sys.modules entry AND the
+    # parent-package attribute forces a real import that we intercept.
+    #
+    # In addition, block importlib.reload in case the test infra used it.
+    import agent.secret_sources as ss
+    monkeypatch.delitem(sys.modules, "agent.secret_sources.bitwarden", raising=False)
+    monkeypatch.delitem(sys.modules, "agent.secret_sources.bitwarden.bws", raising=False)
+    monkeypatch.delattr(ss, "bitwarden", raising=False)
+
+    # Now block the re-import.  ``from agent.secret_sources import
+    # bitwarden`` resolves to a submodule attribute; setting it to a
+    # sentinel that raises on attribute access is more reliable than
+    # trying to intercept __import__ at the C level.
+    class _MissingBWS:
+        """Sentinel: accessing any attribute raises ImportError."""
+        def __getattr__(self, _name):
+            raise ImportError("bws SDK not installed")
+        def __call__(self, *a, **kw):
+            raise ImportError("bws SDK not installed")
+    monkeypatch.setattr(ss, "bitwarden", _MissingBWS(), raising=False)
+
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "tok")
+    bw_cfg = {"project_id": "proj", "access_token_env": "BWS_ACCESS_TOKEN"}
+
+    with pytest.raises(RuntimeError, match="Bitwarden refresh module unavailable"):
+        ip._build_proxy_subprocess_env(
+            refresh_from_bitwarden=True, bitwarden_config=bw_cfg,
+        )
+
+
+def test_bitwarden_importerror_honor_allow_env_fallback(
+    hermes_home, monkeypatch,
+):
+    """With allow_env_fallback, an ImportError falls through to host env
+    instead of raising."""
+
+    ip.write_mappings([_sample_mapping("OPENROUTER_API_KEY")])
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-host-fallback")
+
+    import agent.secret_sources as ss
+    monkeypatch.delitem(sys.modules, "agent.secret_sources.bitwarden", raising=False)
+    monkeypatch.delitem(sys.modules, "agent.secret_sources.bitwarden.bws", raising=False)
+    monkeypatch.delattr(ss, "bitwarden", raising=False)
+
+    class _MissingBWS:
+        def __getattr__(self, _name):
+            raise ImportError("bws SDK not installed")
+        def __call__(self, *a, **kw):
+            raise ImportError("bws SDK not installed")
+    monkeypatch.setattr(ss, "bitwarden", _MissingBWS(), raising=False)
+
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "tok")
+    bw_cfg = {
+        "project_id": "proj",
+        "access_token_env": "BWS_ACCESS_TOKEN",
+        "allow_env_fallback": True,
+    }
+
+    env = ip._build_proxy_subprocess_env(
+        refresh_from_bitwarden=True, bitwarden_config=bw_cfg,
+    )
+    assert env.get("OPENROUTER_API_KEY") == "sk-host-fallback"

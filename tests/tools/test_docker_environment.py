@@ -707,8 +707,13 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                # 3-field format: ID, State, EgressLabel.  When egress_label
+                # is "off" the code parses all three fields; <no value> means
+                # the container has no egress label, which is acceptable.
                 return subprocess.CompletedProcess(
-                    cmd, 0, stdout=f"reused-cid\t{ps_state}\n", stderr="",
+                    cmd, 0,
+                    stdout=f"reused-cid\t{ps_state}\t<no value>\n",
+                    stderr="",
                 )
             if sub == "start":
                 if not start_succeeds:
@@ -994,10 +999,11 @@ def test_find_reusable_container_prefers_running_over_stopped(monkeypatch):
             if cmd[1] == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
             if cmd[1] == "ps":
-                # Two matches: stopped first, running second.
+                # Two matches: stopped first, running second.  3-field format
+                # with absent egress label for the "off" path.
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout="stopped-cid\texited\nrunning-cid\trunning\n",
+                    stdout="stopped-cid\texited\t<no value>\nrunning-cid\trunning\t<no value>\n",
                     stderr="",
                 )
         return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
@@ -1007,6 +1013,42 @@ def test_find_reusable_container_prefers_running_over_stopped(monkeypatch):
     env = _make_dummy_env(task_id="dup-match")
     assert env._container_id == "running-cid", (
         f"running container should win over stopped duplicate, got {env._container_id!r}"
+    )
+
+
+def test_reuse_off_rejects_non_off_egress_container(monkeypatch):
+    """When egress is off, a container that still has hermes-egress=on
+    (e.g. from before ``hermes egress disable``) must be rejected and a
+    fresh container created.  The post-filter protects against silently
+    reusing a container with baked-in proxy env and CA mounts."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            if cmd[1] == "ps":
+                # Return a container with hermes-egress=on.  With egress=off
+                # the three-field format includes the label; the post-filter
+                # must skip this entry.
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="stale-cid\trunning\ton\n",
+                    stderr="",
+                )
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="egress-off-reject")
+    # Should fall through to fresh container because the stale one has
+    # hermes-egress=on.
+    assert env._container_id == "fresh-cid", (
+        f"expected fresh container, got {env._container_id!r}"
     )
 
 

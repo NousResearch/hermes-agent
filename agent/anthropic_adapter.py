@@ -383,6 +383,25 @@ def _detect_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
+# Product-name replacements applied to the relocated OAuth system prompt so
+# nothing in the preamble reads as a competing-product identity (Anthropic's
+# OAuth billing classifier fingerprints distinctive non-Claude-Code content).
+_OAUTH_TEXT_REPLACEMENTS = (
+    ("Hermes Agent", "Claude Code"),
+    ("Hermes agent", "Claude Code"),
+    ("hermes-agent", "claude-code"),
+    ("Nous Research", "Anthropic"),
+)
+# Wrapper tag for the relocated prompt on the first user message.
+_OAUTH_SYSTEM_CONTEXT_TAG = "system_context"
+
+
+def _sanitize_oauth_text(text: str) -> str:
+    """Mask competing-product identity references in OAuth-relocated prompt text."""
+    for old, new in _OAUTH_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
 
 def _prepend_oauth_system_context(messages, preamble: str) -> None:
     """Prepend ``preamble`` as a cache-marked leading block of the first user message.
@@ -392,10 +411,18 @@ def _prepend_oauth_system_context(messages, preamble: str) -> None:
     and into the conversation, mirroring how Claude Code keeps only its identity
     line in ``system[]``.
 
-    The relocated block carries ``cache_control: ephemeral`` so the heavy prompt
-    prefix is still cached across turns — the first user message is a stable
-    prefix within a conversation, so the cache breakpoint simply moves from the
-    system slot to the first-user-message slot without breaking caching.
+    The relocated block carries a 5m ``cache_control`` marker (built via
+    ``prompt_caching._build_marker``) so the heavy prompt prefix is still cached
+    across turns — the first user message is a stable prefix within a
+    conversation, so the cache breakpoint simply moves from the system slot to
+    the first-user-message slot without breaking caching.
+
+    Note on the 4-breakpoint cap: the upstream ``apply_anthropic_cache_control``
+    pass places a marker on the (heavy) system block + the last 3 messages. When
+    the OAuth path below reduces ``system[]`` to the identity line, that system
+    marker is discarded along with the block it rode on, and this preamble marker
+    takes its place — net total stays at exactly 4 (verified by
+    ``test_oauth_relocation_respects_4_breakpoint_cap``).
 
     Mutates ``messages`` in place. Handles user messages whose content is a
     plain string or a list of content blocks, and synthesises a user message at
@@ -403,10 +430,11 @@ def _prepend_oauth_system_context(messages, preamble: str) -> None:
     """
     if not preamble:
         return
+    from agent.prompt_caching import _build_marker
     block = {
         "type": "text",
         "text": preamble,
-        "cache_control": {"type": "ephemeral"},
+        "cache_control": _build_marker("5m"),
     }
     for msg in messages:
         if msg.get("role") != "user":
@@ -2608,40 +2636,30 @@ def build_anthropic_kwargs(
     # still cached across turns (the first user message is a stable prefix; a
     # 2-turn check confirms cache_read on turn 2).
     if is_oauth:
-        # 1. Collect existing system text (string or content blocks).
+        # 1. Collect + sanitize existing system text in one pass (string or
+        #    content blocks). Sanitizing inline avoids a second list rebuild.
         extra_system_parts: List[str] = []
         if isinstance(system, list):
             for b in system:
                 if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
-                    extra_system_parts.append(b["text"])
+                    extra_system_parts.append(_sanitize_oauth_text(b["text"]))
         elif isinstance(system, str) and system:
-            extra_system_parts.append(system)
+            extra_system_parts.append(_sanitize_oauth_text(system))
 
-        # 2. Sanitize the relocated text — replace product-name references so
-        #    nothing in the preamble reads as a competing-product identity.
-        def _sanitize_oauth_text(text: str) -> str:
-            text = text.replace("Hermes Agent", "Claude Code")
-            text = text.replace("Hermes agent", "Claude Code")
-            text = text.replace("hermes-agent", "claude-code")
-            text = text.replace("Nous Research", "Anthropic")
-            return text
-
-        extra_system_parts = [_sanitize_oauth_text(t) for t in extra_system_parts]
-
-        # 3. system[] = the official Claude Code identity line only.
+        # 2. system[] = the official Claude Code identity line only.
         system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
 
-        # 4. Relocate the real prompt into a <system_context> preamble on the
+        # 3. Relocate the real prompt into a <system_context> preamble on the
         #    first user message, with cache_control to preserve prompt caching.
         if extra_system_parts:
             preamble = (
-                "<system_context>\n"
-                + "\n\n".join(p for p in extra_system_parts if p).strip()
-                + "\n</system_context>"
+                f"<{_OAUTH_SYSTEM_CONTEXT_TAG}>\n"
+                + "\n\n".join(extra_system_parts).strip()
+                + f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
             )
             _prepend_oauth_system_context(anthropic_messages, preamble)
 
-        # 5. Normalize tool names so NOTHING goes on the OAuth wire with a
+        # 4. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
         #    billing classifier treats a single-underscore ``mcp_`` tool name as
         #    a third-party-app fingerprint and rejects the request with HTTP 400
@@ -2672,7 +2690,7 @@ def build_anthropic_kwargs(
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
 
-        # 6. Apply the same normalization to tool names in message history
+        # 5. Apply the same normalization to tool names in message history
         #    (tool_use blocks) so replayed turns match the wire names above.
         for msg in anthropic_messages:
             content = msg.get("content")

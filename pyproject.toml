@@ -87,6 +87,12 @@ dependencies = [
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
+  # cryptography wheels bundle OpenSSL; 48.0.1+ fixes GHSA-537c-gmf6-5ccf.
+  "cryptography>=48.0.1,<50",
+  # fastapi/starlette pull python-multipart transitively; pin the patched floor.
+  "python-multipart>=0.0.32,<1",
+  # Transitive via rich/pytest; 2.20.0 fixes GHSA-5239-wwwm-4pmq (ReDoS).
+  "pygments>=2.20.0,<3",
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -135,10 +141,10 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2", "tornado==6.5.7"]  # aiohttp: 3.14.x CVE batch; tornado: GHSA-3x9g-8vmp-wqvf (telegram webhooks)
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
+slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.14.1"]
 matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
@@ -175,16 +181,16 @@ vision = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+mcp = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 nemo-relay = ["nemo-relay==0.3"]
-homeassistant = ["aiohttp==3.13.4"]
-sms = ["aiohttp==3.13.4"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"]
+homeassistant = ["aiohttp==3.14.1"]
+sms = ["aiohttp==3.14.1"]
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -237,9 +243,9 @@ youtube = [
   "youtube-transcript-api==1.2.4",
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
-# starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
+# starlette==1.3.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1"]
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every

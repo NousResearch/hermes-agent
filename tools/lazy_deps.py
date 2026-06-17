@@ -131,7 +131,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
+        "aiohttp==3.14.1",  # CVE-2026-34993, CVE-2026-47265 + 3.14.x advisory batch
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
@@ -156,7 +156,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"),
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -177,7 +177,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "starlette==1.3.1",  # CVE-2026-48710 + post-1.0.1 Starlette advisories — sync with pyproject [web]
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback

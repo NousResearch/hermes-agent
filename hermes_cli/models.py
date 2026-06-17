@@ -3708,6 +3708,7 @@ def validate_requested_model(
                 "persist": True,
                 "recognized": False,
                 "message": message,
+                "suggestions": suggestions,
             }
 
         message = (

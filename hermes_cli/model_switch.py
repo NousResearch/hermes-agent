@@ -290,6 +290,7 @@ class ModelSwitchResult:
     api_mode: str = ""
     error_message: str = ""
     warning_message: str = ""
+    suggestions: list = None
     provider_label: str = ""
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
@@ -1113,13 +1114,16 @@ def switch_model(
     # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model)
 
-    # --- Collect warnings ---
+    # --- Collect warnings + suggestions ---
     warnings: list[str] = []
     if validation.get("message"):
         warnings.append(validation["message"])
     hermes_warn = _check_hermes_model_warning(new_model)
     if hermes_warn:
         warnings.append(hermes_warn)
+
+    # Suggestions from validation (close matches when model wasn't in listing)
+    suggestions = validation.get("suggestions") or []
 
     # --- Build result ---
     return ModelSwitchResult(
@@ -1131,6 +1135,7 @@ def switch_model(
         base_url=base_url,
         api_mode=api_mode,
         warning_message=" | ".join(warnings) if warnings else "",
+        suggestions=suggestions if suggestions else None,
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,

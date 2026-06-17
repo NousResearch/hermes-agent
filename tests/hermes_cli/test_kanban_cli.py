@@ -24,6 +24,20 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _init_git_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    origin = repo.parent / f"{repo.name}-origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", "main"], check=True, capture_output=True, text=True)
+
+
 def _make_git_worktree(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     worktree = tmp_path / "worktree"
@@ -212,6 +226,63 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     kc.run_slash(f"claim {tid}")
     assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
+def test_run_slash_claim_uses_fresh_origin_main_and_records_branch(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    origin = repo.parent / f"{repo.name}-origin.git"
+    upstream = tmp_path / "upstream"
+    real_run = subprocess.run
+    real_run(["git", "clone", str(origin), str(upstream)], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    (upstream / "fresh.txt").write_text("fresh\n", encoding="utf-8")
+    real_run(["git", "-C", str(upstream), "add", "fresh.txt"], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "commit", "-m", "fresh origin"], check=True, capture_output=True, text=True)
+    real_run(["git", "-C", str(upstream), "push", "origin", "main"], check=True, capture_output=True, text=True)
+    fresh_head = real_run(["git", "-C", str(upstream), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    stale_head = real_run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    assert fresh_head != stale_head, "local main should be stale relative to origin/main for this regression test"
+
+    board = "claim-board"
+    kb.create_board(board, default_workdir=str(repo), worktree_base_ref="origin/main")
+    kb.set_current_board(board)
+
+    out = kc.run_slash("create 'claim me' --assignee alice")
+    import re
+    match = re.search(r"(t_[a-f0-9]+)", out)
+    assert match is not None
+    tid = match.group(1)
+
+    calls = []
+
+    def spy(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(kb.subprocess, "run", spy)
+    claim = kc.run_slash(f"claim {tid}")
+    assert "Claimed" in claim
+    assert "Workspace:" in claim
+    assert ".worktrees" in claim
+
+    expected = repo / ".worktrees" / tid
+    with kb.connect(board=board) as conn:
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.workspace_kind == "worktree"
+    assert task.workspace_path == str(expected)
+    assert task.branch_name == f"wt/{tid}"
+    assert task.workspace_base_ref == "origin/main"
+    assert task.workspace_base_commit == fresh_head
+    assert task.workspace_base_commit != stale_head
+    assert expected.exists()
+
+    fetch_idx = next(i for i, cmd in enumerate(calls) if cmd == ["git", "-C", str(repo), "fetch", "origin", "main"])
+    worktree_idx = next(i for i, cmd in enumerate(calls) if cmd[:6] == ["git", "-C", str(repo), "worktree", "add", "-b"])
+    assert fetch_idx < worktree_idx, calls
 
 
 def test_run_slash_json_output(kanban_home):

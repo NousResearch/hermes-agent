@@ -271,3 +271,84 @@ def test_stream_is_lazy_iterator():
         ("after_first", "hi"),
         ("done", "hi"),
     ]
+
+
+# --- ElevenLabs streaming provider ---
+
+
+class _FakeElevenLabsChunk:
+    """Mimics the bytes returned by ElevenLabs' iterator."""
+    pass
+
+
+def _make_fake_elevenlabs_client(chunks: list[bytes]):
+    """Build a stub *class* mimicking ``elevenlabs.client.ElevenLabs``.
+
+    The real SDK's ``ElevenLabs(api_key=...)`` returns a client instance
+    that exposes a ``.text_to_speech.convert(**kwargs)`` method returning
+    an iterator of ``bytes``. This stub class behaves the same way:
+    instantiated with ``api_key=...`` it produces a client whose
+    ``text_to_speech.convert`` returns an iterator over ``chunks`` and
+    asserts the ``output_format`` kwarg matches the API contract.
+
+    Note: this stub returns the *class* (not an instance) so the
+    production code can call ``StubClass(api_key=...)`` just like the
+    real ``ElevenLabs(api_key=...)`` constructor.
+    """
+    class _StubClient:
+        def __init__(self, **kwargs):
+            # Accept api_key=... silently (matches real SDK signature).
+            # The nested class captures ``chunks`` via closure from the
+            # factory's enclosing scope.
+            class _TTS:
+                def __init__(self, chunks):
+                    self._chunks = chunks
+
+                def convert(self, **kwargs):
+                    # Verify the call shape matches the real API
+                    assert kwargs["output_format"] == "pcm_24000"
+                    return iter(self._chunks)
+
+            self.text_to_speech = _TTS(chunks)
+
+    return _StubClient
+
+
+def test_elevenlabs_yields_chunks(monkeypatch):
+    """Provider yields each chunk from the client iterator."""
+    from tools.tts_streaming import ElevenLabsStreamingProvider
+    fake_chunks = [b"\x01\x02", b"\x03\x04", b"\x05\x06"]
+    monkeypatch.setattr(
+        "tools.tts_streaming._import_elevenlabs_client",
+        lambda: _make_fake_elevenlabs_client(fake_chunks),
+    )
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    provider = ElevenLabsStreamingProvider({})
+    out = list(provider.stream("hello"))
+    assert out == fake_chunks
+
+
+def test_elevenlabs_respects_stop_event(monkeypatch):
+    """Stop event aborts the iteration."""
+    from tools.tts_streaming import ElevenLabsStreamingProvider
+    import threading
+    fake_chunks = [b"\x01", b"\x02", b"\x03", b"\x04"]
+    monkeypatch.setattr(
+        "tools.tts_streaming._import_elevenlabs_client",
+        lambda: _make_fake_elevenlabs_client(fake_chunks),
+    )
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    stop = threading.Event()
+    stop.set()  # already stopped
+    provider = ElevenLabsStreamingProvider({}, stop_event=stop)
+    out = list(provider.stream("hello"))
+    assert out == []  # iteration aborts before yielding any chunk
+
+
+def test_elevenlabs_audio_format():
+    """sample_rate/channels/sample_width match the API contract."""
+    from tools.tts_streaming import ElevenLabsStreamingProvider
+    p = ElevenLabsStreamingProvider.__new__(ElevenLabsStreamingProvider)  # skip __init__
+    assert p.sample_rate == 24000
+    assert p.channels == 1
+    assert p.sample_width == 2

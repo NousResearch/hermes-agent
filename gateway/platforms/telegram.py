@@ -609,6 +609,26 @@ class TelegramAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             return False
 
+    _TOPIC_QUALIFIED_CHAT_ID_RE = re.compile(r"^\s*(-?\d+):(\d+)\s*$")
+
+    @classmethod
+    def _split_topic_qualified_chat_id(
+        cls,
+        chat_id: str,
+    ) -> tuple[str, Optional[str]]:
+        """Split ``chat_id:thread_id`` targets before Bot API ``int(chat_id)``.
+
+        Channel-directory and home-channel targets can legitimately arrive at
+        the adapter as a single Telegram target string like
+        ``-1003703772259:4294967297``. Telegram Bot API methods need the base
+        chat id and the forum topic id as separate fields, so normalize that
+        shape at the adapter boundary. Plain chat ids are returned unchanged.
+        """
+        match = cls._TOPIC_QUALIFIED_CHAT_ID_RE.fullmatch(str(chat_id))
+        if not match:
+            return str(chat_id), None
+        return match.group(1), match.group(2)
+
     @classmethod
     def _is_private_dm_topic_send(
         cls,
@@ -1273,6 +1293,7 @@ class TelegramAdapter(BasePlatformAdapter):
         - transient / unknown → ``SendResult(success=False)`` with retry
           semantics (the message may already be edited; do NOT legacy-resend)
         """
+        chat_id, _target_thread_id = self._split_topic_qualified_chat_id(chat_id)
         payload: Dict[str, Any] = {
             "chat_id": int(chat_id),
             "message_id": int(message_id),
@@ -1346,6 +1367,9 @@ class TelegramAdapter(BasePlatformAdapter):
         legacy plain-text draft. A permanent/capability failure additionally
         latches ``_rich_draft_disabled`` so later frames skip the rich attempt.
         """
+        chat_id, target_thread_id = self._split_topic_qualified_chat_id(chat_id)
+        if target_thread_id and self._metadata_thread_id(metadata) is None:
+            metadata = {**(metadata or {}), "thread_id": target_thread_id}
         payload: Dict[str, Any] = {
             "chat_id": int(chat_id),
             "draft_id": int(draft_id),
@@ -2336,6 +2360,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        chat_id, target_thread_id = self._split_topic_qualified_chat_id(chat_id)
+        if target_thread_id and self._metadata_thread_id(metadata) is None:
+            metadata = {**(metadata or {}), "thread_id": target_thread_id}
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via

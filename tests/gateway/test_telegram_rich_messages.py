@@ -118,6 +118,39 @@ async def test_rich_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
+async def test_rich_send_accepts_topic_qualified_chat_id():
+    """Home-channel targets may arrive as chat_id:thread_id; split them before int()."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("-1003703772259:4294967297", RICH_CONTENT)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["chat_id"] == -1003703772259
+    assert api_kwargs["message_thread_id"] == 4294967297
+    bot = adapter._bot
+    assert bot is not None
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_accepts_topic_qualified_chat_id():
+    """The MarkdownV2 fallback path must split chat_id:thread_id too."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send("-1003703772259:4294967297", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited_once()
+    kwargs = bot.send_message.call_args.kwargs
+    assert kwargs["chat_id"] == -1003703772259
+    assert kwargs["message_thread_id"] == 4294967297
+
+
+@pytest.mark.asyncio
 async def test_details_with_math_skips_rich_send_to_avoid_tdesktop_crash():
     adapter = _make_adapter()
 
@@ -529,6 +562,27 @@ async def test_rich_draft_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
+async def test_rich_draft_accepts_topic_qualified_chat_id():
+    adapter = _make_adapter()
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft(
+        "-1003703772259:4294967297",
+        draft_id=7,
+        content=RICH_CONTENT,
+    )
+
+    assert result.success is True
+    call = bot.do_api_request.call_args
+    assert call.args[0] == "sendRichMessageDraft"
+    api_kwargs = call.kwargs["api_kwargs"]
+    assert api_kwargs["chat_id"] == -1003703772259
+    assert api_kwargs["message_thread_id"] == 4294967297
+
+
+@pytest.mark.asyncio
 async def test_rich_draft_capability_failure_falls_back_and_latches_off():
     adapter = _make_adapter()
     adapter._bot.do_api_request = AsyncMock(side_effect=BadRequest("Method not found"))
@@ -656,6 +710,23 @@ async def test_finalize_edit_uses_rich_for_table_content():
     # No fresh send / delete — the whole point of the in-place rich edit.
     adapter._bot.edit_message_text.assert_not_called()
     adapter._bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_accepts_topic_qualified_chat_id():
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "-1003703772259:4294967297",
+        "555",
+        RICH_CONTENT,
+        finalize=True,
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["chat_id"] == -1003703772259
+    assert api_kwargs["message_id"] == 555
 
 
 @pytest.mark.asyncio

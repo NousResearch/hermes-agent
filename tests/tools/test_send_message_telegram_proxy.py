@@ -155,3 +155,39 @@ class TestSendTelegramStandaloneProxy:
         assert "get_updates_request" not in call_kwargs
         httpx_request_factory.assert_not_called()
         bot.send_message.assert_awaited_once()
+
+    def test_topic_qualified_chat_id_is_split_for_standalone_send(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Standalone sends must accept Telegram home targets stored as chat_id:thread_id."""
+        from tools.send_message_tool import _send_telegram
+
+        for var in (
+            "TELEGRAM_PROXY",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        bot = _make_bot()
+        bot_factory = MagicMock(return_value=bot)
+        httpx_request_factory = MagicMock(side_effect=lambda **kw: MagicMock(_kw=kw))
+        _install_telegram_mock_with_request(monkeypatch, bot_factory, httpx_request_factory)
+
+        result: dict[str, Any] = asyncio.run(
+            _send_telegram("tok", "-1003703772259:4294967297", "hello world")
+        )
+
+        assert result["success"] is True
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.call_args.kwargs
+        assert kwargs["chat_id"] == -1003703772259
+        assert kwargs["message_thread_id"] == 4294967297

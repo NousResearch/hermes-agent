@@ -231,6 +231,50 @@ def test_oversized_resume_pending_session_rotates_before_agent_start(monkeypatch
     assert session_key not in runner._pending_model_notes
 
 
+def test_resume_pending_empty_active_history_clears_stale_marker():
+    from gateway.run import GatewayRunner
+
+    now = datetime.now()
+    session_key = (
+        "agent:main:discord:group:1490826686294392893:492823160601837596"
+    )
+    entry = SessionEntry(
+        session_key=session_key,
+        session_id="20260616_234010_2675ef",
+        created_at=now,
+        updated_at=now,
+        platform=Platform.DISCORD,
+        chat_type="group",
+        resume_pending=True,
+        resume_reason="shutdown_timeout",
+        last_prompt_tokens=329_227,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = MagicMock()
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.clear_resume_pending.return_value = True
+
+    result_entry, context_note = runner._reset_oversized_resume_pending_session(
+        source=_make_source(platform=Platform.DISCORD, chat_id="492823160601837596"),
+        session_key=session_key,
+        session_entry=entry,
+    )
+
+    assert result_entry is entry
+    assert context_note is None
+    assert entry.resume_pending is False
+    assert entry.resume_reason is None
+    assert entry.last_resume_marked_at is None
+    assert entry.last_prompt_tokens == 0
+    runner.session_store.clear_resume_pending.assert_called_once_with(session_key)
+    runner.session_store.update_session.assert_called_once_with(
+        session_key,
+        last_prompt_tokens=0,
+    )
+    runner.session_store.reset_session.assert_not_called()
+
+
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
     return SessionSource(platform=platform, chat_id=chat_id, user_id=user_id)
 

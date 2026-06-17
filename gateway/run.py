@@ -8380,7 +8380,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc,
             )
             return session_entry, None
-        if not history or len(history) < 4:
+        if not history:
+            logger.info(
+                "Resume-pending recovery: clearing stale marker for %s; "
+                "no active transcript rows remain for %s",
+                session_key,
+                session_entry.session_id,
+            )
+            try:
+                self.session_store.clear_resume_pending(session_key)
+            except Exception as exc:
+                logger.debug(
+                    "Resume-pending recovery: failed to clear stale marker for %s: %s",
+                    session_key,
+                    exc,
+                )
+            try:
+                self.session_store.update_session(session_key, last_prompt_tokens=0)
+            except Exception as exc:
+                logger.debug(
+                    "Resume-pending recovery: failed to reset prompt token count for %s: %s",
+                    session_key,
+                    exc,
+                )
+            session_entry.resume_pending = False
+            session_entry.resume_reason = None
+            session_entry.last_resume_marked_at = None
+            session_entry.last_prompt_tokens = 0
+            return session_entry, None
+
+        if len(history) < 4:
             return session_entry, None
 
         user_config: dict = {}

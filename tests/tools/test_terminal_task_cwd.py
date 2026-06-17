@@ -159,6 +159,44 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     }]
 
 
+def test_gateway_self_restart_blocked_before_background_spawn(monkeypatch):
+    """Gateway sessions must not self-restart through terminal(background=True)."""
+
+    class FakeEnv:
+        env = {}
+        cwd = "/workspace/live"
+
+    class FakeRegistry:
+        pending_watchers = []
+
+        def spawn_local(self, **_kwargs):
+            raise AssertionError("blocked gateway restart must not spawn")
+
+    import tools.process_registry as process_registry_mod
+
+    task_id = "gateway-bg-self-restart"
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/live"))
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
+    monkeypatch.setattr(process_registry_mod, "process_registry", FakeRegistry())
+
+    result = json.loads(
+        terminal_tool.terminal_tool(
+            command="launchctl kickstart -k gui/501/ai.hermes.gateway",
+            task_id=task_id,
+            background=True,
+        )
+    )
+
+    assert result["status"] == "blocked"
+    assert "gateway self-restart guard" in result["error"]
+
+
 def test_registering_cwd_override_updates_live_env_cwd(monkeypatch):
     """An ACP ``update_cwd`` (re-)registered mid-session must win over a
     previously ``cd``-ed live ``env.cwd``.

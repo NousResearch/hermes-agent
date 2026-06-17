@@ -11,8 +11,11 @@ from gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
     build_footer_line,
+    build_prefix_line,
     format_runtime_footer,
+    format_runtime_prefix,
     resolve_footer_config,
+    resolve_prefix_config,
 )
 
 
@@ -200,6 +203,50 @@ def test_resolve_ignores_malformed_config():
     user = {"display": {"runtime_footer": "on"}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# runtime_prefix — first-line model markers
+# ---------------------------------------------------------------------------
+
+def test_format_runtime_prefix_defaults_grok_and_glm():
+    assert format_runtime_prefix(model="grok-composer-2.5-fast") == "[grok]"
+    assert format_runtime_prefix(model="glm-5.1") == "[glm]"
+    assert format_runtime_prefix(model="glm-5.2") == "[glm2]"
+    assert format_runtime_prefix(model="gpt-5.5") == "[gpt5.5]"
+
+
+def test_format_runtime_prefix_longest_key_wins():
+    assert format_runtime_prefix(
+        model="grok-composer-2.5-fast",
+        labels={"grok": "[generic]", "grok-composer": "[composer]"},
+    ) == "[composer]"
+
+
+def test_resolve_prefix_platform_override_and_custom_label():
+    user = {
+        "display": {
+            "runtime_prefix": {"enabled": False, "labels": {"gpt": "[gpt]"}},
+            "platforms": {"telegram": {"runtime_prefix": {"enabled": True}}},
+        },
+    }
+    cfg = resolve_prefix_config(user, "telegram")
+    assert cfg["enabled"] is True
+    assert cfg["labels"]["gpt"] == "[gpt]"
+
+
+def test_build_prefix_line_empty_when_disabled():
+    assert build_prefix_line(
+        user_config={}, platform_key="telegram", model="grok-composer-2.5-fast"
+    ) == ""
+
+
+def test_build_prefix_line_when_enabled():
+    assert build_prefix_line(
+        user_config={"display": {"runtime_prefix": {"enabled": True}}},
+        platform_key="telegram",
+        model="glm-5.1",
+    ) == "[glm]"
 
 
 # ---------------------------------------------------------------------------

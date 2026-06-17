@@ -29,6 +29,15 @@ import os
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_PREFIX_MAP: dict[str, str] = {
+    "grok-composer": "[grok]",
+    "grok": "[grok]",
+    "gpt-5.5": "[gpt5.5]",
+    "gpt": "[gpt]",
+    "glm-5.1": "[glm]",
+    "glm-5.2": "[glm2]",
+    "glm": "[glm]",
+}
 _SEP = " · "
 
 
@@ -86,6 +95,83 @@ def resolve_footer_config(
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
 
     return resolved
+
+
+def resolve_prefix_config(
+    user_config: dict[str, Any] | None,
+    platform_key: str | None = None,
+) -> dict[str, Any]:
+    """Resolve effective first-line runtime-prefix config for *platform_key*.
+
+    Merge order (later wins):
+        1. Built-in defaults (enabled=False)
+        2. ``display.runtime_prefix``
+        3. ``display.platforms.<platform_key>.runtime_prefix``
+
+    ``labels`` maps model/provider substrings to the exact marker to prepend.
+    Keys are matched case-insensitively against the final model string, longest
+    key first so specific model names beat broad families.
+    """
+    resolved: dict[str, Any] = {
+        "enabled": False,
+        "labels": dict(_DEFAULT_PREFIX_MAP),
+    }
+    cfg = (user_config or {}).get("display") or {}
+
+    def _merge(src: Any) -> None:
+        if not isinstance(src, dict):
+            return
+        if "enabled" in src:
+            resolved["enabled"] = bool(src.get("enabled"))
+        labels = src.get("labels") or src.get("map") or src.get("markers")
+        if isinstance(labels, dict):
+            merged = dict(resolved.get("labels") or {})
+            for key, value in labels.items():
+                k = str(key).strip().lower()
+                v = str(value).strip()
+                if k and v:
+                    merged[k] = v
+            resolved["labels"] = merged
+
+    _merge(cfg.get("runtime_prefix"))
+
+    if platform_key:
+        platforms = cfg.get("platforms") or {}
+        plat_cfg = platforms.get(platform_key)
+        if isinstance(plat_cfg, dict):
+            _merge(plat_cfg.get("runtime_prefix"))
+
+    return resolved
+
+
+def format_runtime_prefix(
+    *,
+    model: Optional[str],
+    labels: dict[str, str] | None = None,
+) -> str:
+    """Return a first-line marker for *model*, or ``""`` when unmatched."""
+    if not model:
+        return ""
+    model_l = str(model).lower()
+    mapping = labels or _DEFAULT_PREFIX_MAP
+    for needle in sorted(mapping, key=len, reverse=True):
+        if needle and needle.lower() in model_l:
+            return str(mapping[needle]).strip()
+    return ""
+
+
+def build_prefix_line(
+    *,
+    user_config: dict[str, Any] | None,
+    platform_key: str | None,
+    model: Optional[str],
+) -> str:
+    """Top-level entry point used by gateway/run.py for first-line markers."""
+    cfg = resolve_prefix_config(user_config, platform_key)
+    if not cfg.get("enabled"):
+        return ""
+    labels = cfg.get("labels") if isinstance(cfg.get("labels"), dict) else None
+    return format_runtime_prefix(model=model, labels=labels)
 
 
 def format_runtime_footer(

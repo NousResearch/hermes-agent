@@ -9145,24 +9145,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
-            # Runtime-metadata footer — only on the FINAL message of the turn.
-            # Off by default (display.runtime_footer.enabled=false).  When
-            # streaming already delivered the body, we can't mutate the sent
-            # text, so we fire a separate trailing send below.
+            # Runtime first-line prefix + metadata footer — only on the FINAL
+            # message of the turn.  Both are off by default.  When streaming has
+            # already delivered the body, we can't mutate the sent text; the
+            # footer is sent as a trailing message below, while the prefix is
+            # intentionally skipped because it would no longer be a first line.
             _footer_line = ""
+            _prefix_line = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl
+                from gateway.runtime_footer import (
+                    build_footer_line as _bfl,
+                    build_prefix_line as _bpl,
+                )
+                _runtime_display_config = _load_gateway_config()
+                _platform_key = _platform_config_key(source.platform)
+                _result_model = agent_result.get("model")
+                _prefix_line = _bpl(
+                    user_config=_runtime_display_config,
+                    platform_key=_platform_key,
+                    model=_result_model,
+                )
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
-                    model=agent_result.get("model"),
+                    user_config=_runtime_display_config,
+                    platform_key=_platform_key,
+                    model=_result_model,
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                 )
             except Exception as _footer_err:
-                logger.debug("runtime_footer build failed: %s", _footer_err)
+                logger.debug("runtime footer/prefix build failed: %s", _footer_err)
                 _footer_line = ""
+                _prefix_line = ""
+            if _prefix_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+                if not response.lstrip().startswith(_prefix_line):
+                    response = f"{_prefix_line}\n{response}"
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 

@@ -832,7 +832,7 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
 
-    def test_load_config_default_disables_telegram_rich_messages(self, tmp_path, monkeypatch):
+    def test_load_config_default_enables_telegram_rich_messages(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
 
@@ -842,7 +842,7 @@ class TestLoadGatewayConfig:
 
         config = load_config()
 
-        assert config["telegram"]["extra"]["rich_messages"] is False
+        assert config["telegram"]["extra"]["rich_messages"] is True
 
     def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

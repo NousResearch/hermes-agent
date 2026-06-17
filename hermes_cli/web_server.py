@@ -5228,10 +5228,39 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
     return {"logged_in": False}
 
 
+def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str]:
+    """Shell command that clears an external provider's credentials.
+
+    External providers store their credentials outside Hermes, so the disconnect
+    API deliberately refuses them (we never delete files another CLI owns on the
+    user's behalf via a silent API call). For the ones we know how to clear we
+    instead hand the GUI a command it can *run in the embedded terminal* — the
+    user sees exactly what executes, and Hermes then stops resolving the token.
+
+    Claude Code has no scriptable logout (only the interactive ``/logout``), so
+    we remove the credential the same way logout does: the macOS Keychain entry
+    (``Claude Code-credentials``) and/or the ``~/.claude/.credentials.json``
+    file — the two sources ``read_claude_code_credentials()`` consults. Returns
+    None for providers we can't safely clear (the GUI shows a manual hint).
+    """
+    if provider.get("flow") != "external":
+        return None
+    if provider.get("id") == "claude-code":
+        rm_file = "rm -f ~/.claude/.credentials.json"
+        if sys.platform == "darwin":
+            return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
+        return rm_file
+    return None
+
+
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
     """Return the manual disconnect path when the API cannot clear this provider."""
     if provider.get("flow") == "external":
-        return f"Use `{provider['cli_command']}` or that provider's CLI to remove it."
+        if _oauth_provider_disconnect_command(provider):
+            # The GUI offers a one-click "run in terminal" path; this hint is the
+            # fallback wording for surfaces that only show text.
+            return "Managed outside Hermes — run the disconnect command to remove it."
+        return "Managed by that provider's CLI; remove it there."
     if status.get("source") == "env_var":
         return "Remove the API key from Settings → Keys instead."
     return None
@@ -5246,6 +5275,8 @@ async def list_oauth_providers(profile: Optional[str] = None):
         name            human label
         flow            "pkce" | "device_code" | "external" | "loopback"
         cli_command     fallback CLI command for users to run manually
+        disconnect_command  shell command that clears an external provider's
+                            creds (run in the embedded terminal), else null
         docs_url        external docs/portal link for the "Learn more" link
         status:
           logged_in        bool — currently has usable creds
@@ -5267,6 +5298,7 @@ async def list_oauth_providers(profile: Optional[str] = None):
                 "cli_command": p["cli_command"],
                 "docs_url": p["docs_url"],
                 "disconnect_hint": disconnect_hint,
+                "disconnect_command": _oauth_provider_disconnect_command(p),
                 "disconnectable": disconnect_hint is None,
                 "status": status,
             })

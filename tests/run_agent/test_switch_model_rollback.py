@@ -202,3 +202,37 @@ def test_successful_switch_still_works_after_rollback_refactor():
     assert agent.provider == "openrouter"
     assert agent.api_key == "or-key-new"
     assert agent.client is new_client
+
+
+def test_provider_switch_without_base_url_drops_previous_endpoint():
+    """Switching providers must not pair the new model with the old endpoint."""
+    agent = _make_agent_openrouter()
+    agent.model = "gpt-5.1-codex"
+    agent.provider = "copilot"
+    agent.base_url = "https://api.githubcopilot.com"
+    agent.api_key = "copilot-key-original"
+    agent._client_kwargs = {
+        "api_key": "copilot-key-original",
+        "base_url": "https://api.githubcopilot.com",
+    }
+
+    with (
+        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as build_client,
+        patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-resolved"),
+        patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+    ):
+        agent.switch_model(
+            new_model="claude-opus-4.8",
+            new_provider="anthropic",
+            api_key="sk-ant-new",
+            base_url="",
+            api_mode="anthropic_messages",
+        )
+
+    assert agent.model == "claude-opus-4.8"
+    assert agent.provider == "anthropic"
+    assert agent.base_url == ""
+    assert agent._primary_runtime["base_url"] == ""
+    assert agent._anthropic_base_url is None
+    build_client.assert_called_once_with("sk-ant-new", None, timeout=None)

@@ -1147,6 +1147,26 @@ def init_agent(
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
+                if _mp is None:
+                    # Provider name not found — warn with valid options
+                    try:
+                        from plugins.memory import discover_memory_providers as _discover_mp
+                        _valid = [n for n, _d, _a in _discover_mp()]
+                        _valid_str = ", ".join(sorted(_valid)) if _valid else "(none)"
+                    except Exception:
+                        _valid_str = "(discovery failed)"
+                    logger.warning(
+                        "memory.provider '%s' is not a recognized memory provider. "
+                        "Valid providers: %s. Falling back to built-in memory.",
+                        _mem_provider_name, _valid_str,
+                    )
+                elif not _mp.is_available():
+                    logger.warning(
+                        "memory.provider '%s' was found but is not available "
+                        "(missing credentials or dependencies). "
+                        "Falling back to built-in memory.",
+                        _mem_provider_name,
+                    )
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 if agent._memory_manager.providers:

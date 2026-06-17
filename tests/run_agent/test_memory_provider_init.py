@@ -1,5 +1,6 @@
 """Regression tests for memory provider selection during AIAgent init."""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -132,3 +133,106 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
+
+
+def test_unknown_memory_provider_logs_warning_with_valid_options(caplog):
+    """Setting memory.provider to an unrecognized name should log a WARNING
+    listing valid providers, not fail silently (#47650)."""
+    cfg = {"memory": {"provider": "lm-studio"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=None),
+        patch(
+            "plugins.memory.discover_memory_providers",
+            return_value=[("builtin", "Built-in", True), ("honcho", "Honcho", False)],
+        ),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        with caplog.at_level(logging.WARNING, logger="agent.agent_init"):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+    # Warning must mention the invalid name and list valid providers
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("lm-studio" in m and "builtin" in m and "honcho" in m for m in warning_msgs), (
+        f"Expected warning about 'lm-studio' with valid providers, got: {warning_msgs}"
+    )
+
+
+def test_unavailable_memory_provider_logs_warning(caplog):
+    """A known memory provider that reports is_available()=False should warn (#47650)."""
+
+    class UnavailableProvider:
+        name = "unavailable-mem"
+
+        def is_available(self):
+            return False
+
+    cfg = {"memory": {"provider": "unavailable-mem"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=UnavailableProvider()),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        with caplog.at_level(logging.WARNING, logger="agent.agent_init"):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("unavailable-mem" in m and "not available" in m for m in warning_msgs), (
+        f"Expected warning about 'unavailable-mem' not available, got: {warning_msgs}"
+    )
+
+
+def test_valid_memory_provider_no_warning(caplog):
+    """A valid, available memory provider should not trigger any validation warning (#47650)."""
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=RecordingMemoryProvider()),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        with caplog.at_level(logging.WARNING, logger="agent.agent_init"):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+    # Valid provider should be activated, no validation warnings
+    assert agent._memory_manager is not None
+    assert len(agent._memory_manager.providers) > 0
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("not a recognized" in m or "not available" in m for m in warning_msgs), (
+        f"Unexpected validation warning for valid provider: {warning_msgs}"
+    )

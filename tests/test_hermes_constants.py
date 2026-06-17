@@ -139,12 +139,66 @@ class TestIsContainer:
         """Returns False on a regular Linux host."""
         import builtins
         self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         cgroup_file = tmp_path / "cgroup"
         cgroup_file.write_text("12:memory:/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text("22 21 0:20 / /sys rw shared:7 - sysfs sysfs rw\n")
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is False
+
+    def test_detects_kubernetes_env(self, monkeypatch):
+        """KUBERNETES_SERVICE_HOST env var triggers detection (k8s/k3s pod)."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+        assert is_container() is True
+
+    def test_detects_cgroup_kubepods(self, monkeypatch, tmp_path):
+        """/proc/1/cgroup containing 'kubepods' triggers detection."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("12:memory:/kubepods/besteffort/podabc\n")
         _real_open = builtins.open
         monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
-        assert is_container() is False
+        assert is_container() is True
+
+    def test_detects_cgroup_v2_via_mountinfo(self, monkeypatch, tmp_path):
+        """cgroup v2 (0::/ only) falls back to containerd marker in mountinfo."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")  # cgroup v2 — no runtime marker
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "1234 1233 0:42 /containerd/.../rootfs / rw - overlay overlay rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is True
 
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""

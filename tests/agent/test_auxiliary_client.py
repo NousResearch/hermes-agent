@@ -2331,6 +2331,42 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["timeout"] == 12.5
         assert response.choices[0].message.content == "summary"
 
+    def test_recovers_text_deltas_when_sdk_parser_crashes_on_null_output(self):
+        """Codex may send response.output=null in the terminal event.
+
+        The OpenAI SDK parser raises TypeError before get_final_response() can
+        be called, but prior output_text.delta events are still enough for
+        text-only auxiliary calls such as title generation.
+        """
+        class NullOutputCrashStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="Recovered ")
+                yield SimpleNamespace(type="response.output_text.delta", delta="Title")
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - SDK crash prevents this
+                raise AssertionError("should not need final response after parser crash")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return NullOutputCrashStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "title me"}],
+            timeout=12.5,
+        )
+
+        assert response.choices[0].message.content == "Recovered Title"
+
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class SlowAliveStream:
             def __enter__(self):

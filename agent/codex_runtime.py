@@ -245,7 +245,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -329,6 +329,19 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            # openai>=2.24 tries to parse response.completed with
+            # `for output in response.output`; the ChatGPT Codex backend can
+            # emit output=null while valid items were already streamed via
+            # response.output_item.done. Route that SDK parsing gap through
+            # the raw create(stream=True) fallback, which can backfill items.
+            if "'NoneType' object is not iterable" in str(exc):
+                logger.debug(
+                    "Responses stream parser hit output=None; falling back to create(stream=True). %s",
+                    agent._client_log_context(),
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
 
 
 
@@ -408,7 +421,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(

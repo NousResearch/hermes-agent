@@ -769,13 +769,13 @@ class _CodexCompletionsAdapter:
                 # new failure mode for auxiliary calls.
                 pass
 
+        # Collect output items and text deltas during streaming —
+        # the Codex backend can return empty response.output from
+        # get_final_response() even when items were streamed.
+        collected_output_items: List[Any] = []
+        collected_text_deltas: List[str] = []
+        has_function_calls = False
         try:
-            # Collect output items and text deltas during streaming —
-            # the Codex backend can return empty response.output from
-            # get_final_response() even when items were streamed.
-            collected_output_items: List[Any] = []
-            collected_text_deltas: List[str] = []
-            has_function_calls = False
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
@@ -857,11 +857,35 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc
-            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
-            raise
+            # The ChatGPT/Codex Responses endpoint can emit a terminal
+            # response.completed event with response.output=null.  The OpenAI
+            # SDK streaming parser then crashes with TypeError("'NoneType'
+            # object is not iterable") before stream.get_final_response() is
+            # reachable, even though useful output_text.delta events may have
+            # already been yielded.  Treat that SDK parser failure as a
+            # partial-success path for text-only auxiliary calls so background
+            # title generation/compression do not spam user-visible warnings.
+            if (
+                isinstance(exc, TypeError)
+                and "NoneType" in str(exc)
+                and "not iterable" in str(exc)
+                and collected_text_deltas
+                and not has_function_calls
+            ):
+                logger.debug(
+                    "Codex auxiliary: recovered %d text deltas after SDK "
+                    "response.output=None parser failure",
+                    len(collected_text_deltas),
+                )
+            else:
+                logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+                raise
         finally:
             if timeout_timer is not None:
                 timeout_timer.cancel()
+
+        if collected_text_deltas and not text_parts and not tool_calls_raw:
+            text_parts.append("".join(collected_text_deltas))
 
         content = "".join(text_parts).strip() or None
 

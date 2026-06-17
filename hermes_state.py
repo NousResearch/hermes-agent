@@ -2877,6 +2877,13 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        Ordered by AUTOINCREMENT id (true insertion order), not timestamp:
+        see c03acca50 / #25774. ``timestamp`` is not monotonic across a
+        multi-tool turn, and platform-supplied timestamps can be skewed, so
+        ordering by it can place a tool result before the assistant tool_call
+        that produced it and break the tool-call/tool-response adjacency the
+        provider requires (HTTP 400 on resume). Mirrors :meth:`get_messages`.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -2890,7 +2897,7 @@ class SessionDB:
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
-                f"{active_clause} ORDER BY timestamp, id",
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 

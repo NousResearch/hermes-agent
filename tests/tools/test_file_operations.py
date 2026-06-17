@@ -563,6 +563,19 @@ class TestSearchFilesFallbackHiddenPaths:
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
 
+class TestShellFileOpsAtomicWrite:
+    def test_atomic_write_wraps_errexit_in_subshell(self, mock_env):
+        """Atomic writes use errexit without leaking it into wrapper shells."""
+        ops = ShellFileOperations(mock_env)
+
+        result = ops._atomic_write("/tmp/test.txt", "hello\n")
+
+        assert result.exit_code == 0
+        command = mock_env.execute.call_args.args[0]
+        assert command.startswith("( set -e; ")
+        assert command.endswith("trap - EXIT )")
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")

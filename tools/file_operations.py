@@ -885,7 +885,7 @@ class ShellFileOperations(FileOperations):
         #    successful mv (the temp no longer exists by then).
         #  - we `cat >` the temp, then `mv -f` it over the target.
         script = (
-            "set -e; "
+            "( set -e; "
             f"d={q_parent}; t={q_path}; "
             'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
             '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
@@ -899,7 +899,7 @@ class ShellFileOperations(FileOperations):
             "fi; "
             'cat > "$tmp"; '
             'mv -f "$tmp" "$t"; '
-            "trap - EXIT"
+            "trap - EXIT )"
         )
         return self._exec(script, stdin_data=content)
 

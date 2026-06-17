@@ -8273,6 +8273,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("@ context reference expansion failed: %s", exc)
 
         return _wrap_line_untrusted_user_message(source.platform, message_text)
+
+    def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
         if not pending_native:
             return []

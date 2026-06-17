@@ -10984,7 +10984,7 @@ def cmd_dashboard(args):
             thread_name="dashboard-mcp-discovery",
         )
     except Exception:
-        logger.debug(
+        logger.warning(
             "Background MCP tool discovery failed at dashboard startup",
             exc_info=True,
         )
@@ -11225,7 +11225,7 @@ def _prepare_agent_startup(args) -> None:
                 thread_name="cli-mcp-discovery",
             )
         except Exception:
-            logger.debug(
+            logger.warning(
                 "Background MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
@@ -11238,7 +11238,7 @@ def _prepare_agent_startup(args) -> None:
 
             discover_mcp_tools()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )

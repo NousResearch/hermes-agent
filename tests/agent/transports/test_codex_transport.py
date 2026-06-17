@@ -155,7 +155,7 @@ class TestCodexBuildKwargs:
         )
         assert "max_output_tokens" not in kw
 
-    def test_codex_backend_does_not_set_extra_headers(self, transport):
+    def test_codex_backend_sets_cache_routing_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
 
         kw = transport.build_kwargs(
@@ -166,9 +166,15 @@ class TestCodexBuildKwargs:
             is_codex_backend=True,
         )
 
-        assert "extra_headers" not in kw
+        assert kw.get("prompt_cache_key") == "conv-codex-1"
+        assert kw.get("extra_headers") == {
+            "session_id": "conv-codex-1",
+            "x-client-request-id": "conv-codex-1",
+        }
 
-    def test_codex_backend_strips_caller_extra_headers(self, transport):
+    def test_codex_backend_preserves_caller_headers_and_adds_cache_routing(
+        self, transport
+    ):
         messages = [{"role": "user", "content": "Hi"}]
 
         kw = transport.build_kwargs(
@@ -180,7 +186,12 @@ class TestCodexBuildKwargs:
             request_overrides={"extra_headers": {"x-test": "1"}},
         )
 
-        assert "extra_headers" not in kw
+        assert kw.get("prompt_cache_key") == "conv-codex-1"
+        assert kw.get("extra_headers") == {
+            "x-test": "1",
+            "session_id": "conv-codex-1",
+            "x-client-request-id": "conv-codex-1",
+        }
 
     def test_non_codex_responses_preserves_caller_extra_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]

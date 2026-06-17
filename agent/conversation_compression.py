@@ -287,6 +287,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    conversation_history: Optional[list] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -512,6 +513,19 @@ def compress_context(
             old_title = agent._session_db.get_session_title(agent.session_id)
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
+            # Persist this turn's unflushed tail before ending the old session.
+            # Compression callers that have the pre-turn history pass it in so
+            # identity-based flush can skip already persisted rows.  Fallback to
+            # the old session's current DB row count for manual/direct callers.
+            if hasattr(agent, "_flush_messages_to_session_db"):
+                flush_history = conversation_history
+                if flush_history is None:
+                    try:
+                        persisted_count = len(agent._session_db.get_messages(agent.session_id))
+                    except Exception:
+                        persisted_count = 0
+                    flush_history = messages[:min(persisted_count, len(messages))]
+                agent._flush_messages_to_session_db(messages, flush_history)
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"

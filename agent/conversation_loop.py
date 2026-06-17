@@ -2741,6 +2741,7 @@ def run_conversation(
                             messages, system_message,
                             approx_tokens=approx_tokens,
                             task_id=effective_task_id,
+                            conversation_history=conversation_history,
                         )
                         # Compression created a new session — clear history
                         # so _flush_messages_to_session_db writes compressed
@@ -2917,6 +2918,7 @@ def run_conversation(
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
+                        conversation_history=conversation_history,
                     )
                     # Compression created a new session — clear history
                     # so _flush_messages_to_session_db writes compressed
@@ -3073,6 +3075,7 @@ def run_conversation(
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
+                        conversation_history=conversation_history,
                     )
                     # Compression created a new session — clear history
                     # so _flush_messages_to_session_db writes compressed
@@ -4028,6 +4031,7 @@ def run_conversation(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
+                        conversation_history=conversation_history,
                     )
                     # Compression created a new session — clear history so
                     # _flush_messages_to_session_db writes compressed messages

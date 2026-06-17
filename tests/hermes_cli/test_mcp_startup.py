@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import inspect
+import logging
 import sys
 import threading
 import time
@@ -86,6 +88,43 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         assert mcp_startup._mcp_discovery_thread.is_alive()
     finally:
         stop.set()
+
+
+def test_wait_for_mcp_discovery_default_covers_slow_local_servers():
+    """The default wait should cover reachable MCP servers that take ~6s."""
+    default_timeout = inspect.signature(
+        mcp_startup.wait_for_mcp_discovery
+    ).parameters["timeout"].default
+    assert default_timeout >= 6.0
+
+
+def test_background_mcp_discovery_failure_logs_warning(monkeypatch, caplog):
+    def _raise_discover():
+        raise RuntimeError("mcp boom")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"command": "demo"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=_raise_discover),
+    )
+
+    logger = logging.getLogger("test.mcp_startup")
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        mcp_startup.start_background_mcp_discovery(
+            logger=logger,
+            thread_name="test-mcp-discovery-failure",
+        )
+        assert mcp_startup._mcp_discovery_thread is not None
+        mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+
+    assert "Background MCP tool discovery failed" in caplog.text
 
 
 def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):

@@ -37,6 +37,7 @@ class HermesOverlay:
 
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
+    dedup_on_overlap: bool = False        # True only for pure routing aggregators (e.g. openrouter)
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
@@ -47,6 +48,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
+        dedup_on_overlap=True,
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
     "nous": HermesOverlay(
@@ -228,6 +230,7 @@ class ProviderDef:
     base_url: str = ""
     base_url_env_var: str = ""
     is_aggregator: bool = False
+    dedup_on_overlap: bool = False
     auth_type: str = "api_key"
     doc: str = ""
     source: str = ""                      # "models.dev", "hermes", "user-config"
@@ -431,6 +434,7 @@ def get_provider(name: str) -> Optional[ProviderDef]:
         # Merge models.dev + overlay
         transport = overlay.transport if overlay else "openai_chat"
         is_agg = overlay.is_aggregator if overlay else False
+        dedup = overlay.dedup_on_overlap if overlay else False
         auth = overlay.auth_type if overlay else "api_key"
         base_url_env = overlay.base_url_env_var if overlay else ""
         base_url_override = overlay.base_url_override if overlay else ""
@@ -450,6 +454,7 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             base_url=base_url_override or mdev_info.api,
             base_url_env_var=base_url_env,
             is_aggregator=is_agg,
+            dedup_on_overlap=dedup,
             auth_type=auth,
             doc=mdev_info.doc,
             source="models.dev",
@@ -465,6 +470,7 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             base_url=overlay.base_url_override,
             base_url_env_var=overlay.base_url_env_var,
             is_aggregator=overlay.is_aggregator,
+            dedup_on_overlap=overlay.dedup_on_overlap,
             auth_type=overlay.auth_type,
             source="hermes",
         )
@@ -497,6 +503,21 @@ def is_aggregator(provider: str) -> bool:
         return True
     pdef = get_provider(provider_norm)
     return pdef.is_aggregator if pdef else False
+
+
+def is_overlap_dedup(provider: str) -> bool:
+    """Return True when the provider should be deduped against user-defined providers.
+
+    Only pure routing aggregators (e.g. openrouter) that silently remap
+    model.provider should be deduped.  Curated catalogs like opencode-go,
+    huggingface, novita serve models directly and must NOT be filtered.
+    See: https://github.com/NousResearch/hermes-agent/issues/47704
+    """
+    provider_norm = normalize_provider(provider or "")
+    if provider_norm.startswith("custom:"):
+        return False
+    pdef = get_provider(provider_norm)
+    return pdef.dedup_on_overlap if pdef else False
 
 
 def determine_api_mode(provider: str, base_url: str = "") -> str:

@@ -45,7 +45,16 @@ def load_overlay_paths(strategy_file: Path) -> list[str]:
     return paths
 
 
-def three_way_merge(path: str, base_sha: str, upstream_ref: str, fork_sha: str) -> tuple[int, str]:
+def three_way_merge(
+    path: str,
+    base_sha: str,
+    upstream_ref: str,
+    fork_sha: str,
+    *,
+    sanitizers: dict[str, dict[str, object]] | None = None,
+) -> tuple[int, str]:
+    from overlay_sanitize import sanitize_fork_overlay_text
+
     base_text = git_show(base_sha, path)
     up_text = git_show(upstream_ref, path)
     fork_text = git_show(fork_sha, path)
@@ -55,6 +64,8 @@ def three_way_merge(path: str, base_sha: str, upstream_ref: str, fork_sha: str) 
         return 2, f"missing fork version: {path}"
     if base_text is None:
         base_text = ""
+
+    fork_text = sanitize_fork_overlay_text(path, fork_text, up_text, sanitizers or {})
 
     with tempfile.TemporaryDirectory(prefix="hermes-3way-") as tmp:
         tmp_path = Path(tmp)
@@ -92,12 +103,22 @@ def main() -> int:
         strategy_file = (REPO_ROOT / strategy_file).resolve()
 
     paths = args.paths or load_overlay_paths(strategy_file)
+    strategy_payload = json.loads(strategy_file.read_text(encoding="utf-8"))
+    from overlay_sanitize import load_overlay_sanitizers
+
+    sanitizers = load_overlay_sanitizers(strategy_payload)
     clean: list[str] = []
     conflicted: list[str] = []
     failed: list[tuple[str, str]] = []
 
     for path in paths:
-        code, merged = three_way_merge(path, args.merge_base, args.upstream_ref, args.fork_ref)
+        code, merged = three_way_merge(
+            path,
+            args.merge_base,
+            args.upstream_ref,
+            args.fork_ref,
+            sanitizers=sanitizers,
+        )
         if code == 2:
             failed.append((path, merged))
             continue

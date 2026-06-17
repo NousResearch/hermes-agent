@@ -1,6 +1,19 @@
 {
   "pinned_upstream_sha": "auto",
   "default_action": "manual_api_followup",
+  "overlay_sanitizers": {
+    "toolsets.py": {
+      "replace_fork_region_with_upstream": {
+        "start_anchor": "\"cronjob\",",
+        "end_anchor": "# Home Assistant smart home control"
+      },
+      "drop_fork_line_substrings": [
+        "\"send_message\",",
+        "# Cross-platform messaging (gated on gateway running via check_fn)"
+      ],
+      "note": "Upstream #47856 removed agent-callable send_message and reordered kanban after homeassistant; replay fork VRChat/VOICEVOX deltas only."
+    }
+  },
   "blocker_actions": ["official_with_overlay", "manual_api_followup"],
   "dirty_tree_ignore": [
     ".cursor/hooks/state/*",
@@ -160,7 +173,7 @@
     {
       "pattern": "toolsets.py",
       "action": "official_with_overlay",
-      "note": "Merge toolset lists: official base + harness/voice/vrchat toolsets.",
+      "note": "Merge toolset lists: official base + harness/voice/vrchat toolsets. send_message stays out of _HERMES_CORE_TOOLS per upstream #47856; see overlay_sanitizers.toolsets.py.",
       "context": "overlap_only"
     },
     {

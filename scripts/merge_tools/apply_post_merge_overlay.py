@@ -28,10 +28,10 @@ def run(cmd: list[str], *, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess
     )
 
 
-def overlay_path(path: str, upstream_ref: str, base_sha: str, old_head: str) -> tuple[str, str]:
+def overlay_path(path: str, upstream_ref: str, base_sha: str, old_head: str, *, sanitizers: dict) -> tuple[str, str]:
     from apply_three_way_overlay import three_way_merge
 
-    code, merged = three_way_merge(path, base_sha, upstream_ref, old_head)
+    code, merged = three_way_merge(path, base_sha, upstream_ref, old_head, sanitizers=sanitizers)
     if code == 2:
         return path, f"failed: missing version for {path}"
     if "<<<<<<<" in merged:
@@ -82,9 +82,19 @@ def main() -> int:
         return 2
 
     paths = load_overlay_paths(strategy_file)
+    strategy_payload = json.loads(strategy_file.read_text(encoding="utf-8"))
+    from overlay_sanitize import load_overlay_sanitizers
+
+    sanitizers = load_overlay_sanitizers(strategy_payload)
     failures: list[tuple[str, str]] = []
     for path in paths:
-        result_path, status = overlay_path(path, args.upstream_ref, merge_base, args.old_head)
+        result_path, status = overlay_path(
+            path,
+            args.upstream_ref,
+            merge_base,
+            args.old_head,
+            sanitizers=sanitizers,
+        )
         print(f"{result_path}: {status}")
         if status.startswith("failed") or status == "conflict-markers":
             failures.append((result_path, status))

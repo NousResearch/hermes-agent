@@ -36,9 +36,27 @@ def merge_file_overlay(
     old_head: str,
     *,
     dry_run: bool,
+    sanitizers: dict[str, dict[str, object]] | None = None,
 ) -> bool:
     """Take upstream file, then replay custom delta from merge-base..old_head."""
     if dry_run:
+        return True
+
+    if sanitizers and target_path in sanitizers:
+        from apply_three_way_overlay import three_way_merge
+
+        code, merged = three_way_merge(
+            target_path,
+            base_sha,
+            upstream_ref,
+            old_head,
+            sanitizers=sanitizers,
+        )
+        if code == 2 or "<<<<<<<" in merged:
+            return False
+        target = REPO_ROOT / target_path
+        target.write_text(merged, encoding="utf-8", newline="\n")
+        run_git(["add", "--", target_path], check=False)
         return True
 
     run_git(["checkout", upstream_ref, "--", target_path], check=False)
@@ -87,11 +105,13 @@ class Resolver:
         *,
         old_head: str = "",
         merge_base: str = "",
+        overlay_sanitizers: dict[str, dict[str, object]] | None = None,
     ):
         self.upstream_ref = upstream_ref
         self.dry_run = dry_run
         self.old_head = old_head or run_git(["rev-parse", "HEAD"], check=False).stdout.strip()
         self.merge_base = merge_base or merge_base_sha(upstream_ref, self.old_head)
+        self.overlay_sanitizers = overlay_sanitizers or {}
         self.actions: list[dict[str, str]] = []
 
     def run(self, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -171,6 +191,7 @@ class Resolver:
                 self.merge_base,
                 self.old_head,
                 dry_run=False,
+                sanitizers=self.overlay_sanitizers,
             ):
                 return "overlay_applied"
             return "overlay_failed"
@@ -377,6 +398,10 @@ def main() -> int:
         raise FileNotFoundError(f"Strategy file not found: {strategy_file}")
 
     strategy = load_strategy(strategy_file)
+    strategy_payload = json.loads(strategy_file.read_text(encoding="utf-8"))
+    from overlay_sanitize import load_overlay_sanitizers
+
+    overlay_sanitizers = load_overlay_sanitizers(strategy_payload)
     if args.paths_file:
         paths_file = Path(args.paths_file)
         if not paths_file.is_absolute():
@@ -398,6 +423,7 @@ def main() -> int:
         dry_run=args.dry_run,
         old_head=args.old_head,
         merge_base=args.merge_base,
+        overlay_sanitizers=overlay_sanitizers,
     )
     print(f"Detected paths: {len(classifications)}")
     if resolver.merge_base:

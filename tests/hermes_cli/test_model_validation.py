@@ -577,6 +577,25 @@ class TestValidateApiNotFound:
         assert result.get("corrected_model") is None
         assert "not found" in result["message"]
 
+    def test_custom_endpoint_full_model_id_not_autocorrected(self):
+        """Full custom-endpoint IDs (with '/') should not be rewritten to a close match.
+
+        Providers like Fireworks may omit newer or aliased models from their
+        /v1/models listing even though the inference endpoint accepts them.
+        Auto-correcting a full path to a sibling model (e.g. glm-5p2 -> glm-5p1)
+        is more harmful than accepting it with a warning.
+        """
+        result = _validate(
+            "accounts/fireworks/models/glm-5p2",
+            provider="custom",
+            api_models=["accounts/fireworks/models/glm-5p1"],
+            base_url="https://api.fireworks.ai/inference/v1",
+        )
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result.get("corrected_model") is None
+        assert "not found" in result["message"].lower() or "note" in result["message"].lower()
+
 
 # -- validate — API unreachable — soft-accept via catalog or warning --------
 

@@ -109,14 +109,14 @@ export function RemoteFolderPicker() {
 
   return (
     <Dialog onOpenChange={open => !open && close()} open={Boolean(pending)}>
-      <DialogContent className="max-w-lg gap-0 overflow-hidden p-0">
-        <div className="border-b border-border/70 px-4 py-3">
+      <DialogContent className="flex max-h-[85vh] min-h-[24rem] max-w-lg flex-col gap-0 overflow-hidden p-0">
+        <div className="shrink-0 border-b border-border/70 px-4 py-3">
           <DialogTitle className="text-sm">{pending?.title || r.remotePickerTitle}</DialogTitle>
           <DialogDescription className="mt-1 text-xs">{r.remotePickerDescription}</DialogDescription>
         </div>
 
-        <div className="flex min-h-[22rem] flex-col">
-          <div className="flex flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
             {crumbs.map((crumb, index) => (
               <button
                 className={cn('rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground', index === crumbs.length - 1 && 'text-foreground')}
@@ -146,7 +146,7 @@ export function RemoteFolderPicker() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
           <div className="min-w-0 truncate text-xs text-muted-foreground">{currentPath}</div>
           <div className="flex shrink-0 items-center gap-2">
             <Button onClick={() => close()} size="sm" variant="ghost">

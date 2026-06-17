@@ -20,6 +20,7 @@ preserved.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sys
@@ -1539,6 +1540,30 @@ def init_agent(
     except (TypeError, ValueError):
         _api_retries = 3
     agent._api_max_retries = _api_retries
+
+    # Backoff timing for API retries. Keep Retry-After's ceiling separate: its
+    # 600s default covers provider quota reset windows while ordinary retries
+    # retain their legacy 2s base / 60s cap.
+    def _positive_finite_delay(key, default):
+        try:
+            raw_value = _agent_section.get(key, default)
+            if isinstance(raw_value, bool):
+                raise ValueError
+            value = float(raw_value)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError
+            return value
+        except (TypeError, ValueError):
+            return default
+
+    agent._retry_base_delay = _positive_finite_delay("retry_base_delay", 2.0)
+    agent._retry_max_delay = max(
+        agent._retry_base_delay,
+        _positive_finite_delay("retry_max_delay", 60.0),
+    )
+    agent._retry_after_max_delay = _positive_finite_delay(
+        "retry_after_max_delay", 600.0,
+    )
 
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit

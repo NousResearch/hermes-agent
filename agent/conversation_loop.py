@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -1592,8 +1593,12 @@ def run_conversation(
                             "failed": True  # Mark as failure for filtering
                         }
                     
-                    # Backoff before retry — jittered exponential: 5s base, 120s cap
-                    wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                    # Backoff before retry — jittered exponential (configurable)
+                    wait_time = jittered_backoff(
+                        retry_count,
+                        base_delay=agent._retry_base_delay,
+                        max_delay=agent._retry_max_delay,
+                    )
                     agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")
                     logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                     
@@ -4176,10 +4181,19 @@ def run_conversation(
                                 # retry before the actual reset window and re-trip the
                                 # limit. 600s covers all realistic provider reset
                                 # windows while still rejecting pathological values. (#26293)
-                                _retry_after = min(float(_ra_raw), 600)
+                                _parsed_retry_after = float(_ra_raw)
+                                if math.isfinite(_parsed_retry_after) and _parsed_retry_after > 0:
+                                    _retry_after = min(
+                                        _parsed_retry_after,
+                                        agent._retry_after_max_delay,
+                                    )
                             except (TypeError, ValueError):
                                 pass
-                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                wait_time = _retry_after if _retry_after else jittered_backoff(
+                    retry_count,
+                    base_delay=agent._retry_base_delay,
+                    max_delay=agent._retry_max_delay,
+                )
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(
@@ -4204,6 +4218,7 @@ def run_conversation(
                         agent._emit_status(_rate_limit_status)
                     else:
                         agent._buffer_status(_rate_limit_status)
+
                 else:
                     agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
                 logger.warning(

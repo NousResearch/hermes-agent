@@ -2548,14 +2548,19 @@ class TestRetryAfterCap:
     Retry-After header up to a 600s ceiling (was 120s, which retried before
     Tier-1 reset windows of ~171s and re-tripped the limit)."""
 
-    def _drive_once(self, agent, retry_after_value):
-        """Raise one 429 carrying ``Retry-After`` and capture the wait the loop
-        chose. Interrupt during the backoff sleep so the test doesn't actually
-        wait, and return the status string that reports the wait time."""
+    def _drive_once(self, agent, retry_after_value, *, zai_overload=False):
+        """Raise one 429 and capture the wait selected by the real loop."""
 
         class _RateLimitError(Exception):
             status_code = 429
-            response = SimpleNamespace(headers={"retry-after": str(retry_after_value)})
+            response = SimpleNamespace(headers=(
+                {} if retry_after_value is None
+                else {"retry-after": str(retry_after_value)}
+            ))
+            body = (
+                {"error": {"code": 1305, "message": "temporarily overloaded"}}
+                if zai_overload else None
+            )
 
             def __str__(self):
                 return "Error code: 429 - Rate limit exceeded."
@@ -2564,6 +2569,9 @@ class TestRetryAfterCap:
             raise _RateLimitError()
 
         agent._interruptible_api_call = _fake_api_call
+        if zai_overload:
+            agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+            agent.model = "glm-5.2"
         agent._persist_session = lambda *args, **kwargs: None
         agent._save_trajectory = lambda *args, **kwargs: None
 
@@ -2591,6 +2599,45 @@ class TestRetryAfterCap:
         # 900s exceeds the ceiling → clamped to 600s, not the old 120s.
         status = self._drive_once(agent, 900)
         assert "Waiting 600.0s" in status
+
+    def test_configured_retry_after_cap_is_used_by_loop(self, agent):
+        agent._retry_after_max_delay = 240.0
+        status = self._drive_once(agent, 900)
+        assert "Waiting 240.0s" in status
+
+    def test_missing_retry_after_uses_configured_exception_backoff(self, agent):
+        from agent import conversation_loop as _conv_loop
+
+        agent._retry_base_delay = 7.0
+        agent._retry_max_delay = 80.0
+        with patch.object(_conv_loop, "jittered_backoff", return_value=17.0) as backoff:
+            status = self._drive_once(agent, None)
+
+        assert "Waiting 17.0s" in status
+        backoff.assert_called_once_with(1, base_delay=7.0, max_delay=80.0)
+
+    def test_invalid_retry_after_uses_configured_exception_backoff(self, agent):
+        from agent import conversation_loop as _conv_loop
+
+        agent._retry_base_delay = 11.0
+        agent._retry_max_delay = 110.0
+        with patch.object(_conv_loop, "jittered_backoff", return_value=21.0) as backoff:
+            status = self._drive_once(agent, float("nan"))
+
+        assert "Waiting 21.0s" in status
+        backoff.assert_called_once_with(1, base_delay=11.0, max_delay=110.0)
+
+    def test_provider_adaptive_backoff_wraps_configured_default(self, agent):
+        from agent import conversation_loop as _conv_loop
+
+        agent._retry_base_delay = 9.0
+        agent._retry_max_delay = 90.0
+        with patch.object(_conv_loop, "jittered_backoff", return_value=19.0) as backoff:
+            status = self._drive_once(agent, None, zai_overload=True)
+
+        assert "Waiting 19.0s" in status
+        assert "Z.AI Coding overload short retry" in status
+        backoff.assert_called_once_with(1, base_delay=9.0, max_delay=90.0)
 
 
 class TestConcurrentToolExecution:
@@ -5822,7 +5869,7 @@ class TestRetryExhaustion:
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
             patch.object(_conv_loop, "time", self._make_fast_time_mock()),
-            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+            patch.object(_conv_loop, "jittered_backoff", return_value=0.0) as backoff,
         ):
             result = agent.run_conversation("hello")
         assert result.get("completed") is False, (
@@ -5832,6 +5879,10 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
         assert result.get("final_response") == result["error"]
+        assert backoff.call_args.kwargs == {
+            "base_delay": agent._retry_base_delay,
+            "max_delay": agent._retry_max_delay,
+        }
 
     def test_content_filter_refusal_surfaced_not_retried(self, agent):
         """A model refusal must be surfaced immediately, NOT laundered into

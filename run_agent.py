@@ -1057,16 +1057,18 @@ class AIAgent:
 
         Azure OpenAI exposes an OpenAI-compatible endpoint at
         ``{resource}.openai.azure.com/openai/v1`` that accepts the
-        standard ``openai`` Python client.  Unlike api.openai.com it
-        does NOT support the Responses API — gpt-5.x models are served
-        on the regular ``/chat/completions`` path — so routing decisions
-        must treat Azure separately from direct OpenAI.
+        standard ``openai`` Python client.  Modern Azure OpenAI resources
+        (post-2024) also use ``{resource}.services.ai.azure.com``.
+        Unlike api.openai.com Azure does NOT support the Responses API —
+        gpt-5.x models are served on the regular ``/chat/completions``
+        path — so routing decisions must treat Azure separately from
+        direct OpenAI.
         """
         if base_url is not None:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return "openai.azure.com" in url or "ai.azure.com" in url
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""

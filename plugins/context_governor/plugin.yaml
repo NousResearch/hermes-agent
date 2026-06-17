@@ -1,0 +1,9 @@
+name: context-governor
+version: 0.1.0
+description: "Deterministic context handoff/checkpoint writer. Auto-writes repo-local CURRENT.md before context compression and exposes /checkpoint + hermes checkpoint."
+author: Hermes Agent
+kind: backend
+provides_hooks:
+  - pre_context_compress
+provides_commands:
+  - checkpoint

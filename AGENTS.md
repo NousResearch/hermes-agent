@@ -1382,23 +1382,27 @@ them into invariants before re-requesting review.
 
 ## Learned User Preferences
 
-- Respond in Japanese; use なんJ tone in `_docs/` implementation logs.
+## Learned User Preferences
+
+- Respond in Japanese for this workspace unless the user switches language; use なんJ tone in `_docs/` implementation logs.
 - Run Python with `py -3`; chain PowerShell commands with `;`, not `&`.
 - Write implementation logs under `_docs/` as `yyyy-mm-dd_{feature}_{worktreename}.md`.
-- Personal single-user gateway deployments use `GATEWAY_ALLOW_ALL_USERS=true` in `~/.hermes/.env`.
+- Commit and push to `origin/main` only when the user explicitly requests it.
 - Do not create git commits unless the user explicitly requests it.
+- For `NousResearch/hermes-agent` PRs: exclude `_docs`, fork-only plugins, and unrelated fork customizations; keep scope to the upstream-worthy fix only.
+- Build upstream PR branches from `upstream/main` via cherry-pick; never open a PR from fork `main` when it would pull hundreds of fork commits.
+- Run ESLint on changed files before opening upstream PRs.
+- Verify `upstream/main` for dependency pins before changing local versions; align with upstream rather than guessing (e.g. `slack` extra `aiohttp`).
+- Personal single-user gateway deployments use `GATEWAY_ALLOW_ALL_USERS=true` in `~/.hermes/.env`.
 
 ## Learned Workspace Facts
 
-- Primary inference: OpenCode Zen free models (`opencode-zen` + `auto-free`) with rotation via `skills/autonomous-ai-agents/opencode-free-rotation/` and `scripts/refresh_opencode_free_catalog.py`.
-- Local rollback: llama-cpp at `http://127.0.0.1:8080/v1`; the active desktop/autostart fallback uses the RTX3060 64K launcher (`scripts/windows/start-hermes-llama-fallback-rtx3060.ps1`), with the RTX3080 launcher kept for legacy/manual use.
-- Local secretary agent (RTX3060 + Ryzen 5 4600, not coding): primary `unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL` alias `qwen35-9b-secretary` @ :8080 with `--jinja` and 65536 context; fallbacks Hermes-3 8B @ :8081 and Phi-4 mini @ :8082; Ollama trial-only; see `docs/local-secretary-runtime.md` and `scripts/windows/start-llama-secretary.ps1`.
-- Local secretary write actions (X publish, Gmail send, Calendar mutate, shell, external publish) require user confirmation; read-only web/Gmail/Calendar/news/TTS auto-OK.
-- User GGUF on H: fallback builds under `H:\elt_data\releases\` (e.g. huihui-qwen35-4b Q8_0); HF hub cache snapshots under `H:\elt_data\hf-cache\`.
-- OpenCode credentials bridge from OpenClaw: shared `OPENCODE_API_KEY` satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset.
-- Canonical checkouts live under `C:\Users\downl\Documents\New project\`: active deployment `hermes-agent` (pushes directly to `main`; syncs NousResearch upstream via `scripts/merge_tools/merge_upstream_with_custom_overlay.py` while preserving fork plugins/skills), WebUI `hermes-WebUI`, Electron desktop via `hermes-agent\apps\desktop\`. Legacy `~\Desktop\hermes-webui` is not used on this host.
-- Config reference for OpenCode free + llama rollback: `docs/migration/opencode_free_webui_config.example.yaml`.
-- Windows logon autostart: `scripts/windows/register-hermes-autostart.ps1` registers llama + gateway scheduled tasks; set `HERMES_LLAMA_MODEL_PATH` in `~/.hermes/.env` for llama task model resolution.
-- `~/.hermes/.env` UTF-8 BOM can prefix keys and break dotenv loading (e.g. `GATEWAY_ALLOW_ALL_USERS`); strip BOM from file and key names if env vars appear unset.
-- `lm-twitterer` fork plugin (X auto-post/replies): bundled `plugins/lm-twitterer/`, runtime state `~/.hermes/lm-twitterer/`; `~/.hermes/plugins/lm-twitterer/` overrides bundled. Mention replies are whitelist-gated (`hermes lm-twitterer whitelist add`). User `~/.hermes/config.yaml` sets `cron.script_timeout_seconds: 900` for LLM-backed cron scripts (default 120s times out post jobs).
-- Fork vendor plugins **book-to-skill** (`plugins/book-to-skill/`, upstream virgiliojr94/book-to-skill, `hermes book-to-skill install|status`) and **openclaw-vendor** (`plugins/openclaw-vendor/`, bridges in-tree `vendor/openclaw-mirror/`, `hermes openclaw-vendor install|sync|status`) ship bundled; enable via `plugins.enabled` in `~/.hermes/config.yaml`, then install to link skills under `~/.hermes/skills/`.
+- Fork upstream sync uses `scripts/merge_tools/`; preserves harness/vrchat/voicevox toolsets and keyless Parallel web default.
+- HF hub cache on this PC: `H:\elt_data\hf-cache\`.
+- `lm-twitterer`: cron jobs need `script_timeout_seconds: 900`; status via `lm_twitterer_status` tool.
+- `openclaw-vendor` and `book-to-skill`: enable in `plugins.enabled`; install via `hermes … install`.
+- Gateway on Windows can lock `agent.log`; rollover tolerates `PermissionError`.
+- Desktop session transcript bleed fixes: `use-message-stream.ts`, `use-session-state-cache.ts`, `use-session-actions.ts`.
+- Plugin tool handlers must accept `task_id` (or `**kwargs`).
+- QuestFrame: `questframe-fh6vr` in `plugins.enabled` and `questframe` in CLI toolsets.
+

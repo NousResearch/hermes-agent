@@ -438,3 +438,83 @@ class TestFeishuEditMetadata:
             content="streaming text",
         )
         assert result.success
+
+
+class TestCardLifecycle:
+    """Integration test for the full card lifecycle: ACK → streaming → tool → final."""
+
+    def test_ack_card_structure(self):
+        """ACK card has only a thinking indicator."""
+        card = build_card_json(content="⏳ 正在思考...")
+        assert len(card["elements"]) == 1
+        assert card["elements"][0]["tag"] == "markdown"
+        assert "正在思考" in card["elements"][0]["content"]
+
+    def test_streaming_card_structure(self):
+        """Streaming card has accumulated text, no footer."""
+        card = build_card_json(content="partial response so far...")
+        assert len(card["elements"]) == 1
+        assert card["elements"][0]["tag"] == "markdown"
+
+    def test_tool_status_card_structure(self):
+        """Tool status card appends ephemeral status to accumulated text."""
+        card = build_card_json(
+            content="I'll check the file.",
+            tool_status="⏳ Read · 阅读文件...",
+        )
+        assert len(card["elements"]) == 1
+        md = card["elements"][0]["content"]
+        assert "I'll check the file." in md
+        assert "⏳ Read · 阅读文件..." in md
+
+    def test_heartbeat_card_structure(self):
+        """Heartbeat card shows generating indicator with time and tool."""
+        card = build_card_json(
+            content="",
+            tool_status="📝 生成中 · 15s · Read · 阅读文件",
+        )
+        assert "📝 生成中" in card["elements"][0]["content"]
+
+    def test_final_success_card_structure(self):
+        """Final card has content + hr + footer note + status note."""
+        card = build_card_json(
+            content="Here is your answer.",
+            footer_line="📊 ↑48 | ↓11.1k | $0.01 | ⏳12s | 🧠gpt-5.5",
+            status_text="✅ 回复完毕",
+        )
+        tags = [e["tag"] for e in card["elements"]]
+        assert tags == ["markdown", "hr", "note", "note"]
+
+    def test_final_error_card_structure(self):
+        """Error card shows error message with status."""
+        card = build_card_json(
+            content="❌ 处理出错，请重试",
+            status_text="❌ 出错",
+        )
+        tags = [e["tag"] for e in card["elements"]]
+        assert tags == ["markdown", "note"]
+
+    def test_final_card_with_table(self):
+        """Final card with table uses native table element."""
+        md = "Results:\n\n| Name | Score |\n|---|---|\n| Alice | 95 |\n| Bob | 87 |"
+        card = build_card_json(
+            content=md,
+            footer_line="📊 ↑100 | ↓200 | $0.01 | ⏳5s | 🧠claude",
+            status_text="✅ 回复完毕",
+        )
+        tags = [e["tag"] for e in card["elements"]]
+        assert "table" in tags
+        assert "hr" in tags
+        assert tags.count("note") == 2
+
+    def test_card_json_is_valid_for_feishu(self):
+        """Card JSON can be serialized to valid JSON string."""
+        card = build_card_json(
+            content="test",
+            footer_line="📊 ↑1 | ↓2",
+            status_text="✅",
+        )
+        payload = json.dumps(card, ensure_ascii=False)
+        parsed = json.loads(payload)
+        assert parsed["config"]["wide_screen_mode"] is True
+        assert parsed["config"]["update_multi"] is True

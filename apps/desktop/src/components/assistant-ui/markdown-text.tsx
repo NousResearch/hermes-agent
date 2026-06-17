@@ -19,8 +19,9 @@ import {
   useState
 } from 'react'
 
+import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
-import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
@@ -57,7 +58,11 @@ const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 // flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
 // module-scope so the prop identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
-  return tailBoundedRemend(preprocessMarkdown(text))
+  try {
+    return tailBoundedRemend(preprocessMarkdown(text))
+  } catch {
+    return text
+  }
 }
 
 // Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
@@ -453,8 +458,35 @@ const MARKDOWN_CONTAINER_CLASS_NAME = cn(
   '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>*+*]:mt-(--paragraph-gap)'
 )
 
+const MAX_MARKDOWN_CHARS = 200_000
+
+function HugeTextFallback({ containerClassName, text }: { containerClassName?: string; text: string }) {
+  const chunks = useMemo(() => chunkByLines(text, 200), [text])
+
+  return (
+    <div
+      className={cn(
+        'aui-md w-full max-w-none overflow-hidden rounded-[0.625rem] border border-border font-mono text-[0.7rem] leading-relaxed text-foreground/90',
+        containerClassName
+      )}
+    >
+      <ExpandableBlock className="p-2">
+        {chunks.map((chunk, index) => (
+          <div
+            className="[content-visibility:auto]"
+            key={index}
+            style={{ containIntrinsicSize: `auto ${chunk.lines * 16}px` }}
+          >
+            {chunk.text}
+          </div>
+        ))}
+      </ExpandableBlock>
+    </div>
+  )
+}
+
 function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTextSurfaceProps) {
-  const { status } = useMessagePartText()
+  const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
@@ -550,6 +582,10 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
       }) as StreamdownTextComponents,
     [isStreaming]
   )
+
+  if (text.length > MAX_MARKDOWN_CHARS) {
+    return <HugeTextFallback containerClassName={containerClassName} text={text} />
+  }
 
   return (
     <StreamdownTextPrimitive

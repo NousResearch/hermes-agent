@@ -59,14 +59,18 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
-    # Kanban coordination (runtime-gated by tools/kanban_tools.py check_fn)
-    "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
-    "kanban_heartbeat", "kanban_comment", "kanban_create", "kanban_link",
-    "kanban_unblock",
-    # Cross-platform messaging (gated on gateway running via check_fn)
-    "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Kanban multi-agent coordination — only in schema when the agent is
+    # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
+    # profile explicitly enables the kanban toolset. Gated via check_fn in
+    # tools/kanban_tools.py.
+    "kanban_show", "kanban_list",
+    "kanban_complete", "kanban_block", "kanban_heartbeat",
+    "kanban_comment", "kanban_create", "kanban_link",
+    "kanban_unblock",
+    # Computer use (macOS, gated on cua-driver being installed via check_fn)
+    "computer_use",
     # VRChat autonomy readiness, decision validation, and dry-run-first turn planning
     "vrchat_autonomy_status", "vrchat_autonomy_heartbeat",
     "vrchat_autonomy_build_decision_request", "vrchat_autonomy_validate_decision",
@@ -205,13 +209,7 @@ TOOLSETS = {
         "includes": []
     },
     
-    "messaging": {
-        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
-        "includes": []
-    },
 
-    
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
@@ -466,8 +464,10 @@ TOOLSETS = {
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools (including send_message,
-    # which is gated on gateway running via its check_fn).
+    # All platforms share the same core tools. Note: agents do NOT get an
+    # agent-callable send_message tool — outbound platform messaging is handled
+    # outside the agent loop (cron delivery, the gateway kanban notifier, and
+    # the `hermes send` CLI), not by the model deciding to send on its own.
     # ==========================================================================
 
     "hermes-acp": {

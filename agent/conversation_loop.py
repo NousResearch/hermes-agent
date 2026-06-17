@@ -871,6 +871,8 @@ def run_conversation(
         api_start_time = time.time()
         retry_count = 0
         max_retries = agent._api_max_retries
+        # Wall-clock anchor for persistent-retry's optional time cap (#35230).
+        _persistent_retry_started_at = api_start_time
         _retry = TurnRetryState()
         max_compression_attempts = 3
 
@@ -1222,16 +1224,11 @@ def run_conversation(
                     # upstream server error, or malformed response.
                     retry_count += 1
                     
-                    # Eager fallback: empty/malformed responses are a common
-                    # rate-limit symptom.  Switch to fallback immediately
-                    # rather than retrying with extended backoff.
-                    if agent._fallback_index < len(agent._fallback_chain):
-                        agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
-                    if agent._try_activate_fallback():
-                        retry_count = 0
-                        compression_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        continue
+                    # Empty/malformed responses can still be transient.
+                    # Keep them on the same provider and let the normal
+                    # invalid-response retry/backoff path decide when to
+                    # fall back.
+                    agent._buffer_vprint("⚠️ Empty/malformed response — retrying...")
 
                     # Check for error field in response (some providers include this)
                     error_msg = "Unknown"
@@ -1303,18 +1300,43 @@ def run_conversation(
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
                             continue
-                        # Terminal — flush buffered retry trace so user sees what happened.
-                        agent._flush_status_buffer()
-                        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
-                        logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
-                            "failed": True  # Mark as failure for filtering
-                        }
+                        # Persistent retry (#35230): empty/malformed/invalid
+                        # responses are transient.  If the user opted into
+                        # long-horizon persistence and the time valve hasn't
+                        # tripped, reset the counter and keep retrying with
+                        # backoff rather than giving up.  The jittered backoff
+                        # below still runs on the next loop iteration.
+                        if (
+                            agent._should_persist_retry("invalid_response")
+                            and not agent._persistent_retry_time_exhausted(_persistent_retry_started_at)
+                        ):
+                            agent._buffer_status(
+                                f"⏳ Persistent retry — invalid responses after {max_retries} "
+                                f"attempts; continuing to retry ({_failure_hint})..."
+                            )
+                            logger.warning(
+                                "%sPersistent retry engaged for invalid responses — "
+                                "continuing instead of failing the turn.",
+                                agent.log_prefix,
+                            )
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            # Fall through to the shared backoff+sleep below so
+                            # we don't hammer the provider with zero delay.
+                        else:
+                            # Terminal — flush buffered retry trace so user sees what happened.
+                            agent._flush_status_buffer()
+                            agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                            logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
+                                "failed": True  # Mark as failure for filtering
+                            }
                     
                     # Backoff before retry — jittered exponential: 5s base, 120s cap
                     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
@@ -3294,6 +3316,61 @@ def run_conversation(
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
                         continue
+                    # Persistent retry safety net (#35230, #25689): the fallback
+                    # chain is exhausted (or none is configured) but this is a
+                    # TRANSIENT failure (overloaded / rate-limit / usage- or
+                    # concurrent-limit / 5xx / timeout / unclassifiable) and the
+                    # user opted into long-horizon persistence.  Instead of
+                    # failing the turn, back off and keep retrying the current
+                    # provider — indefinitely, unless the optional wall-clock
+                    # safety valve has been reached.  Authorization, billing,
+                    # bad-request, content-policy and model-not-found never reach
+                    # here as persistent (see _should_persist_retry), so this
+                    # cannot hang on an error that retrying won't fix.
+                    if (
+                        agent._should_persist_retry(classified.reason)
+                        and not agent._persistent_retry_time_exhausted(_persistent_retry_started_at)
+                    ):
+                        _persist_wait = jittered_backoff(
+                            min(retry_count, max_retries), base_delay=2.0, max_delay=60.0
+                        )
+                        agent._buffer_status(
+                            f"⏳ Persistent retry ({classified.reason.value}) — provider still "
+                            f"failing after {max_retries} attempts; retrying in {_persist_wait:.0f}s..."
+                        )
+                        logger.warning(
+                            "%sPersistent retry engaged (reason=%s) — retrying in %.1fs "
+                            "instead of failing the turn.",
+                            agent.log_prefix, classified.reason.value, _persist_wait,
+                        )
+                        _persist_sleep_end = time.time() + _persist_wait
+                        _persist_touch = 0
+                        while time.time() < _persist_sleep_end:
+                            if agent._interrupt_requested:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚡ Interrupt during persistent retry wait, aborting.",
+                                    force=True,
+                                )
+                                agent._persist_session(messages, conversation_history)
+                                agent.clear_interrupt()
+                                return {
+                                    "final_response": "Operation interrupted during persistent retry.",
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "interrupted": True,
+                                }
+                            time.sleep(0.2)
+                            _persist_touch += 1
+                            if _persist_touch % 150 == 0:  # ~30s
+                                agent._touch_activity(
+                                    f"persistent retry backoff ({classified.reason.value}), "
+                                    f"{int(_persist_sleep_end - time.time())}s remaining"
+                                )
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
                     _final_summary = agent._summarize_api_error(api_error)
@@ -4168,8 +4245,8 @@ def run_conversation(
                         continue
 
                     # ── Empty response retry ──────────────────────
-                    # Model returned nothing usable.  Retry up to 3
-                    # times before attempting fallback.  This covers
+                    # Model returned nothing usable.  Retry (default up
+                    # to 3 times) before attempting fallback.  This covers
                     # both truly empty responses (no content, no
                     # reasoning) AND reasoning-only responses after
                     # prefill exhaustion — models like mimo-v2-pro
@@ -4183,17 +4260,66 @@ def run_conversation(
                         _has_structured
                         and agent._thinking_prefill_retries >= 2
                     )
-                    if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
+                    # Persistent retry (#35230, #25689): when the user opts into
+                    # long-horizon persistence, empty responses keep retrying
+                    # past the hardcoded 3-attempt cap (subject to the optional
+                    # wall-clock valve) instead of degrading to "(empty)".
+                    _empty_persist = (
+                        agent._should_persist_retry("invalid_response")
+                        and not agent._persistent_retry_time_exhausted(_persistent_retry_started_at)
+                    )
+                    _empty_budget_ok = agent._empty_content_retries < 3 or _empty_persist
+                    if _truly_empty and (not _has_structured or _prefill_exhausted) and _empty_budget_ok:
                         agent._empty_content_retries += 1
                         logger.warning(
                             "Empty response (no content or reasoning) — "
-                            "retry %d/3 (model=%s)",
-                            agent._empty_content_retries, agent.model,
+                            "retry %d%s (model=%s)",
+                            agent._empty_content_retries,
+                            "" if _empty_persist else "/3",
+                            agent.model,
                         )
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
+                            f"({agent._empty_content_retries}"
+                            f"{'' if _empty_persist else '/3'})"
                         )
+                        # Backoff before the empty-response retry (#35230).
+                        # The previous code used a bare `continue` with zero
+                        # delay, firing all retries back-to-back within seconds
+                        # and wasting API calls.  Use the same jittered backoff
+                        # as the API-error path, interrupt-aware so the user can
+                        # still abort.  Cap the growth term so unbounded
+                        # persistent retries don't all sleep at the 60s ceiling
+                        # immediately — they ramp like the bounded path.
+                        _empty_wait = jittered_backoff(
+                            min(agent._empty_content_retries, 6),
+                            base_delay=2.0,
+                            max_delay=60.0,
+                        )
+                        _empty_sleep_end = time.time() + _empty_wait
+                        _empty_touch = 0
+                        while time.time() < _empty_sleep_end:
+                            if agent._interrupt_requested:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚡ Interrupt during empty-response retry wait, aborting.",
+                                    force=True,
+                                )
+                                agent._persist_session(messages, conversation_history)
+                                agent.clear_interrupt()
+                                return {
+                                    "final_response": "Operation interrupted during empty-response retry.",
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "interrupted": True,
+                                }
+                            time.sleep(0.2)
+                            _empty_touch += 1
+                            if _empty_touch % 150 == 0:  # ~30s
+                                agent._touch_activity(
+                                    f"empty-response retry backoff "
+                                    f"({int(_empty_sleep_end - time.time())}s remaining)"
+                                )
                         continue
 
                     # ── Exhausted retries — try fallback provider ──

@@ -1236,6 +1236,18 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Persistent retry for long-horizon / unattended agents (#35230, #25689).
+    # When enabled, transient failures keep retrying past api_max_retries
+    # instead of surfacing a failed turn.  Deterministic / authorization
+    # errors are never made persistent (see AIAgent._should_persist_retry).
+    agent._api_retry_persistent = bool(_agent_section.get("api_retry_persistent", False))
+    try:
+        _persist_cap = int(_agent_section.get("api_retry_persistent_max_elapsed_seconds", 0) or 0)
+        _persist_cap = max(_persist_cap, 0)  # 0 = no time limit
+    except (TypeError, ValueError):
+        _persist_cap = 0
+    agent._api_retry_persistent_max_elapsed_seconds = _persist_cap
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

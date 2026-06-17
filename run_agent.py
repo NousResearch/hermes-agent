@@ -4252,7 +4252,56 @@ class AIAgent:
         index = getattr(self, "_fallback_index", 0)
         return index < len(chain)
 
-    # ── Per-turn primary restoration ─────────────────────────────────────
+    # ── Persistent retry for long-horizon agents (#35230, #25689) ────────
+
+    # Transient failure reasons that persistent retry is allowed to loop on
+    # indefinitely.  Deliberately excludes every deterministic / authorization
+    # failure: a 401/403 (auth), 402 (billing), 400 (format_error /
+    # bad request), content-policy block, and model-not-found will NOT fix
+    # themselves by retrying, so making them persistent would just hang the
+    # turn forever against a wall.  These are exactly the reasons the classifier
+    # already marks ``retryable=True`` for a *bounded* loop — persistent mode
+    # only changes how long we keep at them.  Usage-limit and concurrent-limit
+    # throttles surface as ``rate_limit`` (see error_classifier), so they are
+    # covered here.
+    _PERSISTENT_RETRY_REASONS = frozenset({
+        "overloaded",
+        "rate_limit",
+        "server_error",
+        "timeout",
+        "unknown",
+        "invalid_response",
+    })
+
+    def _should_persist_retry(self, reason: "str | FailoverReason | None") -> bool:
+        """Whether a transient failure should retry past ``api_max_retries``.
+
+        Returns True only when persistent retry is enabled in config AND the
+        failure ``reason`` is a transient one (provider overloaded, rate/usage/
+        concurrent limit, 5xx, timeout, empty/malformed response, or an
+        unclassifiable hiccup).  Authorization, billing, bad-request, and
+        content-policy failures always return False so the turn still fails
+        fast on errors that retrying cannot fix.
+        """
+        if not getattr(self, "_api_retry_persistent", False):
+            return False
+        if reason is None:
+            return False
+        reason_value = getattr(reason, "value", reason)
+        return str(reason_value) in self._PERSISTENT_RETRY_REASONS
+
+    def _persistent_retry_time_exhausted(self, started_at: float) -> bool:
+        """Whether persistent retry has exceeded its wall-clock safety valve.
+
+        ``api_retry_persistent_max_elapsed_seconds`` of 0 means retry forever;
+        any positive value caps the total time a single turn may spend in
+        persistent retry before it finally gives up.
+        """
+        cap = getattr(self, "_api_retry_persistent_max_elapsed_seconds", 0) or 0
+        if cap <= 0:
+            return False
+        import time as _time
+        return (_time.time() - started_at) >= cap
 
     def _restore_primary_runtime(self) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.restore_primary_runtime``."""

@@ -840,6 +840,22 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Persistent retry for long-horizon / unattended agents.  When True,
+        # transient provider failures (overloaded 5xx/503/529, rate limits,
+        # timeouts, empty/malformed responses, usage/concurrent-limit throttles)
+        # keep retrying with backoff INSTEAD of giving up after
+        # ``api_max_retries`` attempts — so a flaky or overloaded provider
+        # eventually succeeds rather than failing the turn.  Authorization and
+        # other deterministic errors (401/403 auth, 402 billing, 400 bad
+        # request, content-policy blocks, model-not-found) are NEVER made
+        # persistent — those will not fix themselves by retrying.  Default
+        # False preserves the legacy bounded behavior.  See #35230, #25689.
+        "api_retry_persistent": False,
+        # Safety valve for persistent retry: maximum wall-clock seconds a single
+        # turn may spend retrying a transient failure before it finally gives
+        # up.  0 means no time limit (retry forever).  Only consulted when
+        # ``api_retry_persistent`` is True.
+        "api_retry_persistent_max_elapsed_seconds": 0,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.

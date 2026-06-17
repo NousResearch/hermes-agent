@@ -1303,6 +1303,54 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
+def _cost_cap_usd() -> float:
+    """Read AIOS_MONTHLY_COST_LIMIT_USD from the process env, falling back to
+    ~/.hermes/.env so the cap works whether or not it's in the gateway's launch
+    environment. Returns 0 (no cap) on anything unusual."""
+    val = os.environ.get("AIOS_MONTHLY_COST_LIMIT_USD")
+    if not val:
+        try:
+            envf = os.path.expanduser("~/.hermes/.env")
+            if os.path.exists(envf):
+                with open(envf) as f:
+                    for line in f:
+                        s = line.strip()
+                        if s.startswith("AIOS_MONTHLY_COST_LIMIT_USD="):
+                            val = s.split("=", 1)[1].strip().strip('"').strip("'")
+                            break
+        except Exception:
+            return 0.0
+    try:
+        return float(val or 0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _should_throttle(job: dict) -> bool:
+    """Cost-governance soft-throttle. True only when ALL hold: the job is tagged
+    priority=='P2', it's an agent job (no_agent is exempt), a cost cap is set
+    (>0), and monthly AI spend (~/.hermes/aios-state/roi.json) is at/over it.
+    DEFAULT-INERT (no P2 tag or no cap → False) and FAIL-OPEN (any error → False,
+    i.e. the job runs). Deferral is reversible: tick() already advanced next_run,
+    so a skipped job is simply re-evaluated at its next slot."""
+    try:
+        if str(job.get("priority") or "").upper() != "P2":
+            return False
+        if job.get("no_agent"):
+            return False
+        cap = _cost_cap_usd()
+        if cap <= 0:
+            return False
+        roi_path = os.path.expanduser("~/.hermes/aios-state/roi.json")
+        if not os.path.exists(roi_path):
+            return False
+        with open(roi_path) as f:
+            spend = float(json.load(f).get("monthly_ai_spend") or 0)
+        return spend >= cap
+    except Exception:
+        return False  # fail-open — never block a job on a throttle-check error
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2047,6 +2095,17 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
+                # Cost-governance soft-throttle: defer a P2 agent job when AI
+                # spend is over cap. Skip run + mark entirely — next_run was
+                # already advanced above (line ~2018), so the job is simply
+                # re-evaluated next slot. Inert by default; fail-open.
+                if _should_throttle(job):
+                    logger.info(
+                        "Job '%s': throttled (P2, AI spend over cap) — deferred to next slot",
+                        job["id"],
+                    )
+                    return True
+
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)

@@ -2264,6 +2264,26 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         token = _get_env_prefer_dotenv(env_var)
         if not token:
             continue
+        # A `GITHUB_TOKEN` is commonly present for unrelated reasons (gh CLI,
+        # GitHub MCP). If it's a classic `ghp_*` PAT it is rejected by the
+        # Copilot API on every request, so auto-enrolling it as a copilot
+        # credential creates a permanently-broken pool entry that burns a
+        # failover hop and 400s every turn (#47708). The dynamic resolver in
+        # _seed_from_singletons already skips classic PATs via
+        # resolve_copilot_token(); apply the same gate here so the env path
+        # never seeds an unusable token into the pool.
+        if provider == "copilot":
+            try:
+                from hermes_cli.copilot_auth import validate_copilot_token
+                _ok, _msg = validate_copilot_token(token)
+            except Exception:
+                _ok = True  # never block seeding on an import/validation error
+            if not _ok:
+                logger.warning(
+                    "Skipping Copilot credential auto-derived from %s: %s",
+                    env_var, _msg.splitlines()[0] if _msg else "unsupported token",
+                )
+                continue
         source = f"env:{env_var}"
         if _is_source_suppressed(provider, source):
             continue

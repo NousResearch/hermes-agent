@@ -13,7 +13,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [validation, quality, review, subagent, testing, verification]
-    related_skills: [subagent-driven-development, requesting-code-review, test-driven-development]
+    related_skills: [rest-graphql-debug, blackbox]
     category: software-development
 ---
 

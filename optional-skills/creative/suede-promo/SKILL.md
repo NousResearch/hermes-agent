@@ -1,6 +1,6 @@
 ---
 name: suede-promo
-description: "Music promotion and AI media production via Suede Labs AI. Two tracks: Creator jobs (social content, clipping, performance posts, contests, landing pages) and Suede services (AI music generation, stems, mastering, vocals, MIDI, lyrics, rights — 17 pay-per-call endpoints, no subscription required)."
+description: "Music promotion and AI media production via Suede Labs AI. Two tracks: Creator jobs (social content, clipping, performance posts, contests, landing pages) and Suede services (AI music generation, stems, mastering, vocals, MIDI, lyrics, rights — 22 pay-per-call endpoints, no subscription required)."
 version: 1.0.0
 author: Suede Labs AI
 license: MIT
@@ -42,7 +42,7 @@ from suede_ai import SuedeClient
 import os
 
 with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
-    print(suede.manifest())   # free — lists all 17 endpoints with prices
+    print(suede.manifest())   # free — lists all 22 endpoints with prices
 EOF
 ```
 

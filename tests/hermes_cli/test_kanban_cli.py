@@ -24,6 +24,38 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _make_git_worktree(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "wt/live", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return worktree
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
@@ -105,6 +137,29 @@ def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     assert task.workspace_kind == "worktree"
     assert task.workspace_path == target_arg
     assert task.branch_name == "wt/t6-wire"
+
+
+def test_task_to_dict_uses_live_worker_workspace_snapshot(
+    kanban_home, tmp_path, monkeypatch
+):
+    worktree = _make_git_worktree(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(worktree))
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path="/stale/path",
+            branch_name="wt/stale",
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    payload = kc._task_to_dict(task)
+    assert payload["workspace_kind"] == "worktree"
+    assert payload["workspace_path"] == str(worktree.resolve())
+    assert payload["branch_name"] == "wt/live"
 
 
 def test_run_slash_rejects_branch_without_worktree(kanban_home):

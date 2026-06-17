@@ -214,6 +214,55 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     return DEFAULT_CLAIM_TTL_SECONDS
 
 
+def live_worker_workspace_snapshot(task) -> dict[str, str]:
+    """Return live workspace overrides for a worker task row.
+
+    The dispatcher writes the intended workspace state into the DB, but for the
+    currently running worker we prefer the live checkout on disk as the source
+    of truth. We only expose live metadata for actual worktree tasks so scratch
+    and dir workspaces never get an invented branch name.
+    """
+    if getattr(task, "workspace_kind", None) != "worktree":
+        return {}
+
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    if not workspace:
+        return {}
+
+    path = Path(workspace).expanduser()
+    git_dir = path / ".git"
+    if not git_dir.is_file():
+        return {}
+    try:
+        if not git_dir.read_text(encoding="utf-8").startswith("gitdir:"):
+            return {}
+    except OSError:
+        return {}
+
+    result = subprocess.run(
+        ["git", "-C", str(path), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    branch_name = (result.stdout or "").strip()
+    if not branch_name:
+        return {}
+
+    try:
+        resolved = str(path.resolve(strict=False))
+    except OSError:
+        resolved = str(path)
+    return {
+        "workspace_kind": "worktree",
+        "workspace_path": resolved,
+        "branch_name": branch_name,
+    }
+
+
 # Grace period after a task transitions to ``running`` during which
 # ``detect_crashed_workers`` skips the ``_pid_alive`` check. Covers the
 # fork() → /proc-visibility window where liveness can transiently report

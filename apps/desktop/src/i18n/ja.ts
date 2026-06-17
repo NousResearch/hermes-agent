@@ -1323,7 +1323,8 @@ export const ja = defineLocale({
       ageNow: 'たった今',
       ageDay: '日',
       ageHour: '時間',
-      ageMin: '分'
+      ageMin: '分',
+      profileBadge: (name: string) => `プロファイル：${name}`
     }
   },
 

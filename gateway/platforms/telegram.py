@@ -1065,6 +1065,97 @@ class TelegramAdapter(BasePlatformAdapter):
             return self.RICH_MESSAGE_MAX_CHARS
         return None
 
+    # LaTeX commands silently dropped by the Bot API 10.1 math renderer.
+    #
+    # \boxed{X}  → X           — box styling not supported; inner math is fine
+    # \ce{X}     → \text{X}    — mhchem not supported; label as text entity
+    #
+    # Add new entries here as Bot API support gaps are discovered.
+
+    # Simple pattern for \ce{} — chemistry formulas have no nested braces.
+    _CE_LATEX_RE = re.compile(r"\\ce\{([^{}]*)\}")
+
+    @classmethod
+    def _extract_brace_arg(cls, s: str, start: int) -> tuple[str, int] | None:
+        """Extract the balanced-brace argument starting at *start* (which must
+        point at the opening ``{``).  Returns ``(inner, end)`` where *inner* is
+        the content between the outermost braces and *end* is the index just
+        past the closing ``}``, or ``None`` if *start* is not ``{`` or the
+        braces are unbalanced.
+        """
+        if start >= len(s) or s[start] != "{":
+            return None
+        depth = 0
+        for i in range(start, len(s)):
+            if s[i] == "{":
+                depth += 1
+            elif s[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return s[start + 1 : i], i + 1
+        return None  # unbalanced
+
+    @classmethod
+    def _strip_boxed(cls, math: str) -> str:
+        """Recursively strip all ``\\boxed{...}`` wrappers from *math*.
+
+        Uses a balanced-brace scanner so ``\\boxed{\\frac{a}{b}}`` is handled
+        correctly regardless of nesting depth inside the argument.
+        """
+        marker = r"\boxed"
+        if marker not in math:
+            return math
+        out: list[str] = []
+        i = 0
+        while i < len(math):
+            idx = math.find(marker, i)
+            if idx == -1:
+                out.append(math[i:])
+                break
+            out.append(math[i:idx])
+            arg_start = idx + len(marker)
+            # Skip optional whitespace between \boxed and {
+            while arg_start < len(math) and math[arg_start] == " ":
+                arg_start += 1
+            extracted = cls._extract_brace_arg(math, arg_start)
+            if extracted is None:
+                # Malformed — emit \boxed verbatim and advance past it.
+                out.append(marker)
+                i = arg_start
+            else:
+                inner, end = extracted
+                # Recurse so \boxed{\boxed{x}} → x
+                out.append(cls._strip_boxed(inner))
+                i = end
+        return "".join(out)
+
+    @classmethod
+    def _normalize_rich_latex(cls, content: str) -> str:
+        """Strip Bot-API-10.1-unsupported LaTeX wrappers from ``$$`` math blocks.
+
+        Only the content *inside* ``$$...$$`` fences is touched so surrounding
+        prose is never altered.
+
+        Currently normalised:
+          * ``\\boxed{X}`` → ``X``  (box dropped; inner math renders correctly)
+          * ``\\ce{X}``    → ``\\text{X}``  (mhchem → text entity)
+        """
+        if "$$" not in content:
+            return content
+
+        parts: list[str] = []
+        segments = content.split("$$")
+        for idx, segment in enumerate(segments):
+            if idx % 2 == 0:
+                # Outside a math block — leave untouched.
+                parts.append(segment)
+            else:
+                # Inside a $$ block — apply transforms.
+                normalized = cls._strip_boxed(segment)
+                normalized = cls._CE_LATEX_RE.sub(r"\\text{\1}", normalized)
+                parts.append(normalized)
+        return "$$".join(parts)
+
     def _rich_message_payload(
         self, content: str, *, skip_entity_detection: bool = False
     ) -> Dict[str, Any]:
@@ -1072,7 +1163,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Never pass ``format_message(content)`` here — that converts to
         MarkdownV2 and would escape/destroy rich syntax like table pipes.
+
+        Unsupported LaTeX commands (``\\boxed{}``, ``\\ce{}``) are normalised
+        before delivery so the inner math renders rather than being silently
+        dropped by Telegram's Bot API 10.1 math parser.
         """
+        content = self._normalize_rich_latex(content)
         payload: Dict[str, Any] = {"markdown": content}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True

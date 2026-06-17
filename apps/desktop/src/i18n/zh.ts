@@ -1381,7 +1381,8 @@ export const zh: Translations = {
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',
-      ageMin: '分'
+      ageMin: '分',
+      profileBadge: (name: string) => `配置档案：${name}`
     }
   },
 

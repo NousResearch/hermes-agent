@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { profileColor, profileColorSoft } from '@/lib/profile-color'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
@@ -26,6 +27,8 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  /** Show a profile-colored badge next to the dot. Only in the All-profiles flat view. */
+  showProfileBadge?: boolean
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -58,6 +61,7 @@ export function SidebarSessionRow({
   onDelete,
   onPin,
   onResume,
+  showProfileBadge = false,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -203,6 +207,9 @@ export function SidebarSessionRow({
               />
             </Tip>
           ) : null}
+          {showProfileBadge && session.profile && (
+            <ProfileBadge profile={session.profile} />
+          )}
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
@@ -237,6 +244,42 @@ export function SidebarSessionRow({
     </SessionContextMenu>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Profile badge — shown per-row only in the All-profiles flat view
+// ---------------------------------------------------------------------------
+
+function ProfileBadge({ profile }: { profile: null | string | undefined }) {
+  const { t } = useI18n()
+  const key = (profile ?? '').trim()
+
+  if (!key || key === 'default') {
+    return null
+  }
+
+  const color = profileColor(key)
+  const initial = key.replace(/[^a-z0-9]/gi, '').charAt(0).toUpperCase() || '?'
+  const label = t.sidebar.row.profileBadge(key)
+
+  return (
+    <Tip label={label}>
+      <span
+        aria-label={label}
+        className="shrink-0 select-none rounded-[3px] px-1 py-px text-[0.5625rem] font-semibold uppercase leading-none"
+        style={{
+          backgroundColor: color ? profileColorSoft(color, 22) : 'color-mix(in srgb, currentColor 10%, transparent)',
+          color: color ?? undefined
+        }}
+      >
+        {initial}
+      </span>
+    </Tip>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Dot status indicator
+// ---------------------------------------------------------------------------
 
 function SidebarRowDot({
   isWorking,

@@ -1877,66 +1877,64 @@ class FeishuAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
 
         # --- Auto-convert Markdown tables to interactive cards ---
-        # Extract ALL tables from content, send each as card, then send remaining text
-        tables: list[tuple[str, str, str]] = []  # (before, table_text, after)
-        remaining_content = formatted
-
-        for match in _MARKDOWN_TABLE_RE.finditer(remaining_content):
+        # Extract ALL valid tables from content at once
+        all_tables: list[tuple[int, int, str]] = []  # (start, end, table_text)
+        for match in _MARKDOWN_TABLE_RE.finditer(formatted):
             table_text = match.group(0)
-            # Check if this is a valid table (has data rows, not just header+separator)
-            test_card = _markdown_table_to_card("test", table_text)
-            if test_card is None:
-                continue  # Skip invalid tables
+            if _markdown_table_to_card("test", table_text) is not None:
+                all_tables.append((match.start(), match.end(), table_text))
 
-            before = remaining_content[: match.start()].rstrip("\n")
-            after = remaining_content[match.end():].lstrip("\n")
-            tables.append((before, table_text, after))
-            remaining_content = after  # Continue searching in the rest
-            break  # Process one table at a time to handle nested content
+        if all_tables:
+            # Send all tables as cards in parallel, then send remaining text
+            import asyncio
 
-        if tables:
-            before, table_text, after = tables[0]
-
-            # Extract title from preceding text
-            title = "📊 表格"
-            if before:
-                first_line = before.split("\n")[0].strip()
-                title = first_line.lstrip("#").strip() or "📊 表格"
-                if len(title) > 40:
-                    title = title[:37] + "..."
-
-            # Parse and send the table as card
-            card = _markdown_table_to_card(title, table_text)
-            card_sent = False
-            card_result = SendResult(success=False, error="card parse failed")
-            if card:
-                card_result = await self.send_interactive_card(
+            async def _send_one_card(idx: int) -> SendResult:
+                start, end, table_text = all_tables[idx]
+                before = formatted[:start].rstrip("\n")
+                title = "📊 表格"
+                if before:
+                    first_line = before.split("\n")[0].strip()
+                    title = first_line.lstrip("#").strip() or "📊 表格"
+                    if len(title) > 40:
+                        title = title[:37] + "..."
+                if len(all_tables) > 1:
+                    title = f"📊 表格 {idx+1}/{len(all_tables)}"
+                card = _markdown_table_to_card(title, table_text)
+                if not card:
+                    return SendResult(success=False, error="card parse failed")
+                return await self.send_interactive_card(
                     chat_id=chat_id,
                     card=card,
                     reply_to=reply_to,
                     metadata=metadata,
                 )
-                if card_result.raw_response:
-                    reply_to = self._extract_response_field(
-                        card_result.raw_response, "message_id"
-                    )
-                card_sent = True
-            else:
-                logger.warning("[Feishu] Table parse returned None — falling through")
 
-            # Recursively process remaining content (may contain more tables)
-            if after.strip():
-                await self.send(
-                    chat_id=chat_id,
-                    content=after,
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
+            # Send all cards in parallel
+            card_results = await asyncio.gather(*[_send_one_card(i) for i in range(len(all_tables))])
 
-            # Send the "before" text if any
-            if before.strip():
-                chunks = self.truncate_message(before, self.MAX_MESSAGE_LENGTH)
-                last_response = None
+            # Collect reply_to from first successful card
+            last_response = None
+            for cr in card_results:
+                if cr.success and cr.raw_response:
+                    reply_to = self._extract_response_field(cr.raw_response, "message_id")
+                    last_response = cr
+
+            # Build remaining text (parts between/around tables)
+            text_parts: list[str] = []
+            prev_end = 0
+            for start, end, _ in all_tables:
+                part = formatted[prev_end:start].strip()
+                if part:
+                    text_parts.append(part)
+                prev_end = end
+            tail = formatted[prev_end:].strip()
+            if tail:
+                text_parts.append(tail)
+
+            # Send remaining text
+            remaining = "\n\n".join(text_parts)
+            if remaining:
+                chunks = self.truncate_message(remaining, self.MAX_MESSAGE_LENGTH)
                 try:
                     for chunk in chunks:
                         msg_type, payload = self._build_outbound_payload(chunk)
@@ -1965,8 +1963,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     logger.error("[Feishu] Send error: %s", exc, exc_info=True)
                     return SendResult(success=False, error=str(exc))
             else:
-                if card_sent:
-                    return card_result
+                if last_response:
+                    return last_response
 
         # --- Normal path (no Markdown table detected) ---
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)

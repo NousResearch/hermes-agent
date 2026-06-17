@@ -355,3 +355,21 @@ class TestStoredPromptCwdDrift:
             assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
                 "Expected True when stored cwd matches current cwd"
             )
+
+    def test_stored_prompt_stale_when_runtime_surface_differs(self):
+        """Desktop GUI marker in stored prompt must not be reused when running in terminal."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = (
+            "Runtime surface: you're running inside the Hermes desktop GUI app.\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        # Current runtime is terminal/CLI: no desktop marker.
+        with patch.dict(os.environ, {"HERMES_DESKTOP": ""}, clear=False):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+                "Expected False when stored prompt claims desktop but HERMES_DESKTOP is unset"
+            )

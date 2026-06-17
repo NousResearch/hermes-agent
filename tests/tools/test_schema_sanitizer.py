@@ -700,3 +700,56 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ---------------------------------------------------------------------------
+# Empty / missing tool name guard
+#
+# A single misbehaving MCP server can register a tool with a blank name. The
+# provider (Anthropic and others) then rejects the WHOLE request with a 400
+# ("tools.N...name: String should have at least 1 character"), bricking every
+# turn. sanitize_tool_schemas drops the uncallable tool so the request stays
+# valid; well-formed tools are never affected.
+# ---------------------------------------------------------------------------
+
+
+def test_empty_name_tool_is_dropped():
+    tools = [_tool("good", {"type": "object", "properties": {}}), _tool("", {"type": "object"})]
+    out = sanitize_tool_schemas(tools)
+    assert len(out) == 1
+    assert out[0]["function"]["name"] == "good"
+
+
+def test_whitespace_only_name_tool_is_dropped():
+    tools = [_tool("   ", {"type": "object"}), _tool("keep", {"type": "object"})]
+    out = sanitize_tool_schemas(tools)
+    assert [t["function"]["name"] for t in out] == ["keep"]
+
+
+def test_missing_name_key_tool_is_dropped():
+    tools = [
+        {"type": "function", "function": {"parameters": {"type": "object"}}},
+        _tool("keep", {"type": "object"}),
+    ]
+    out = sanitize_tool_schemas(tools)
+    assert [t["function"]["name"] for t in out] == ["keep"]
+
+
+def test_none_name_tool_is_dropped():
+    tools = [_tool(None, {"type": "object"}), _tool("keep", {"type": "object"})]  # type: ignore[arg-type]
+    out = sanitize_tool_schemas(tools)
+    assert [t["function"]["name"] for t in out] == ["keep"]
+
+
+def test_bare_name_tool_without_function_wrapper_is_honored():
+    # Some callers pass a flat {"name": ...} shape rather than the function envelope.
+    tools = [{"name": ""}, {"name": "flatkeep", "parameters": {"type": "object"}}]
+    out = sanitize_tool_schemas(tools)
+    assert len(out) == 1
+    assert out[0].get("name") == "flatkeep"
+
+
+def test_all_named_tools_pass_through_unchanged_count():
+    tools = [_tool("a", {"type": "object"}), _tool("b", {"type": "object"})]
+    out = sanitize_tool_schemas(tools)
+    assert [t["function"]["name"] for t in out] == ["a", "b"]

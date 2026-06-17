@@ -57,6 +57,27 @@ def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
 
     sanitized: list[dict] = []
     for tool in tools:
+        # Drop tools with an empty/missing name before they reach the provider API.
+        # Anthropic (and others) reject the whole request with a 400 if any tool has a
+        # blank name (e.g. "tools.100.custom.name: String should have at least 1
+        # character"), which a single misbehaving MCP server can trigger. An unnamed
+        # tool is uncallable anyway, so dropping it is strictly safe and keeps the
+        # request valid. Log the culprit so the source can be fixed.
+        _nm = ""
+        if isinstance(tool, dict):
+            _fn = tool.get("function")
+            if isinstance(_fn, dict):
+                _nm = _fn.get("name") or ""
+            else:
+                _nm = tool.get("name") or ""
+        if not str(_nm).strip():
+            logger.warning(
+                "Dropping tool with empty/missing name before send (type=%r); "
+                "an upstream provider would reject the whole request. Tool: %.200s",
+                (tool.get("type") if isinstance(tool, dict) else type(tool).__name__),
+                repr(tool),
+            )
+            continue
         sanitized.append(_sanitize_single_tool(tool))
     return sanitized
 

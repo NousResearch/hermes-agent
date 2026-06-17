@@ -1280,6 +1280,10 @@ class SlashCommandCompleter(Completer):
         current word doesn't look like a path.  A word is path-like when
         it starts with ``./``, ``../``, ``~/``, ``/``, or contains a
         ``/`` separator (e.g. ``src/main.py``).
+
+        Tokens containing a ``://`` scheme separator (e.g. URLs like
+        ``https://example.com/x``) are excluded even though they contain a
+        ``/`` — they are never useful local-path completions.
         """
         if not text:
             return None

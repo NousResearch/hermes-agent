@@ -176,22 +176,23 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
   // /api/events in hermes_cli/web_server.py for the broadcast hop.
   //
-  // Failures (auth/loopback rejection, server too old to expose the
-  // endpoint, transient drops) surface in the same banner as the
-  // JSON-RPC sidecar so the sidebar matches its documented best-effort
-  // UX and the user always has a reconnect affordance.
+  // Auto-reconnects on transient drops with exponential backoff
+  // (1s → 2s → 4s → … → 30s cap). Auth rejections (4401/4403) are
+  // terminal — no retry, manual reload required.
   useEffect(() => {
     if (!channel) {
       return;
     }
-    // In loopback mode the legacy ?token=<session> path is fine; in gated
-    // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
-    // at the top level; the local ``ws`` is hoisted to a closed-over
-    // binding the cleanup reads via ``wsRef``.
     let unmounting = false;
     let ws: WebSocket | null = null;
-    void (async () => {
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    const MAX_BACKOFF_MS = 30_000;
+    const INITIAL_BACKOFF_MS = 1_000;
+
+    const connect = async () => {
+      if (unmounting) return;
+
       const [authName, authValue] = await buildWsAuthParam();
       if (!authValue || unmounting) {
         return;
@@ -202,19 +203,43 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
         `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
       );
 
-      // `unmounting` suppresses the banner during cleanup — `ws.close()`
-      // from the effect's return fires a close event with code 1005 that
-      // would otherwise look like an unexpected drop.
       const DISCONNECTED = "events feed disconnected — tool calls may not appear";
       const surface = (msg: string) => !unmounting && setError(msg);
 
-      ws.addEventListener("error", () => surface(DISCONNECTED));
+      const scheduleReconnect = () => {
+        if (unmounting) return;
+        attempt++;
+        const delay = Math.min(
+          INITIAL_BACKOFF_MS * 2 ** (attempt - 1),
+          MAX_BACKOFF_MS,
+        );
+        surface(`events feed reconnecting in ${Math.round(delay / 1000)}s…`);
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, delay);
+      };
+
+      ws.addEventListener("open", () => {
+        // Successful connection — reset backoff and clear error
+        attempt = 0;
+        if (!unmounting) setError(null);
+      });
+
+      ws.addEventListener("error", () => {
+        surface(DISCONNECTED);
+        scheduleReconnect();
+      });
 
       ws.addEventListener("close", (ev) => {
         if (ev.code === 4401 || ev.code === 4403) {
           surface(`events feed rejected (${ev.code}) — reload the page`);
-        } else if (ev.code !== 1000) {
+          // Auth failures are terminal — don't retry
+          return;
+        }
+        if (ev.code !== 1000) {
           surface(DISCONNECTED);
+          scheduleReconnect();
         }
       });
 
@@ -292,21 +317,23 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
             t.tool_id === p.tool_id
               ? {
                   ...t,
-                  status: p.error ? "error" : "done",
+                  status: (p.error ? "error" : "done") as const,
                   summary: p.summary,
-                  error: p.error,
                   inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
+                  finishedAt: Date.now(),
                 }
               : t,
           ),
         );
       }
       });
-    })();
+    };
+
+    connect();
 
     return () => {
       unmounting = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
   }, [channel, version]);

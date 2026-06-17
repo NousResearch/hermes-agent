@@ -25,6 +25,7 @@
     "@easyops-cn/docusaurus-search-local": "^0.55.1",
     "@mdx-js/react": "^3.0.0",
     "clsx": "^2.0.0",
+    "dompurify": "^3.4.10",
     "prism-react-renderer": "^2.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -36,13 +37,8 @@
     "typescript": "^6.0.3"
   },
   "overrides": {
-    "@babel/core": "7.29.6",
-    "joi": "^18.2.1",
-    "js-yaml": "4.2.0",
-    "launch-editor": "2.14.1",
     "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0",
-    "ws": "7.5.11"
+    "uuid": "^14.0.0"
   },
   "browserslist": {
     "production": [

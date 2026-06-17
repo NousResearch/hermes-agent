@@ -324,8 +324,11 @@ def env_int(key: str, default: int = 0) -> int:
 
 
 def env_bool(key: str, default: bool = False) -> bool:
-    """Read an environment variable as a boolean."""
-    return is_truthy_value(os.getenv(key, ""), default=default)
+    """Read an environment variable as a boolean, with fallback."""
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    return is_truthy_value(raw, default=default)
 
 
 # ─── Proxy Helpers ────────────────────────────────────────────────────────────

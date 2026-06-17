@@ -78,6 +78,26 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
 const textSegments = (segments: Msg[]) =>
   segments.filter(msg => msg.role === 'assistant' && msg.kind !== 'diff').map(msg => msg.text)
 
+const normalizedAssistantText = (text: string) => text.trim().replace(/\s+/g, ' ')
+
+const lastAssistantSegmentText = (segments: Msg[]) => {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const msg = segments[i]
+
+    if (msg?.role === 'assistant' && msg.kind !== 'diff' && msg.text.trim()) {
+      return msg.text
+    }
+  }
+
+  return ''
+}
+
+const repeatsLastAssistantSegment = (text: string, segments: Msg[]) => {
+  const normalized = normalizedAssistantText(text)
+
+  return Boolean(normalized && normalized === normalizedAssistantText(lastAssistantSegmentText(segments)))
+}
+
 const finalTail = (finalText: string, segments: Msg[]) => {
   let tail = finalText
 
@@ -410,12 +430,22 @@ class TurnController {
       this.syncReasoningSegment()
     }
 
-    const msg: Msg = {
-      role: split.text ? 'assistant' : 'system',
-      text: split.text,
-      ...(!split.text && { kind: 'trail' as const }),
-      ...(this.pendingSegmentTools.length && { tools: this.pendingSegmentTools })
-    }
+    const duplicateToolBoundaryText =
+      Boolean(split.text && this.pendingSegmentTools.length) && repeatsLastAssistantSegment(split.text, this.segmentMessages)
+
+    const msg: Msg = duplicateToolBoundaryText
+      ? {
+          kind: 'trail',
+          role: 'system',
+          text: '',
+          tools: this.pendingSegmentTools
+        }
+      : {
+          role: split.text ? 'assistant' : 'system',
+          text: split.text,
+          ...(!split.text && { kind: 'trail' as const }),
+          ...(this.pendingSegmentTools.length && { tools: this.pendingSegmentTools })
+        }
 
     this.streamTimer = clear(this.streamTimer)
 

@@ -566,6 +566,28 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]?.tools?.[0]).toContain('Patch')
   })
 
+  it('does not repeat identical assistant text flushed across tool boundaries (#47085)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { text: 'Wrote the file.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'foo.ts', name: 'write_file', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { summary: 'ok', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+
+    onEvent({ payload: { text: 'Wrote the file.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'cleanup', name: 'terminal', tool_id: 'tool-2' }, type: 'tool.start' } as any)
+    onEvent({ payload: { summary: 'ok', tool_id: 'tool-2' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { text: 'Wrote the file.' }, type: 'message.complete' } as any)
+
+    expect(appended.filter(msg => msg.role === 'assistant' && msg.text.trim() === 'Wrote the file.')).toHaveLength(1)
+
+    const toolLines = appended.flatMap(msg => msg.tools ?? [])
+
+    expect(toolLines).toHaveLength(2)
+    expect(toolLines[0]).toContain('Write File')
+    expect(toolLines[1]).toContain('Terminal')
+  })
+
   it('drops the diff segment when the final assistant text narrates the same diff', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

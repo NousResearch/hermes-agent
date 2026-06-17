@@ -52,6 +52,31 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _retry_after_seconds(error: str | None) -> float | None:
+    """Extract a platform-advised retry delay from an error string.
+
+    Telegram reports flood control as both ``Retry in 32 seconds`` and, on
+    internal paths, ``flood_control:32``. Generic exponential backoff retries
+    too early for those errors and can burn every retry inside the same flood
+    window. Return ``None`` when no explicit server wait is present.
+    """
+    if not error:
+        return None
+    text = str(error)
+    patterns = (
+        r"flood_control\s*:\s*(\d+(?:\.\d+)?)",
+        r"retry\s+(?:in|after)\s+(\d+(?:\.\d+)?)\s*(?:s|sec|second|seconds)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                return max(0.0, float(match.group(1)))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
@@ -3457,9 +3482,15 @@ class BasePlatformAdapter(ABC):
             return result
 
         if is_network:
-            # Retry with exponential backoff for transient errors
+            # Retry with exponential backoff for transient errors. If the
+            # platform gave us an explicit retry-after/flood-control window,
+            # honor it instead of retrying early and exhausting every attempt
+            # inside the same rate-limit bucket.
+            retry_after = _retry_after_seconds(error_str)
             for attempt in range(1, max_retries + 1):
                 delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                if retry_after is not None:
+                    delay = max(delay, retry_after + 0.25)
                 logger.warning(
                     "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
                     self.name, attempt, max_retries, delay, error_str,
@@ -3477,6 +3508,7 @@ class BasePlatformAdapter(ABC):
                 error_str = result.error or ""
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
+                retry_after = _retry_after_seconds(error_str)
             else:
                 # All retries exhausted (loop completed without break) — notify user
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)

@@ -15661,11 +15661,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # can actually type (`!approve`) — typed "/" is blocked in
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                cmd_preview = cmd[:160] + "..." if len(cmd) > 160 else cmd
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
+                    f"⚠️ **Command approval required**\n\n"
+                    f"**What I’m asking to do:** Run this command:\n"
                     f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
+                    f"**Why permission is required:** Hermes flagged it as {desc}.\n"
+                    f"**Risk:** It may change files, system state, credentials, or external services depending on what the command does. Approve only if that scope looks right.\n\n"
                     f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
                     f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
                 )

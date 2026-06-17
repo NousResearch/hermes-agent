@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -350,6 +351,30 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _is_under_path(path: str, parent: str) -> bool:
+    """Return True when ``path`` is ``parent`` or a descendant of it."""
+    try:
+        return os.path.commonpath([path, parent]) == parent
+    except (OSError, ValueError):
+        return False
+
+
+def _is_allowed_temp_path(resolved: str, normalized: str) -> bool:
+    """Allow file-tool writes inside the platform temp directory.
+
+    On macOS, ``tempfile.gettempdir()`` commonly resolves under
+    ``/private/var/folders/...``. That prefix is otherwise blocked because it
+    also contains sensitive system databases and logs. The guard should block
+    those system locations without breaking pytest fixtures and normal temp-file
+    workflows.
+    """
+    try:
+        temp_dir = os.path.realpath(tempfile.gettempdir())
+    except (OSError, ValueError):
+        return False
+    return _is_under_path(resolved, temp_dir) or _is_under_path(normalized, temp_dir)
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -361,11 +386,6 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
@@ -377,6 +397,13 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    if _is_allowed_temp_path(resolved, normalized):
+        return None
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 

@@ -80,6 +80,7 @@ from gateway.platforms.base import (
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
+    _retry_after_seconds,
     utf16_len,
 )
 from gateway.platforms.telegram_network import (
@@ -2934,6 +2935,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 # send continuations.
                 pass
             else:
+                retry_after = _retry_after_seconds(str(e))
+                if retry_after is not None:
+                    logger.warning(
+                        "[%s] Overflow split: first-chunk edit hit flood control; retrying final delivery after %.1fs",
+                        self.name, retry_after,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{retry_after}",
+                        retryable=True,
+                    )
                 logger.error(
                     "[%s] Overflow split: first-chunk edit failed: %s",
                     self.name, e, exc_info=True,
@@ -3284,11 +3296,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            cmd_preview = command[:3400] + "..." if len(command) > 3400 else command
+            desc = _html.escape(description or "potentially risky command")
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"<b>What I’m asking to do:</b> Run this command:\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+                f"<b>Why permission is required:</b> Hermes flagged it as {desc}.\n"
+                f"<b>Risk:</b> It may change files, system state, credentials, or external services depending on what the command does. Approve only if that scope looks right."
             )
 
             # Resolve thread context for thread replies

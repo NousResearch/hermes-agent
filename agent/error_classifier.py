@@ -843,7 +843,22 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Account/plan usage caps are quota walls, not transient per-minute
+        # throttles. Retrying the identical huge request immediately just burns
+        # attempts and tokens until the reset window. Treat them like billing so
+        # the loop rotates/falls back if possible, otherwise aborts fast.
+        if (
+            "usage_limit_reached" in error_code.lower()
+            or "usage limit has been reached" in error_msg
+            or "usage limit reached" in error_msg
+        ):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
+        # Already checked long_context_tier above; this is a normal rate limit.
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,

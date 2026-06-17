@@ -215,12 +215,19 @@ def build_acp_edit_tool_call(proposal: EditProposal):
     import acp
 
     tool_call_id = f"edit-approval-{next(_PERMISSION_REQUEST_IDS)}"
+    explanation = (
+        "What I’m asking to do: Approve the proposed file edit before Hermes writes it.\n"
+        f"Path: {proposal.path}\n\n"
+        "Why permission is required: This changes files in your workspace instead of only reading them.\n"
+        "Risk: The edit could introduce bugs, overwrite work, or modify the wrong file if the diff is not what you intended. Review the diff below before approving."
+    )
     return acp.update_tool_call(
         tool_call_id,
         title=f"Approve edit: {proposal.path}",
         kind="edit",
         status="pending",
         content=[
+            acp.tool_content(acp.text_block(explanation)),
             acp.tool_diff_content(
                 path=proposal.path,
                 old_text=proposal.old_text,

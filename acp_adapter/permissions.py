@@ -80,8 +80,14 @@ def _build_permission_tool_call(command: str, description: str):
     import acp as _acp
 
     tool_call_id = f"perm-check-{next(_PERMISSION_REQUEST_IDS)}"
-    title = f"{description}: {command}" if description else command
-    content_text = f"{description}\n$ {command}" if description else f"$ {command}"
+    title = f"Approve command: {command}"
+    reason = description or "potentially risky command"
+    content_text = (
+        "What I’m asking to do: Run this command.\n"
+        f"$ {command}\n\n"
+        f"Why permission is required: Hermes flagged it as {reason}.\n"
+        "Risk: It may change files, system state, credentials, or external services depending on what the command does. Approve only if that scope looks right."
+    )
     return _acp.update_tool_call(
         tool_call_id,
         title=title,

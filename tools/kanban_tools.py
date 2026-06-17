@@ -386,12 +386,22 @@ def _handle_show(args: dict, **kw) -> str:
             children = kb.child_ids(conn, tid)
 
             def _task_dict(t):
+                live = kb.live_worker_workspace_snapshot(t)
+                if live:
+                    workspace_kind = live.get("workspace_kind", t.workspace_kind)
+                    workspace_path = live.get("workspace_path", t.workspace_path)
+                    branch_name = live.get("branch_name", t.branch_name)
+                else:
+                    workspace_kind = t.workspace_kind
+                    workspace_path = t.workspace_path
+                    branch_name = t.branch_name
                 return {
                     "id": t.id, "title": t.title, "body": t.body,
                     "assignee": t.assignee, "status": t.status,
                     "tenant": t.tenant, "priority": t.priority,
-                    "workspace_kind": t.workspace_kind,
-                    "workspace_path": t.workspace_path,
+                    "workspace_kind": workspace_kind,
+                    "workspace_path": workspace_path,
+                    "branch_name": branch_name,
                     "created_by": t.created_by, "created_at": t.created_at,
                     "started_at": t.started_at,
                     "completed_at": t.completed_at,

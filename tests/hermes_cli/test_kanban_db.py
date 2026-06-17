@@ -38,6 +38,38 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+def _make_git_worktree(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "wt/live", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return worktree
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
@@ -268,6 +300,95 @@ def test_branch_name_requires_worktree_workspace(kanban_home):
             workspace_kind="scratch",
             branch_name="wt/bad",
         )
+
+
+def test_build_worker_context_uses_live_worktree_branch_and_kind(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    target = repo / ".worktrees" / "live-handoff"
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="live handoff",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        resolved = kb.resolve_workspace(task)
+        assert resolved == target
+
+        # Corrupt the persisted row to prove the worker context reads the
+        # live git workspace instead of stale metadata.
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='scratch', branch_name=NULL WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(target))
+        context = kb.build_worker_context(conn, tid)
+
+    assert f"Workspace: worktree @ {target}" in context
+    assert f"Branch:   wt/{tid}" in context
+    assert "Workspace: scratch" not in context
+
+
+def test_build_worker_context_does_not_fabricate_worktree_branch_for_scratch_workspace(
+    kanban_home, tmp_path, monkeypatch
+):
+    scratch_ws = tmp_path / "scratch"
+    scratch_ws.mkdir()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="scratch handoff")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(scratch_ws))
+        context = kb.build_worker_context(conn, tid)
+
+    assert "Workspace: scratch @" in context
+    assert "Branch:" not in context
+
+
+def test_live_worker_workspace_snapshot_uses_live_worktree_checkout(
+    kanban_home, tmp_path, monkeypatch
+):
+    worktree = _make_git_worktree(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(worktree))
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path="/stale/path",
+            branch_name="wt/stale",
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    snap = kb.live_worker_workspace_snapshot(task)
+    assert snap == {
+        "workspace_kind": "worktree",
+        "workspace_path": str(worktree.resolve()),
+        "branch_name": "wt/live",
+    }
+
+
+def test_live_worker_workspace_snapshot_ignores_scratch_tasks(
+    kanban_home, tmp_path, monkeypatch
+):
+    worktree = _make_git_worktree(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(worktree))
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="scratch", workspace_kind="scratch")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert kb.live_worker_workspace_snapshot(task) == {}
 
 
 # ---------------------------------------------------------------------------

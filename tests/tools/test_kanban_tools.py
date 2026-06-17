@@ -13,6 +13,9 @@ import os
 
 import pytest
 
+from hermes_cli import kanban_db as kb
+import tools.kanban_tools as kt
+
 
 # ---------------------------------------------------------------------------
 # Gating
@@ -171,6 +174,38 @@ def worker_env(monkeypatch, tmp_path):
     return tid
 
 
+def _make_git_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", "wt/live", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return worktree
+
+
 def test_show_defaults_to_env_task_id(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_show({})
@@ -194,6 +229,39 @@ def test_show_explicit_task_id(worker_env):
     out = kt._handle_show({"task_id": other})
     d = json.loads(out)
     assert d["task"]["id"] == other
+
+
+def test_show_uses_live_worktree_snapshot(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    worktree = _make_git_worktree(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(worktree))
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="live show",
+            workspace_kind="worktree",
+            workspace_path="/stale/path",
+            branch_name="wt/stale",
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_show({"task_id": tid})
+    d = json.loads(out)
+    assert d["task"]["workspace_kind"] == "worktree"
+    assert d["task"]["workspace_path"] == str(worktree.resolve())
+    assert d["task"]["branch_name"] == "wt/live"
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

@@ -858,6 +858,15 @@ export function useMessageStream({
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
+          // Clear compaction flag on first content delta — the model has
+          // resumed generating after mid-turn compaction.  Without this,
+          // the "Summarizing thread" label lingers for the rest of the turn
+          // because no new message.start fires when compaction happens
+          // mid-turn (the agent just continues its existing turn).
+          if (compactedTurnRef.current.has(sessionId)) {
+            setSessionCompacting(sessionId, false)
+            compactedTurnRef.current.delete(sessionId)
+          }
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'thinking.delta') {
@@ -867,6 +876,12 @@ export function useMessageStream({
         // avoid a duplicative "Thinking" disclosure showing spinner text.
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
+          // Reasoning content also signals the model is active again after
+          // mid-turn compaction — clear the compaction label.
+          if (compactedTurnRef.current.has(sessionId)) {
+            setSessionCompacting(sessionId, false)
+            compactedTurnRef.current.delete(sessionId)
+          }
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
         }
       } else if (event.type === 'reasoning.available') {

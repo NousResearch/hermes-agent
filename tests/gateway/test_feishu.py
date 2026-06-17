@@ -254,6 +254,34 @@ class TestFeishuMessageNormalization(unittest.TestCase):
         self.assertIn("Just body content", normalized.text_content)
         self.assertNotEqual(normalized.text_content, "[Interactive message]")
 
+    def test_normalize_interactive_card_handles_tag_text_elements(self):
+        """Cards using ``tag: text`` (e.g. lark-cli post-style content
+        embedded in interactive cards) must have their body text extracted.
+        The ``text`` tag was previously missing from the rich-block set,
+        causing all body content to be silently dropped."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        card = (
+            '{"title":"📋 Daily Digest","elements":'
+            '[[{"tag":"text","text":"📊 Stats: 12 commits"},'
+            '{"tag":"text","text":"  5 articles published"}],'
+            '[{"tag":"hr"}],'
+            '[{"tag":"text","text":"🚀 Deployed"},'
+            '{"tag":"text","text":"1. spaceship-app v2.1"}]]}'
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=card,
+        )
+
+        self.assertIn("📋 Daily Digest", normalized.text_content)
+        self.assertIn("📊 Stats: 12 commits", normalized.text_content)
+        self.assertIn("5 articles published", normalized.text_content)
+        self.assertIn("🚀 Deployed", normalized.text_content)
+        self.assertIn("spaceship-app", normalized.text_content)
+        self.assertNotEqual(normalized.text_content, "[Interactive message]")
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {

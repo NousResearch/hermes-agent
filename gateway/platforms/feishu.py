@@ -1130,6 +1130,7 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
         "button",
         "select_static",
         "date_picker",
+        "text",
     }
 
     segments: List[str] = []

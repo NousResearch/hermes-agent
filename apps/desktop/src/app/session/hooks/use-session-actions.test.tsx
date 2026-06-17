@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $currentCwd } from '@/store/session'
+import { $connection, $currentCwd, setCurrentCwd } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -83,6 +83,9 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    $connection.set(null)
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.local.rules')
     vi.restoreAllMocks()
   })
 
@@ -115,5 +118,18 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'default' })
+  })
+
+  it('does not send the previous local profile cwd when starting a named local profile chat', async () => {
+    const params = await createWith(() => {
+      $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
+      setCurrentCwd('/default/project')
+      $connection.set({ baseUrl: '', mode: 'local', profile: 'rules' } as never)
+      $activeGatewayProfile.set('rules')
+      $newChatProfile.set('rules')
+    })
+
+    expect(params).toMatchObject({ profile: 'rules' })
+    expect(params).not.toHaveProperty('cwd')
   })
 })

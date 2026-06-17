@@ -12,7 +12,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { $activeSessionId, setConnection, setCurrentBranch, setCurrentCwd, setWorkspaceProfileKey } from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -162,6 +162,7 @@ let _lastRoutedProfile: string | null = null
 
 $activeGatewayProfile.subscribe(value => {
   const key = normalizeProfileKey(value)
+  setWorkspaceProfileKey(key)
   setApiRequestProfile(key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
@@ -202,6 +203,35 @@ async function syncConnectionToActiveProfile(profile: string): Promise<void> {
     setConnection(await getConnection(profile))
   } catch {
     // Leave the prior connection in place; boot/reconnect resyncs it later.
+  }
+}
+
+async function syncWorkspaceToProfileDefault(profile: string, options: { force?: boolean } = {}): Promise<void> {
+  if (!options.force && $activeSessionId.get()) {
+    return
+  }
+
+  const api = window.hermesDesktop?.api
+
+  if (!api) {
+    return
+  }
+
+  try {
+    const result = await api<{ branch?: string; cwd?: string }>({
+      path: '/api/fs/default-cwd',
+      profile: normalizeProfileKey(profile)
+    })
+
+    const cwd = result?.cwd?.trim()
+
+    if (cwd && (options.force || !$activeSessionId.get())) {
+      setCurrentCwd(cwd)
+      setCurrentBranch(result.branch || '')
+    }
+  } catch {
+    // Best-effort only: a backend that cannot report a default cwd should not
+    // block the profile swap; the user can still pick a folder manually.
   }
 }
 
@@ -248,6 +278,7 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // The active backend just changed; resync $connection so remote-aware
     // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
     await syncConnectionToActiveProfile(target)
+    await syncWorkspaceToProfileDefault(target)
   })()
 
   try {
@@ -286,7 +317,7 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // Switch the active context to `name`: leave "All profiles" mode, point new
 // chats at it, and swap the single live gateway onto its backend (which moves
 // $activeGatewayProfile → name, so $profileScope follows).
-export function selectProfile(name: string): void {
+export async function selectProfile(name: string): Promise<void> {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
@@ -298,7 +329,11 @@ export function selectProfile(name: string): void {
     requestFreshSession()
   }
 
-  void ensureGatewayProfile(target)
+  await ensureGatewayProfile(target)
+
+  if (switching) {
+    await syncWorkspaceToProfileDefault(target, { force: true })
+  }
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -307,11 +342,12 @@ export function selectProfile(name: string): void {
 // session list, where switching scope would throw away the browse state the user
 // is in. Points new chats at the profile and opens its backend so the next
 // message lands in the right place.
-export function newSessionInProfile(name: string): void {
+export async function newSessionInProfile(name: string): Promise<void> {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
   requestFreshSession()
-  void ensureGatewayProfile(target)
+  await ensureGatewayProfile(target)
+  await syncWorkspaceToProfileDefault(target, { force: true })
 }
 
 export function setShowAllProfiles(value: boolean): void {

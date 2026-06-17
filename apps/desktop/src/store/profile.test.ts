@@ -15,8 +15,8 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 
-const { $activeGatewayProfile, ensureGatewayProfile } = await import('./profile')
-const { $connection } = await import('./session')
+const { $activeGatewayProfile, ensureGatewayProfile, selectProfile } = await import('./profile')
+const { $activeSessionId, $connection, $currentBranch, $currentCwd } = await import('./session')
 
 const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: 'https://hermes-roy.tail.ts.net', mode: 'remote', profile: 'vps-remote', ...over }) as HermesConnection
@@ -25,19 +25,27 @@ const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: '', mode: 'local', profile: 'default', ...over }) as HermesConnection
 
 const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
+const api = vi.fn()
 
 beforeEach(() => {
+  api.mockReset()
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $activeSessionId.set(null)
   $connection.set(localConn())
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  $currentBranch.set('')
+  $currentCwd.set('')
+  vi.stubGlobal('window', { hermesDesktop: { api, getConnection } })
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  $activeSessionId.set(null)
   $connection.set(null)
+  $currentBranch.set('')
+  $currentCwd.set('')
 })
 
 describe('ensureGatewayProfile → $connection sync (#46651)', () => {
@@ -85,5 +93,44 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+
+  it('seeds an idle local profile workspace from that backend default cwd', async () => {
+    getConnection.mockResolvedValue(localConn({ baseUrl: 'http://127.0.0.1:54929', profile: 'utils' }))
+    api.mockResolvedValue({ branch: 'main', cwd: 'D:\\project-new\\utils' })
+
+    await ensureGatewayProfile('utils')
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'utils' })
+    expect($currentCwd.get()).toBe('D:\\project-new\\utils')
+    expect($currentBranch.get()).toBe('main')
+  })
+
+  it('keeps an active session workspace instead of replacing it with the profile default', async () => {
+    $activeSessionId.set('session-1')
+    $currentBranch.set('feature/session')
+    $currentCwd.set('D:\\project-new\\session-worktree')
+    getConnection.mockResolvedValue(localConn({ baseUrl: 'http://127.0.0.1:54929', profile: 'utils' }))
+    api.mockResolvedValue({ branch: 'main', cwd: 'D:\\project-new\\utils' })
+
+    await ensureGatewayProfile('utils')
+
+    expect(api).not.toHaveBeenCalled()
+    expect($currentCwd.get()).toBe('D:\\project-new\\session-worktree')
+    expect($currentBranch.get()).toBe('feature/session')
+  })
+
+  it('updates the workspace when the user explicitly switches profiles from an active session', async () => {
+    $activeSessionId.set('session-1')
+    $currentBranch.set('feature/session')
+    $currentCwd.set('D:\\project-new\\session-worktree')
+    getConnection.mockResolvedValue(localConn({ baseUrl: 'http://127.0.0.1:54929', profile: 'utils' }))
+    api.mockResolvedValue({ branch: 'main', cwd: 'D:\\project-new\\utils' })
+
+    await selectProfile('utils')
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'utils' })
+    expect($currentCwd.get()).toBe('D:\\project-new\\utils')
+    expect($currentBranch.get()).toBe('main')
   })
 })

@@ -94,10 +94,6 @@ export async function desktopWorktrees(cwds: string[]): Promise<Record<string, H
 }
 
 export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string } | null> {
-  if (!isDesktopFsRemoteMode()) {
-    return null
-  }
-
   return bridge().api<{ branch: string; cwd: string }>({ path: '/api/fs/default-cwd' })
 }
 

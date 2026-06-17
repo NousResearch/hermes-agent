@@ -152,6 +152,7 @@ describe('mergeSessionPage', () => {
       session({ id: 'tip-4', _lineage_root_id: 'root' }),
       session({ id: 'other' }),
     ] as SessionInfo[]
+
     const incoming = [
       session({ id: 'tip-5', _lineage_root_id: 'root' }),
     ] as SessionInfo[]
@@ -173,6 +174,7 @@ describe('mergeSessionPage', () => {
       session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
       session({ id: 'b', _lineage_root_id: 'lineage-b' }),
     ] as SessionInfo[]
+
     const incoming = [
       session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
     ] as SessionInfo[]
@@ -190,6 +192,7 @@ describe('workspaceCwdForNewSession', () => {
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.local.rules')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
     window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
   })
@@ -240,6 +243,22 @@ describe('workspaceCwdForNewSession', () => {
 
     $connection.set(null)
     expect(workspaceCwdForNewSession()).toBe('/local/project')
+  })
+
+  it('keeps named local profile workspace memory separate from the default profile', () => {
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
+    setCurrentCwd('/default/project')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'rules' } as never)
+    expect(workspaceCwdForNewSession()).toBe('')
+
+    setCurrentCwd('/rules/project')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
+    expect(workspaceCwdForNewSession()).toBe('/default/project')
+
+    $connection.set({ baseUrl: '', mode: 'local', profile: 'rules' } as never)
+    expect(workspaceCwdForNewSession()).toBe('/rules/project')
   })
 })
 

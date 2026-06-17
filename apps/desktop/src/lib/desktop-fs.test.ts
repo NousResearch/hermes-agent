@@ -18,11 +18,26 @@ const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
 const api = vi.fn(async ({ path }: { path: string }) => {
-  if (path.startsWith('/api/fs/list?')) return { entries: [{ name: 'remote', path: '/remote', isDirectory: true }] }
-  if (path.startsWith('/api/fs/read-text?')) return { path: '/remote/file.txt', text: 'remote', byteSize: 6 }
-  if (path.startsWith('/api/fs/read-data-url?')) return { dataUrl: 'data:text/plain;base64,cmVtb3Rl' }
-  if (path.startsWith('/api/fs/git-root?')) return { root: '/remote' }
-  if (path === '/api/fs/default-cwd') return { cwd: '/backend/project', branch: 'main' }
+  if (path.startsWith('/api/fs/list?')) {
+    return { entries: [{ name: 'remote', path: '/remote', isDirectory: true }] }
+  }
+
+  if (path.startsWith('/api/fs/read-text?')) {
+    return { path: '/remote/file.txt', text: 'remote', byteSize: 6 }
+  }
+
+  if (path.startsWith('/api/fs/read-data-url?')) {
+    return { dataUrl: 'data:text/plain;base64,cmVtb3Rl' }
+  }
+
+  if (path.startsWith('/api/fs/git-root?')) {
+    return { root: '/remote' }
+  }
+
+  if (path === '/api/fs/default-cwd') {
+    return { cwd: '/backend/project', branch: 'main' }
+  }
+
   throw new Error(`unexpected path ${path}`)
 })
 
@@ -67,6 +82,14 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).toHaveBeenCalledWith('/work')
     expect(selectPaths).toHaveBeenCalledWith({ directories: true })
     expect(api).not.toHaveBeenCalled()
+  })
+
+  it('reads the backend default cwd in local mode', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(desktopDefaultCwd()).resolves.toEqual({ cwd: '/backend/project', branch: 'main' })
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd' })
   })
 
   it('routes filesystem reads through authenticated backend REST in remote mode', async () => {

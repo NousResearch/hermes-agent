@@ -71,20 +71,67 @@ def _get_user_plugins_dir() -> Optional[Path]:
         return None
 
 
+def _init_declares_memory_provider(init_file: Path) -> bool:
+    """Cheap text scan for memory-provider registration code."""
+    try:
+        source = init_file.read_text(errors="replace")[:8192]
+        return "register_memory_provider" in source or "MemoryProvider" in source
+    except Exception:
+        return False
+
+
+def _memory_provider_init_file(path: Path) -> Optional[Path]:
+    """Return the provider package ``__init__.py`` for a plugin directory.
+
+    User-installed packages are often laid out like
+    ``$HERMES_HOME/plugins/mimir/hermes_mimir/__init__.py`` rather than putting
+    the implementation directly at ``plugins/mimir/__init__.py``. Keep the
+    original root-file behavior, then fall back to one immediate package
+    subdirectory that clearly declares a memory provider.
+    """
+    root_init = path / "__init__.py"
+    if root_init.exists() and _init_declares_memory_provider(root_init):
+        return root_init
+
+    normalized_name = path.name.replace("-", "_")
+    preferred = (
+        path.name,
+        normalized_name,
+        f"hermes_{normalized_name}",
+    )
+    seen: set[Path] = set()
+
+    for child_name in preferred:
+        candidate = path / child_name / "__init__.py"
+        seen.add(candidate)
+        if candidate.exists() and _init_declares_memory_provider(candidate):
+            return candidate
+
+    try:
+        children = sorted(path.iterdir(), key=lambda child: child.name)
+    except Exception:
+        return None
+
+    for child in children:
+        candidate = child / "__init__.py"
+        if (
+            candidate in seen
+            or not child.is_dir()
+            or child.name.startswith(("_", "."))
+        ):
+            continue
+        if candidate.exists() and _init_declares_memory_provider(candidate):
+            return candidate
+    return None
+
+
 def _is_memory_provider_dir(path: Path) -> bool:
     """Heuristic: does *path* look like a memory provider plugin?
 
     Checks for ``register_memory_provider`` or ``MemoryProvider`` in the
     ``__init__.py`` source.  Cheap text scan — no import needed.
     """
-    init_file = path / "__init__.py"
-    if not init_file.exists():
-        return False
-    try:
-        source = init_file.read_text(errors="replace")[:8192]
-        return "register_memory_provider" in source or "MemoryProvider" in source
-    except Exception:
-        return False
+    return _memory_provider_init_file(path) is not None
 
 
 def _iter_provider_dirs() -> List[Tuple[str, Path]]:
@@ -217,9 +264,9 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
     # collide with bundled providers in sys.modules.
     _is_bundled = _MEMORY_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _MEMORY_PLUGINS_DIR
     module_name = f"plugins.memory.{name}" if _is_bundled else f"{_USER_NAMESPACE}.{name}"
-    init_file = provider_dir / "__init__.py"
+    init_file = _memory_provider_init_file(provider_dir)
 
-    if not init_file.exists():
+    if init_file is None:
         return None
 
     # Check if already loaded.  A synthetic package shell registered by
@@ -258,7 +305,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
         # Now load the provider module
         spec = importlib.util.spec_from_file_location(
             module_name, str(init_file),
-            submodule_search_locations=[str(provider_dir)]
+            submodule_search_locations=[str(init_file.parent)]
         )
         if not spec:
             return None
@@ -268,7 +315,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 
         # Register submodules so relative imports work
         # e.g., "from .store import MemoryStore" in holographic plugin
-        for sub_file in provider_dir.glob("*.py"):
+        for sub_file in init_file.parent.glob("*.py"):
             if sub_file.name == "__init__.py":
                 continue
             sub_name = sub_file.stem

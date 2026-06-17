@@ -606,6 +606,44 @@ class TestUserInstalledProviderDiscovery:
         assert p is not None
         assert p.name == "nestedimpl"
 
+    def test_load_user_plugin_from_package_subdir_without_root_init(
+        self, tmp_path, monkeypatch
+    ):
+        """Pip-style provider packages do not need a copied root __init__.py."""
+        from plugins.memory import discover_memory_providers, load_memory_provider
+
+        plugin_dir = tmp_path / "plugins" / "mimir"
+        package_dir = plugin_dir / "hermes_mimir"
+        package_dir.mkdir(parents=True)
+        (package_dir / "helper.py").write_text("PROVIDER_NAME = 'mimir'\n")
+        (package_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "from . import helper\n"
+            "class MyProvider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return helper.PROVIDER_NAME\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: mimir\ndescription: Pip package provider\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+
+        p = load_memory_provider("mimir")
+        assert p is not None
+        assert p.name == "mimir"
+
+        providers = discover_memory_providers()
+        matches = [row for row in providers if row[0] == "mimir"]
+        assert matches == [("mimir", "Pip package provider", True)]
+
 
 class TestUserInstalledProviderCli:
     """CLI commands of user-installed providers must be discoverable.

@@ -289,25 +289,36 @@ class LiveAegisSessionDriver(RecoveryDriver):
         *,
         profile: str = "aegis",
         timeout_seconds: int = 300,
-        threshold: float = 0.02,
+        threshold: float | None = 0.02,
         filler_turns: int = 4,
         filler_tokens: int = 2500,
         lcm_db: str | None = None,
+        model: str | None = None,
+        provider: str | None = None,
     ) -> None:
         self.profile = profile
         self.timeout_seconds = timeout_seconds
         self.threshold = threshold
         self.filler_turns = filler_turns
         self.filler_tokens = filler_tokens
+        self.model = model
+        self.provider = provider
         self.lcm_db = lcm_db or os.path.expanduser(
             f"~/.hermes/profiles/{profile}/lcm.db"
         )
 
     def _hermes(self, args: list[str], prompt: str) -> subprocess.CompletedProcess:
         env = os.environ.copy()
-        env["LCM_CONTEXT_THRESHOLD"] = str(self.threshold)
+        if self.threshold is not None:
+            env["LCM_CONTEXT_THRESHOLD"] = str(self.threshold)
+        cmd = ["hermes", "-p", self.profile, "chat", "-Q"]
+        if self.model:
+            cmd.extend(["-m", self.model])
+        if self.provider:
+            cmd.extend(["--provider", self.provider])
+        cmd.extend([*args, "-q", prompt])
         return subprocess.run(
-            ["hermes", "-p", self.profile, "chat", "-Q", *args, "-q", prompt],
+            cmd,
             capture_output=True, text=True, timeout=self.timeout_seconds,
             env=env, check=False,
         )
@@ -424,12 +435,12 @@ def wilson_lower_bound(successes: int, total: int, z: float = WILSON_Z) -> float
     return wilson_stats(successes, total, z).lower
 
 
-def validate_run_config(*, mode: str, n: int) -> None:
+def validate_run_config(*, mode: str, n: int, allow_underpowered_live: bool = False) -> None:
     if mode not in {"dry-run", "live"}:
         raise ValueError(f"mode must be 'dry-run' or 'live', got {mode!r}")
     if n <= 0:
         raise ValueError("n must be positive")
-    if mode == "live" and n < LIVE_MIN_TRIALS:
+    if mode == "live" and n < LIVE_MIN_TRIALS and not allow_underpowered_live:
         raise ValueError(f"live Phase-2 gate requires N=180 minimum; got n={n}")
 
 
@@ -620,8 +631,9 @@ def run_recovery_gate(
     budget: BudgetPolicy | None = None,
     driver: RecoveryDriver | None = None,
     judge: Any | None = None,
+    allow_underpowered_live: bool = False,
 ) -> RecoveryRun:
-    validate_run_config(mode=mode, n=n)
+    validate_run_config(mode=mode, n=n, allow_underpowered_live=allow_underpowered_live)
     sampling = sampling or SamplingParams(seed=seed)
     if thresholds is None:
         thresholds = GateThresholds(min_trials=1, wilson_lower_min=0.0) if mode == "dry-run" else GateThresholds()
@@ -902,8 +914,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--no-tool-call-required", action="store_true", help="Record tool calls but do not fail the gate when they are absent.")
     parser.add_argument("--session-mode", action="store_true", help="Use the persistent multi-turn LiveAegisSessionDriver (plant->filler->recover against the real LCM store) instead of the inline single-prompt driver.")
     parser.add_argument("--profile", default="aegis", help="Hermes profile to drive in --session-mode.")
+    parser.add_argument("--model", help="Model override for each Hermes chat call in --session-mode (e.g. claude-haiku-4-5-20251001).")
+    parser.add_argument("--provider", help="Provider override for each Hermes chat call in --session-mode.")
     parser.add_argument("--lcm-threshold", type=float, default=0.02, help="LCM_CONTEXT_THRESHOLD override for --session-mode filler turns.")
+    parser.add_argument("--natural-threshold", action="store_true", help="Do not override LCM_CONTEXT_THRESHOLD; use the profile/model natural threshold.")
     parser.add_argument("--filler-turns", type=int, default=4, help="Filler turns per trial in --session-mode.")
+    parser.add_argument("--filler-tokens", type=int, default=2500, help="Approximate filler-token budget per filler turn in --session-mode.")
+    parser.add_argument("--allow-underpowered-live", action="store_true", help="Allow N<180 live runs for E2E shakedown ONLY; not a Phase-2 promotion gate.")
     return parser.parse_args(argv)
 
 
@@ -912,7 +929,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "live" if args.live else "dry-run" if args.dry_run else "live"
     out_path = Path(args.out).expanduser().resolve()
     try:
-        validate_run_config(mode=mode, n=args.n)
+        validate_run_config(mode=mode, n=args.n, allow_underpowered_live=args.allow_underpowered_live)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -921,7 +938,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         wilson_lower_min = args.wilson_lower_min
     thresholds = GateThresholds(
-        min_trials=LIVE_MIN_TRIALS,
+        min_trials=args.n if args.allow_underpowered_live and mode == "live" and args.n < LIVE_MIN_TRIALS else LIVE_MIN_TRIALS,
         recall_point_min=args.recall_point_min,
         wilson_lower_min=wilson_lower_min,
         judge_precision_min=args.judge_precision_min,
@@ -941,8 +958,11 @@ def main(argv: list[str] | None = None) -> int:
             driver = LiveAegisSessionDriver(
                 profile=args.profile,
                 timeout_seconds=args.timeout_seconds,
-                threshold=args.lcm_threshold,
+                threshold=None if args.natural_threshold else args.lcm_threshold,
                 filler_turns=args.filler_turns,
+                filler_tokens=args.filler_tokens,
+                model=args.model,
+                provider=args.provider,
             )
         else:
             driver = LiveAegisDriver(command=command, timeout_seconds=args.timeout_seconds)
@@ -955,6 +975,7 @@ def main(argv: list[str] | None = None) -> int:
         thresholds=thresholds,
         budget=budget,
         driver=driver,
+        allow_underpowered_live=args.allow_underpowered_live,
     )
     print(f"{run.gate.correct_trials}/{run.gate.total_trials} correct; Wilson lower={run.gate.wilson_lower:.6f}")
     print(f"estimated spend=${run.estimated_spend_usd:.6f}; observed spend=${run.observed_spend_usd:.6f}; report={out_path}")

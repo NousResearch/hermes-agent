@@ -186,10 +186,11 @@ def test_session_driver_recovers_fact_and_reads_tool_calls_from_db(tmp_path, mon
     conn.commit()
     conn.close()
 
-    calls = {"n": 0}
+    calls = {"n": 0, "cmds": []}
 
     def fake_run(cmd, **kwargs):
         calls["n"] += 1
+        calls["cmds"].append(cmd)
         # session_id goes to STDERR (real CLI behavior); answer to STDOUT
         is_recovery = "recover" in cmd[-1].lower() or "sentinel" in cmd[-1].lower()
         stdout = "Warning: Unknown toolsets: rl\n"
@@ -202,7 +203,7 @@ def test_session_driver_recovers_fact_and_reads_tool_calls_from_db(tmp_path, mon
     monkeypatch.setattr(harness.subprocess, "run", fake_run)
 
     drv = harness.LiveAegisSessionDriver(
-        profile="aegis", filler_turns=2, lcm_db=str(db)
+        profile="aegis", filler_turns=2, lcm_db=str(db), model="claude-haiku-4-5-20251001"
     )
     fx = harness.make_fixtures(180, seed=4242)[2]
     # force the fixture's expected answer to match our fake reply
@@ -222,3 +223,12 @@ def test_session_driver_recovers_fact_and_reads_tool_calls_from_db(tmp_path, mon
     assert any(t["name"] == "lcm_grep" for t in resp.tool_calls)
     # plant + 2 filler + 1 recovery = 4 subprocess calls
     assert calls["n"] == 4
+    assert all("-q" in cmd for cmd in calls["cmds"])
+    assert all("-m" in cmd and "claude-haiku-4-5-20251001" in cmd for cmd in calls["cmds"])
+
+
+def test_underpowered_live_requires_explicit_shakedown_override() -> None:
+    with pytest.raises(ValueError):
+        harness.validate_run_config(mode="live", n=12)
+    harness.validate_run_config(mode="live", n=12, allow_underpowered_live=True)
+

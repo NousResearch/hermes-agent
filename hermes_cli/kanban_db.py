@@ -7823,7 +7823,15 @@ def _dispatch_once_locked(
         # Git-backed boards (default_workdir resolves to a repo) run workers in
         # worktrees for branch-based, verifiable handoffs; a worktree-kind task
         # always does. Other boards keep scratch/dir so research/ops still runs.
-        use_worktree = claimed.workspace_kind == "worktree" or _board_is_git_backed(board)
+        # goal_mode roots are coordination loops (they fan out / wake on child
+        # completion) and produce no code of their own, so they stay scratch
+        # even on a git-backed board — otherwise the worktree completion gate
+        # (which requires real CI on a code branch) blocks them forever. An
+        # explicit workspace_kind=worktree still wins for the rare goal card
+        # that genuinely edits code.
+        use_worktree = claimed.workspace_kind == "worktree" or (
+            _board_is_git_backed(board) and not getattr(claimed, "goal_mode", False)
+        )
         try:
             if use_worktree:
                 workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
@@ -7922,7 +7930,15 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
-        use_worktree = claimed.workspace_kind == "worktree" or _board_is_git_backed(board)
+        # goal_mode roots are coordination loops (they fan out / wake on child
+        # completion) and produce no code of their own, so they stay scratch
+        # even on a git-backed board — otherwise the worktree completion gate
+        # (which requires real CI on a code branch) blocks them forever. An
+        # explicit workspace_kind=worktree still wins for the rare goal card
+        # that genuinely edits code.
+        use_worktree = claimed.workspace_kind == "worktree" or (
+            _board_is_git_backed(board) and not getattr(claimed, "goal_mode", False)
+        )
         try:
             if use_worktree:
                 workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(

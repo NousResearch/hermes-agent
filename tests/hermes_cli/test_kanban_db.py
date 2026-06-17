@@ -2611,6 +2611,38 @@ def test_dispatch_non_git_board_keeps_scratch_workspace(kanban_home, tmp_path, m
     assert ".worktrees" not in (task.workspace_path or "")
 
 
+def test_dispatch_goal_mode_root_stays_scratch_on_git_backed_board(kanban_home, tmp_path, monkeypatch):
+    # goal_mode coordination roots produce no code of their own; on a git-backed
+    # board they must NOT be coerced to worktree, or the worktree completion gate
+    # (real CI on a code branch) would block them forever.
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "k@example.com"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "K"], check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+
+    kb.create_board("goal-board", default_workdir=str(repo))  # git-backed
+    import hermes_cli.profiles as profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+
+    def fake_spawn(task, workspace, board=None):
+        return None
+
+    with kb.connect(board="goal-board") as conn:
+        tid = kb.create_task(
+            conn, title="goal root", assignee="orchestrator", goal_mode=True, board="goal-board"
+        )
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, board="goal-board")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.workspace_kind == "scratch"  # not coerced to worktree
+    assert task.branch_name is None
+    assert ".worktrees" not in (task.workspace_path or "")
+
+
 def test_dispatch_worktree_task_fetches_fresh_origin_main_before_materializing_workspace(
     kanban_home, tmp_path, monkeypatch
 ):

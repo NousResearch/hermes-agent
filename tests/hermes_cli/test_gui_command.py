@@ -616,6 +616,23 @@ def test_electron_dist_ok_per_platform(tmp_path, monkeypatch, platform, rel):
     assert cli_main._electron_dist_ok(tmp_path) is True
 
 
+def test_electron_dist_ok_uses_configured_workspace_dist(tmp_path, monkeypatch):
+    """The health check follows build.electronDist, not a hard-coded hoist path."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    (desktop_dir / "package.json").write_text(
+        '{"build": {"electronDist": "node_modules/electron/dist"}}',
+        encoding="utf-8",
+    )
+
+    binp = desktop_dir / "node_modules" / "electron" / "dist" / "electron"
+    binp.parent.mkdir(parents=True)
+    binp.write_text("", encoding="utf-8")
+
+    assert cli_main._electron_dist_ok(tmp_path) is True
+
+
 def test_redownload_electron_dist_noop_when_present(tmp_path, monkeypatch):
     """Already-healthy dist → no download, so an unrelated build failure can't
     trigger a needless ~200 MB refetch."""
@@ -678,6 +695,38 @@ def test_redownload_electron_dist_runs_installer_with_mirror(tmp_path, monkeypat
     # The partial dir + marker were dropped before the re-download.
     assert not (electron / "dist" / "leftover").exists()
     assert not (electron / "path.txt").exists()
+
+
+def test_redownload_electron_dist_uses_configured_workspace_dist(tmp_path, monkeypatch):
+    """The mirror fallback runs install.js next to the configured Electron dist."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    (desktop_dir / "package.json").write_text(
+        '{"build": {"electronDist": "node_modules/electron/dist"}}',
+        encoding="utf-8",
+    )
+    electron = desktop_dir / "node_modules" / "electron"
+    electron.mkdir(parents=True)
+    (electron / "install.js").write_text("// stub", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        binp = electron / "dist" / "electron"
+        binp.parent.mkdir(parents=True, exist_ok=True)
+        binp.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+        ok = cli_main._redownload_electron_dist(tmp_path, {})
+
+    assert ok is True
+    assert captured["cmd"] == ["/usr/bin/node", str(electron / "install.js")]
+    assert captured["cwd"] == str(electron)
 
 
 def test_redownload_electron_dist_returns_false_when_download_fails(tmp_path, monkeypatch):

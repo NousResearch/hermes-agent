@@ -2161,28 +2161,28 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
-# True when node_modules\electron\dist holds a usable Electron binary.
-# electron-builder reads the binary from build.electronDist
-# (node_modules\electron\dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing electron.exe (partial extraction / aborted
-# postinstall) is NOT ok.
+# True when apps\desktop\node_modules\electron\dist holds a usable Electron binary.
+# electron-builder reads the binary from build.electronDist relative to
+# apps/desktop since #38673, so this is the exact file whose absence makes a
+# pack fail with "The specified electronDist does not exist". A dist dir that
+# exists but is missing electron.exe (partial extraction / aborted postinstall)
+# is NOT ok.
 function Test-ElectronDist {
     param([string]$InstallDir)
-    $distExe = Join-Path $InstallDir 'node_modules\electron\dist\electron.exe'
+    $distExe = Join-Path $InstallDir 'apps\desktop\node_modules\electron\dist\electron.exe'
     return (Test-Path -LiteralPath $distExe)
 }
 
-# (Re)populate node_modules\electron\dist via electron's own downloader.
+# (Re)populate apps\desktop\node_modules\electron\dist via electron's own downloader.
 #
-# Since #38673 the desktop build pins build.electronDist to
-# node_modules\electron\dist, so electron-builder reads the Electron binary
-# straight from there and never downloads it during `npm run pack`. That dist
-# tree is produced by the electron package's postinstall (install.js) during
-# `npm ci`. When that download is blocked/throttled (GitHub's release host is
-# unreachable in some regions - #47266), dist is missing and re-running pack only
-# re-throws "The specified electronDist does not exist". The mirror fallback
-# therefore has to drive THIS downloader, not another pack.
+# Since #38673 the desktop build pins build.electronDist relative to apps/desktop,
+# so electron-builder reads the Electron binary straight from there and never
+# downloads it during `npm run pack`. That dist tree is produced by the electron
+# package's postinstall (install.js) during `npm ci`. When that download is
+# blocked/throttled (GitHub's release host is unreachable in some regions -
+# #47266), dist is missing and re-running pack only re-throws "The specified
+# electronDist does not exist". The mirror fallback therefore has to drive THIS
+# downloader, not another pack.
 #
 # No-op (returns $true) when the dist binary is already present. Otherwise drops a
 # partial dist + version marker (electron's install.js short-circuits when
@@ -2193,7 +2193,7 @@ function Restore-ElectronDist {
     param([string]$InstallDir, [string]$Mirror)
     if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
 
-    $electronDir = Join-Path $InstallDir 'node_modules\electron'
+    $electronDir = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
     $distExe = Join-Path $electronDir 'dist\electron.exe'
     $installer = Join-Path $electronDir 'install.js'
     if (-not (Test-Path -LiteralPath $installer)) { return $false }
@@ -2370,12 +2370,12 @@ function Install-Desktop {
             # once; @electron/get re-downloads with its own SHASUM check. Without
             # this a corrupt download hard-fails the whole installer.
             $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-            # electronDist is pinned to node_modules\electron\dist (#38673):
+            # electronDist is pinned relative to apps/desktop (#38673):
             # electron-builder reads the Electron binary from there and `pack`
             # never downloads it, so purging the cache + re-running pack can't by
-            # itself repopulate a missing/partial dist. When the dist is actually
-            # gone, re-run electron's own downloader so the retry has a binary to
-            # read. Gated on the dist check so an unrelated build failure
+            # itself repopulate a missing/partial dist. When the configured dist is
+            # actually gone, re-run electron's own downloader so the retry has a
+            # binary to read. Gated on the dist check so an unrelated build failure
             # (tsc/vite) doesn't trigger a pointless ~200MB refetch.
             $restored = $false
             if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
@@ -2403,7 +2403,7 @@ function Install-Desktop {
             Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
             # electronDist is pinned (#38673), so `npm run pack` never downloads
             # Electron - the mirror only helps if it drives electron's own
-            # downloader. Re-fetch the binary through the mirror first; otherwise
+            # downloader. Re-fetch the configured binary through the mirror first; otherwise
             # the retry just re-reads the same missing dist and re-throws
             # "The specified electronDist does not exist" (#47266).
             $haveDist = Test-ElectronDist -InstallDir $InstallDir
@@ -2412,7 +2412,7 @@ function Install-Desktop {
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
             } else {
-                Write-Warn "Could not re-download Electron from the mirror (node_modules\electron\dist still missing)"
+                Write-Warn "Could not re-download Electron from the mirror (configured electronDist still missing)"
             }
         }
         $ErrorActionPreference = $prevEAP

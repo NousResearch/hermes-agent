@@ -2407,15 +2407,15 @@ _desktop_pack() {
 # failed, and we never override a user-pinned ELECTRON_MIRROR.
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
-# True (returns 0) when node_modules/electron/dist holds a usable Electron
-# binary. electron-builder reads the binary from build.electronDist
-# (node_modules/electron/dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing the binary (partial extraction / aborted
-# postinstall) is NOT ok. $1 = the workspace root holding node_modules.
+# True (returns 0) when apps/desktop/node_modules/electron/dist holds a usable
+# Electron binary. electron-builder reads the binary from build.electronDist
+# relative to apps/desktop since #38673, so this is the exact file whose absence
+# makes a pack fail with "The specified electronDist does not exist". A dist dir
+# that exists but is missing the binary (partial extraction / aborted
+# postinstall) is NOT ok. $1 = the workspace root holding apps/desktop.
 _electron_dist_ok() {
     local install_dir="$1"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir="$install_dir/apps/desktop/node_modules/electron"
     if [ "$OS" = "macos" ]; then
         [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
     else
@@ -2423,26 +2423,26 @@ _electron_dist_ok() {
     fi
 }
 
-# (Re)populate node_modules/electron/dist via electron's own downloader.
+# (Re)populate apps/desktop/node_modules/electron/dist via electron's own downloader.
 #
-# Since #38673 the desktop build pins build.electronDist to
-# node_modules/electron/dist, so electron-builder reads the Electron binary
-# straight from there and never downloads it during `npm run pack`. That dist
-# tree is produced by the electron package's postinstall (install.js) during
-# `npm ci`. When that download is blocked/throttled (GitHub's release host is
-# unreachable in some regions - #47266), dist is missing and re-running pack only
-# re-throws "The specified electronDist does not exist". The mirror fallback
-# therefore has to drive THIS downloader, not another pack.
+# Since #38673 the desktop build pins build.electronDist relative to apps/desktop,
+# so electron-builder reads the Electron binary straight from there and never
+# downloads it during `npm run pack`. That dist tree is produced by the electron
+# package's postinstall (install.js) during `npm ci`. When that download is
+# blocked/throttled (GitHub's release host is unreachable in some regions -
+# #47266), dist is missing and re-running pack only re-throws "The specified
+# electronDist does not exist". The mirror fallback therefore has to drive THIS
+# downloader, not another pack.
 #
 # No-op (returns 0) when the dist binary is already present. Otherwise drops a
 # partial dist + version marker (electron's install.js short-circuits when
 # path.txt already matches) and runs the downloader once. $1 = the workspace root
-# holding node_modules; optional $2 = an ELECTRON_MIRROR base URL. Best-effort:
+# holding apps/desktop; optional $2 = an ELECTRON_MIRROR base URL. Best-effort:
 # returns 0 iff the dist binary exists afterward.
 _restore_electron_dist() {
     local install_dir="$1"
     local mirror="${2:-}"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir="$install_dir/apps/desktop/node_modules/electron"
     _electron_dist_ok "$install_dir" && return 0
 
     [ -f "$electron_dir/install.js" ] || return 1
@@ -2531,12 +2531,12 @@ install_desktop() {
         # (b) Corrupt cached Electron zip is the most common self-healable cause.
         local purged
         purged="$(clear_electron_build_cache "$desktop_dir")"
-        # electronDist is pinned to node_modules/electron/dist (#38673):
-        # electron-builder reads the binary from there and `pack` never downloads
+        # electronDist is pinned relative to apps/desktop (#38673):
+        # electron-builder reads the Electron binary from there and `pack` never downloads
         # it, so purging the cache + re-running pack can't by itself repopulate a
-        # missing/partial dist. When the dist is actually gone, re-run electron's
-        # own downloader so the retry has a binary to read. Gated on the dist
-        # check so an unrelated build failure (tsc/vite) doesn't trigger a
+        # missing/partial dist. When the configured dist is actually gone, re-run
+        # electron's own downloader so the retry has a binary to read. Gated on the
+        # dist check so an unrelated build failure (tsc/vite) doesn't trigger a
         # pointless ~200MB refetch.
         local restored=false
         if ! _electron_dist_ok "$INSTALL_DIR"; then
@@ -2570,7 +2570,7 @@ install_desktop() {
                 pack_ok=true
             fi
         else
-            log_warn "Could not re-download Electron from the mirror (node_modules/electron/dist still missing)"
+            log_warn "Could not re-download Electron from the mirror (configured electronDist still missing)"
         fi
     fi
 

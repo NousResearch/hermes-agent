@@ -94,3 +94,29 @@ def test_lockfile_resolves_the_pinned_electron():
         f"but the pin is {spec!r}; run `npm install --package-lock-only` so "
         "`npm ci` stays consistent."
     )
+
+
+def test_electron_dist_points_at_locked_install_location():
+    """Electron Builder must read the Electron package npm actually installs."""
+    if not ROOT_LOCK.is_file():
+        pytest.skip("root package-lock.json not present")
+    pkg = _desktop_pkg()
+    electron_dist = pkg.get("build", {}).get("electronDist")
+    assert electron_dist, "build.electronDist is missing"
+
+    dist = (DESKTOP_PKG.parent / electron_dist).resolve()
+    assert dist.name == "dist", f"build.electronDist must point at a dist dir, got {electron_dist!r}"
+    try:
+        electron_package_key = dist.parent.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        pytest.fail(f"build.electronDist points outside the repository: {electron_dist!r}")
+        return
+
+    lock = json.loads(ROOT_LOCK.read_text(encoding="utf-8"))
+    packages = lock.get("packages", {})
+    assert electron_package_key in packages, (
+        f"build.electronDist resolves to {electron_package_key!r}, but package-lock.json "
+        "does not install Electron there. Align build.electronDist with the "
+        "workspace install location so electron-builder can find the binary."
+    )
+    assert packages[electron_package_key].get("version") == _electron_spec(pkg)

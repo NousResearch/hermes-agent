@@ -11,6 +11,7 @@ This module is the single source of truth for the dangerous command system:
 import contextvars
 import fnmatch
 import functools
+import hashlib
 import logging
 import os
 import re
@@ -18,6 +19,7 @@ import sys
 import threading
 import time
 import unicodedata
+from datetime import datetime, timezone
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -756,6 +758,66 @@ class _ApprovalEntry:
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _digest_text(value: str) -> str:
+    return hashlib.sha256((value or "").encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _approval_ttl_seconds() -> int:
+    timeout = _get_approval_config().get("gateway_timeout", 300)
+    try:
+        return max(int(timeout), 0)
+    except (ValueError, TypeError):
+        return 300
+
+
+def _build_pending_approval_envelope(
+    *,
+    command: str,
+    session_key: str,
+    risk_reason: str,
+    pattern_keys: list[str] | tuple[str, ...] | None = None,
+    tool_identity: str = "terminal",
+    cwd: str | None = None,
+    state: str = "pending",
+) -> dict:
+    """Build a scoped pending-approval envelope for smart-denied work.
+
+    The envelope is intentionally value-based and narrow: an explicit owner
+    approval is tied to the exact tool/command/cwd/risk tuple that was shown,
+    not to a broad mode downgrade from smart to manual (#46544).
+    """
+    created = time.time()
+    ttl = _approval_ttl_seconds()
+    cwd_value = os.path.abspath(cwd or os.getcwd())
+    keys = list(pattern_keys or [])
+    normalized_command = _normalize_command_for_detection(command)
+    return {
+        "tool_identity": tool_identity,
+        "command_fingerprint": _digest_text(command),
+        "args_digest": _digest_text(normalized_command),
+        "working_directory": cwd_value,
+        "target_resource_scope": keys,
+        "session_id": session_key,
+        "risk_reason": risk_reason,
+        "created_at": _utc_now_iso(),
+        "expires_at": datetime.fromtimestamp(created + ttl, timezone.utc).isoformat(),
+        "created_at_epoch": created,
+        "expires_at_epoch": created + ttl,
+        "decision_state": state,
+    }
+
+
+def _mark_envelope_decision(approval_data: dict, state: str) -> None:
+    envelope = approval_data.get("approval_envelope")
+    if isinstance(envelope, dict):
+        envelope["decision_state"] = state
+    approval_data["audit_outcome"] = state
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -1511,6 +1573,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
     _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    if _outcome == "timeout":
+        _mark_envelope_decision(approval_data, "expired")
+    elif _outcome == "deny":
+        _mark_envelope_decision(approval_data, "denied")
+    elif _outcome in {"once", "session", "always"}:
+        _mark_envelope_decision(approval_data, "owner_approved")
     _fire_approval_hook(
         "post_approval_response",
         command=command,
@@ -1561,7 +1629,8 @@ def check_all_command_guards(command: str, env_type: str,
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
+        return {"approved": True, "message": None,
+                "audit_outcome": "manual_mode_bypass"}
 
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
@@ -1669,6 +1738,7 @@ def check_all_command_guards(command: str, env_type: str,
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
+    smart_blocked_for_owner = False
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
@@ -1681,15 +1751,20 @@ def check_all_command_guards(command: str, env_type: str,
             return {"approved": True, "message": None,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
-        elif verdict == "deny":
+        elif verdict == "deny" and not (is_cli or is_gateway or is_ask):
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
                            "The command was assessed as genuinely dangerous. Do NOT retry.",
                 "smart_denied": True,
+                "audit_outcome": "auto_blocked",
             }
-        # verdict == "escalate" → fall through to manual prompt
+        elif verdict == "deny":
+            smart_blocked_for_owner = True
+        # verdict == "deny" in an interactive surface, or "escalate", falls
+        # through to manual approval. Smart mode is only an automatic approval
+        # shortcut; it must not discard an explicit owner override (#46544).
 
     # --- Phase 3: Approval ---
 
@@ -1718,10 +1793,20 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "audit_outcome": "pending",
                 # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
                 # "always" to session scope below, so the UI must not offer it.
-                "allow_permanent": not has_tirith,
+                "allow_permanent": (not has_tirith) and (not smart_blocked_for_owner),
             }
+            if smart_blocked_for_owner:
+                approval_data["smart_denied"] = True
+                approval_data["approval_envelope"] = _build_pending_approval_envelope(
+                    command=command,
+                    session_key=session_key,
+                    risk_reason=combined_desc,
+                    pattern_keys=all_keys,
+                    tool_identity="terminal",
+                )
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -1764,21 +1849,29 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                     "outcome": outcome,
                     "user_consent": False,
+                    "audit_outcome": approval_data.get("audit_outcome"),
+                    "approval_envelope": approval_data.get("approval_envelope"),
                 }
 
-            # User approved — persist based on scope (same logic as CLI)
-            for key, _, is_tirith in warnings:
-                if choice == "session" or (choice == "always" and is_tirith):
-                    approve_session(session_key, key)
-                elif choice == "always":
-                    approve_session(session_key, key)
-                    approve_permanent(key)
-                    save_permanent_allowlist(_permanent_approved)
-                # choice == "once": no persistence — command allowed this
-                # single time only, matching the CLI's behavior.
+            # User approved — persist based on scope for normal manual prompts.
+            # For a smart-denied operation, an explicit owner approval is a
+            # scoped one-operation override, not a session/permanent mode
+            # downgrade (#46544). Treat session/always replies as once.
+            if not smart_blocked_for_owner:
+                for key, _, is_tirith in warnings:
+                    if choice == "session" or (choice == "always" and is_tirith):
+                        approve_session(session_key, key)
+                    elif choice == "always":
+                        approve_session(session_key, key)
+                        approve_permanent(key)
+                        save_permanent_allowlist(_permanent_approved)
+                    # choice == "once": no persistence — command allowed this
+                    # single time only, matching the CLI's behavior.
 
             return {"approved": True, "message": None,
-                    "user_approved": True, "description": combined_desc}
+                    "user_approved": True, "description": combined_desc,
+                    "audit_outcome": approval_data.get("audit_outcome"),
+                    "approval_envelope": approval_data.get("approval_envelope")}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
@@ -1811,8 +1904,17 @@ def check_all_command_guards(command: str, env_type: str,
         session_key=session_key,
         surface="cli",
     )
+    cli_envelope = None
+    if smart_blocked_for_owner:
+        cli_envelope = _build_pending_approval_envelope(
+            command=command,
+            session_key=session_key,
+            risk_reason=combined_desc,
+            pattern_keys=all_keys,
+            tool_identity="terminal",
+        )
     choice = prompt_dangerous_approval(command, combined_desc,
-                                       allow_permanent=not has_tirith,
+                                       allow_permanent=(not has_tirith) and (not smart_blocked_for_owner),
                                        approval_callback=approval_callback)
     _fire_approval_hook(
         "post_approval_response",
@@ -1826,6 +1928,8 @@ def check_all_command_guards(command: str, env_type: str,
     )
 
     if choice == "deny":
+        if cli_envelope is not None:
+            cli_envelope["decision_state"] = "denied"
         return {
             "approved": False,
             "message": (
@@ -1840,21 +1944,29 @@ def check_all_command_guards(command: str, env_type: str,
             "description": combined_desc,
             "outcome": "denied",
             "user_consent": False,
+            "audit_outcome": "denied" if smart_blocked_for_owner else None,
+            "approval_envelope": cli_envelope,
         }
 
-    # Persist approval for each warning individually
-    for key, _, is_tirith in warnings:
-        if choice == "session" or (choice == "always" and is_tirith):
-            # tirith: session only (no permanent broad allowlisting)
-            approve_session(session_key, key)
-        elif choice == "always":
-            # dangerous patterns: permanent allowed
-            approve_session(session_key, key)
-            approve_permanent(key)
-            save_permanent_allowlist(_permanent_approved)
+    # Persist approval for each warning individually, except smart-denied owner
+    # overrides which remain one-operation scoped (#46544).
+    if not smart_blocked_for_owner:
+        for key, _, is_tirith in warnings:
+            if choice == "session" or (choice == "always" and is_tirith):
+                # tirith: session only (no permanent broad allowlisting)
+                approve_session(session_key, key)
+            elif choice == "always":
+                # dangerous patterns: permanent allowed
+                approve_session(session_key, key)
+                approve_permanent(key)
+                save_permanent_allowlist(_permanent_approved)
+    elif cli_envelope is not None:
+        cli_envelope["decision_state"] = "owner_approved"
 
     return {"approved": True, "message": None,
-            "user_approved": True, "description": combined_desc}
+            "user_approved": True, "description": combined_desc,
+            "audit_outcome": "owner_approved" if smart_blocked_for_owner else None,
+            "approval_envelope": cli_envelope}
 
 
 def check_execute_code_guard(code: str, env_type: str) -> dict:
@@ -1890,7 +2002,8 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
+        return {"approved": True, "message": None,
+                "audit_outcome": "manual_mode_bypass"}
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
@@ -1937,6 +2050,7 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()
     # guards (restored by context propagation) still run independently.
+    smart_blocked_for_owner = False
     if approval_mode == "smart":
         verdict = _smart_approve(command, description)
         if verdict == "approve":
@@ -1944,7 +2058,7 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
                          session_key)
             return {"approved": True, "message": None,
                     "smart_approved": True, "description": description}
-        if verdict == "deny":
+        if verdict == "deny" and not (is_gateway or is_ask):
             return {
                 "approved": False,
                 "message": ("BLOCKED by smart approval: execute_code script "
@@ -1955,8 +2069,13 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
                 "description": description,
                 "outcome": "denied",
                 "user_consent": False,
+                "audit_outcome": "auto_blocked",
             }
-        # verdict == "escalate" → fall through to manual approval
+        elif verdict == "deny":
+            smart_blocked_for_owner = True
+        # verdict == "deny" in an interactive surface, or "escalate", falls
+        # through to manual approval. Smart mode is only an automatic approval
+        # shortcut; it must not discard an explicit owner override (#46544).
 
     notify_cb = None
     with _lock:
@@ -1989,7 +2108,17 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         "pattern_key": pattern_key,
         "pattern_keys": [pattern_key],
         "description": description,
+        "audit_outcome": "pending",
     }
+    if smart_blocked_for_owner:
+        approval_data["smart_denied"] = True
+        approval_data["approval_envelope"] = _build_pending_approval_envelope(
+            command=command,
+            session_key=session_key,
+            risk_reason=description,
+            pattern_keys=[pattern_key],
+            tool_identity="execute_code",
+        )
     decision = _await_gateway_decision(
         session_key, notify_cb, approval_data, surface="gateway"
     )
@@ -2022,19 +2151,27 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "description": description,
             "outcome": "timeout" if not resolved else "denied",
             "user_consent": False,
+            "audit_outcome": approval_data.get("audit_outcome"),
+            "approval_envelope": approval_data.get("approval_envelope"),
         }
 
-    # Approved — persist based on scope (same logic as check_all_command_guards).
-    if choice == "session":
-        approve_session(session_key, pattern_key)
-    elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
-    # choice == "once": no persistence — approval lasts this single call only.
+    # Approved — persist based on scope for normal manual prompts. A
+    # smart-denied execute_code script is too broad to session/permanent
+    # allowlist safely, because the pattern key is the constant "execute_code".
+    # Treat session/always replies as once (#46544).
+    if not smart_blocked_for_owner:
+        if choice == "session":
+            approve_session(session_key, pattern_key)
+        elif choice == "always":
+            approve_session(session_key, pattern_key)
+            approve_permanent(pattern_key)
+            save_permanent_allowlist(_permanent_approved)
+        # choice == "once": no persistence — approval lasts this single call only.
 
     return {"approved": True, "message": None,
-            "user_approved": True, "description": description}
+            "user_approved": True, "description": description,
+            "audit_outcome": approval_data.get("audit_outcome"),
+            "approval_envelope": approval_data.get("approval_envelope")}
 
 
 # =========================================================================

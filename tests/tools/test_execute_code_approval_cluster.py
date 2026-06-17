@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextvars
+import os
 import threading
 
 import pytest
@@ -142,6 +143,23 @@ def _register_resolver(session_key: str, result):
         A._gateway_notify_cbs[session_key] = cb
 
 
+def _register_capturing_resolver(session_key: str, result):
+    seen = {}
+
+    def cb(approval_data):
+        seen["approval_data"] = approval_data
+        with A._lock:
+            entries = A._gateway_queues.get(session_key, [])
+            if entries:
+                entry = entries[-1]
+                entry.result = result
+                entry.event.set()
+
+    with A._lock:
+        A._gateway_notify_cbs[session_key] = cb
+    return seen
+
+
 def test_guard_isolated_backend_approved():
     # Container backends already sandbox the child — no-op approve.
     assert A.check_execute_code_guard("import os", "docker")["approved"] is True
@@ -255,14 +273,161 @@ def test_guard_smart_mode(gw_session, monkeypatch):
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is True and res.get("smart_approved") is True
 
+    # Smart DENY must not bypass an explicit owner override in interactive
+    # gateway/ask surfaces (#46544). It falls through to the same pending
+    # approval object as ESCALATE and succeeds only because the simulated user
+    # approves this exact operation.
     monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
+    seen = _register_capturing_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is False and res.get("smart_denied") is True
+    assert res["approved"] is True and res.get("user_approved") is True
+    assert res["audit_outcome"] == "owner_approved"
+    envelope = res["approval_envelope"]
+    assert envelope["tool_identity"] == "execute_code"
+    assert envelope["session_id"] == gw_session
+    assert envelope["risk_reason"] == res["description"]
+    assert envelope["decision_state"] == "owner_approved"
+    assert seen["approval_data"]["approval_envelope"]["decision_state"] == "owner_approved"
 
     # escalate → falls through to manual gateway approval
     monkeypatch.setattr(A, "_smart_approve", lambda c, d: "escalate")
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os", "local")
+    assert res["approved"] is True
+
+
+def test_command_guard_smart_deny_allows_gateway_owner_override(gw_session, monkeypatch):
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
+    monkeypatch.setattr(
+        A,
+        "detect_dangerous_command",
+        lambda _command: (True, "test-danger", "test dangerous command"),
+    )
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        raising=False,
+    )
+
+    seen = _register_capturing_resolver(gw_session, "once")
+    res = A.check_all_command_guards("dangerous-but-owner-approved", "local")
+    assert res["approved"] is True
+    assert res.get("user_approved") is True
+    assert res["audit_outcome"] == "owner_approved"
+    envelope = res["approval_envelope"]
+    assert envelope["tool_identity"] == "terminal"
+    assert envelope["session_id"] == gw_session
+    assert envelope["risk_reason"] == "test dangerous command"
+    assert envelope["target_resource_scope"] == ["test-danger"]
+    assert envelope["decision_state"] == "owner_approved"
+    assert seen["approval_data"]["smart_denied"] is True
+    assert A.is_approved(gw_session, "test-danger") is False
+
+
+def test_smart_denied_session_or_always_reply_does_not_broaden(gw_session, monkeypatch):
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
+    monkeypatch.setattr(
+        A,
+        "detect_dangerous_command",
+        lambda command: (True, "test-danger", f"risk:{command}"),
+    )
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        raising=False,
+    )
+
+    _register_capturing_resolver(gw_session, "always")
+    res = A.check_all_command_guards("dangerous /tmp/a", "local")
+    assert res["approved"] is True
+    assert res["audit_outcome"] == "owner_approved"
+    assert A.is_approved(gw_session, "test-danger") is False
+
+    # A changed command still needs its own fresh approval object; the prior
+    # smart-denied owner override did not create session/permanent allowlist.
+    seen = _register_capturing_resolver(gw_session, "once")
+    res2 = A.check_all_command_guards("dangerous /tmp/b", "local")
+    assert res2["approved"] is True
+    assert seen["approval_data"]["approval_envelope"]["risk_reason"] == "risk:dangerous /tmp/b"
+
+    _register_capturing_resolver(gw_session, "session")
+    res3 = A.check_execute_code_guard("import os", "local")
+    assert res3["approved"] is True
+    assert A.is_approved(gw_session, "execute_code") is False
+
+    seen2 = _register_capturing_resolver(gw_session, "once")
+    res4 = A.check_execute_code_guard("import subprocess", "local")
+    assert res4["approved"] is True
+    assert seen2["approval_data"]["approval_envelope"]["tool_identity"] == "execute_code"
+
+
+def test_smart_pending_envelope_changes_with_command_and_cwd(gw_session, monkeypatch, tmp_path):
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
+    monkeypatch.setattr(
+        A,
+        "detect_dangerous_command",
+        lambda command: (True, "test-danger", f"risk:{command}"),
+    )
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        raising=False,
+    )
+
+    first = _register_capturing_resolver(gw_session, "once")
+    res1 = A.check_all_command_guards("dangerous /tmp/a", "local")
+    second = _register_capturing_resolver(gw_session, "once")
+    monkeypatch.chdir(tmp_path)
+    res2 = A.check_all_command_guards("dangerous /tmp/b", "local")
+
+    env1 = res1["approval_envelope"]
+    env2 = res2["approval_envelope"]
+    assert first["approval_data"]["approval_envelope"]["command_fingerprint"] == env1["command_fingerprint"]
+    assert second["approval_data"]["approval_envelope"]["command_fingerprint"] == env2["command_fingerprint"]
+    assert env1["command_fingerprint"] != env2["command_fingerprint"]
+    assert env1["args_digest"] != env2["args_digest"]
+    assert env1["working_directory"] != env2["working_directory"]
+    assert env2["working_directory"] == os.path.abspath(tmp_path)
+
+
+def test_smart_pending_envelope_expiry_and_deny_audit(gw_session, monkeypatch):
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
+    monkeypatch.setattr(A, "_get_approval_config", lambda: {"gateway_timeout": 0})
+    seen = {}
+    with A._lock:
+        A._gateway_notify_cbs[gw_session] = lambda approval_data: seen.setdefault("approval_data", approval_data)
+
+    res = A.check_execute_code_guard("import os", "local")
+    assert res["approved"] is False
+    assert res["outcome"] == "timeout"
+    envelope = seen["approval_data"]["approval_envelope"]
+    assert envelope["decision_state"] == "expired"
+    assert seen["approval_data"]["audit_outcome"] == "expired"
+    assert envelope["expires_at_epoch"] <= envelope["created_at_epoch"]
+
+    monkeypatch.setattr(A, "_get_approval_config", lambda: {"gateway_timeout": 300})
+    seen2 = _register_capturing_resolver(gw_session, "deny")
+    res2 = A.check_execute_code_guard("import os", "local")
+    assert res2["approved"] is False
+    assert res2["outcome"] == "denied"
+    assert seen2["approval_data"]["approval_envelope"]["decision_state"] == "denied"
+
+
+def test_approval_audit_outcomes_distinguish_auto_block_and_manual_bypass(gw_session, monkeypatch):
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "off")
+    assert A.check_execute_code_guard("import os", "local")["audit_outcome"] == "manual_mode_bypass"
+
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(A, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.setattr(A, "_smart_approve", lambda c, d: "deny")
+    res = A.check_execute_code_guard("import os", "local")
+    # Headless local execute_code remains trusted-by-config and does not call smart.
     assert res["approved"] is True
 
 

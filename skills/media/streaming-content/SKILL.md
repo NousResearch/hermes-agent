@@ -2,11 +2,11 @@
 name: streaming-content
 description: >
   Fetch transcripts from clips and VODs on live-streaming platforms (Twitch, Kick, Rumble,
-  and other yt-dlp-supported sites) and transform them into structured content (summaries,
-  threads, blog posts, quotes). Use when the user shares a Twitch / Kick / Rumble clip or
-  VOD link, asks to summarize a stream, or wants a transcript from a live-streaming
-  platform. For YouTube, use the youtube-content skill instead — it reads served captions
-  and is cheaper.
+  X/Twitter, and other yt-dlp-supported sites) and transform them into structured content
+  (summaries, threads, blog posts, quotes). Use when the user shares a Twitch / Kick / Rumble /
+  X (Twitter) clip, VOD, video post, or broadcast link, asks to summarize a stream, or wants
+  a transcript from a live-streaming platform. For YouTube, use the youtube-content skill
+  instead — it reads served captions and is cheaper.
 ---
 
 # Streaming Content
@@ -56,6 +56,12 @@ Accepts any single clip or VOD URL yt-dlp supports.
 - **Rumble** — standard video URLs (`rumble.com/v…-….html`, via yt-dlp's RumbleEmbed extractor).
   Note: `rumble.com/shorts/` URLs are not yet supported by yt-dlp — they fall back to unreliable
   generic extraction, so pass the standard video URL instead.
+- **X (Twitter)** — native video posts (`x.com/<user>/status/<id>`, `twitter.com/...`) and
+  broadcasts (`x.com/i/broadcasts/<id>`) transcribe without login via yt-dlp's guest token.
+  Image / text / link-only posts return `no playable video in this post` (expected — there's
+  nothing to transcribe, not a bad link). Spaces and protected / age-gated / NSFW posts need a
+  logged-in session, which isn't wired in. X rotates its private endpoints often, so keep
+  yt-dlp current.
 - Any other yt-dlp-supported site is handled by the same path.
 
 ## Output Formats
@@ -72,8 +78,10 @@ After fetching the transcript, format it based on what the user asks for:
 ## Workflow
 
 1. **Fetch** the transcript with the helper script.
-2. **Validate**: confirm the output is non-empty. An `audio download failed` error usually
-   means the URL is private, sub-only, or an expired VOD — ask the user to verify it.
+2. **Validate**: confirm the output is non-empty. A `no playable video in this post` error
+   means an X/Twitter (or similar) post with no video — image, text, or link-only; that's
+   expected, not a bad link. An `audio download failed` error usually means the URL is
+   private, sub-only, or an expired VOD — ask the user to verify it.
 3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping
    ~40K chunks (2K overlap) and summarize each before merging.
 4. **Transform** into the requested format. Default to a summary if unspecified.
@@ -83,6 +91,9 @@ After fetching the transcript, format it based on what the user asks for:
 
 - **Audio download failed**: the clip/VOD is private, sub-only, expired (Twitch VODs), or
   the URL is wrong. Relay and ask the user to verify the link.
+- **No playable video in this post**: an X/Twitter (or similar) post that has no video —
+  image, text, or link-only. The URL is fine; there's just nothing to transcribe. Not a
+  failure to retry.
 - **Transcription failed**: confirm `ffmpeg` is installed and a transcription backend is
   configured (`transcribe_audio` falls back across local / Groq / OpenAI).
 - **Dependency missing**: `pip install yt-dlp` and make sure `ffmpeg` is on PATH.

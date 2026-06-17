@@ -782,6 +782,14 @@ def load_permanent(patterns: set):
         _permanent_approved.update(patterns)
 
 
+_ALLOWLIST_SHELL_OPERATOR_RE = re.compile(r"(?:\n|&&|\|\||[;&|<>`]|\$\()")
+
+
+def _has_allowlist_shell_operator(command: str) -> bool:
+    """Return True when a command is too compound for the allowlist shortcut."""
+    return bool(_ALLOWLIST_SHELL_OPERATOR_RE.search(command or ""))
+
+
 def _command_matches_permanent_allowlist(command: str) -> bool:
     """Return True when command_allowlist contains this command or a glob.
 
@@ -791,6 +799,8 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
     """
     command = (command or "").strip()
     if not command:
+        return False
+    if _has_allowlist_shell_operator(command):
         return False
 
     with _lock:

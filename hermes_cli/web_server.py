@@ -1668,13 +1668,20 @@ async def get_status(profile: Optional[str] = None):
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
-        runtime = read_runtime_status()
+        local_runtime = read_runtime_status()
+        runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body
-        runtime_pid = get_runtime_status_running_pid(runtime)
-        if not gateway_running and runtime_pid is not None:
-            gateway_running = True
-            gateway_pid = runtime_pid
+        # The runtime-status PID fallback validates liveness with a local
+        # os.kill() probe, so it must only run against the LOCAL status file —
+        # never the remote health body, whose PID belongs to another host and
+        # is display-only. (Running os.kill on a remote PID is both wrong and
+        # trips the test live-system guard.)
+        if not gateway_running and local_runtime is not None:
+            runtime_pid = get_runtime_status_running_pid(local_runtime)
+            if runtime_pid is not None:
+                gateway_running = True
+                gateway_pid = runtime_pid
 
         if runtime:
             gateway_state = runtime.get("gateway_state")

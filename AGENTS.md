@@ -26,6 +26,42 @@ reviewing any change:
   high. Most new capability should arrive as a CLI command + skill, a
   service-gated tool, or a plugin — not as core surface.
 
+## Worktree / PR Discipline for Agent Changes
+
+Agent-owned repository changes happen in an isolated worktree by default. Treat
+`main` and the primary checkout as read-only snapshots of `origin/main`: inspect,
+`git fetch`, and fast-forward only. Do not edit, stage, commit, or push directly
+from the default branch unless a human maintainer explicitly takes ownership of
+that exception.
+
+For Hermes Agent itself, or any project without a stronger repo-owned helper:
+
+1. Start from a freshly fetched remote default branch:
+   `git fetch origin --prune && git worktree add -b agent/<slug> ../hermes-agent-<slug> origin/main`.
+2. Bootstrap/install dependencies in that worktree when validation depends on an
+   editable install or generated local config. Do not blindly reuse another
+   checkout's virtualenv for proof that is supposed to exercise this checkout.
+3. Keep the slice narrow. Before editing, validation, staging, commit, or push,
+   inspect shared state and the owned diff with `git status --short --branch
+   --untracked-files=all`, `git diff --name-status HEAD -- <owned-paths...>`,
+   and `git diff --check HEAD -- <owned-paths...>`.
+4. Treat unrelated dirty or staged files as another agent's work. Never stage,
+   unstage, reset, revert, clean, or summarize unrelated files. Stage explicit
+   owned paths only; never use `git add .` or `git add -A` in agent sessions.
+5. Push only the dedicated feature branch, open a PR, and report the commit SHA,
+   PR URL, and validation. Spawned subagents stay PR-free; the launching agent
+   owns final scoped review, push, and PR creation.
+6. Rebase only your own feature branch onto fresh `origin/main`; if it was
+   already pushed, update that branch with `git push --force-with-lease`. Never
+   force-push `main` or a branch you do not solely own.
+7. After the PR merges, remove only your own worktree/branch.
+
+`hermes -w` is a convenience for disposable isolation, not a substitute for a
+repo-owned methodology. It creates `.worktrees/hermes-<hash>` from the current
+`HEAD`, does not fetch or run project preflight/bootstrap, and auto-removes the
+worktree unless it contains commits unreachable from remotes. Use the explicit
+worktree/PR flow for durable repo work.
+
 ## Contribution Rubric — What We Want / What We Don't
 
 This is the project's intent layer. Use it two ways:
@@ -1216,12 +1252,14 @@ guards and be dispatched inline, not via `_process_message_background()`
 (which races session lifecycle).
 
 ### Squash merges from stale branches silently revert recent fixes
-Before squash-merging a PR, ensure the branch is up to date with `main`
-(`git fetch origin main && git reset --hard origin/main` in the worktree,
-then re-apply the PR's commits). A stale branch's version of an unrelated
-file will silently overwrite recent fixes on main when squashed. Verify
-with `git diff HEAD~1..HEAD` after merging — unexpected deletions are a
-red flag.
+Before squash-merging a PR, ensure the feature branch is up to date with
+`origin/main` from inside the owning worktree. Fetch, inspect the scoped diff,
+then rebase the feature branch onto `origin/main`; if the branch was already
+pushed, update only that feature branch with `git push --force-with-lease`.
+Do not reset/reapply from the default branch, and never force-push `main`.
+A stale branch's version of an unrelated file can silently overwrite recent
+fixes on main when squashed. Verify the merge result with a scoped
+`git diff HEAD~1..HEAD` after merging — unexpected deletions are a red flag.
 
 ### Don't wire in dead code without E2E validation
 Unused code that was never shipped was dead for a reason. Before wiring an

@@ -691,23 +691,38 @@ Leaving the list empty, or omitting the key, is a no-op.
 
 ## Git Worktree Isolation
 
-Enable isolated git worktrees for running multiple agents in parallel on the same repo:
+Enable automatic disposable git worktrees for CLI sessions:
 
 ```yaml
 worktree: true    # Always create a worktree (same as hermes -w)
 # worktree: false # Default — only when -w flag is passed
 ```
 
-When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery.
+When enabled, each CLI session creates a fresh worktree under `.worktrees/` from
+the current `HEAD` with a branch like `hermes/hermes-<hash>`. This is useful for
+quick isolation when running multiple agents on one repo, but it is not a full
+repo-governance workflow: Hermes does not fetch `origin`, branch from the remote
+default branch, run project-specific preflight/claim checks, bootstrap a
+per-worktree environment, validate, push, or open a PR for you.
 
-You can also list gitignored files to copy into worktrees via `.worktreeinclude` in your repo root:
+On exit, automatic worktree cleanup preserves a worktree only when it has commits
+that are not reachable from any remote branch. Uncommitted-only edits are not a
+durable handoff; commit and push work you need to keep, or use a manual/repo-owned
+worktree workflow for PR-bound changes.
 
-```
+You can list gitignored files to copy into automatic worktrees via
+`.worktreeinclude` in your repo root:
+
+```text
 # .worktreeinclude
-.env
-.venv/
-node_modules/
+.env.local
+config/local.yaml
 ```
+
+Keep `.worktreeinclude` small and intentional. Avoid copying `.venv/`,
+`node_modules/`, caches, secrets, or generated artifacts unless your repository
+explicitly says that is safe. Projects with editable installs usually need each
+worktree to run its own bootstrap so paths point at the active checkout.
 
 ## Context Compression
 

@@ -59,12 +59,22 @@ uv pip install -e ".[all,dev]"
 npm install
 ```
 
-After that, create branches and run tests from that checkout:
+After that, keep the installed checkout as a clean primary snapshot and do
+agent-owned work from a dedicated worktree:
 
 ```bash
-git checkout -b fix/description
+git fetch origin --prune
+git worktree add -b agent/fix-description ../hermes-agent-fix-description origin/main
+cd ../hermes-agent-fix-description
+
+# Bootstrap this checkout if your validation depends on editable-install paths.
+uv pip install -e ".[all,dev]"
 scripts/run_tests.sh
 ```
+
+If you are a human working in a throwaway clone, a normal feature branch is fine.
+For Hermes agents and long-running contributor work, use the worktree flow so the
+primary checkout and default branch remain read-only.
 
 ### Manual clone fallback
 
@@ -211,6 +221,23 @@ Hermes has terminal access. Security matters.
 
 ## Pull Request Process
 
+### Branch and worktree discipline
+
+For agent-owned changes, branch in a dedicated worktree from the freshly fetched
+remote default branch. Keep the primary checkout/default branch clean and
+read-only, stage explicit paths only, push the feature branch, and open a PR.
+Do not commit or push directly to `main`.
+
+```bash
+git fetch origin --prune
+git worktree add -b agent/short-description ../hermes-agent-short-description origin/main
+cd ../hermes-agent-short-description
+```
+
+Human contributors in a personal throwaway clone can use a normal feature branch,
+but PRs should still be narrow, current with `origin/main`, and never include
+unrelated staged files.
+
 ### Branch Naming
 
 ```
@@ -223,10 +250,15 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `pytest tests/ -v`
+1. **Run scoped tests through the wrapper**: `scripts/run_tests.sh <paths...>`
+   (or the full `scripts/run_tests.sh` before broad changes)
 2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: Consider macOS and different Linux distros
-4. **Keep PRs focused**: One logical change per PR
+3. **Review the owned diff**: `git status --short --branch --untracked-files=all`,
+   `git diff --name-status HEAD -- <owned-paths...>`, and `git diff --check HEAD -- <owned-paths...>`
+4. **Keep PRs focused**: One logical change per PR; do not include unrelated
+   dirty or staged files
+5. **Update against `origin/main`** before merge; rebase your feature branch and
+   use `--force-with-lease` only on that branch if it was already pushed
 
 ### PR Description
 

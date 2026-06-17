@@ -91,6 +91,25 @@ hermes [flags] [command]
 
 No subcommand defaults to `chat`.
 
+### Worktree policy for coding tasks
+
+When Hermes is changing a git repository, first read the project's local
+instructions (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc.). If they define a
+repo-owned worktree or preflight command, use that instead of generic `hermes -w`.
+
+Default durable PR workflow:
+1. Keep the primary/default-branch checkout read-only.
+2. Fetch and branch a dedicated worktree from `origin/<default-branch>`.
+3. Bootstrap that worktree's own environment if the project uses editable
+   installs, generated config, or per-checkout virtualenvs.
+4. Own a narrow path set; stage only explicit paths, never `git add .`.
+5. Push the feature branch and open a PR; do not push the default branch.
+
+`hermes -w` is useful for disposable isolation, but it branches from the current
+`HEAD`, does not run project preflight/bootstrap/validation, and auto-removes the
+worktree unless it has commits unreachable from remotes. Use repo-owned or
+explicit worktree flows for production/durable changes.
+
 ### Chat
 
 ```
@@ -360,7 +379,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 
 ```
 ~/.hermes/config.yaml       Main configuration
-~/.hermes/.env              API keys and secrets
+~/.hermes/.env              API keys and secrets (under $HERMES_HOME if set)
 $HERMES_HOME/skills/        Installed skills
 ~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
 ~/.hermes/state.db          Canonical session store (SQLite + FTS5)
@@ -630,7 +649,7 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 ### Tips
 
 - **Prefer `delegate_task` for quick subtasks** — less overhead than spawning a full process
-- **Use `-w` (worktree mode)** when spawning agents that edit code — prevents git conflicts
+- **Use project worktree policy for coding agents** — repo-owned helpers/preflight beat generic `hermes -w`; use `-w` only when its disposable current-HEAD worktree semantics are acceptable
 - **Set timeouts** for one-shot mode — complex tasks can take 5-10 minutes
 - **Use `hermes chat -q` for fire-and-forget** — no PTY needed
 - **Use tmux for interactive sessions** — raw PTY mode has `\r` vs `\n` issues with prompt_toolkit
@@ -927,7 +946,7 @@ hermes-agent/
 ```
 <!-- ascii-guard-ignore-end -->
 
-Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys).
+Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.
 
 ### Adding a Tool (3 files)
 

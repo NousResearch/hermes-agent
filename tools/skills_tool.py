@@ -1623,6 +1623,15 @@ def _skill_view_with_bump(args, **kw):
                 # to act on it — that counts as use, not just a browse/view.
                 # Curator's stale timer keys off last_used_at (see agent/curator.py).
                 bump_use(str(resolved))
+                try:
+                    from agent import runtime_status
+                    runtime_status.record_skill(
+                        kw.get("session_id") or kw.get("task_id") or "",
+                        str(resolved),
+                        event="view",
+                    )
+                except Exception:
+                    pass
     except Exception:
         pass
     return result

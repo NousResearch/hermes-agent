@@ -97,6 +97,11 @@ def register(
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
+    try:
+        from agent import runtime_status
+        runtime_status.record_wait(session_key, reason="clarify")
+    except Exception:
+        pass
     return entry
 
 
@@ -140,6 +145,12 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             if not ids:
                 _session_index.pop(entry.session_key, None)
 
+    try:
+        from agent import runtime_status
+        runtime_status.record_wait(entry.session_key, reason="none")
+    except Exception:
+        pass
+
     return entry.response
 
 
@@ -158,6 +169,11 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
         if entry is None:
             return False
     entry.response = str(response) if response is not None else ""
+    try:
+        from agent import runtime_status
+        runtime_status.record_wait(entry.session_key, reason="none")
+    except Exception:
+        pass
     entry.event.set()
     return True
 

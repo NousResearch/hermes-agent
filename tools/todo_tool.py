@@ -188,6 +188,7 @@ def todo_tool(
     todos: Optional[List[Dict[str, Any]]] = None,
     merge: bool = False,
     store: Optional[TodoStore] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """
     Single entry point for the todo tool. Reads or writes depending on params.
@@ -214,15 +215,24 @@ def todo_tool(
     completed = sum(1 for i in items if i["status"] == "completed")
     cancelled = sum(1 for i in items if i["status"] == "cancelled")
 
+    summary = {
+        "total": len(items),
+        "pending": pending,
+        "in_progress": in_progress,
+        "completed": completed,
+        "cancelled": cancelled,
+    }
+
+    if session_id:
+        try:
+            from agent import runtime_status
+            runtime_status.record_task_summary(session_id, summary)
+        except Exception:
+            pass
+
     return json.dumps({
         "todos": items,
-        "summary": {
-            "total": len(items),
-            "pending": pending,
-            "in_progress": in_progress,
-            "completed": completed,
-            "cancelled": cancelled,
-        },
+        "summary": summary,
     }, ensure_ascii=False)
 
 
@@ -302,7 +312,11 @@ registry.register(
     toolset="todo",
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(
-        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
+        todos=args.get("todos"),
+        merge=args.get("merge", False),
+        store=kw.get("store"),
+        session_id=kw.get("session_id"),
+    ),
     check_fn=check_todo_requirements,
     emoji="📋",
 )

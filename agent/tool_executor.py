@@ -434,6 +434,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(name, args)
+                try:
+                    from agent import runtime_status
+                    runtime_status.record_tool_started(
+                        getattr(agent, "session_id", None) or "",
+                        name,
+                        preview=preview or "",
+                        tool_call_id=getattr(tc, "id", "") or "",
+                    )
+                    runtime_status.record_wait(
+                        getattr(agent, "session_id", None) or "",
+                        reason=f"tool:{name}",
+                    )
+                except Exception:
+                    pass
                 agent.tool_progress_callback("tool.started", name, preview, args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
@@ -892,6 +906,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not _execution_blocked and agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(function_name, function_args)
+                try:
+                    from agent import runtime_status
+                    runtime_status.record_tool_started(
+                        getattr(agent, "session_id", None) or "",
+                        function_name,
+                        preview=preview or "",
+                        tool_call_id=getattr(tool_call, "id", "") or "",
+                    )
+                    runtime_status.record_wait(
+                        getattr(agent, "session_id", None) or "",
+                        reason=f"tool:{function_name}",
+                    )
+                except Exception:
+                    pass
                 agent.tool_progress_callback("tool.started", function_name, preview, function_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")

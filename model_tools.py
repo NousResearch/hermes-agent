@@ -847,12 +847,26 @@ def _emit_post_tool_call_hook(
     result *after* the gate (parsing the result is only worth it when a
     listener will actually consume it).
     """
+    if status is None:
+        status, error_type, error_message = _tool_result_observer_fields(result)
+    try:
+        from agent import runtime_status
+        runtime_status.record_tool_completed(
+            session_id or "",
+            function_name,
+            status=status or "ok",
+            duration_ms=duration_ms,
+            error_message=error_message or "",
+            tool_call_id=tool_call_id or "",
+        )
+        runtime_status.record_wait(session_id or "", reason="none")
+    except Exception as _status_err:
+        logger.debug("runtime status tool record error: %s", _status_err)
+
     try:
         from hermes_cli.plugins import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
             return
-        if status is None:
-            status, error_type, error_message = _tool_result_observer_fields(result)
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,

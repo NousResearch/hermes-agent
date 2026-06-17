@@ -5323,15 +5323,41 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Config keys whose values are string enums (e.g. "off", "manual") and
+    # must NOT be coerced to Python booleans.  The Desktop schema defines
+    # these as select fields; coercing "off" → False corrupts the YAML and
+    # breaks the settings UI.  See #47515.
+    _STRING_ENUM_KEYS = {
+        "approvals.mode",
+        "approvals.cron_mode",
+        "terminal.backend",
+        "terminal.vercel_runtime",
+        "terminal.modal_mode",
+        "tts.provider",
+        "stt.provider",
+        "display.skin",
+        "display.resume_display",
+        "display.busy_input_mode",
+        "dashboard.theme",
+        "memory.provider",
+        "context.engine",
+        "human_delay.mode",
+        "logging.level",
+        "agent.service_tier",
+        "delegation.reasoning_effort",
+    }
+
+    # Convert value to appropriate type — but skip coercion for keys that
+    # are known string-enum fields (select fields in the schema).
+    if key not in _STRING_ENUM_KEYS:
+        if value.lower() in {'true', 'yes', 'on'}:
+            value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            value = float(value)
 
     _set_nested(user_config, key, value)
     

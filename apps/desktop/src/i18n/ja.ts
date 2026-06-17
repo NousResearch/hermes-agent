@@ -1053,6 +1053,7 @@ export const ja = defineLocale({
   profiles: {
     close: 'プロファイルを閉じる',
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',
+    reservedNameHint: 'この名前は予約済みです。別のプロファイル名を選んでください。',
     title: 'プロファイル',
     count: count => `${count} プロファイル`,
     loading: 'プロファイルを読み込み中...',

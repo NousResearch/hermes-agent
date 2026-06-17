@@ -23,6 +23,7 @@ import {
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
+import { formatBackendError } from '@/lib/format-error'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -104,12 +105,6 @@ function isProviderSetupError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
 
   return isProviderSetupErrorMessage(message)
-}
-
-function inlineErrorMessage(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
-
-  return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
 }
 
 function isSessionNotFoundError(error: unknown): boolean {
@@ -746,7 +741,7 @@ export function usePromptActions({
           return false
         }
 
-        const message = inlineErrorMessage(err, copy.promptFailed)
+        const message = formatBackendError(err, copy.promptFailed)
 
         updateSessionState(sessionId, state => ({
           ...state,
@@ -817,7 +812,7 @@ export function usePromptActions({
           session_id: sid
         })
       } catch (err) {
-        return { error: inlineErrorMessage(err, copy.handoff.failed(target)), ok: false }
+        return { error: formatBackendError(err, copy.handoff.failed(target)), ok: false }
       }
 
       const deadline = Date.now() + 60_000

@@ -1010,6 +1010,7 @@ export const zhHant = defineLocale({
   profiles: {
     close: '關閉設定檔',
     nameHint: '小寫字母、數字、連字號和底線。必須以字母或數字開頭。',
+    reservedNameHint: '此名稱為保留名稱。請選擇其他設定檔名稱。',
     title: '設定檔',
     count: count => `${count} 個設定檔`,
     loading: '正在載入設定檔…',

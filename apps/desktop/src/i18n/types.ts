@@ -699,6 +699,7 @@ export interface Translations {
   profiles: {
     close: string
     nameHint: string
+    reservedNameHint: string
     title: string
     count: (count: number) => string
     loading: string

@@ -926,6 +926,7 @@ export const en: Translations = {
   profiles: {
     close: 'Close profiles',
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
+    reservedNameHint: 'This name is reserved. Choose a different profile name.',
     title: 'Profiles',
     count: count => `${count} ${count === 1 ? 'profile' : 'profiles'}`,
     loading: 'Loading profiles...',

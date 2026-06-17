@@ -1114,6 +1114,7 @@ export const zh: Translations = {
   profiles: {
     close: '关闭配置档案',
     nameHint: '小写字母、数字、连字符和下划线。必须以字母或数字开头。',
+    reservedNameHint: '该名称为保留名称。请选择其他配置档案名称。',
     title: '配置档案',
     count: count => `${count} 个配置档案`,
     loading: '正在加载配置档案…',

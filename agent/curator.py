@@ -358,6 +358,11 @@ CURATOR_REVIEW_PROMPT = (
     "Hard rules — do not violate:\n"
     "1. DO NOT touch bundled or hub-installed skills. The candidate list "
     "below is already filtered to agent-created skills only.\n"
+    "1b. DO NOT touch any skill that lives in a ``skills.external_dirs`` "
+    "directory — those skills are user-managed, often version-controlled, "
+    "and treated as externally owned. The candidate list below excludes "
+    "them, and attempting to reach them via ``terminal`` or ``skills_list`` "
+    "is forbidden.\n"
     "2. DO NOT delete any skill. Archiving (moving the skill's directory "
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
@@ -1400,6 +1405,15 @@ def _render_candidate_list() -> str:
             f"view={r.get('view_count', 0)}  "
             f"patches={r.get('patch_count', 0)}  "
             f"last_activity={r.get('last_activity_at') or 'never'}"
+        )
+    # GH-47688: note that external_dirs skills are excluded from the candidate list.
+    from agent.skill_utils import get_external_skills_dirs
+    ext_dirs = get_external_skills_dirs()
+    if ext_dirs:
+        dirs_str = ", ".join(str(d) for d in ext_dirs)
+        lines.append(
+            f"\nNote: skills in external_dirs ({dirs_str}) are not listed — "
+            "they are user-managed and excluded from curation."
         )
     return "\n".join(lines)
 

@@ -428,6 +428,34 @@ def is_bundled(skill_name: str) -> bool:
     return skill_name in _read_bundled_manifest_names()
 
 
+def is_external_skill(skill_name: str) -> bool:
+    """Whether *skill_name* lives under a ``skills.external_dirs`` directory.
+
+    Skills in external dirs are user-managed, often version-controlled, and
+    MUST be treated as read-only by the curator — the curator must never
+    archive, consolidate, edit, or delete them in place.
+    """
+    from agent.skill_utils import get_external_skills_dirs, is_excluded_skill_path
+
+    external_dirs = get_external_skills_dirs()
+    if not external_dirs:
+        return False
+
+    for ext_dir in external_dirs:
+        for skill_md in ext_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            try:
+                text = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+                import re
+                m = re.search(r"^name:\s*(.+)$", text, re.MULTILINE)
+                if m and m.group(1).strip() == skill_name:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def is_curation_eligible(skill_name: str) -> bool:
     """Whether the curator may track/archive *skill_name*.
 
@@ -436,6 +464,8 @@ def is_curation_eligible(skill_name: str) -> bool:
     NEVER eligible — they have an external upstream owner. Protected built-ins
     (``PROTECTED_BUILTIN_SKILLS``) are NEVER eligible regardless of any flag —
     they back load-bearing UX and must never be archived or consolidated.
+    Skills residing in ``skills.external_dirs`` are NEVER eligible — they are
+    user-managed and the curator must not touch them (see ``is_external_skill``).
     """
     if is_protected_builtin(skill_name):
         return False
@@ -443,6 +473,9 @@ def is_curation_eligible(skill_name: str) -> bool:
         return False
     if is_bundled(skill_name):
         return _prune_builtins_enabled()
+    # GH-47688: external_dirs skills are user-managed — curator must not touch them.
+    if is_external_skill(skill_name):
+        return False
     return True
 
 
@@ -685,6 +718,12 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
             )
         if is_hub_installed(skill_name):
             return False, f"skill '{skill_name}' is hub-installed; never archive"
+        # GH-47688: external_dirs skills are user-managed — curator must not touch them.
+        if is_external_skill(skill_name):
+            return False, (
+                f"skill '{skill_name}' lives in skills.external_dirs and is "
+                "user-managed; the curator never archives external skills"
+            )
         return False, (
             f"skill '{skill_name}' is a bundled built-in; enable "
             "curator.prune_builtins to allow pruning it"

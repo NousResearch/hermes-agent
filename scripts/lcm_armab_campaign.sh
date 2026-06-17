@@ -16,8 +16,14 @@ hb() { /usr/bin/python3 ~/.hermes/scripts/notify.py --send "$1" --channel discor
 echo "[campaign] $(date) waiting for Arm-A pid $ARM_A_PID ..."
 while kill -0 "$ARM_A_PID" 2>/dev/null; do sleep 30; done
 echo "[campaign] $(date) Arm-A finished."
+# Drain delay: Arm A's gateway flushes its final session into the SAME lcm.db
+# the Arm-B in-process engine reads. Starting Arm B immediately races that flush
+# and surfaces malformed reads ('type' object is not subscriptable). Wait for the
+# store to go quiescent before touching it. (Belt: the harness also settle-guards.)
+echo "[campaign] $(date) draining ~45s for gateway DB flush to settle..."
+sleep 45
 ARM_A_VERDICT=$(grep -iE "verdict|recall|wilson" "$REPORTS/arm-a-n180-haiku.md" 2>/dev/null | head -3 | tr '\n' ' ')
-hb "💓 **LCM campaign** · Arm A (raw-store N=180) finished. ${ARM_A_VERDICT:-(verdict parsing...)} — starting Arm-B batch validation."
+hb "💓 **LCM campaign** · Arm A (raw-store N=180) finished. ${ARM_A_VERDICT:-(verdict parsing...)} — draining, then starting Arm-B batch validation."
 
 # --- Validate the batched harness on ONE session of K sentinels first. ---
 echo "[campaign] $(date) validating batched Arm-B (1 session, K=$K)..."

@@ -307,3 +307,51 @@ class TestGatewayHistoryOffsetAfterSplit:
         assert len(new_messages) == 0, (
             "Expected 0 messages with stale offset=200 (demonstrates the bug)"
         )
+
+
+class TestStoredPromptCwdDrift:
+    """Verify that stored system prompts are rejected when cwd changed."""
+
+    def _make_agent(self, model="test/model", provider="openrouter"):
+        class _Agent:
+            pass
+
+        agent = _Agent()
+        agent.model = model
+        agent.provider = provider
+        return agent
+
+    def test_stored_prompt_stale_when_cwd_differs(self):
+        """Different cwd should force a prompt rebuild."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = (
+            "Current working directory: /project/old\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        with patch("os.getcwd", return_value="/project/new"):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+                "Expected False when stored cwd differs from current cwd"
+            )
+
+    def test_stored_prompt_fresh_when_cwd_matches(self):
+        """Matching cwd should allow prompt reuse."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        current_cwd = "/project/current"
+        stored_prompt = (
+            f"Current working directory: {current_cwd}\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        with patch("os.getcwd", return_value=current_cwd):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                "Expected True when stored cwd matches current cwd"
+            )

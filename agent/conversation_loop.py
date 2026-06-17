@@ -446,6 +446,20 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     if stored_provider and current_provider and stored_provider != current_provider:
         return False
 
+    # Detect cwd drift: if the stored prompt was built in a different working
+    # directory, reuse would silently inject a stale path into the prefix cache.
+    stored_cwd = line_value("Current working directory")
+    if stored_cwd:
+        import os as _os
+        if stored_cwd != _os.getcwd():
+            return False
+
+    # Detect runtime surface drift: desktop GUI vs non-desktop.
+    has_desktop_marker = "Runtime surface: you're running inside the Hermes desktop GUI app." in prompt
+    in_desktop = (os.environ.get("HERMES_DESKTOP", "").strip().lower() in {"1", "true", "yes"})
+    if has_desktop_marker != in_desktop:
+        return False
+
     return True
 
 

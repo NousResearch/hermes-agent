@@ -429,3 +429,54 @@ def test_secret_not_persisted_in_summary_or_expand_hint(tmp_path):
                 )
     finally:
         _close(engine)
+
+
+# --------------------------------------------------------------------------
+# Concurrency-contention guard: lcm_expand_query's aux-LLM synthesis must
+# DEGRADE (not crash with an opaque "'type' object is not subscriptable") when
+# call_llm returns an error-shaped / partial response. Reproduces the live
+# Arm-B failure where the recovery sub-model collided with the foreground
+# gateway and `response.choices` was missing/None/non-subscriptable.
+# --------------------------------------------------------------------------
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("bad_response", [
+    type("Resp", (), {"choices": None})(),          # choices is None
+    type("Resp", (), {"choices": []})(),            # empty choices
+    type("Resp", (), {"choices": object})(),        # a TYPE, not subscriptable -> the real symptom
+    type("Resp", (), {})(),                          # no choices attr at all
+    "rate_limited",                                  # a bare string error sentinel
+])
+def test_expansion_synthesis_degrades_on_malformed_llm_response(monkeypatch, bad_response):
+    from plugins.context_engine.lcm import tools as lcm_tools
+
+    monkeypatch.setattr(
+        "agent.auxiliary_client.call_llm",
+        lambda **kw: bad_response,
+    )
+    # Must raise the CLEAN, catchable error — never a raw TypeError/AttributeError.
+    with _pytest.raises(lcm_tools._ExpansionSynthesisError):
+        lcm_tools._synthesize_expansion_answer(
+            prompt="who is the recovery owner?",
+            context_blocks=[{"node_id": 1, "summary": "owner is Ada Lovelace"}],
+            model="claude-haiku-4-5",
+            max_tokens=256,
+            timeout=30.0,
+        )
+
+
+def test_expansion_synthesis_ok_on_well_formed_response(monkeypatch):
+    """Belt: a normal well-formed response still returns the content unchanged."""
+    from types import SimpleNamespace
+    from plugins.context_engine.lcm import tools as lcm_tools
+
+    good = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content="Ada Lovelace is the recovery owner."))])
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: good)
+    out = lcm_tools._synthesize_expansion_answer(
+        prompt="who?", context_blocks=[{"node_id": 1, "summary": "x"}],
+        model="claude-haiku-4-5", max_tokens=256, timeout=30.0,
+    )
+    assert "Ada Lovelace" in out

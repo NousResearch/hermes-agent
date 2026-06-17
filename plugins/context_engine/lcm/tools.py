@@ -586,6 +586,12 @@ def _context_content_token_count(blocks: list[dict[str, Any]]) -> int:
     return total
 
 
+class _ExpansionSynthesisError(RuntimeError):
+    """Raised when lcm_expand_query's aux-LLM synthesis returns an error-shaped
+    or malformed response (no usable choices). Caught at the call site and turned
+    into a degraded payload, never propagated as an opaque TypeError."""
+
+
 def _synthesize_expansion_answer(
     *,
     prompt: str,
@@ -617,7 +623,25 @@ def _synthesize_expansion_answer(
     }
     apply_lcm_model_route(call_kwargs, model)
     response = call_llm(**call_kwargs)
-    content = response.choices[0].message.content
+    # call_llm can return an error-shaped or partial object under load/concurrency
+    # (e.g. the aux-LLM lane colliding with the foreground gateway's own calls):
+    # `.choices` may be missing, empty, or a non-subscriptable sentinel. Guard the
+    # access so a malformed response degrades cleanly instead of raising an opaque
+    # "'type' object is not subscriptable" that crashes the whole expand call.
+    choices = getattr(response, "choices", None)
+    first = None
+    if choices is not None:
+        try:
+            first = choices[0]
+        except (TypeError, IndexError, KeyError):
+            first = None
+    if first is None:
+        raise _ExpansionSynthesisError(
+            "expansion synthesis returned no choices "
+            f"(response type={type(response).__name__})"
+        )
+    message = getattr(first, "message", None)
+    content = getattr(message, "content", None)
     if not isinstance(content, str):
         content = str(content) if content else ""
     from .escalation import _strip_reasoning_blocks
@@ -1424,6 +1448,13 @@ def lcm_expand_query(args: Dict[str, Any], **kwargs) -> str:
             f"lcm_expand_query synthesis timed out after {timeout:.3g}s",
             include_timeout=True,
         )
+    except _ExpansionSynthesisError as exc:
+        # Malformed/error-shaped aux-LLM response (e.g. concurrency collision with
+        # the foreground gateway). Degrade gracefully instead of crashing the
+        # whole expand call with an opaque TypeError. The caller still gets the
+        # node matches; only the synthesized prose answer is unavailable.
+        logger.warning("LCM expand_query synthesis failed: %s", exc)
+        return _degraded_payload(f"lcm_expand_query synthesis unavailable: {exc}")
 
     answer = str(answer).strip() if answer is not None else ""
     if not answer:

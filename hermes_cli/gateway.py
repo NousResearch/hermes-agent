@@ -2008,6 +2008,36 @@ def _detect_venv_dir() -> Path | None:
     return None
 
 
+def _is_nix_install() -> bool:
+    """Detect if Hermes is running from a Nix store path.
+
+    Nix installs place the Python interpreter deep in ``/nix/store/`` and
+    rely on a wrapper script (built with ``makeWrapper``) to add
+    ``PYTHONPATH`` so that ``hermes_cli`` is importable.  When the bare
+    interpreter is used directly (as in a systemd ``ExecStart``), the
+    import fails with ``ModuleNotFoundError``.
+    """
+    return "/nix/store/" in sys.executable
+
+
+def _find_nix_hermes_wrapper() -> str | None:
+    """Return the absolute path to the ``hermes`` wrapper on a Nix install.
+
+    The Nix package creates ``$out/bin/hermes`` via ``makeWrapper`` which
+    sets up ``PYTHONPATH`` and other environment variables required at
+    runtime.  Returns ``None`` when no Nix wrapper is found.
+    """
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin and "/nix/store/" in hermes_bin:
+        return hermes_bin
+    # Fallback: walk PATH looking for a Nix store hermes binary.
+    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(path_dir) / "hermes"
+        if candidate.exists() and "/nix/store/" in str(candidate):
+            return str(candidate)
+    return None
+
+
 def get_python_path() -> str:
     venv = _detect_venv_dir()
     if venv is not None:
@@ -2162,6 +2192,11 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+    # On Nix installs, the bare Python interpreter lacks the hermes_cli
+    # package because the Nix wrapper adds PYTHONPATH at launch.  Use the
+    # wrapper directly as ExecStart so the gateway inherits the correct
+    # environment.  (Issue #48071)
+    nix_wrapper = _find_nix_hermes_wrapper() if _is_nix_install() else None
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
     detected_venv = _detect_venv_dir()
@@ -2199,6 +2234,10 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        if nix_wrapper:
+            exec_start = f"{nix_wrapper}{f' --profile {profile_arg}' if profile_arg else ''} gateway run --replace"
+        else:
+            exec_start = f"{python_path} -m hermes_cli.main{f' {profile_arg}' if profile_arg else ''} gateway run --replace"
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2209,7 +2248,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={exec_start}
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2239,6 +2278,10 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    if nix_wrapper:
+        exec_start = f"{nix_wrapper}{f' --profile {profile_arg}' if profile_arg else ''} gateway run --replace"
+    else:
+        exec_start = f"{python_path} -m hermes_cli.main{f' {profile_arg}' if profile_arg else ''} gateway run --replace"
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2247,7 +2290,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={exec_start}
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"

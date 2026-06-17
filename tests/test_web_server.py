@@ -75,3 +75,16 @@ def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
 
     assert captured["ws_ping_interval"] == 20.0
     assert captured["ws_ping_timeout"] == 20.0
+
+
+def test_loopback_dashboard_rejects_unconfigured_reverse_proxy_host(monkeypatch):
+    monkeypatch.delenv("HERMES_DASHBOARD_ALLOWED_HOSTS", raising=False)
+
+    assert not web_server._is_accepted_host("dashboard.example.com", "127.0.0.1")
+
+
+def test_loopback_dashboard_allows_configured_reverse_proxy_host(monkeypatch):
+    monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_HOSTS", "dashboard.example.com")
+
+    assert web_server._is_accepted_host("dashboard.example.com", "127.0.0.1")
+    assert web_server._is_accepted_host("dashboard.example.com:443", "127.0.0.1")

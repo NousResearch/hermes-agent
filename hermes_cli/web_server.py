@@ -304,12 +304,28 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
+def _dashboard_extra_host_values() -> frozenset[str]:
+    """Return explicitly allowed reverse-proxy hostnames for the dashboard.
+
+    The default loopback bind rejects non-loopback Host/Origin values to block
+    DNS rebinding. A local reverse proxy or Cloudflare Tunnel can still be safe
+    when the operator pins the public hostname here; keep this opt-in narrow.
+    """
+    raw = os.getenv("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    return frozenset(
+        item.strip().lower().rsplit(":", 1)[0]
+        for item in raw.split(",")
+        if item.strip()
+    )
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Explicit operator allowlist entries for reverse-proxied loopback binds
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
@@ -337,6 +353,9 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
     if bound_host in {"0.0.0.0", "::"}:
+        return True
+
+    if host_only in _dashboard_extra_host_values():
         return True
 
     # Loopback bind: accept the loopback names

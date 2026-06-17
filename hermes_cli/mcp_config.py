@@ -642,10 +642,15 @@ def cmd_mcp_test(args):
     else:
         _info("Auth: none")
 
-    # Attempt connection
+    # Attempt connection — honour per-server connect_timeout if configured.
+    probe_timeout = cfg.get("connect_timeout", 30)
+    if isinstance(probe_timeout, (int, float)):
+        probe_timeout = float(probe_timeout)
+    else:
+        probe_timeout = 30.0
     start = time.monotonic()
     try:
-        tools = _probe_single_server(name, cfg)
+        tools = _probe_single_server(name, cfg, connect_timeout=probe_timeout)
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000

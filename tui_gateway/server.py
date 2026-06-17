@@ -4081,12 +4081,55 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             info = _session_info(agent, session)
         # Emit outside the lock — write_json must not block under _sessions_lock.
         _emit("session.info", sid, info)
-
     threading.Thread(
         target=_wait_then_refresh,
         name=f"tui-mcp-late-refresh-{sid}",
         daemon=True,
     ).start()
+
+
+def _resolve_runtime_with_fallback(
+    resolve_kwargs: dict | None = None,
+) -> dict:
+    """Resolve runtime provider with init-time fallback on auth failure.
+
+    Mirrors the fallback pattern in ``cron/scheduler.py`` and
+    ``hermes_cli/cli_agent_setup_mixin.py``: when the primary provider
+    raises ``AuthError``, walk the configured ``fallback_providers`` /
+    ``fallback_model`` chain before giving up.
+    """
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    kwargs = resolve_kwargs or {}
+    try:
+        return resolve_runtime_provider(**kwargs)
+    except AuthError as primary_exc:
+        fb_chain = _load_fallback_model() or []
+        for entry in fb_chain:
+            if not isinstance(entry, dict):
+                continue
+            fb_provider = (entry.get("provider") or "").strip()
+            if not fb_provider:
+                continue
+            try:
+                fb_kwargs: dict = {"requested": fb_provider}
+                if entry.get("base_url"):
+                    fb_kwargs["explicit_base_url"] = entry["base_url"]
+                if entry.get("api_key"):
+                    fb_kwargs["explicit_api_key"] = entry["api_key"]
+                runtime = resolve_runtime_provider(**fb_kwargs)
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Primary auth failed (%s), falling back to %s",
+                    primary_exc,
+                    fb_provider,
+                )
+                return runtime
+            except Exception:
+                continue
+        raise
 
 
 def _make_agent(
@@ -4100,7 +4143,6 @@ def _make_agent(
     service_tier_override: str | None = None,
 ):
     from run_agent import AIAgent
-    from hermes_cli.runtime_provider import resolve_runtime_provider
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
@@ -4169,11 +4211,9 @@ def _make_agent(
                 # Failing identity recovery, still hand the base_url to the
                 # direct-alias branch so pool/env credentials resolve for it.
                 resolve_kwargs["explicit_base_url"] = override_base_url
-        runtime = resolve_runtime_provider(
-            requested=requested_provider,
-            target_model=model or None,
-            **resolve_kwargs,
-        )
+        resolve_kwargs["requested"] = requested_provider
+        resolve_kwargs["target_model"] = model or None
+        runtime = _resolve_runtime_with_fallback(resolve_kwargs)
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global
         # resolution would pick a different one.
@@ -4189,10 +4229,10 @@ def _make_agent(
             model = model_override
         if provider_override:
             requested_provider = provider_override
-        runtime = resolve_runtime_provider(
-            requested=requested_provider,
-            target_model=model or None,
-        )
+        runtime = _resolve_runtime_with_fallback({
+            "requested": requested_provider,
+            "target_model": model or None,
+        })
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,

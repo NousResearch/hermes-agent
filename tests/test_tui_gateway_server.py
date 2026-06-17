@@ -8173,3 +8173,143 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
     assert saved["model"]["provider"] == "anthropic"
     # Stale custom base_url must be cleared (null coalesces to absent on read).
     assert not saved["model"].get("base_url"), saved["model"].get("base_url")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_runtime_with_fallback — init-time provider fallback
+# ---------------------------------------------------------------------------
+
+class TestResolveRuntimeWithFallback:
+    """Tests for _resolve_runtime_with_fallback(): init-time provider
+    fallback when the primary provider raises AuthError."""
+
+    def test_primary_success_returns_runtime(self, monkeypatch):
+        """When primary resolve succeeds, return its result directly."""
+        expected = {"provider": "openai", "api_key": "tok"}
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kw: expected,
+        )
+        result = server._resolve_runtime_with_fallback({"requested": "openai"})
+        assert result == expected
+
+    def test_auth_error_tries_fallback_chain(self, monkeypatch):
+        """On AuthError from primary, walk fallback_providers chain."""
+        from hermes_cli.auth import AuthError
+
+        fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+        )
+        result = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"},
+        )
+        assert result == fallback_runtime
+
+    def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
+        """When all fallbacks also fail, re-raise the original AuthError."""
+        from hermes_cli.auth import AuthError
+
+        def fake_resolve(**kwargs):
+            raise AuthError("No credentials for " + str(kwargs.get("requested")))
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+        )
+        import pytest
+
+        with pytest.raises(AuthError, match="No credentials for openai-codex"):
+            server._resolve_runtime_with_fallback(
+                {"requested": "openai-codex"},
+            )
+
+    def test_auth_error_skips_non_dict_entries(self, monkeypatch):
+        """Fallback chain entries that are not dicts are skipped."""
+        from hermes_cli.auth import AuthError
+
+        fallback_runtime = {"provider": "anthropic", "api_key": "ant-tok"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [
+                "invalid-string-entry",
+                {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            ],
+        )
+        result = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"},
+        )
+        assert result == fallback_runtime
+
+    def test_make_agent_uses_fallback_on_auth_error(self, monkeypatch):
+        """Integration: _make_agent falls back to configured fallback
+        provider when the primary provider raises AuthError."""
+        import types
+
+        from hermes_cli.auth import AuthError
+
+        captured = {}
+        fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(model=kwargs.get("model"))
+
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+        monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+        monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+        monkeypatch.setattr(
+            server,
+            "_load_cfg",
+            lambda: {
+                "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+                "fallback_providers": [
+                    {"provider": "deepseek", "model": "deepseek-v4-pro"},
+                ],
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+        monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+
+        agent = server._make_agent("sid", "session-key")
+
+        assert agent.model == "gpt-5.5"
+        assert captured["provider"] == "deepseek"

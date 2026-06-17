@@ -4204,6 +4204,30 @@ def run_conversation(
                         agent._session_messages = messages
                         continue
 
+                    # ── Promote reasoning to visible content ──────
+                    # After prefill retries are exhausted, some models
+                    # (e.g. MiMo-v2.5) consistently put their real
+                    # response — including vision descriptions — in
+                    # reasoning_content instead of content.  Rather
+                    # than falling through to empty retries or "(empty)",
+                    # promote the reasoning text to visible content so
+                    # the user sees the response.
+                    if _has_structured and agent._thinking_prefill_retries >= 2:
+                        _rc_text = (
+                            getattr(assistant_message, "reasoning_content", None)
+                            or getattr(assistant_message, "reasoning", None)
+                            or ""
+                        )
+                        if isinstance(_rc_text, str) and _rc_text.strip():
+                            final_response = _rc_text.strip()
+                            logger.info(
+                                "Promoted reasoning_content to visible "
+                                "content after prefill exhaustion "
+                                "(model=%s, len=%d)",
+                                agent.model, len(final_response),
+                            )
+                            break
+
                     # ── Empty response retry ──────────────────────
                     # Model returned nothing usable.  Retry up to 3
                     # times before attempting fallback.  This covers

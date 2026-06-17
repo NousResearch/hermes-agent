@@ -18,10 +18,17 @@ import tempfile
 import threading
 import time
 
+# fcntl is Unix-only; on Windows use msvcrt for file locking
+# (same pattern as tools/memory_tool.py).
+msvcrt = None
 try:
     import fcntl
 except ImportError:
-    fcntl = None  # Windows — file locking skipped
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        pass
 from pathlib import Path
 from typing import Callable
 
@@ -315,20 +322,39 @@ class FileSyncManager:
                     signal.raise_signal(signal.SIGINT)
 
     def _sync_back_locked(self, lock_path: Path) -> None:
-        """Sync-back under file lock (serializes concurrent gateways)."""
-        if fcntl is None:
-            # Windows: no flock — run without serialization
+        """Sync-back under file lock (serializes concurrent gateways).
+
+        On POSIX uses fcntl.flock for cross-process serialization.
+        On Windows falls back to msvcrt.locking (byte-range lock).
+        If neither is available, logs a warning and proceeds unlocked.
+        """
+        if fcntl is None and msvcrt is None:
+            logger.warning(
+                "sync_back: no file-locking module available — "
+                "proceeding without serialization"
+            )
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w", encoding="utf-8")
+        lock_fd = open(lock_path, "a+", encoding="utf-8")
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if fcntl:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            else:
+                lock_fd.seek(0)
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
             self._sync_back_impl()
         finally:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
+            if fcntl:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            elif msvcrt:
+                try:
+                    lock_fd.seek(0)
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

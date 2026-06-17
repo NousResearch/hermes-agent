@@ -476,3 +476,52 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         "host-visible output mount" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_mcp_discovery_failure_logs_warning(monkeypatch, tmp_path):
+    """MCP discovery failures must log at WARNING, not DEBUG (#47509)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _CleanExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+    monkeypatch.setattr(
+        "tools.mcp_tool.discover_mcp_tools",
+        lambda: (_ for _ in ()).throw(RuntimeError("mcp package not installed")),
+    )
+
+    import logging
+    from gateway.run import start_gateway
+
+    with pytest.MonkeyPatch.context() as mp:
+        warning_logs = []
+        original_warning = logging.Logger.warning
+
+        def _capture_warning(self, msg, *args, **kwargs):
+            warning_logs.append(msg % args if args else msg)
+            return original_warning(self, msg, *args, **kwargs)
+
+        mp.setattr(logging.Logger, "warning", _capture_warning)
+
+        ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is True
+    assert any("MCP tool discovery failed" in w for w in warning_logs), (
+        f"Expected WARNING log about MCP discovery failure, got: {warning_logs}"
+    )

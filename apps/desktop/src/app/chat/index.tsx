@@ -42,6 +42,7 @@ import {
   $sessions,
   sessionPinId
 } from '@/store/session'
+import { isSecondaryWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
@@ -61,6 +62,7 @@ import { threadLoadingState } from './thread-loading'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
+  modelMenuContent?: React.ReactNode
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
@@ -119,10 +121,10 @@ function ChatHeader({
       ? pinnedSessionIds.includes(selectedSessionId)
       : false
 
-  // A brand-new session has no session to pin/delete/rename, so the header is
-  // just a dead "New session" label + chevron. Drop it (and its border)
-  // entirely until there's a real session to act on.
-  if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
+  // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
+  // are compact side panels — they drop the session-actions header + border
+  // entirely. A brand-new draft has nothing to pin/delete/rename either.
+  if (isSecondaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
     return null
   }
 
@@ -249,6 +251,7 @@ function ChatRuntimeBoundary({
 export function ChatView({
   className,
   gateway,
+  modelMenuContent,
   onToggleSelectedPin,
   onDeleteSelectedSession,
   onCancel,
@@ -302,7 +305,10 @@ export function ChatView({
   // waiting for the resume effect (which paints a frame later) to clear them.
   const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
 
-  const showIntro = freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
+  // The compact new-session pop-out skips the wordmark/tagline intro — it's a
+  // scratch window, not the full-height empty state.
+  const showIntro =
+    !isSecondaryWindow() && freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
@@ -342,6 +348,7 @@ export function ChatView({
         provider: currentProvider,
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
+        modelMenuContent,
         quickModels
       },
       tools: {
@@ -354,7 +361,7 @@ export function ChatView({
         active: false
       }
     }),
-    [contextSuggestions, currentModel, currentProvider, gatewayOpen, quickModels]
+    [contextSuggestions, currentModel, currentProvider, gatewayOpen, modelMenuContent, quickModels]
   )
 
   // Drop files anywhere in the conversation area, not just on the composer

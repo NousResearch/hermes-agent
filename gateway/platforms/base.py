@@ -77,6 +77,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     return metadata
 
 
+def _mark_notify_metadata(metadata: dict | None) -> dict:
+    """Clone metadata and mark a user-visible reply as notify-worthy."""
+    notify_metadata = dict(metadata) if metadata else {}
+    notify_metadata["notify"] = True
+    return notify_metadata
+
+
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
@@ -3889,7 +3896,7 @@ class BasePlatformAdapter(ABC):
                     chat_id=event.source.chat_id,
                     content=_text,
                     reply_to=_reply_anchor_for_event(event),
-                    metadata=thread_meta,
+                    metadata=_mark_notify_metadata(thread_meta),
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
                     self._schedule_ephemeral_delete(
@@ -3995,7 +4002,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             content=_text,
                             reply_to=_reply_anchor_for_event(event),
-                            metadata=_thread_meta,
+                            metadata=_mark_notify_metadata(_thread_meta),
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
                             self._schedule_ephemeral_delete(
@@ -4045,7 +4052,7 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 content=_text,
                                 reply_to=_reply_anchor_for_event(event),
-                                metadata=_thread_meta,
+                                metadata=_mark_notify_metadata(_thread_meta),
                             )
                             if _eph_ttl > 0 and _r.success and _r.message_id:
                                 self._schedule_ephemeral_delete(
@@ -4268,6 +4275,12 @@ class BasePlatformAdapter(ABC):
                         )
                         text_content = _recovered
 
+                # Final user-visible content (text, TTS, media, files) gets
+                # the existing notify=True marker. Clone once so typing/status
+                # metadata stays unmarked and progress bubbles remain
+                # thread-strict.
+                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -4307,7 +4320,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                         )
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
@@ -4322,23 +4335,11 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
-                    # Mark final response messages for notification delivery.
-                    # Platform adapters that support per-message notification
-                    # control (e.g. Telegram's disable_notification) use this
-                    # flag to override silent-mode and ensure the final
-                    # response triggers a push notification.
-                    # Clone to avoid mutating the metadata shared with the
-                    # typing-indicator task (which must remain unmarked).
-                    if _thread_metadata is not None:
-                        _thread_metadata = dict(_thread_metadata)
-                        _thread_metadata["notify"] = True
-                    else:
-                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,
-                        metadata=_thread_metadata,
+                        metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
 
@@ -4367,7 +4368,7 @@ class BasePlatformAdapter(ABC):
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
@@ -4409,7 +4410,7 @@ class BasePlatformAdapter(ABC):
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
@@ -4424,19 +4425,19 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
 
                         if not media_result.success:
@@ -4454,13 +4455,13 @@ class BasePlatformAdapter(ABC):
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         else:
                             await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)

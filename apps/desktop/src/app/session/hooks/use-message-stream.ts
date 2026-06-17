@@ -47,6 +47,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -641,6 +642,9 @@ export function useMessageStream({
       })
 
       void refreshSessions().catch(() => undefined)
+      // Sync the freshly-titled row to other windows (e.g. main, when the turn
+      // ran in the pop-out).
+      broadcastSessionsChanged()
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false
@@ -1098,8 +1102,13 @@ export function useMessageStream({
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else if (isActiveEvent) {
+        } else {
+          // Toast globally, not just when the failing thread is focused: a
+          // turn-ending error (e.g. out of funds) blocks every thread, so the
+          // inline error alone is too easy to miss. The stable id collapses the
+          // same error from multiple blocked threads into one toast.
           notify({
+            id: `gateway-error:${errorMessage}`,
             kind: 'error',
             title: 'Hermes error',
             message: errorMessage

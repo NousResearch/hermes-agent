@@ -54,19 +54,33 @@ When invoked, the agent should run the following bash script to find authorized 
 
 ```bash
 #!/bin/bash
-set -euo pipefail
 
-# Ensure GH CLI is installed and authenticated
-if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null; then
-  echo "GitHub CLI (gh) is not installed or not authenticated."
-  exit 1
-fi
+main() {
+  set -euo pipefail
 
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-PRS_TO_REVIEW=$(mktemp "${TMPDIR:-/tmp}/hermes-prs-to-review.XXXXXX")
-trap 'rm -f "$PRS_TO_REVIEW" "$PRS_TO_REVIEW.candidates"' EXIT
+  # Ensure GH CLI is installed and authenticated
+  if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null; then
+    echo "GitHub CLI (gh) is not installed or not authenticated."
+    return 1
+  fi
 
-echo "Scanning $REPO for authorized '@jules code review' PR review requests..."
+  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+  PRS_TO_REVIEW=$(mktemp "${TMPDIR:-/tmp}/hermes-prs-to-review.XXXXXX")
+  trap 'rm -f "$PRS_TO_REVIEW" "$PRS_TO_REVIEW.candidates"' RETURN EXIT
+
+  set -euo pipefail
+
+  # Ensure GH CLI is installed and authenticated
+  if ! command -v gh &>/dev/null || ! gh auth status &>/dev/null; then
+    echo "GitHub CLI (gh) is not installed or not authenticated."
+    return 1 2>/dev/null || true
+  fi
+
+  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+  PRS_TO_REVIEW=$(mktemp "${TMPDIR:-/tmp}/hermes-prs-to-review.XXXXXX")
+  trap 'rm -f "$PRS_TO_REVIEW" "$PRS_TO_REVIEW.candidates"' RETURN EXIT
+
+  echo "Scanning $REPO for authorized '@jules code review' PR review requests..."
 
 # Search all pages for open PRs with matching comments, excluding PRs already reviewed.
 gh api --paginate -X GET search/issues \
@@ -103,7 +117,7 @@ rm -f "$PRS_TO_REVIEW.candidates"
 
 if [ ! -s "$PRS_TO_REVIEW" ]; then
   echo "No authorized PRs to review."
-  exit 0
+  return 0
 fi
 
 # Ensure the jules-reviewed label exists before we attempt to apply it.
@@ -123,6 +137,9 @@ while read -r PR_NUMBER; do
 done < "$PRS_TO_REVIEW"
 
 echo "Review pass complete."
+}
+
+main
 ```
 
 ## Agent Instructions

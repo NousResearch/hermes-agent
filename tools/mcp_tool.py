@@ -1165,6 +1165,16 @@ class SamplingHandler:
 # ---------------------------------------------------------------------------
 
 
+
+def _is_lumen_globally_enabled() -> bool:
+    """Check mcp_lumen.enabled in Hermes config (default: True)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return cfg.get("mcp_lumen", {}).get("enabled", True)
+    except Exception:
+        return True  # If config can't be read, default to enabled
+
 class _LumenSession:
     """Minimal MCP session wrapper around LumenStdioTransport.
 
@@ -1645,6 +1655,7 @@ class MCPServerTask:
         use_lumen = (
             _MCP_LUMEN_AVAILABLE
             and config.get("transport") == "lumen"
+            and _is_lumen_globally_enabled()
         )
 
         try:

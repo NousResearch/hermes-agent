@@ -57,7 +57,16 @@ const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 // flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
 // module-scope so the prop identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
-  return tailBoundedRemend(preprocessMarkdown(text))
+  // Streamdown runs `preprocess` inside its own useMemo, so anything thrown
+  // here escapes to the ROOT error boundary and takes down the whole app — a
+  // single adversarial message (e.g. content that overflows a regex/stack)
+  // shouldn't be able to do that. Degrade to the raw text instead; it still
+  // renders, just without our cosmetic normalization.
+  try {
+    return tailBoundedRemend(preprocessMarkdown(text))
+  } catch {
+    return text
+  }
 }
 
 // Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full

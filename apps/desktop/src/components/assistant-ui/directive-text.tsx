@@ -327,8 +327,23 @@ function shortLabel(type: HermesRefType, id: string): string {
  * inline chips. Embedded MEDIA images render below as a thumbnail row.
  */
 export function DirectiveContent({ text }: { text: string }) {
-  const { cleanedText, images } = useMemo(() => extractEmbeddedImages(text ?? ''), [text])
-  const segments = useMemo(() => hermesDirectiveFormatter.parse(cleanedText), [cleanedText])
+  // Both passes run text through regexes; on pathological input they can throw
+  // (or overflow) and, since this renders inside a useMemo under the message,
+  // bubble up to the root error boundary. Degrade gracefully to plain text.
+  const { cleanedText, images } = useMemo(() => {
+    try {
+      return extractEmbeddedImages(text ?? '')
+    } catch {
+      return { cleanedText: text ?? '', images: [] }
+    }
+  }, [text])
+  const segments = useMemo(() => {
+    try {
+      return hermesDirectiveFormatter.parse(cleanedText)
+    } catch {
+      return [{ kind: 'text', text: cleanedText }] as Unstable_DirectiveSegment[]
+    }
+  }, [cleanedText])
 
   return (
     <span className="whitespace-pre-line" data-slot="aui_directive-text">

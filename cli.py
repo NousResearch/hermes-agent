@@ -12936,6 +12936,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Create the input area with multiline (Alt+Enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+        from prompt_toolkit.completion import ThreadedCompleter
 
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands(),
@@ -12950,7 +12951,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
-            completer=_completer,
+            # complete_while_typing fires the completer on every keystroke. The
+            # completer does blocking work — fuzzy @-file indexing shells out to
+            # rg/fd (up to a 2s timeout) and path completion hits os.listdir/stat
+            # — so running it inline would stall the render loop on each key (very
+            # noticeable on WSL2/slow filesystems). ThreadedCompleter moves it off
+            # the UI event loop, keeping typing responsive.
+            completer=ThreadedCompleter(_completer),
             complete_while_typing=True,
             auto_suggest=SlashCommandAutoSuggest(
                 history_suggest=AutoSuggestFromHistory(),

@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_UPSTREAM_REF = "upstream/main"
 DEFAULT_STRATEGY = ROOT / "scripts" / "merge_tools" / "hermes-merge-conflict-strategies.json"
 REPORT_DIR = ROOT / "_docs" / "merge-reports"

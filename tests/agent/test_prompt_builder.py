@@ -19,7 +19,11 @@ from agent.prompt_builder import (
     build_nous_subscription_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
+    _dynamic_context_file_max_chars,
+    _get_context_file_max_chars,
+    _CONTEXT_FILE_DYNAMIC_CEILING,
     DEFAULT_AGENT_IDENTITY,
+    drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -113,6 +117,18 @@ class TestScanContextContent:
 
 
 class TestTruncateContent:
+    @pytest.fixture(autouse=True)
+    def _reset_truncation_state(self, monkeypatch):
+        drain_truncation_warnings()
+
+        def default_load_config():
+            return {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", default_load_config)
+
+    def test_context_file_max_chars_default_matches_upstream_limit(self):
+        assert CONTEXT_FILE_MAX_CHARS == 20_000
+
     def test_short_content_unchanged(self):
         content = "Short content"
         result = _truncate_content(content, "test.md")
@@ -137,6 +153,138 @@ class TestTruncateContent:
         content = "x" * CONTEXT_FILE_MAX_CHARS
         result = _truncate_content(content, "exact.md")
         assert result == content
+
+    def test_configured_context_file_max_chars_controls_truncation(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "HEAD" + "x" * 160 + "TAIL"
+
+        result = _truncate_content(content, "config.md")
+
+        assert result != content
+        assert "truncated config.md" in result
+        assert "kept 84+24" in result
+        assert "HEAD" in result
+        assert "TAIL" in result
+
+    def test_explicit_max_chars_overrides_config(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        result = _truncate_content(content, "explicit.md", max_chars=200)
+
+        assert result == content
+
+    def test_truncation_warning_points_to_config_key(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        _truncate_content("x" * 180, "warning.md")
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        assert "context_file_max_chars" in warnings[0]
+        assert "CONTEXT_FILE_MAX_CHARS" not in warnings[0]
+
+    def test_warnings_isolated_across_contexts(self, monkeypatch):
+        """Truncation warnings accumulate per-context — a concurrent build in
+        a separate context must not see or drain this context's warnings."""
+        import contextvars
+
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        # Generate a warning in a fresh child context, then assert it did NOT
+        # leak into the parent context's accumulator.
+        def _child():
+            _truncate_content("x" * 180, "child.md")
+            # Inside the child context, the warning is visible & drainable.
+            assert any("child.md" in w for w in drain_truncation_warnings())
+
+        contextvars.copy_context().run(_child)
+
+        # Parent context never saw the child's warning.
+        assert drain_truncation_warnings() == []
+
+        # And a warning raised in the parent stays in the parent.
+        _truncate_content("y" * 180, "parent.md")
+        parent_warnings = drain_truncation_warnings()
+        assert len(parent_warnings) == 1
+        assert "parent.md" in parent_warnings[0]
+
+
+class TestDynamicContextFileCap:
+    """B — cap scales with the model's context window when not pinned.
+    C — truncation marker points the agent at the full file to read_file."""
+
+    @pytest.fixture(autouse=True)
+    def _no_explicit_config(self, monkeypatch):
+        # No explicit context_file_max_chars → dynamic path is eligible.
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+    def test_dynamic_floor_for_small_window(self):
+        # A small context window never drops below the historical 20K floor.
+        assert _dynamic_context_file_max_chars(8_000) == CONTEXT_FILE_MAX_CHARS
+
+    def test_dynamic_scales_above_floor_for_large_window(self):
+        # 200K-token window → ~48K (200000 * 4 * 0.06), well above the floor
+        # and above Codex's 32 KiB project_doc default.
+        cap = _dynamic_context_file_max_chars(200_000)
+        assert cap == 48_000
+        assert cap > CONTEXT_FILE_MAX_CHARS
+
+    def test_dynamic_respects_ceiling(self):
+        # An enormous window is clamped to the ceiling.
+        assert _dynamic_context_file_max_chars(100_000_000) == _CONTEXT_FILE_DYNAMIC_CEILING
+
+    def test_none_context_length_falls_back_to_flat_default(self):
+        assert _dynamic_context_file_max_chars(None) == CONTEXT_FILE_MAX_CHARS
+        assert _dynamic_context_file_max_chars(0) == CONTEXT_FILE_MAX_CHARS
+
+    def test_get_context_file_max_chars_uses_context_length(self):
+        # With no explicit config, the resolver derives the cap from context.
+        assert _get_context_file_max_chars(200_000) == 48_000
+        assert _get_context_file_max_chars(None) == CONTEXT_FILE_MAX_CHARS
+
+    def test_explicit_config_beats_dynamic(self, monkeypatch):
+        # An explicit value always wins, even when a big window is available.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_file_max_chars": 1_000},
+        )
+        assert _get_context_file_max_chars(200_000) == 1_000
+
+    def test_large_window_avoids_truncation_of_midsize_doc(self):
+        # A 30K-char AGENTS.md is truncated at the flat default but survives
+        # whole on a large-context model (dynamic cap ~48K).
+        content = "z" * 30_000
+        small = _truncate_content(content, "AGENTS.md", context_length=8_000)
+        big = _truncate_content(content, "AGENTS.md", context_length=200_000)
+        assert "truncated" in small.lower()
+        assert big == content
+
+    def test_marker_points_to_read_path(self):
+        content = "h" * 50_000
+        result = _truncate_content(
+            content, "AGENTS.md", context_length=8_000,
+            read_path="/proj/AGENTS.md",
+        )
+        assert "read_file" in result
+        assert "/proj/AGENTS.md" in result
+
+    def test_marker_defaults_to_filename_without_read_path(self):
+        result = _truncate_content("h" * 50_000, "AGENTS.md", context_length=8_000)
+        assert "read_file" in result
+        assert "AGENTS.md" in result
 
 
 # =========================================================================

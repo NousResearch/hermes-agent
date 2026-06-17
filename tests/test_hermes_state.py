@@ -347,6 +347,15 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_append_message_accepts_explicit_timestamp(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        event_ts = 1777383653.0
+
+        db.append_message("s1", role="user", content="Hello", timestamp=event_ts)
+
+        messages = db.get_messages_as_conversation("s1")
+        assert messages[0]["timestamp"] == event_ts
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
@@ -370,11 +379,10 @@ class TestMessageStorage:
         assert messages[1]["observed"] == 0
 
         conversation = db.get_messages_as_conversation("s1")
-        assert conversation[0] == {
-            "role": "user",
-            "content": "[Alice|111]\nside chatter",
-            "observed": True,
-        }
+        assert conversation[0]["role"] == "user"
+        assert conversation[0]["content"] == "[Alice|111]\nside chatter"
+        assert conversation[0]["observed"] is True
+        assert isinstance(conversation[0].get("timestamp"), float)
         assert "observed" not in conversation[1]
 
     def test_tool_response_does_not_increment_tool_count(self, db):
@@ -458,7 +466,9 @@ class TestMessageStorage:
         # get_messages_as_conversation decodes back to the original list
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 1
-        assert conv[0] == {"role": "user", "content": content}
+        assert conv[0]["role"] == "user"
+        assert conv[0]["content"] == content
+        assert isinstance(conv[0].get("timestamp"), float)
 
     def test_dict_content_round_trip(self, db):
         """Dict-shaped content (e.g. provider wrappers) also round-trips."""
@@ -529,8 +539,12 @@ class TestMessageStorage:
 
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 2
-        assert conv[0] == {"role": "user", "content": "Hello"}
-        assert conv[1] == {"role": "assistant", "content": "Hi!"}
+        assert conv[0]["role"] == "user"
+        assert conv[0]["content"] == "Hello"
+        assert isinstance(conv[0]["timestamp"], float)
+        assert conv[1]["role"] == "assistant"
+        assert conv[1]["content"] == "Hi!"
+        assert isinstance(conv[1]["timestamp"], float)
 
     def test_platform_message_id_round_trips(self, db):
         """Platform-side message ids (yuanbao msg_id, telegram update_id, …)
@@ -620,7 +634,10 @@ class TestMessageStorage:
         )
 
         conv = db.get_messages_as_conversation("s1")
-        assert conv == [{"role": "assistant", "content": "Visible answer"}]
+        assert len(conv) == 1
+        assert conv[0]["role"] == "assistant"
+        assert conv[0]["content"] == "Visible answer"
+        assert isinstance(conv[0].get("timestamp"), float)
 
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by

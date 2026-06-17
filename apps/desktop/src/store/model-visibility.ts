@@ -51,6 +51,11 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
       continue
     }
 
+    if (/-\d{8}$/.test(model) && present.has(model.replace(/-\d{8}$/, ''))) {
+      // A date-pinned snapshot superseded by its rolling alias — drop the dupe.
+      continue
+    }
+
     const fastId = `${model}-fast`
     const hasFast = present.has(fastId)
     families.push({ fastId: hasFast ? fastId : null, id: model })

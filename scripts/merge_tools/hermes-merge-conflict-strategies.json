@@ -109,6 +109,8 @@
       "note": "Take upstream web plugin dispatch; overlay keyless Parallel backend selection.",
       "context": "overlap_only"
     },
+    {
+      "pattern": "tools/environments/local.py",
       "action": "official_with_overlay",
       "note": "Take upstream env-security fixes; overlay Windows-native shell compatibility.",
       "context": "overlap_only"

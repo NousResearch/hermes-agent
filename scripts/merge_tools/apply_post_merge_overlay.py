@@ -7,8 +7,11 @@ import argparse
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STRATEGY = REPO_ROOT / "scripts" / "merge_tools" / "hermes-merge-conflict-strategies.json"
@@ -26,27 +29,19 @@ def run(cmd: list[str], *, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess
 
 
 def overlay_path(path: str, upstream_ref: str, base_sha: str, old_head: str) -> tuple[str, str]:
-    run(["git", "checkout", upstream_ref, "--", path])
-    diff = run(["git", "diff", f"{base_sha}..{old_head}", "--", path])
-    if not diff.stdout.strip():
+    from apply_three_way_overlay import three_way_merge
+
+    code, merged = three_way_merge(path, base_sha, upstream_ref, old_head)
+    if code == 2:
+        return path, f"failed: missing version for {path}"
+    if "<<<<<<<" in merged:
+        target = REPO_ROOT / path
+        target.write_text(merged, encoding="utf-8", newline="\n")
         run(["git", "add", "--", path])
-        return path, "no-delta"
+        return path, "conflict-markers"
 
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        suffix=".diff",
-        delete=False,
-    ) as handle:
-        handle.write(diff.stdout)
-        patch_file = handle.name
-
-    apply_res = run(["git", "apply", "--3way", "--whitespace=nowarn", patch_file])
-    Path(patch_file).unlink(missing_ok=True)
-    if apply_res.returncode != 0:
-        detail = (apply_res.stderr or apply_res.stdout or "apply failed").strip()
-        return path, f"failed: {detail[:300]}"
-
+    target = REPO_ROOT / path
+    target.write_text(merged, encoding="utf-8", newline="\n")
     run(["git", "add", "--", path])
     return path, "applied"
 
@@ -91,7 +86,7 @@ def main() -> int:
     for path in paths:
         result_path, status = overlay_path(path, args.upstream_ref, merge_base, args.old_head)
         print(f"{result_path}: {status}")
-        if status.startswith("failed"):
+        if status.startswith("failed") or status == "conflict-markers":
             failures.append((result_path, status))
 
     if failures:

@@ -130,6 +130,39 @@ class TestSyncExternalMemoryForTurn:
             messages=messages,
         )
 
+    def test_completed_skill_turn_keeps_original_message_for_memory_manager(self):
+        """Provider-specific query shaping belongs inside the provider.
+
+        The MemoryManager fan-out contract stays raw so non-OpenViking
+        providers can decide for themselves whether slash-skill-expanded
+        content is useful.
+        """
+        agent = _bare_agent()
+        skill_message = (
+            '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
+            "you to follow its instructions. The full skill content is loaded below.]\n\n"
+            "# Skill Creator\n\n"
+            "Large skill body that must not be searched or embedded.\n\n"
+            "The user has provided the following instruction alongside the skill invocation: "
+            "make a skill for release triage"
+        )
+
+        agent._sync_external_memory_for_turn(
+            original_user_message=skill_message,
+            final_response="Done.",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            skill_message,
+            "Done.",
+            session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_called_once_with(
+            skill_message,
+            session_id="test_session_001",
+        )
+
     # --- Edge cases (pre-existing behaviour preserved) ------------------
 
     def test_no_final_response_skips(self):

@@ -77,6 +77,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '../store/session'
+import { onSessionsChanged } from '../store/session-sync'
 import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
@@ -465,6 +466,17 @@ export function DesktopController() {
     void refreshSessions()
   }, [refreshSessions])
 
+  // Another window mutated the shared session list (e.g. a chat started in the
+  // pop-out). Re-pull so the sidebar reflects it. Pop-outs have no sidebar, so
+  // only real windows bother.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
+  }, [refreshSessions])
+
   // ALL-profiles view pages one profile at a time: fetch that profile's next
   // page and merge it in place, leaving every other profile's rows untouched.
   const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
@@ -701,7 +713,9 @@ export function DesktopController() {
     }
 
     lastGatewayProfileRef.current = activeGatewayProfile
-    void refreshCurrentModel()
+    // Force: the new profile has its own default, so reseed even if the composer
+    // already shows the previous profile's model.
+    void refreshCurrentModel(true)
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])
 
@@ -849,7 +863,6 @@ export function DesktopController() {
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
-    modelMenuContent,
     openAgents,
     freshDraftReady,
     openCommandCenterSection,
@@ -971,6 +984,7 @@ export function DesktopController() {
     <ChatView
       gateway={gatewayRef.current}
       maxVoiceRecordingSeconds={voiceMaxRecordingSeconds}
+      modelMenuContent={modelMenuContent}
       onAddContextRef={composer.addContextRefAttachment}
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}

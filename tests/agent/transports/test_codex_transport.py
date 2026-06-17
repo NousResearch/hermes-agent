@@ -240,6 +240,89 @@ class TestCodexBuildKwargs:
 
         assert kw["extra_headers"] == {"x-test": "1"}
 
+    def test_post_tool_replay_preserves_reasoning_for_default_responses(self, transport):
+        messages = [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "encrypted_content": "sealed",
+                        "summary": [],
+                    }
+                ],
+                "tool_calls": [
+                    {
+                        "id": "call_marker",
+                        "type": "function",
+                        "function": {"name": "write_marker", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_marker",
+                "content": "marker written",
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
+        messages = [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "encrypted_content": "sealed",
+                        "summary": [],
+                    }
+                ],
+                "tool_calls": [
+                    {
+                        "id": "call_marker",
+                        "type": "function",
+                        "function": {"name": "write_marker", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_marker",
+                "content": "marker written",
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=(
+                "https://placeholder.services.ai.azure.com/"
+                "api/projects/placeholder/openai/v1"
+            ),
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == []
+
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

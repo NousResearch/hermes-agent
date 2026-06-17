@@ -46,6 +46,20 @@ def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]])
     return f"pck_{digest}"
 
 
+def _is_azure_foundry_responses(params: Dict[str, Any]) -> bool:
+    """Return True for Microsoft Foundry's OpenAI-compatible Responses API."""
+    provider = str(params.get("provider") or "").strip().lower()
+    if provider == "azure-foundry":
+        return True
+
+    base_url = str(params.get("base_url") or "").strip().lower()
+    base_url_hostname = str(params.get("base_url_hostname") or "").strip().lower()
+    return (
+        ".services.ai.azure.com" in base_url
+        or base_url_hostname.endswith(".services.ai.azure.com")
+    )
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -143,6 +157,14 @@ class ResponsesApiTransport(ProviderTransport):
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
+        is_azure_foundry_responses = _is_azure_foundry_responses(params)
+        if is_azure_foundry_responses:
+            # Microsoft Foundry accepts the initial Responses function-call
+            # request, but rejects post-tool replay payloads that include
+            # prior encrypted reasoning items with HTTP 400 invalid_payload.
+            # Keep function_call/function_call_output continuity intact and
+            # suppress only encrypted reasoning replay for this endpoint.
+            replay_encrypted_reasoning = False
 
         # Resolve the issuing endpoint for this call. Stashed on the
         # transport so normalize_response can stamp it onto reasoning

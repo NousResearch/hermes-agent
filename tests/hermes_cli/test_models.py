@@ -907,3 +907,44 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestNvidiaCuratedModels:
+    """Regression tests for the NVIDIA NIM curated model list (#47977)."""
+
+    def test_no_stale_model_ids(self):
+        """The NVIDIA curated list must not contain model IDs that don't exist on NIM."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        nvidia_list = _PROVIDER_MODELS["nvidia"]
+        stale_ids = {
+            "deepseek-ai/deepseek-v3.2",  # replaced by v4-flash/v4-pro
+            "minimaxai/minimax-m2.5",     # replaced by m2.7
+            "z-ai/glm5",                  # replaced by glm-5.1
+        }
+        for sid in stale_ids:
+            assert sid not in nvidia_list, f"Stale model ID {sid!r} still in NVIDIA curated list"
+
+    def test_corrected_ids_present(self):
+        """Corrected model IDs must be in the curated list."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        nvidia_list = _PROVIDER_MODELS["nvidia"]
+        required = [
+            "deepseek-ai/deepseek-v4-flash",
+            "minimaxai/minimax-m2.7",
+            "z-ai/glm-5.1",
+        ]
+        for model in required:
+            assert model in nvidia_list, f"Expected model {model!r} not in NVIDIA curated list"
+
+    def test_all_entries_have_valid_prefix(self):
+        """Every NVIDIA curated model must have a recognized provider prefix."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        nvidia_list = _PROVIDER_MODELS["nvidia"]
+        valid_prefixes = (
+            "nvidia/", "deepseek-ai/", "meta/", "qwen/", "mistralai/",
+            "moonshotai/", "minimaxai/", "z-ai/", "openai/", "google/",
+            "microsoft/", "bytedance/", "stepfun-ai/",
+        )
+        for model in nvidia_list:
+            assert any(model.startswith(p) for p in valid_prefixes), \
+                f"Model {model!r} has no recognized provider prefix"

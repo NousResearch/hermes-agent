@@ -292,14 +292,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3-nano-30b-a3b",
         "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "nvidia/nvidia-nemotron-nano-9b-v2",
         # Third-party agentic models hosted on build.nvidia.com
-        # (map to OpenRouter defaults — users get familiar picks on NIM)
+        "deepseek-ai/deepseek-v4-flash",
+        "deepseek-ai/deepseek-v4-pro",
+        "meta/llama-4-maverick-17b-128e-instruct",
         "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
+        "mistralai/mistral-large-3-675b-instruct-2512",
         "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
+        "minimaxai/minimax-m2.7",
+        "z-ai/glm-5.1",
         "openai/gpt-oss-120b",
+        "google/gemma-4-31b-it",
     ],
     "kimi-coding": [
         "kimi-k2.7-code",

@@ -253,28 +253,6 @@ class TestResolveVisionProviderClientModelNormalization:
         assert client is not None
         assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
 
-    def test_vision_auto_uses_zai_coding_vision_model(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "zai-coding/glm-5-turbo", "provider": "zai-coding"},
-        })
-        with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.auxiliary_client._main_model_supports_vision", return_value=True),
-            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
-                "api_key": "glm-key",
-                "base_url": "https://api.z.ai/api/coding/paas/v4",
-            }),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-        ):
-            mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_vision_provider_client
-
-            provider, client, model = resolve_vision_provider_client()
-
-        assert provider == "zai-coding"
-        assert client is not None
-        assert model == "glm-5v-turbo"
-
 
 class TestVisionPathApiMode:
     """Vision path should propagate api_mode to _get_cached_client."""

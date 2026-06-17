@@ -4675,7 +4675,8 @@ class AIAgent:
         MiniMax keeps dots (e.g. MiniMax-M2.7).
         Xiaomi MiMo keeps dots (e.g. mimo-v2.5, mimo-v2.5-pro).
         OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
-        ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1).
+        ZAI/Zhipu direct and coding-plan endpoints keep dots
+        (e.g. glm-4.7, glm-5.1).
         AWS Bedrock uses dotted inference-profile IDs
         (e.g. ``global.anthropic.claude-opus-4-7``,
         ``us.anthropic.claude-sonnet-4-5-20250929-v1:0``) and rejects
@@ -4686,7 +4687,7 @@ class AIAgent:
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
-            "zai", "bedrock",
+            "zai", "zai-coding", "bedrock",
             "xiaomi",
         }:
             return True

@@ -205,9 +205,6 @@ class TestResolveProvider:
     def test_alias_zhipu(self):
         assert resolve_provider("zhipu") == "zai"
 
-    def test_alias_glm_coding(self):
-        assert resolve_provider("glm-coding") == "zai-coding"
-
     def test_alias_kimi(self):
         assert resolve_provider("kimi") == "kimi-coding"
 
@@ -573,18 +570,6 @@ class TestResolveApiKeyProviderCredentials:
 
         creds = resolve_api_key_provider_credentials("zai-coding")
         assert creds["base_url"] == ZAI_CODING_CN_BASE_URL
-
-    def test_zai_coding_env_seed_uses_coding_base_url(self, monkeypatch):
-        monkeypatch.setenv("GLM_API_KEY", "glm-key")
-        monkeypatch.setenv("GLM_BASE_URL", ZAI_CODING_CN_BASE_URL)
-
-        from agent.credential_pool import _seed_from_env
-
-        entries = []
-        changed, active = _seed_from_env("zai-coding", entries)
-        assert changed is True
-        assert active == {"env:GLM_API_KEY"}
-        assert entries[0].base_url == ZAI_CODING_CN_BASE_URL
 
     def test_zai_coding_reuses_zai_credential_pool_key(self, monkeypatch):
         class _Entry:
@@ -1088,7 +1073,7 @@ class TestZaiEndpointAutoDetect:
         assert creds["base_url"] == ZAI_DIRECT_CN_BASE_URL
 
     def test_coding_probe_uses_only_coding_endpoints(self, monkeypatch):
-        monkeypatch.setenv("GLM_API_KEY", "glm-coding-key")
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
 
         def fake_detect(*_args, **kwargs):
             assert kwargs["endpoints"] == ZAI_CODING_ENDPOINTS

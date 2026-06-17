@@ -1766,9 +1766,6 @@ def resolve_provider(
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
-        "zai-coding-plan": "zai-coding", "z-ai-coding": "zai-coding",
-        "glm-coding": "zai-coding", "glm-coding-plan": "zai-coding",
-        "zhipu-coding": "zai-coding", "zhipu-coding-plan": "zai-coding",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",

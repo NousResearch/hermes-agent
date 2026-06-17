@@ -387,6 +387,12 @@ class TestMinimaxPreserveDots:
         from run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
+    def test_zai_coding_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="zai-coding", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
     def test_bigmodel_cn_url_preserves_dots(self):
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="custom", base_url="https://open.bigmodel.cn/api/paas/v4")

@@ -30,6 +30,22 @@ def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
     assert os.getenv("OPENROUTER_API_KEY") == "from-hermes-home"
 
 
+def test_detect_provider_zai_direct_and_coding_urls():
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+
+    compressor.config = SimpleNamespace(base_url="https://api.z.ai/api/paas/v4")
+    assert compressor._detect_provider() == "zai"
+
+    compressor.config = SimpleNamespace(base_url="https://api.z.ai/api/coding/paas/v4")
+    assert compressor._detect_provider() == "zai-coding"
+
+    compressor.config = SimpleNamespace(base_url="https://open.bigmodel.cn/api/paas/v4")
+    assert compressor._detect_provider() == "zai"
+
+    compressor.config = SimpleNamespace(base_url="https://open.bigmodel.cn/api/coding/paas/v4")
+    assert compressor._detect_provider() == "zai-coding"
+
+
 def test_generate_summary_kimi_omits_temperature():
     """Kimi models should have temperature omitted — server manages it."""
     config = CompressionConfig(

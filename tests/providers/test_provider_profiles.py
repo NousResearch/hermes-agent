@@ -115,10 +115,6 @@ class TestZaiCodingProfile:
             "glm-4.5-air",
         )
 
-    def test_coding_plan_alias(self):
-        assert get_provider_profile("glm-coding").name == "zai-coding"
-
-
 class TestOpenRouterProfile:
     def test_extra_body_with_prefs(self):
         p = get_provider_profile("openrouter")

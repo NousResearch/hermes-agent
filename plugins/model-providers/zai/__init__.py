@@ -21,14 +21,6 @@ zai = ProviderProfile(
 
 zai_coding = ProviderProfile(
     name="zai-coding",
-    aliases=(
-        "zai-coding-plan",
-        "z-ai-coding",
-        "glm-coding",
-        "glm-coding-plan",
-        "zhipu-coding",
-        "zhipu-coding-plan",
-    ),
     env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
     display_name="Z.AI / GLM Coding Plan API",
     description="Z.AI / GLM Coding Plan API endpoint",

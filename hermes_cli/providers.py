@@ -252,12 +252,6 @@ ALIASES: Dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
-    "zai-coding-plan": "zai-coding",
-    "z-ai-coding": "zai-coding",
-    "glm-coding": "zai-coding",
-    "glm-coding-plan": "zai-coding",
-    "zhipu-coding": "zai-coding",
-    "zhipu-coding-plan": "zai-coding",
 
     # xai
     "x-ai": "xai",

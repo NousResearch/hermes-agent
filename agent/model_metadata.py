@@ -57,8 +57,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
-    "glm", "z-ai", "z.ai", "zhipu", "zai-coding-plan", "z-ai-coding", "glm-coding",
-    "glm-coding-plan", "zhipu-coding", "zhipu-coding-plan", "github", "github-copilot",
+    "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
     "ollama",
     "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",

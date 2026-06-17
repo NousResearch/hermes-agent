@@ -5739,6 +5739,21 @@ def _worktree_base_ref(board: Optional[str]) -> str:
     return "main"
 
 
+def _board_is_git_backed(board: Optional[str]) -> bool:
+    """True when the board's ``default_workdir`` resolves to a git repo root.
+
+    Git-backed boards run workers in worktrees (branch-based, verifiable
+    handoffs); other boards keep scratch/dir workspaces so research / ops
+    workloads still dispatch (kinds coexist by design — see module header).
+    """
+    if board is None:
+        return False
+    wd = read_board_metadata(board).get("default_workdir")
+    if not wd:
+        return False
+    return _repo_root_for_worktree_target(Path(str(wd)).expanduser()) is not None
+
+
 def _git_toplevel(path: Path) -> Optional[Path]:
     result = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
@@ -7572,12 +7587,18 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # Git-backed boards (default_workdir resolves to a repo) run workers in
+        # worktrees for branch-based, verifiable handoffs; a worktree-kind task
+        # always does. Other boards keep scratch/dir so research/ops still runs.
+        use_worktree = claimed.workspace_kind == "worktree" or _board_is_git_backed(board)
         try:
-            resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            if use_worktree:
+                workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                    claimed, board=board
+                )
             else:
                 workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _base_ref = _base_commit = None
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -7588,9 +7609,13 @@ def _dispatch_once_locked(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        if use_worktree:
+            set_workspace_kind(conn, claimed.id, "worktree")
+            set_branch_name(conn, claimed.id, resolved_branch_name)
+            set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(
+            conn, claimed.id, "worktree" if use_worktree else (claimed.workspace_kind or "scratch")
+        )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -7664,12 +7689,15 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        use_worktree = claimed.workspace_kind == "worktree" or _board_is_git_backed(board)
         try:
-            resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            if use_worktree:
+                workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                    claimed, board=board
+                )
             else:
                 workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _base_ref = _base_commit = None
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -7680,9 +7708,13 @@ def _dispatch_once_locked(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        if use_worktree:
+            set_workspace_kind(conn, claimed.id, "worktree")
+            set_branch_name(conn, claimed.id, resolved_branch_name)
+            set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(
+            conn, claimed.id, "worktree" if use_worktree else (claimed.workspace_kind or "scratch")
+        )
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory
         # kanban lifecycle is already injected into every worker's system

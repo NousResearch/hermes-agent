@@ -2489,6 +2489,28 @@ def test_dispatch_worktree_task_branches_from_local_main_by_default(kanban_home,
     assert branch_tip == local_main
 
 
+def test_dispatch_non_git_board_keeps_scratch_workspace(kanban_home, tmp_path, monkeypatch):
+    # A board WITHOUT a git default_workdir must not force tasks into worktrees:
+    # scratch tasks dispatch into a scratch dir so research / ops workloads keep
+    # running (regression guard for the board-conditional dispatch policy).
+    kb.create_board("scratch-board")  # no default_workdir -> not git-backed
+    import hermes_cli.profiles as profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+
+    def fake_spawn(task, workspace, board=None):
+        return None
+
+    with kb.connect(board="scratch-board") as conn:
+        tid = kb.create_task(conn, title="research", assignee="sentinel", board="scratch-board")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, board="scratch-board")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.workspace_kind == "scratch"
+    assert task.branch_name is None
+    assert ".worktrees" not in (task.workspace_path or "")
+
+
 def test_dispatch_worktree_task_fetches_fresh_origin_main_before_materializing_workspace(
     kanban_home, tmp_path, monkeypatch
 ):

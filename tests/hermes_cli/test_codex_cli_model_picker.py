@@ -89,7 +89,7 @@ def test_codex_picker_uses_live_codex_catalog(hermes_auth_only_env, tmp_path, mo
     # 10s HTTP probe to chatgpt.com/backend-api/codex/models which is both
     # slow and non-deterministic in CI/sandboxed environments.
     monkeypatch.setattr(
-        "hermes_cli.codex_models._fetch_models_from_api",
+        "hermes_cli.codex_models._fetch_catalog_models_from_api",
         lambda access_token: [],
     )
 

@@ -31,7 +31,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 ## `browser` toolset (CDP-gated tools)
 
-These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox.
+These two tools live in the `browser` toolset but only register when a Chrome DevTools Protocol endpoint is reachable at session start — via `/browser connect`, `browser.cdp_url` config, a Browserbase session, or Camofox. For local Chrome, prefer a loopback HTTP discovery endpoint such as `http://127.0.0.1:9222`; Hermes resolves it to the concrete browser WebSocket through `/json/version`.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
@@ -266,5 +266,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

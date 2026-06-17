@@ -391,8 +391,96 @@ class TestPortalEndpoint:
         r = self.client.get("/api/portal")
         assert r.status_code == 200
         body = r.json()
-        assert {"logged_in", "features", "subscription_url", "provider"} <= set(body)
+        assert {
+            "logged_in",
+            "features",
+            "subscription_url",
+            "provider",
+            "readiness_scope",
+            "mcp_keepalive_matrix",
+            "mcp_local_preflight_matrix",
+        } <= set(body)
         assert isinstance(body["features"], list)
+        assert isinstance(body["mcp_keepalive_matrix"], list)
+        assert isinstance(body["mcp_local_preflight_matrix"], list)
+        assert {
+            "selected_paid_routes",
+            "selected_tool_gateway_routes",
+            "official_one_shot_bundle",
+            "portal_setup_bundle",
+            "official_term_source",
+            "model_provider_nous",
+            "browser_via_portal",
+            "official_one_shot_bundle_reasons",
+            "portal_setup_bundle_reasons",
+        } <= set(body["readiness_scope"])
+
+    def test_readiness_scope_separates_selected_routes_from_official_bundle(self):
+        from hermes_cli.web_server import _portal_readiness_scope
+
+        features = [
+            {"label": "Web tools", "state": "via Nous Portal"},
+            {"label": "Image generation", "state": "via Nous Portal"},
+            {"label": "Video generation", "state": "via Nous Portal"},
+            {"label": "OpenAI TTS", "state": "via Nous Portal"},
+            {"label": "Browser automation", "state": "Local browser"},
+        ]
+
+        scope = _portal_readiness_scope(features, "openai-codex")
+
+        assert scope["selected_paid_routes"] == "pass"
+        assert scope["selected_tool_gateway_routes"] == "pass"
+        assert scope["official_one_shot_bundle"] == "partial"
+        assert scope["portal_setup_bundle"] == "partial"
+        assert scope["official_term_source"] == "Hermes Nous Portal + Tool Gateway docs"
+        assert scope["model_provider_nous"] is False
+        assert scope["browser_via_portal"] is False
+        assert "model provider is not Nous in current config" in scope["official_one_shot_bundle_reasons"]
+        assert "browser is not routed via Nous Portal" in scope["official_one_shot_bundle_reasons"]
+        assert scope["portal_setup_bundle_reasons"] == scope["official_one_shot_bundle_reasons"]
+
+    def test_mcp_matrices_keep_listing_and_smoke_separate(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        cfg = {
+            "mcp_servers": {
+                "github": {"enabled": True},
+                "chrome-devtools": {"enabled": True},
+                "google-workspace": {"enabled": True},
+            }
+        }
+
+        monkeypatch.setattr(
+            ws,
+            "_github_cli_preflight",
+            lambda: {
+                "server": "github",
+                "preflight_status": "pass",
+                "evidence_scope": "gh auth status",
+                "detail": "github.com auth present",
+                "claim_not_allowed": "GitHub MCP server tool usability or write authority",
+            },
+        )
+        monkeypatch.setattr(
+            ws,
+            "_chrome_cdp_preflight",
+            lambda: {
+                "server": "chrome-devtools",
+                "preflight_status": "pass",
+                "evidence_scope": "http://127.0.0.1:9233/json/version",
+                "detail": "websocket=True",
+                "claim_not_allowed": "Chrome MCP tool usability or page automation success",
+            },
+        )
+
+        keepalive = ws._mcp_keepalive_matrix(cfg)
+        local = ws._mcp_local_preflight_matrix(keepalive)
+
+        assert len(keepalive) >= 3
+        assert all(row["smoke_status"] == "pending" for row in keepalive)
+        assert all("tool usability" in row["claim_not_allowed"] or "write authority" in row["claim_not_allowed"] for row in keepalive)
+        assert {row["server"] for row in local} == {"github", "chrome-devtools", "google-workspace"}
+        assert all("claim_not_allowed" in row for row in local)
 
 
 class TestSessionManagementEndpoints:

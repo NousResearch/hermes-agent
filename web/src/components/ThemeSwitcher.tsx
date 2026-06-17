@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Palette, Check, Type } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -28,12 +28,28 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   const { themeName, availableThemes, setTheme, fontId, fontChoices, setFont } = useTheme();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState<CSSProperties | undefined>();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
 
   const close = useCallback(() => setOpen(false), []);
+
+  const toggleOpen = useCallback(() => {
+    setOpen((currentOpen) => {
+      const nextOpen = !currentOpen;
+      if (nextOpen && dropUp) {
+        const rect = wrapperRef.current?.getBoundingClientRect();
+        setDropdownStyle(
+          rect
+            ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
+            : undefined,
+        );
+      }
+      return nextOpen;
+    });
+  }, [dropUp]);
 
   useEffect(() => {
     if (!open) return;
@@ -65,7 +81,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       <Button
         ghost
         size={collapsed ? "icon" : undefined}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
         className={cn(
           collapsed
             ? "text-text-secondary hover:text-foreground hover:bg-transparent"
@@ -113,9 +129,39 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
         </BottomSheet>
       )}
 
-      {open && !useMobileSheet && (() => {
-        const rect = wrapperRef.current?.getBoundingClientRect();
-        const dropdown = (
+      {open && !useMobileSheet && (
+        <ThemeSwitcherDropdown
+          availableThemes={availableThemes}
+          close={close}
+          dropUp={dropUp}
+          dropdownRef={dropdownRef}
+          dropdownStyle={dropdownStyle}
+          fontChoices={fontChoices}
+          fontId={fontId}
+          setFont={setFont}
+          setTheme={setTheme}
+          sheetTitle={sheetTitle}
+          themeName={themeName}
+        />
+      )}
+    </div>
+  );
+}
+
+function ThemeSwitcherDropdown({
+  availableThemes,
+  close,
+  dropUp,
+  dropdownRef,
+  dropdownStyle,
+  fontChoices,
+  fontId,
+  setFont,
+  setTheme,
+  sheetTitle,
+  themeName,
+}: ThemeSwitcherDropdownProps) {
+  const dropdown = (
           <div
             ref={dropdownRef}
             aria-label={sheetTitle}
@@ -126,11 +172,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
             )}
             role="listbox"
-            style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
-                : undefined
-            }
+            style={dropUp ? dropdownStyle : undefined}
           >
             <div className="border-b border-current/20 px-3 py-2">
               <Typography
@@ -154,10 +196,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
             />
           </div>
         );
-        return dropUp ? createPortal(dropdown, document.body) : dropdown;
-      })()}
-    </div>
-  );
+  return dropUp ? createPortal(dropdown, document.body) : dropdown;
 }
 
 function ThemeSwitcherOptions({
@@ -354,6 +393,16 @@ interface ThemeSwitcherOptionsProps {
   close: () => void;
   setTheme: (name: string) => void;
   themeName: string;
+}
+
+interface ThemeSwitcherDropdownProps extends ThemeSwitcherOptionsProps {
+  dropUp: boolean;
+  dropdownRef: React.RefObject<HTMLDivElement | null>;
+  dropdownStyle: CSSProperties | undefined;
+  fontChoices: FontChoice[];
+  fontId: string;
+  setFont: (id: string) => void;
+  sheetTitle: string;
 }
 
 interface FontSectionProps {

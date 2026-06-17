@@ -126,6 +126,7 @@ def chrome_debug_data_dir() -> str:
 
 def _chrome_debug_args(port: int) -> list[str]:
     return [
+        "--remote-debugging-address=127.0.0.1",
         f"--remote-debugging-port={port}",
         f"--user-data-dir={chrome_debug_data_dir()}",
         "--no-first-run",
@@ -180,7 +181,8 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     if system == "Darwin":
         data_dir = chrome_debug_data_dir()
         return (
-            f'open -a "Google Chrome" --args --remote-debugging-port={port} '
+            f'open -a "Google Chrome" --args --remote-debugging-address=127.0.0.1 '
+            f'--remote-debugging-port={port} '
             f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
         )
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { creditsCommands } from '../app/slash/commands/credits.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { creditsCommands } from '../app/slash/commands/credits.js'
 import type { CreditsViewResponse } from '../gatewayTypes.js'
 
 // The command opens the top-up URL through this helper on confirm. Mock it so
@@ -54,7 +54,7 @@ const buildCtx = (rpcResult: CreditsViewResponse) => {
   // Run the command, then await the rpc promise so the .then() handler has
   // flushed before assertions — deterministic, no polling/timeouts.
   const run = async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     creditsCommand.run('', ctx as any, 'credits')
     await rpc.mock.results[0]?.value
     // Allow the chained .then() microtask to settle.
@@ -133,6 +133,7 @@ describe('/credits slash command', () => {
       logged_in: false,
       topup_url: null
     })
+
     const { run, sys } = buildCtx(view)
 
     await run()

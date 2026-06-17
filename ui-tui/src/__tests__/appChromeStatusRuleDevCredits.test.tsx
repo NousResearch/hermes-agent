@@ -1,7 +1,9 @@
 import React from 'react'
+import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { StatusRule } from '../components/appChrome.js'
+import type * as EnvModule from '../config/env.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 // DEV_CREDITS_MODE is a module-load-time constant (config/env.ts reads
@@ -11,11 +13,12 @@ import { DEFAULT_THEME } from '../theme.js'
 // appChrome picks up the mocked flag. Lives in its own file so the override
 // stays scoped (the other StatusRule tests run with the real, dev-off value).
 vi.mock('../config/env.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../config/env.js')>()
+  const actual = await importOriginal<typeof EnvModule>()
+
   return { ...actual, DEV_CREDITS_MODE: true }
 })
 
-type ReactNodeLike = React.ReactNode
+type ReactNodeLike = ReactNode
 
 const textContent = (node: ReactNodeLike): string => {
   if (node === null || node === undefined || typeof node === 'boolean') {

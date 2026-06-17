@@ -639,9 +639,9 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
 
 def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     """The worker spawns fine but keeps crashing mid-run. Check the last
-    N runs' outcomes; N consecutive ``crashed`` without a successful
-    ``completed`` means something about the task + profile combo is
-    broken (OOM, missing dependency, tool it needs is down).
+    N runs' outcomes; N consecutive trailing ``crashed`` outcomes means
+    something about the task + profile combo is broken (OOM, missing
+    dependency, tool it needs is down).
 
     Threshold: cfg["crash_threshold"] (default 2).
 
@@ -672,14 +672,12 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
             consecutive += 1
             if last_err is None:
                 last_err = _task_field(r, "error")
-        elif outcome in {"completed", "reclaimed"}:
-            # A success (or manual reclaim) breaks the streak.
-            break
         else:
-            # Other outcomes (timed_out, blocked, spawn_failed, gave_up)
-            # aren't crash signals — don't count them, but they also
-            # don't break the crash streak.
-            continue
+            # The diagnostic is specifically about the current trailing
+            # crash loop. A later blocked/timed_out/spawn_failed/gave_up
+            # outcome may still be important, but it is no longer proof
+            # that the task is actively crash-looping.
+            break
     if consecutive < threshold:
         return []
     task_id = _task_field(task, "id")

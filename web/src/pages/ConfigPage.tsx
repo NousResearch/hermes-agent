@@ -196,25 +196,31 @@ export default function ConfigPage() {
   // Set active category when categories load
   useEffect(() => {
     if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
+      const id = window.setTimeout(() => setActiveCategory(categoryOrder[0]), 0);
+      return () => window.clearTimeout(id);
     }
+    return undefined;
   }, [categoryOrder, activeCategory]);
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
     if (yamlMode) {
+      const id = window.setTimeout(() => {
       setYamlLoading(true);
       api
         .getConfigRaw()
         .then((resp) => setYamlText(resp.yaml))
         .catch(() => showToast(t.config.failedToLoadRaw, "error"))
         .finally(() => setYamlLoading(false));
+      }, 0);
+      return () => window.clearTimeout(id);
     }
-  }, [yamlMode]);
+    return undefined;
+  }, [yamlMode, showToast, t.config.failedToLoadRaw]);
 
   /* ---- Categories ---- */
-  const categories = useMemo(() => {
-    if (!schema) return [];
+  const categories = (() => {
+    if (!schema) return [] as string[];
     const allCats = [
       ...new Set(
         Object.values(schema).map((s) => String(s.category ?? "general")),
@@ -223,7 +229,7 @@ export default function ConfigPage() {
     const ordered = categoryOrder.filter((c) => allCats.includes(c));
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
+  })();
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {

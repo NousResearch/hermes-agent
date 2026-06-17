@@ -20,6 +20,8 @@ import logging
 import re
 import threading
 import time
+import importlib
+import sys
 from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
@@ -27,6 +29,15 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str):
+    """Expose Honcho support modules as lazy submodule attributes."""
+    if name in {"client", "cli", "session"}:
+        module = importlib.import_module(f"{__name__}.{name}")
+        setattr(sys.modules[__name__], name, module)
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------

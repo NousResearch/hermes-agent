@@ -9,11 +9,13 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 from hermes_cli.config import (
     cfg_get,
@@ -37,6 +39,21 @@ _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
     "codex": {
         "command": "codex",
         "args": ["mcp-server"],
+    },
+    "local-cdp": {
+        "command": "npx",
+        "args": [
+            "-y",
+            "chrome-devtools-mcp@latest",
+            "--browserUrl=http://127.0.0.1:9222",
+            "--no-usage-statistics",
+            "--no-performance-crux",
+            "--redactNetworkHeaders",
+        ],
+        "env": {
+            "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",
+            "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
+        },
     },
 }
 
@@ -186,6 +203,9 @@ def _apply_mcp_preset(
         server_config["command"] = command
     if cmd_args:
         server_config["args"] = cmd_args
+    preset_env = preset.get("env")
+    if isinstance(preset_env, dict) and preset_env:
+        server_config["env"] = dict(preset_env)
 
     return url, command, cmd_args, True
 
@@ -254,12 +274,88 @@ def _probe_single_server(
 
     try:
         _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
-    except BaseException as exc:
+    except Exception as exc:
         raise _unwrap_exception_group(exc) from None
     finally:
         _stop_mcp_loop_if_idle()
 
     return tools_found
+
+
+def _call_single_server_tool(
+    name: str,
+    config: dict,
+    tool_name: str,
+    arguments: dict[str, Any],
+    connect_timeout: float = 30,
+) -> Any:
+    """Connect to one MCP server, call a single tool, then disconnect."""
+    issues = validate_mcp_server_entry(name, config)
+    if issues:
+        raise ValueError("; ".join(issues))
+
+    from tools.mcp_tool import (
+        _connect_server,
+        _ensure_mcp_loop,
+        _run_on_mcp_loop,
+        _stop_mcp_loop_if_idle,
+    )
+
+    config = _resolve_mcp_server_config(config)
+    _ensure_mcp_loop()
+
+    async def _call():
+        server = await asyncio.wait_for(
+            _connect_server(name, config), timeout=connect_timeout
+        )
+        try:
+            return await server.session.call_tool(tool_name, arguments=arguments)
+        finally:
+            await server.shutdown()
+
+    try:
+        return _run_on_mcp_loop(_call(), timeout=connect_timeout + 10)
+    except Exception as exc:
+        raise _unwrap_exception_group(exc) from None
+    finally:
+        _stop_mcp_loop_if_idle()
+
+
+def _redact_url_queries(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        try:
+            parts = urlsplit(raw)
+        except ValueError:
+            return raw
+        if not parts.query:
+            return raw
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "<redacted-query>", parts.fragment))
+
+    return re.sub(r"https?://[^\s)>\]\"']+", repl, text)
+
+
+def _summarize_mcp_result(result: Any) -> str:
+    content = getattr(result, "content", None)
+    if not content:
+        return _redact_url_queries(str(result))
+
+    parts: list[str] = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+        else:
+            parts.append(str(block))
+    return _redact_url_queries("\n".join(parts))
+
+
+def _is_chrome_devtools_server(name: str, cfg: dict) -> bool:
+    if "chrome" in name.lower() and "devtools" in name.lower():
+        return True
+    command = str(cfg.get("command", "")).lower()
+    args = " ".join(str(arg).lower() for arg in cfg.get("args", []) if arg is not None)
+    return "chrome-devtools-mcp" in command or "chrome-devtools-mcp" in args
 
 
 def _oauth_tokens_present(name: str) -> bool:
@@ -326,7 +422,10 @@ def cmd_mcp_add(args):
         _error(str(exc))
         return
 
-    if url and explicit_env:
+    preset_env = dict(server_config.get("env") or {})
+    merged_env = {**preset_env, **explicit_env}
+
+    if url and merged_env:
         _error("--env is only supported for stdio MCP servers (--command or stdio presets)")
         return
 
@@ -353,8 +452,8 @@ def cmd_mcp_add(args):
         server_config["command"] = command
         if cmd_args:
             server_config["args"] = cmd_args
-        if explicit_env:
-            server_config["env"] = explicit_env
+        if merged_env:
+            server_config["env"] = merged_env
 
     issues = validate_mcp_server_entry(name, server_config)
     if issues:
@@ -663,6 +762,56 @@ def cmd_mcp_test(args):
     print()
 
 
+# ─── hermes mcp smoke ────────────────────────────────────────────────────────
+
+def cmd_mcp_smoke(args):
+    """Run one deterministic MCP tool call for connection smoke testing."""
+    name = args.name
+    servers = _get_mcp_servers()
+
+    if name not in servers:
+        _error(f"Server '{name}' not found in config.")
+        if servers:
+            _info(f"Available: {', '.join(servers)}")
+        return
+
+    cfg = servers[name]
+    tool_name = getattr(args, "tool", None)
+    if not tool_name and _is_chrome_devtools_server(name, cfg):
+        tool_name = "list_pages"
+    if not tool_name:
+        _error(f"No default smoke tool for '{name}'. Pass --tool <tool_name>.")
+        return
+
+    raw_arguments = getattr(args, "arguments", None) or "{}"
+    try:
+        arguments = json.loads(raw_arguments)
+    except json.JSONDecodeError as exc:
+        _error(f"Invalid --arguments JSON: {exc}")
+        return
+    if not isinstance(arguments, dict):
+        _error("Invalid --arguments JSON: expected an object")
+        return
+
+    print()
+    print(color(f"  Smoking '{name}' via tool '{tool_name}'...", Colors.CYAN))
+    start = time.monotonic()
+    try:
+        result = _call_single_server_tool(name, cfg, tool_name, arguments)
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000
+        _error(f"Smoke failed ({elapsed_ms:.0f}ms): {exc}")
+        return
+
+    elapsed_ms = (time.monotonic() - start) * 1000
+    _success(f"Smoke passed ({elapsed_ms:.0f}ms)")
+    summary = _summarize_mcp_result(result)
+    if summary:
+        for line in summary.splitlines():
+            _info(line)
+    print()
+
+
 # ─── hermes mcp login ────────────────────────────────────────────────────────
 
 def cmd_mcp_login(args):
@@ -885,6 +1034,7 @@ def mcp_command(args):
         "list": cmd_mcp_list,
         "ls": cmd_mcp_list,
         "test": cmd_mcp_test,
+        "smoke": cmd_mcp_smoke,
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
@@ -909,6 +1059,7 @@ def mcp_command(args):
         _info("hermes mcp remove <name>                      Remove a server")
         _info("hermes mcp list                               List configured servers")
         _info("hermes mcp test <name>                        Test connection")
+        _info("hermes mcp smoke <name> [--tool <tool>]       Run one MCP smoke tool")
         _info("hermes mcp configure <name>                   Toggle tools")
         _info("hermes mcp login <name>                       Re-authenticate OAuth")
         print()

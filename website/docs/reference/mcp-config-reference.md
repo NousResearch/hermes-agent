@@ -12,6 +12,19 @@ For conceptual guidance, see:
 - [MCP (Model Context Protocol)](/user-guide/features/mcp)
 - [Use MCP with Hermes](/guides/use-mcp-with-hermes)
 
+## Built-in presets
+
+Use `hermes mcp add <name> --preset <preset>` when Hermes already knows the
+safe transport shape.
+
+| Preset | Use case | Expansion |
+|---|---|---|
+| `codex` | Local Codex MCP server | `command: codex`, `args: [mcp-server]` |
+| `local-cdp` | Local Chrome DevTools MCP attached to `127.0.0.1:9222` | `npx -y chrome-devtools-mcp@latest --browserUrl=http://127.0.0.1:9222 --no-usage-statistics --no-performance-crux --redactNetworkHeaders` |
+
+`local-cdp` also sets `CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1` and
+`CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1` for the spawned MCP process.
+
 ## Root config shape
 
 ```yaml
@@ -174,6 +187,59 @@ mcp_servers:
       resources: false
       prompts: false
 ```
+
+### Chrome DevTools MCP for an existing local Chrome
+
+```yaml
+mcp_servers:
+  chrome-devtools:
+    command: "npx"
+    args:
+      - "-y"
+      - "chrome-devtools-mcp@latest"
+      - "--browserUrl=http://127.0.0.1:9222"
+      - "--no-usage-statistics"
+      - "--no-performance-crux"
+      - "--redactNetworkHeaders"
+    tools:
+      include:
+        - click
+        - close_page
+        - drag
+        - emulate
+        - fill
+        - fill_form
+        - get_console_message
+        - get_network_request
+        - list_pages
+        - select_page
+        - new_page
+        - navigate_page
+        - wait_for
+        - handle_dialog
+        - hover
+        - press_key
+        - resize_page
+        - take_memory_snapshot
+        - take_snapshot
+        - take_screenshot
+        - evaluate_script
+        - list_console_messages
+        - list_network_requests
+        - performance_start_trace
+        - performance_stop_trace
+        - performance_analyze_insight
+        - lighthouse_audit
+        - type_text
+        - upload_file
+      resources: false
+      prompts: false
+```
+
+Use `--browserUrl` for a Chrome process you started yourself with a dedicated
+`--user-data-dir` and `--remote-debugging-address=127.0.0.1`. Use
+`--wsEndpoint` only when you already have the exact browser WebSocket endpoint
+from `/json/version`.
 
 ### Stripe blacklist
 

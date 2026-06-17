@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from pathlib import Path
 from typing import Any, Dict
@@ -574,7 +575,7 @@ def test_xai_adapter_retry_returns_none_for_unrelated_status(tmp_path, monkeypat
 aiohttp = pytest.importorskip("aiohttp")
 from aiohttp import web  # noqa: E402
 
-from hermes_cli.proxy.server import create_app  # noqa: E402
+from hermes_cli.proxy.server import create_app, _write_eof_if_connected  # noqa: E402
 
 
 class FakeAdapter(UpstreamAdapter):
@@ -819,6 +820,20 @@ def test_server_streams_sse():
             await upstream_runner.cleanup()
 
     asyncio.run(run())
+
+
+def test_proxy_ignores_client_disconnect_during_final_eof(caplog):
+    caplog.set_level(logging.DEBUG)
+
+    class ClosedClientResponse:
+        async def write_eof(self):
+            raise aiohttp.ClientConnectionResetError("Cannot write to closing transport")
+
+    async def run():
+        await _write_eof_if_connected(ClosedClientResponse())
+
+    asyncio.run(run())
+    assert "client disconnected before stream EOF" in caplog.text
 
 
 def test_server_strips_client_auth_header():

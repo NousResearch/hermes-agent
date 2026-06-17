@@ -1,12 +1,17 @@
-import { useState, useRef, useEffect } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  type CSSProperties,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
-import { useI18n } from "@/i18n/context";
-import { LOCALE_META } from "@/i18n";
+import { LOCALE_META, useI18n } from "@/i18n";
 import type { Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +39,27 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
+  const [dropdownStyle, setDropdownStyle] = useState<{
+    bottom: number;
+    left: number;
+  }>();
+
+  const toggleOpen = () => {
+    setOpen((current) => {
+      const next = !current;
+      if (next && dropUp && !useMobileSheet) {
+        const rect = containerRef.current?.getBoundingClientRect();
+        setDropdownStyle(
+          rect
+            ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
+            : undefined,
+        );
+      } else {
+        setDropdownStyle(undefined);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -66,7 +92,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
     <div ref={containerRef} className="relative inline-flex">
       <Button
         ghost
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggleOpen}
         title={t.language.switchTo}
         aria-label={t.language.switchTo}
         aria-haspopup="listbox"
@@ -104,33 +130,64 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
         </BottomSheet>
       )}
 
-      {open && !useMobileSheet && (() => {
-        const rect = containerRef.current?.getBoundingClientRect();
-        const dropdown = (
-          <div
-            ref={dropdownRef}
-            aria-label={sheetTitle}
-            className={cn(
-              "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
-              dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
-            )}
-            role="listbox"
-            style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
-                : undefined
-            }
-          >
-            <LanguageSwitcherOptions
-              allLocales={allLocales}
-              locale={locale}
-              setLocale={setLocale}
-              setOpen={setOpen}
-            />
-          </div>
-        );
-        return dropUp ? createPortal(dropdown, document.body) : dropdown;
-      })()}
+      {open && !useMobileSheet && (
+        dropUp
+          ? createPortal(
+              <LanguageSwitcherDropdown
+                allLocales={allLocales}
+                dropdownRef={dropdownRef}
+                locale={locale}
+                setLocale={setLocale}
+                setOpen={setOpen}
+                sheetTitle={sheetTitle}
+                style={dropdownStyle}
+                variant="portal"
+              />,
+              document.body,
+            )
+          : (
+              <LanguageSwitcherDropdown
+                allLocales={allLocales}
+                dropdownRef={dropdownRef}
+                locale={locale}
+                setLocale={setLocale}
+                setOpen={setOpen}
+                sheetTitle={sheetTitle}
+                variant="inline"
+              />
+            )
+      )}
+    </div>
+  );
+}
+
+function LanguageSwitcherDropdown({
+  allLocales,
+  dropdownRef,
+  locale,
+  setLocale,
+  setOpen,
+  sheetTitle,
+  style,
+  variant,
+}: LanguageSwitcherDropdownProps) {
+  return (
+    <div
+      ref={dropdownRef}
+      aria-label={sheetTitle}
+      className={cn(
+        "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
+        variant === "portal" ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
+      )}
+      role="listbox"
+      style={style}
+    >
+      <LanguageSwitcherOptions
+        allLocales={allLocales}
+        locale={locale}
+        setLocale={setLocale}
+        setOpen={setOpen}
+      />
     </div>
   );
 }
@@ -178,6 +235,13 @@ interface LanguageSwitcherOptionsProps {
   locale: Locale;
   setLocale: (code: Locale) => void;
   setOpen: (open: boolean) => void;
+}
+
+interface LanguageSwitcherDropdownProps extends LanguageSwitcherOptionsProps {
+  dropdownRef: RefObject<HTMLDivElement | null>;
+  sheetTitle: string;
+  style?: CSSProperties;
+  variant: "inline" | "portal";
 }
 
 interface LanguageSwitcherProps {

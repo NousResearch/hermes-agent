@@ -170,7 +170,7 @@ export default function SkillsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProfile]);
+  }, [selectedProfile, showToast, t.common.loading]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -1260,16 +1260,19 @@ function SkillDetailDialog({
 
   useEffect(() => {
     let cancelled = false;
-    setPreviewLoading(true);
-    api
-      .previewSkillFromHub(result.identifier)
-      .then((p) => !cancelled && setPreview(p))
-      .catch((e) => {
-        if (!cancelled) showToast(`Preview failed: ${e}`, "error");
-      })
-      .finally(() => !cancelled && setPreviewLoading(false));
+    const id = window.setTimeout(() => {
+      setPreviewLoading(true);
+      api
+        .previewSkillFromHub(result.identifier)
+        .then((p) => !cancelled && setPreview(p))
+        .catch((e) => {
+          if (!cancelled) showToast(`Preview failed: ${e}`, "error");
+        })
+        .finally(() => !cancelled && setPreviewLoading(false));
+    }, 0);
     return () => {
       cancelled = true;
+      window.clearTimeout(id);
     };
   }, [result.identifier, showToast]);
 

@@ -72,6 +72,30 @@ function formatDuration(seconds: number): string {
   return `${m}m`;
 }
 
+function portalScopeTone(scope?: "pass" | "partial" | "blocked") {
+  if (scope === "pass") return "success";
+  if (scope === "partial") return "warning";
+  return "secondary";
+}
+
+function portalScopeLabel(scope?: "pass" | "partial" | "blocked") {
+  if (scope === "pass") return "PASS";
+  if (scope === "partial") return "PARTIAL";
+  return "BLOCKED";
+}
+
+function mcpTone(status?: string) {
+  if (status === "pass") return "success";
+  if (status === "partial" || status === "pending-smoke") return "warning";
+  if (status === "blocked" || status === "blocked-safe") return "destructive";
+  return "secondary";
+}
+
+function mcpLabel(status?: string) {
+  if (!status) return "UNKNOWN";
+  return status.replace(/-/g, " ").toUpperCase();
+}
+
 /**
  * Live action-log viewer for the spawn-based admin actions (doctor, audit,
  * backup, import, skills update, checkpoints prune, gateway start/stop).
@@ -842,6 +866,99 @@ export default function SystemPage() {
                     <span className="text-muted-foreground">{f.state}</span>
                   </div>
                 ))}
+              </div>
+            )}
+            {portal?.readiness_scope && (
+              <div className="flex flex-col gap-2 border-t border-border pt-3">
+                <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Readiness scope
+                </span>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2 text-sm">
+                    <span>Selected Tool Gateway routes</span>
+                    <Badge
+                      tone={portalScopeTone(
+                        portal.readiness_scope.selected_tool_gateway_routes ??
+                          portal.readiness_scope.selected_paid_routes,
+                      )}
+                    >
+                      {portalScopeLabel(
+                        portal.readiness_scope.selected_tool_gateway_routes ??
+                          portal.readiness_scope.selected_paid_routes,
+                      )}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2 text-sm">
+                    <span>Portal setup bundle</span>
+                    <Badge
+                      tone={portalScopeTone(
+                        portal.readiness_scope.portal_setup_bundle ??
+                          portal.readiness_scope.official_one_shot_bundle,
+                      )}
+                    >
+                      {portalScopeLabel(
+                        portal.readiness_scope.portal_setup_bundle ??
+                          portal.readiness_scope.official_one_shot_bundle,
+                      )}
+                    </Badge>
+                  </div>
+                </div>
+                {portal.readiness_scope.official_one_shot_bundle_reasons.length > 0 && (
+                  <div className="rounded border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted-foreground">
+                    {portal.readiness_scope.official_one_shot_bundle_reasons.join(" · ")}
+                  </div>
+                )}
+              </div>
+            )}
+            {portal?.mcp_local_preflight_matrix && portal.mcp_local_preflight_matrix.length > 0 && (
+              <div className="flex flex-col gap-2 border-t border-border pt-3">
+                <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                  MCP local preflight
+                </span>
+                <div className="grid gap-2 md:grid-cols-3">
+                  {portal.mcp_local_preflight_matrix.map((row) => (
+                    <div
+                      key={row.server}
+                      className="flex min-h-20 flex-col justify-between gap-2 rounded border border-border px-3 py-2 text-sm"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{row.server}</span>
+                        <Badge tone={mcpTone(row.preflight_status)}>
+                          {mcpLabel(row.preflight_status)}
+                        </Badge>
+                      </div>
+                      <span className="text-xs text-muted-foreground">{row.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {portal?.mcp_keepalive_matrix && portal.mcp_keepalive_matrix.length > 0 && (
+              <div className="flex flex-col gap-2 border-t border-border pt-3">
+                <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                  MCP keepalive
+                </span>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {portal.mcp_keepalive_matrix.map((row) => (
+                    <div
+                      key={row.server}
+                      className="flex items-center justify-between gap-3 rounded border border-border px-3 py-2 text-sm"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">{row.server}</div>
+                        <div className="text-xs text-muted-foreground">
+                          config {row.configuration_status} · warnings{" "}
+                          {row.recent_keepalive_warning_count} · tools{" "}
+                          {row.recent_registered_tools ?? "n/a"} · smoke{" "}
+                          {row.smoke_status}
+                        </div>
+                      </div>
+                      <Badge tone={mcpTone(row.keepalive_status)}>
+                        {mcpLabel(row.keepalive_status)}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             {!portal?.logged_in && (

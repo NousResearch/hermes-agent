@@ -7,7 +7,7 @@ from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir(parents=True, exist_ok=True)
-    (codex_home / "config.toml").write_text('model = "gpt-5.2-codex"\n')
+    (codex_home / "config.toml").write_text('model = "gpt-5.5"\n')
     (codex_home / "models_cache.json").write_text(
         json.dumps(
             {
@@ -25,15 +25,11 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
 
     models = get_codex_model_ids()
 
-    assert models[0] == "gpt-5.2-codex"
-    assert "gpt-5.1-codex" in models
-    assert "gpt-5.3-codex" in models
-    # Codex CLI marks Spark unsupported in the public API, but the Codex
-    # backend still accepts it via the OAuth-backed CLI/Hermes route.
-    assert "gpt-5.3-codex-spark" in models
-    # Non-codex-suffixed models are included when the cache says they're available
-    assert "gpt-5.4" in models
-    assert "gpt-5.4-mini" in models
+    assert models == ["gpt-5.5"]
+    assert "gpt-5.1-codex" not in models
+    assert "gpt-5.3-codex" not in models
+    assert "gpt-5.3-codex-spark" not in models
+    assert "gpt-5.4" not in models
     assert "gpt-5-hidden-codex" not in models
 
 
@@ -53,8 +49,7 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
     models = get_codex_model_ids()
 
     assert models[: len(DEFAULT_CODEX_MODELS)] == DEFAULT_CODEX_MODELS
-    assert "gpt-5.4" in models
-    assert "gpt-5.3-codex-spark" in models
+    assert models == ["gpt-5.5"]
 
 
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
@@ -65,25 +60,13 @@ def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypat
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
-    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
-    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
-    # (each is templated off gpt-5.3-codex).
-    assert models == [
-        "gpt-5.3-codex",
-        "gpt-5.5",
-        "gpt-5.4-mini",
-        "gpt-5.4",
-        "gpt-5.3-codex-spark",
-    ]
+    # When live discovery only returns an older template, forward-compat
+    # synthesis should surface only the current active Codex slug.
+    assert models == ["gpt-5.5"]
 
 
-def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
-    """Regression: gpt-5.3-codex-spark is returned by the live Codex backend
-    with ``supported_in_api: false`` because it isn't in the public OpenAI
-    API. The Codex CLI / OAuth route still serves it for ChatGPT Pro
-    accounts, so we must not drop it on that flag. visibility=hidden is
-    the separate signal that *should* still filter entries out.
-    """
+def test_fetch_from_api_returns_only_latest_verified_active_model(monkeypatch):
+    """Discovery filters stale cache/API entries to the latest verified route."""
     import sys
     from hermes_cli import codex_models
 
@@ -108,8 +91,8 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
 
     models = codex_models._fetch_models_from_api(access_token="tok")
 
-    assert "gpt-5.5" in models
-    assert "gpt-5.3-codex-spark" in models
+    assert models == ["gpt-5.5"]
+    assert "gpt-5.3-codex-spark" not in models
     assert "gpt-5-internal" not in models
 
 
@@ -357,15 +340,15 @@ class TestNormalizeModelForProvider:
         assert cli._model_is_default is True
         with patch(
             "hermes_cli.codex_models.get_codex_model_ids",
-            return_value=["gpt-5.3-codex", "gpt-5.4"],
+            return_value=["gpt-5.5"],
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        # Uses first from available list
-        assert cli.model == "gpt-5.3-codex"
+        # Uses first verified active Codex recommendation.
+        assert cli.model == "gpt-5.5"
 
     def test_default_fallback_when_api_fails(self):
-        """No model configured falls back to gpt-5.3-codex when API unreachable."""
+        """No model configured falls back to gpt-5.5 when API unreachable."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
@@ -391,4 +374,4 @@ class TestNormalizeModelForProvider:
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.5"

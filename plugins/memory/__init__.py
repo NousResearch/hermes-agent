@@ -39,6 +39,16 @@ _MEMORY_PLUGINS_DIR = Path(__file__).parent
 _USER_NAMESPACE = "_hermes_user_memory"
 
 
+def __getattr__(name: str):
+    """Expose bundled provider packages as lazy submodule attributes."""
+    provider_dir = _MEMORY_PLUGINS_DIR / name
+    if provider_dir.is_dir() and (provider_dir / "__init__.py").exists():
+        module = importlib.import_module(f"{__name__}.{name}")
+        setattr(sys.modules[__name__], name, module)
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
     """Register an empty package shell in sys.modules.
 

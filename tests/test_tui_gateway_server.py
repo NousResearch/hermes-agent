@@ -6074,6 +6074,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     assert any(
         "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]
     )
+    assert any(
+        "--remote-debugging-address=127.0.0.1" in line
+        for line in resp["result"]["messages"]
+    )
     assert "BROWSER_CDP_URL" not in os.environ
     progress = [p["message"] for evt, p in emitted if evt == "browser.progress"]
     assert progress == resp["result"]["messages"]

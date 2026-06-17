@@ -1760,6 +1760,8 @@ def _provider_keys(provider: str) -> set[str]:
 
 
 def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
+    if "openai-codex" in providers and "codex" in name_lower:
+        return True
     return any(
         name_lower == model.lower()
         for provider in providers
@@ -2188,7 +2190,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
     if normalized == "openai-codex":
-        from hermes_cli.codex_models import get_codex_model_ids
+        from hermes_cli.codex_models import get_codex_catalog_model_ids
 
         # Pass the live OAuth access token so the picker matches whatever
         # ChatGPT lists for this account right now (new models appear without
@@ -2202,7 +2204,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             access_token = creds.get("api_key")
         except Exception:
             access_token = None
-        return get_codex_model_ids(access_token=access_token)
+        return get_codex_catalog_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:

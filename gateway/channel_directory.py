@@ -8,6 +8,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -218,13 +219,17 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     for team_id, client in team_clients.items():
         try:
             cursor: Optional[str] = None
+            workspace_team_id = _slack_workspace_team_id_for_directory(str(team_id))
             for _page in range(20):  # safety cap on pagination
-                response = await client.users_conversations(
-                    types="public_channel,private_channel",
-                    exclude_archived=True,
-                    limit=200,
-                    cursor=cursor,
-                )
+                request_kwargs = {
+                    "types": "public_channel,private_channel",
+                    "exclude_archived": True,
+                    "limit": 200,
+                    "cursor": cursor,
+                }
+                if workspace_team_id:
+                    request_kwargs["team_id"] = workspace_team_id
+                response = await client.users_conversations(**request_kwargs)
                 if not response.get("ok"):
                     logger.warning(
                         "Channel directory: users.conversations not ok for team %s: %s",
@@ -260,6 +265,28 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             seen_ids.add(entry.get("id"))
 
     return channels
+
+
+def _slack_workspace_team_id_for_directory(auth_team_id: str) -> Optional[str]:
+    """Return workspace team_id for Enterprise Slack directory calls.
+
+    Slack org-level installs can authenticate with an Enterprise ID (E...)
+    while users.conversations still requires a workspace team_id (T...).
+    """
+    if auth_team_id.startswith("T"):
+        return auth_team_id
+    for env_key in (
+        "SLACK_WORKSPACE_TEAM_ID",
+        "SLACK_WORKSPACE_GRANT_TEAM_ID",
+        "SLACK_WORKSPACE_TEAM_IDS",
+        "SLACK_RUNTIME_INSTALL_TEAM_ID",
+    ):
+        raw_value = os.environ.get(env_key, "")
+        for candidate in raw_value.split(","):
+            candidate = candidate.strip()
+            if candidate.startswith("T"):
+                return candidate
+    return None
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:

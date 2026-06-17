@@ -85,6 +85,21 @@ export default defineConfig({
   build: {
     outDir: "../hermes_cli/web_dist",
     emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/react-router/")) {
+            return "router";
+          }
+          if (id.includes("/node_modules/@xterm/addon-webgl/")) {
+            return "xterm-webgl";
+          }
+          if (id.includes("/node_modules/@xterm/")) {
+            return "xterm";
+          }
+        },
+      },
+    },
   },
   server: {
     proxy: {

@@ -4425,9 +4425,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             current_model = slug
             changed = True
 
-        # 2. Replace untouched default with a Codex model
+        # 2. Replace untouched default with the latest verified Codex model.
         if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
+            fallback_model = "gpt-5.5"
             try:
                 from hermes_cli.codex_models import get_codex_model_ids
 

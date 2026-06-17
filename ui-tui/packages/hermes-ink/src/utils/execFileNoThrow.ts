@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type StdioOptions } from 'child_process'
+import { type ChildProcess, spawn, type StdioOptions } from 'child_process'
 type ExecFileOptions = {
   input?: string
   timeout?: number

@@ -9,6 +9,7 @@ import sys
 import subprocess
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -100,6 +101,40 @@ def _termux_install_all_fallback_notes() -> list[str]:
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+
+def _cdp_discovery_url(endpoint: str) -> str:
+    """Normalize a Chrome DevTools endpoint to the HTTP discovery URL.
+
+    ``chrome-devtools-mcp`` accepts either a browser root URL or the lower-level
+    browser WebSocket endpoint. Doctor probes only the root-style endpoints; a
+    concrete ``/devtools/browser/<id>`` WebSocket is already specific enough and
+    should not be rewritten to a misleading discovery URL.
+    """
+    raw = (endpoint or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    if parsed.scheme in {"ws", "wss"} and parsed.path.startswith("/devtools/browser/"):
+        return ""
+    scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
+    if scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunparse((scheme, parsed.netloc, "/json/version", "", "", ""))
+
+
+def _has_arg_prefix(server: dict, prefixes: tuple[str, ...]) -> bool:
+    args = server.get("args") if isinstance(server, dict) else None
+    if not isinstance(args, list):
+        return False
+    return any(any(str(arg).startswith(prefix) for prefix in prefixes) for arg in args)
+
+
+def _mcp_server_uses_chrome_devtools(server: dict) -> bool:
+    command = str(server.get("command") or "") if isinstance(server, dict) else ""
+    args = server.get("args") if isinstance(server, dict) else []
+    parts = [command, *(str(arg) for arg in args)] if isinstance(args, list) else [command]
+    return any("chrome-devtools-mcp" in part for part in parts)
 
 
 def _honcho_is_configured_for_doctor() -> bool:

@@ -75,6 +75,21 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")
 
+    mcp_smoke_p = mcp_sub.add_parser(
+        "smoke",
+        help="Run one MCP smoke tool call",
+    )
+    mcp_smoke_p.add_argument("name", help="Server name to smoke test")
+    mcp_smoke_p.add_argument(
+        "--tool",
+        help="Tool name to call (defaults to list_pages for chrome-devtools)",
+    )
+    mcp_smoke_p.add_argument(
+        "--arguments",
+        default="{}",
+        help="JSON object arguments for the smoke tool call",
+    )
+
     mcp_cfg_p = mcp_sub.add_parser(
         "configure", aliases=["config"], help="Toggle tool selection"
     )

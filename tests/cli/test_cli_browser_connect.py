@@ -18,6 +18,7 @@ from hermes_cli.browser_connect import (
 def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
     """Verify the auto-launch command has all required flags."""
     assert cmd[0] == expected_chrome
+    assert "--remote-debugging-address=127.0.0.1" in cmd
     assert f"--remote-debugging-port={expected_port}" in cmd
     assert "--no-first-run" in cmd
     assert "--no-default-browser-check" in cmd
@@ -105,7 +106,10 @@ class TestChromeDebugLaunch:
             command = manual_chrome_debug_command(9222, "Linux")
 
         assert command is not None
-        assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
+        assert command.startswith(
+            "/usr/bin/chromium --remote-debugging-address=127.0.0.1 "
+            "--remote-debugging-port=9222"
+        )
 
     def test_linux_candidates_prefer_chrome_before_brave_when_both_exist(self):
         chrome = "/usr/bin/google-chrome"
@@ -121,7 +125,10 @@ class TestChromeDebugLaunch:
 
         assert candidates[:2] == [chrome, brave]
         assert command is not None
-        assert command.startswith(f"{chrome} --remote-debugging-port=9222")
+        assert command.startswith(
+            f"{chrome} --remote-debugging-address=127.0.0.1 "
+            "--remote-debugging-port=9222"
+        )
 
     def test_linux_candidates_prefer_chrome_install_path_before_brave_on_path(self):
         chrome = "/opt/google/chrome/chrome"
@@ -158,7 +165,10 @@ class TestChromeDebugLaunch:
 
         assert candidates == [brave]
         assert command is not None
-        assert command.startswith(f"{brave} --remote-debugging-port=9222")
+        assert command.startswith(
+            f"{brave} --remote-debugging-address=127.0.0.1 "
+            "--remote-debugging-port=9222"
+        )
 
     def test_linux_candidates_include_brave_binary_name(self):
         brave = "/usr/bin/brave"
@@ -170,7 +180,10 @@ class TestChromeDebugLaunch:
 
         assert candidates == [brave]
         assert command is not None
-        assert command.startswith(f"{brave} --remote-debugging-port=9222")
+        assert command.startswith(
+            f"{brave} --remote-debugging-address=127.0.0.1 "
+            "--remote-debugging-port=9222"
+        )
 
     def test_linux_candidates_include_official_brave_and_edge_stable_paths(self):
         brave = "/usr/bin/brave-browser-stable"
@@ -208,7 +221,10 @@ class TestChromeDebugLaunch:
 
         assert command is not None
         # Linux/WSL uses POSIX shell quoting (single quotes around paths with spaces).
-        assert command.startswith(f"'{chrome}' --remote-debugging-port=9222")
+        assert command.startswith(
+            f"'{chrome}' --remote-debugging-address=127.0.0.1 "
+            "--remote-debugging-port=9222"
+        )
 
     def test_manual_command_uses_windows_quoting_on_windows(self):
         chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -219,7 +235,10 @@ class TestChromeDebugLaunch:
 
         assert command is not None
         # Windows uses cmd.exe-compatible quoting via subprocess.list2cmdline.
-        assert command.startswith(f'"{chrome}" --remote-debugging-port=9222')
+        assert command.startswith(
+            f'"{chrome}" --remote-debugging-address=127.0.0.1 '
+            "--remote-debugging-port=9222"
+        )
         assert "'" not in command
 
     def test_manual_command_returns_none_when_linux_browser_missing(self):

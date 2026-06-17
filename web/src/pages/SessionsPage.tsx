@@ -396,13 +396,17 @@ function SessionRow({
 
   useEffect(() => {
     if (isExpanded && messages === null && !loading) {
-      setLoading(true);
-      api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
-        .catch((err) => setError(String(err)))
-        .finally(() => setLoading(false));
+      const id = window.setTimeout(() => {
+        setLoading(true);
+        api
+          .getSessionMessages(session.id)
+          .then((resp) => setMessages(resp.messages))
+          .catch((err) => setError(String(err)))
+          .finally(() => setLoading(false));
+      }, 0);
+      return () => window.clearTimeout(id);
     }
+    return undefined;
   }, [isExpanded, session.id, messages, loading]);
 
   const sourceInfo = (session.source
@@ -723,7 +727,7 @@ export default function SessionsPage() {
     SessionSearchResult[] | null
   >(null);
   const [searching, setSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const debounceRef = useRef<number | null>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
@@ -830,8 +834,11 @@ export default function SessionsPage() {
   }, [loadStats]);
 
   useEffect(() => {
-    loadSessions(page);
-    refreshEmptyCount();
+    const id = window.setTimeout(() => {
+      loadSessions(page);
+      refreshEmptyCount();
+    }, 0);
+    return () => window.clearTimeout(id);
   }, [loadSessions, page, refreshEmptyCount]);
 
   useEffect(() => {
@@ -887,16 +894,18 @@ export default function SessionsPage() {
 
   // Debounced FTS search
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
 
     if (!search.trim()) {
-      setSearchResults(null);
-      setSearching(false);
+      debounceRef.current = window.setTimeout(() => {
+        setSearchResults(null);
+        setSearching(false);
+      }, 0);
       return;
     }
 
-    setSearching(true);
-    debounceRef.current = setTimeout(() => {
+    debounceRef.current = window.setTimeout(() => {
+      setSearching(true);
       api
         .searchSessions(search.trim())
         .then((resp) => setSearchResults(resp.results))
@@ -905,7 +914,7 @@ export default function SessionsPage() {
     }, 300);
 
     return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
   }, [search]);
 
@@ -1182,7 +1191,11 @@ export default function SessionsPage() {
   const showPagination = showList && !searchResults && total > PAGE_SIZE;
 
   useEffect(() => {
-    if (isSearching) setView("list");
+    if (isSearching) {
+      const id = window.setTimeout(() => setView("list"), 0);
+      return () => window.clearTimeout(id);
+    }
+    return undefined;
   }, [isSearching]);
 
   const alerts: { message: string; detail?: string }[] = [];

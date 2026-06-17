@@ -17,30 +17,44 @@ const ANSI_OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 const ANSI_STRING_RE = new RegExp(`${ESC}[PX^_][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 const ANSI_NON_CSI_ESC_SEQ_RE = new RegExp(`${ESC}(?!\\[|\\]|P|X|\\^|_)[ -/]*[0-~]`, 'g')
 const ANSI_STRAY_ESC_RE = new RegExp(`${ESC}(?!\\[)[\\s\\S]?`, 'g')
-const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]/g
 const WS_RE = /\s+/g
 
+const stripControlChars = (value: string) =>
+  Array.from(value)
+    .filter(char => {
+      const code = char.charCodeAt(0)
+
+      return !(
+        code === 0x7f ||
+        code <= 0x08 ||
+        code === 0x0b ||
+        code === 0x0c ||
+        code === 0x0d ||
+        (code >= 0x0e && code <= 0x1a) ||
+        (code >= 0x1c && code <= 0x1f)
+      )
+    })
+    .join('')
+
 export const stripAnsi = (s: string) =>
-  s
+  stripControlChars(s
     .replace(ANSI_OSC_RE, '')
     .replace(ANSI_STRING_RE, '')
     .replace(ANSI_INCOMPLETE_CSI_RE, '')
     .replace(ANSI_CSI_RE, '')
     .replace(ANSI_INCOMPLETE_CSI_RE, '')
     .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
+    .replace(ANSI_STRAY_ESC_RE, ''))
 
 export const sanitizeAnsiForRender = (s: string) =>
-  s
+  stripControlChars(s
     .replace(ANSI_OSC_RE, '')
     .replace(ANSI_STRING_RE, '')
     .replace(ANSI_INCOMPLETE_CSI_RE, '')
     .replace(ANSI_CSI_WITH_CMD_RE, (seq, cmd: string) => (cmd === 'm' ? seq : ''))
     .replace(ANSI_INCOMPLETE_CSI_RE, '')
     .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
+    .replace(ANSI_STRAY_ESC_RE, ''))
 
 export const hasAnsi = (s: string) => s.includes(ESC)
 
@@ -240,6 +254,7 @@ export const buildVerboseToolTrailLine = (
   const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
     .filter(Boolean)
     .join('\n')
+
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
   return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`

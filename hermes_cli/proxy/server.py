@@ -81,6 +81,13 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
+async def _write_eof_if_connected(resp: "web.StreamResponse") -> None:
+    try:
+        await resp.write_eof()
+    except aiohttp.ClientConnectionResetError:
+        logger.debug("proxy: client disconnected before stream EOF")
+
+
 def create_app(adapter: UpstreamAdapter) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
@@ -229,7 +236,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             upstream_resp.release()
             await session.close()
 
-        await resp.write_eof()
+        await _write_eof_if_connected(resp)
         return resp
 
     # /health doesn't go through the upstream

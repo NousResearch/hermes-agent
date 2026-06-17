@@ -1938,6 +1938,198 @@ def _safe_call(mod, fn_name: str, default):
 # Portal endpoint — Nous Portal auth + Tool Gateway routing status (read-only).
 # ---------------------------------------------------------------------------
 
+_PORTAL_SELECTED_ROUTE_LABELS = ("web", "image", "video", "tts")
+_PORTAL_OFFICIAL_BUNDLE_LABELS = ("web", "image", "tts", "browser")
+_MCP_TRACKED_SERVERS = (
+    "github",
+    "context7",
+    "google-workspace",
+    "linear-remote",
+    "ouroboros",
+    "codex-bridge",
+    "gitbook-docs",
+    "chrome-devtools",
+)
+_CHROME_CDP_VERSION_URL = "http://127.0.0.1:9233/json/version"
+
+
+def _portal_feature_via_nous(features: list[dict[str, Any]], needle: str) -> bool:
+    needle = needle.lower()
+    for feature in features:
+        label = str(feature.get("label") or "").lower()
+        state = str(feature.get("state") or "").lower()
+        if needle == "tts":
+            matched = "tts" in label or "text-to-speech" in label
+        elif needle == "browser":
+            matched = "browser" in label
+        else:
+            matched = needle in label
+        if matched and state == "via nous portal":
+            return True
+    return False
+
+
+def _portal_readiness_scope(features: list[dict[str, Any]], provider: str) -> dict[str, Any]:
+    """Separate selected paid-route readiness from the official setup bundle.
+
+    Official docs describe ``hermes setup --portal`` as Portal OAuth, a Nous
+    model-provider path when selected, and Tool Gateway routing for web, image,
+    TTS, and browser. The dashboard can also show a narrower selected-route
+    state for local configs that mix Nous-managed tools with local/direct
+    backends.
+    """
+    provider_is_nous = provider.strip().lower() == "nous"
+    browser_via_portal = _portal_feature_via_nous(features, "browser")
+    selected_routes_pass = all(
+        _portal_feature_via_nous(features, label)
+        for label in _PORTAL_SELECTED_ROUTE_LABELS
+    )
+    official_bundle_reasons: list[str] = []
+    if not provider_is_nous:
+        official_bundle_reasons.append("model provider is not Nous in current config")
+    for label in _PORTAL_OFFICIAL_BUNDLE_LABELS:
+        if not _portal_feature_via_nous(features, label):
+            official_bundle_reasons.append(f"{label} is not routed via Nous Portal")
+    return {
+        "selected_paid_routes": "pass" if selected_routes_pass else "blocked",
+        "selected_tool_gateway_routes": "pass" if selected_routes_pass else "blocked",
+        "official_one_shot_bundle": "pass" if not official_bundle_reasons else "partial",
+        "portal_setup_bundle": "pass" if not official_bundle_reasons else "partial",
+        "official_term_source": "Hermes Nous Portal + Tool Gateway docs",
+        "model_provider_nous": provider_is_nous,
+        "browser_via_portal": browser_via_portal,
+        "official_one_shot_bundle_reasons": official_bundle_reasons,
+        "portal_setup_bundle_reasons": official_bundle_reasons,
+    }
+
+
+def _recent_agent_log(max_lines: int = 2000) -> str:
+    log_path = Path(get_hermes_home()) / "logs" / "agent.log"
+    try:
+        return "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:])
+    except OSError:
+        return ""
+
+
+def _mcp_config_status(cfg: dict[str, Any], server: str) -> str:
+    servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+    entry = servers.get(server) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict):
+        return "unknown"
+    return "disabled" if entry.get("enabled") is False else "enabled"
+
+
+def _mcp_warning_count(log_text: str, server: str) -> int:
+    pattern = rf"WARNING tools\.mcp_tool: MCP server '{re.escape(server)}'.*(keepalive failed|initial connection failed|connection lost|failed initial connection|Failed to connect)"
+    return len(re.findall(pattern, log_text))
+
+
+def _mcp_recent_registered_tools(log_text: str, server: str) -> int | None:
+    pattern = rf"MCP server '{re.escape(server)}'.*registered\s+(\d+)\s+tool"
+    matches = re.findall(pattern, log_text)
+    return int(matches[-1]) if matches else None
+
+
+def _mcp_keepalive_matrix(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    log_text = _recent_agent_log()
+    rows: list[dict[str, Any]] = []
+    for server in _MCP_TRACKED_SERVERS:
+        config_status = _mcp_config_status(cfg, server)
+        warning_count = _mcp_warning_count(log_text, server)
+        registered_tools = _mcp_recent_registered_tools(log_text, server)
+        if config_status == "disabled":
+            keepalive_status = "blocked-safe"
+            next_action = "leave disabled unless this MCP becomes part of the objective"
+        elif warning_count:
+            keepalive_status = "partial"
+            next_action = "run one safe read-only smoke before claiming usability"
+        elif config_status == "enabled":
+            keepalive_status = "pending-smoke"
+            next_action = "configuration is listed; run safe read-only smoke if needed"
+        else:
+            keepalive_status = "unknown"
+            next_action = "inspect MCP config and logs before making a claim"
+        rows.append(
+            {
+                "server": server,
+                "configuration_status": config_status,
+                "recent_keepalive_warning_count": warning_count,
+                "recent_registered_tools": registered_tools,
+                "keepalive_status": keepalive_status,
+                "smoke_status": "pending",
+                "claim_not_allowed": "actual external API/tool usability or write authority",
+                "next_action": next_action,
+            }
+        )
+    return rows
+
+
+def _github_cli_preflight() -> dict[str, Any]:
+    if not shutil.which("gh"):
+        return {
+            "server": "github",
+            "preflight_status": "partial",
+            "evidence_scope": "gh auth status",
+            "detail": "gh CLI not found",
+            "claim_not_allowed": "GitHub MCP server tool usability or write authority",
+        }
+    try:
+        result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, timeout=5, check=False)
+    except Exception as exc:
+        return {
+            "server": "github",
+            "preflight_status": "partial",
+            "evidence_scope": "gh auth status",
+            "detail": str(exc),
+            "claim_not_allowed": "GitHub MCP server tool usability or write authority",
+        }
+    text = f"{result.stdout}\n{result.stderr}"
+    ok = result.returncode == 0 and "Logged in to github.com" in text
+    return {
+        "server": "github",
+        "preflight_status": "pass" if ok else "partial",
+        "evidence_scope": "gh auth status",
+        "detail": "github.com auth present" if ok else "github.com auth not proven",
+        "claim_not_allowed": "GitHub MCP server tool usability or write authority",
+    }
+
+
+def _chrome_cdp_preflight() -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(_CHROME_CDP_VERSION_URL, timeout=3) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        return {
+            "server": "chrome-devtools",
+            "preflight_status": "blocked",
+            "evidence_scope": _CHROME_CDP_VERSION_URL,
+            "detail": str(exc),
+            "claim_not_allowed": "Chrome MCP tool usability or page automation success",
+        }
+    return {
+        "server": "chrome-devtools",
+        "preflight_status": "pass" if payload.get("webSocketDebuggerUrl") else "partial",
+        "evidence_scope": _CHROME_CDP_VERSION_URL,
+        "detail": f"browser={payload.get('Browser')} protocol={payload.get('Protocol-Version')} websocket={bool(payload.get('webSocketDebuggerUrl'))}",
+        "claim_not_allowed": "Chrome MCP tool usability or page automation success",
+    }
+
+
+def _mcp_local_preflight_matrix(keepalive_matrix: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    google_row = next((row for row in keepalive_matrix if row.get("server") == "google-workspace"), {})
+    registered = google_row.get("recent_registered_tools")
+    return [
+        _github_cli_preflight(),
+        _chrome_cdp_preflight(),
+        {
+            "server": "google-workspace",
+            "preflight_status": "pass" if isinstance(registered, int) and registered > 0 else "partial",
+            "evidence_scope": "recent Hermes agent.log MCP registration",
+            "detail": f"registered_tools={registered}",
+            "claim_not_allowed": "Google API credential freshness, mailbox access, or external write authority",
+        },
+    ]
+
 
 @app.get("/api/portal")
 async def get_portal_status():
@@ -1970,13 +2162,18 @@ async def get_portal_status():
         _log.exception("portal features failed")
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    provider = str((model_cfg or {}).get("provider") or "")
+    mcp_keepalive = _mcp_keepalive_matrix(cfg)
     return {
         "logged_in": bool(auth.get("logged_in")),
         "portal_url": auth.get("portal_base_url"),
         "inference_url": auth.get("inference_base_url"),
-        "provider": str((model_cfg or {}).get("provider") or ""),
+        "provider": provider,
         "subscription_url": "https://portal.nousresearch.com/manage-subscription",
         "features": features,
+        "readiness_scope": _portal_readiness_scope(features, provider),
+        "mcp_keepalive_matrix": mcp_keepalive,
+        "mcp_local_preflight_matrix": _mcp_local_preflight_matrix(mcp_keepalive),
     }
 
 

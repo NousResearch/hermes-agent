@@ -22,12 +22,16 @@ export type BlockGroup = 'diff' | 'intro' | 'model' | 'note' | 'slash' | 'trail'
 export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
   switch (msg.kind) {
     case 'intro':
+
     case 'panel':
       return 'intro'
+
     case 'slash':
       return 'slash'
+
     case 'diff':
       return 'diff'
+
     case 'trail':
       return 'trail'
   }

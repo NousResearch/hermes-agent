@@ -183,7 +183,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
-  const channel = useMemo(() => generateChannelId(), [resumeParam, scopedProfile]);
+  const channel = useMemo(() => {
+    void resumeParam;
+    void scopedProfile;
+    return generateChannelId();
+  }, [resumeParam, scopedProfile]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -724,7 +728,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile]);
+  }, [channel, resumeParam, scopedProfile, terminalTheme]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

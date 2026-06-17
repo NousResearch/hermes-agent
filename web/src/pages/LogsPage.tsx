@@ -144,7 +144,8 @@ export default function LogsPage() {
   ]);
 
   useEffect(() => {
-    fetchLogs();
+    const id = window.setTimeout(fetchLogs, 0);
+    return () => window.clearTimeout(id);
   }, [fetchLogs]);
 
   useEffect(() => {

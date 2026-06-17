@@ -55,9 +55,13 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const urlProfile = searchParams.get("profile");
   useEffect(() => {
     if (urlProfile !== null && urlProfile !== profile) {
-      setManagementProfile(urlProfile);
-      setProfileState(urlProfile);
+      const id = window.setTimeout(() => {
+        setManagementProfile(urlProfile);
+        setProfileState(urlProfile);
+      }, 0);
+      return () => window.clearTimeout(id);
     }
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlProfile]);
 

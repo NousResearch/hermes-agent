@@ -150,6 +150,7 @@ After saving the server:
 
 ```bash
 hermes mcp test chrome-devtools-win
+hermes mcp smoke chrome-devtools-win
 ```
 
 Then start a fresh Hermes session or run:
@@ -183,6 +184,92 @@ In those cases, keep `/browser connect` for same-environment setups and use MCP 
 - Start Hermes from a Windows-mounted path like `/mnt/c/Users/<you>` or `/mnt/c/workspace/...` when using Windows stdio executables through MCP.
 - If you start Hermes from `/root` or `/home/...`, Windows may emit a `UNC` current-directory warning before the MCP server starts.
 - If `chrome-devtools-mcp --autoConnect` times out while enumerating pages, reduce background/frozen tabs in Chrome and retry.
+
+## Chrome DevTools MCP: local Chrome baseline
+
+Use the official `chrome-devtools-mcp` server when you want Hermes to inspect a
+real Chrome session through MCP instead of the built-in `/browser connect`
+transport.
+
+The safest local attach mode is to start Chrome yourself with a non-default
+profile and then point MCP at the HTTP discovery endpoint. For the default
+local CDP port (`127.0.0.1:9222`), use the preset:
+
+```bash
+hermes mcp add chrome-devtools --preset local-cdp
+```
+
+That expands to the explicit form below:
+
+```bash
+hermes mcp add chrome-devtools \
+  --command npx \
+  --args -y chrome-devtools-mcp@latest \
+    --browserUrl=http://127.0.0.1:9222 \
+    --no-usage-statistics \
+    --no-performance-crux \
+    --redactNetworkHeaders
+```
+
+Then verify and reload:
+
+```bash
+hermes mcp test chrome-devtools
+hermes mcp smoke chrome-devtools
+/reload-mcp
+```
+
+`hermes mcp test` verifies that Hermes can start the MCP server and discover
+its tools. `hermes mcp smoke` goes one step further and calls a safe runtime
+tool. For `chrome-devtools-mcp`, the default smoke tool is `list_pages`; Hermes
+redacts URL query strings before printing the page list.
+
+### Why this shape
+
+- `--browserUrl=http://127.0.0.1:<port>` attaches to an already running Chrome instance and is the best default for sandboxed or profile-sensitive Hermes sessions. The `--browser-url` spelling is also accepted by the CLI examples, but `--browserUrl` is the option name shown by `--help`.
+- `--wsEndpoint=ws://.../devtools/browser/<id>` is the lower-level alternative when you already have the exact browser WebSocket from `/json/version`.
+- `--autoConnect` is for Chrome 144+ active-session attachment. It requires Chrome-side remote debugging to be enabled at `chrome://inspect/#remote-debugging` and a user-approved prompt, so it is not the default for unattended Hermes profiles.
+- Chrome 136+ rejects remote-debugging switches against the default Chrome data directory. Start Chrome with a dedicated `--user-data-dir`, or use Chrome for Testing for repeatable automation.
+- `--no-usage-statistics` opts out of Chrome DevTools MCP telemetry. This is separate from Chrome browser telemetry.
+- `--no-performance-crux` prevents performance tools from sending trace URLs to the CrUX API for field data.
+- `--redactNetworkHeaders` redacts sensitive network headers before tool results are returned to Hermes.
+
+### Tool-surface choices
+
+Use full mode for debugging and performance work. Use slim mode only for simple
+navigation, JavaScript execution, and screenshots:
+
+```bash
+hermes mcp add chrome-devtools-slim \
+  --command npx \
+  --args -y chrome-devtools-mcp@latest \
+    --slim \
+    --headless \
+    --no-usage-statistics \
+    --no-performance-crux
+```
+
+Do not expect extension tools in slim mode. Extension tools require
+`--categoryExtensions` and, until Chrome 149 support lands, they require the
+MCP server to launch Chrome directly rather than attach through
+`--browserUrl`, `--wsEndpoint`, or `--autoConnect`.
+
+### Debugging the MCP server itself
+
+For install/runtime failures:
+
+```bash
+npx chrome-devtools-mcp@latest --help
+DEBUG=* npx chrome-devtools-mcp@latest --log-file=/tmp/chrome-devtools-mcp.log
+```
+
+Common classifications:
+
+- `Could not find DevToolsActivePort` is normally an `--autoConnect` setup problem, not a generic CDP problem.
+- `Target closed` means Chrome failed to launch or exited.
+- `ProtocolError: Network.enable timed out` or socket close errors often mean `--autoConnect` failed to handshake with the running Chrome instance or too many frozen/background tabs were present.
+- In VM/container/sandbox situations, start Chrome outside the sandbox and attach with `--browserUrl`.
+- For VM-to-host Chrome, use an SSH tunnel to `127.0.0.1:<port>` instead of connecting to the host address directly; Chrome validates the Host header.
 
 ### Example: blacklist dangerous actions
 

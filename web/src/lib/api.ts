@@ -1516,6 +1516,37 @@ export interface PortalFeature {
   state: string;
 }
 
+export interface PortalReadinessScope {
+  selected_paid_routes: "pass" | "blocked";
+  selected_tool_gateway_routes?: "pass" | "blocked";
+  official_one_shot_bundle: "pass" | "partial";
+  portal_setup_bundle?: "pass" | "partial";
+  official_term_source?: string;
+  model_provider_nous: boolean;
+  browser_via_portal: boolean;
+  official_one_shot_bundle_reasons: string[];
+  portal_setup_bundle_reasons?: string[];
+}
+
+export interface McpKeepaliveRow {
+  server: string;
+  configuration_status: "enabled" | "disabled" | "unknown";
+  recent_keepalive_warning_count: number;
+  recent_registered_tools: number | null;
+  keepalive_status: "partial" | "pending-smoke" | "blocked-safe" | "unknown";
+  smoke_status: "pending";
+  claim_not_allowed: string;
+  next_action: string;
+}
+
+export interface McpLocalPreflightRow {
+  server: string;
+  preflight_status: "pass" | "partial" | "blocked";
+  evidence_scope: string;
+  detail: string;
+  claim_not_allowed: string;
+}
+
 export interface PortalStatus {
   logged_in: boolean;
   portal_url: string | null;
@@ -1523,6 +1554,9 @@ export interface PortalStatus {
   provider: string;
   subscription_url: string;
   features: PortalFeature[];
+  readiness_scope?: PortalReadinessScope;
+  mcp_keepalive_matrix?: McpKeepaliveRow[];
+  mcp_local_preflight_matrix?: McpLocalPreflightRow[];
 }
 
 export interface CheckpointSession {

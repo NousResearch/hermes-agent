@@ -414,6 +414,29 @@ class TestBuildSlack:
         assert types["G123ABCDEF"] == "private"
         client.users_conversations.assert_awaited_once()
 
+    def test_enterprise_auth_uses_workspace_team_id_for_users_conversations(self, tmp_path):
+        """integration-contract: Enterprise Slack org tokens pass workspace team_id."""
+        client = _make_slack_client([
+            {
+                "ok": True,
+                "channels": [{"id": "C001", "name": "enterprise-channel", "is_private": False}],
+                "response_metadata": {},
+            },
+        ])
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "SLACK_WORKSPACE_TEAM_ID": "T0B1DM360R3",
+                "SLACK_WORKSPACE_GRANT_TEAM_ID": "T0IGNORED",
+            },
+        ):
+            entries = asyncio.run(_build_slack(_make_slack_adapter({"E0B1AG40TF0": client})))
+
+        assert {e["id"] for e in entries} == {"C001"}
+        client.users_conversations.assert_awaited_once()
+        assert client.users_conversations.await_args.kwargs["team_id"] == "T0B1DM360R3"
+
     def test_paginates_via_response_metadata_cursor(self, tmp_path):
         client = _make_slack_client([
             {

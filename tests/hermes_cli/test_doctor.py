@@ -13,7 +13,12 @@ import pytest
 import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.doctor import (
+    _cdp_discovery_url,
+    _has_arg_prefix,
+    _has_provider_env_config,
+    _mcp_server_uses_chrome_devtools,
+)
 
 
 class TestDoctorPlatformHints:
@@ -31,6 +36,30 @@ class TestDoctorPlatformHints:
         assert doctor._is_termux() is False
         assert doctor._python_install_cmd() == "uv pip install"
         assert doctor._system_package_install_cmd("ripgrep") == "sudo apt install ripgrep"
+
+
+class TestDoctorChromeCdpChecks:
+    def test_cdp_discovery_url_normalizes_loopback_http_and_ws(self):
+        assert _cdp_discovery_url("http://127.0.0.1:9222") == "http://127.0.0.1:9222/json/version"
+        assert _cdp_discovery_url("ws://127.0.0.1:9222") == "http://127.0.0.1:9222/json/version"
+        assert _cdp_discovery_url("http://127.0.0.1:9222/json") == "http://127.0.0.1:9222/json/version"
+
+    def test_cdp_discovery_url_skips_concrete_browser_websocket(self):
+        assert _cdp_discovery_url("ws://127.0.0.1:9222/devtools/browser/abc") == ""
+
+    def test_chrome_devtools_mcp_detection_and_attach_args(self):
+        server = {
+            "command": "npx",
+            "args": [
+                "-y",
+                "chrome-devtools-mcp@latest",
+                "--browserUrl=http://127.0.0.1:9222",
+                "--redactNetworkHeaders",
+            ],
+        }
+        assert _mcp_server_uses_chrome_devtools(server) is True
+        assert _has_arg_prefix(server, ("--browserUrl", "--browser-url")) is True
+        assert _has_arg_prefix(server, ("--wsEndpoint", "--ws-endpoint")) is False
 
 
 class TestProviderEnvDetection:

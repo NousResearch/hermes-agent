@@ -321,7 +321,7 @@ In the CLI, use:
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths such as `/opt/brave-bin/brave` and `/snap/bin/brave`.
+If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-address=127.0.0.1`, `--remote-debugging-port=9222`, and a dedicated user-data-dir. Detection includes Brave, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths such as `/opt/brave-bin/brave` and `/snap/bin/brave`.
 
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:
@@ -329,6 +329,7 @@ To start a Chromium-family browser manually with CDP enabled, use a dedicated us
 ```bash
 # Linux — Brave
 brave-browser \
+  --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
   --user-data-dir=$HOME/.hermes/chrome-debug \
   --no-first-run \
@@ -336,6 +337,7 @@ brave-browser \
 
 # Linux — Google Chrome
 google-chrome \
+  --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
   --user-data-dir=$HOME/.hermes/chrome-debug \
   --no-first-run \
@@ -343,6 +345,7 @@ google-chrome \
 
 # macOS — Brave
 "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
+  --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
   --user-data-dir="$HOME/.hermes/chrome-debug" \
   --no-first-run \
@@ -350,6 +353,7 @@ google-chrome \
 
 # macOS — Google Chrome
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
   --user-data-dir="$HOME/.hermes/chrome-debug" \
   --no-first-run \
@@ -358,7 +362,14 @@ google-chrome \
 
 Then launch the Hermes CLI and run `/browser connect`.
 
-**Why `--user-data-dir`?** Without it, launching a Chromium-family browser while a regular instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh browser process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
+Confirm the endpoint before connecting:
+
+```bash
+curl http://127.0.0.1:9222/json/version
+curl http://127.0.0.1:9222/json/protocol
+```
+
+**Why `--user-data-dir`?** Without it, launching a Chromium-family browser while a regular instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. Chrome 136+ also rejects remote-debugging switches against the default Chrome data directory. A dedicated user-data-dir forces a fresh browser process where the debug port actually listens. `--remote-debugging-address=127.0.0.1` keeps the debug endpoint local-only, and `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 :::
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session.
@@ -378,6 +389,7 @@ For that setup, prefer `chrome-devtools-mcp` through Hermes MCP support.
 See the MCP guide for the practical setup:
 
 - [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
+- [Chrome DevTools MCP: local Chrome baseline](../../guides/use-mcp-with-hermes.md#chrome-devtools-mcp-local-chrome-baseline)
 
 ### Local browser mode
 

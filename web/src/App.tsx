@@ -1,12 +1,14 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ComponentType,
-  type FocusEvent,
-  type MouseEvent,
+  type LazyExoticComponent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -61,7 +63,8 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
+import { gatewayLine } from "@/components/sidebarStatus";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
@@ -72,25 +75,6 @@ import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
-import ConfigPage from "@/pages/ConfigPage";
-import DocsPage from "@/pages/DocsPage";
-import EnvPage from "@/pages/EnvPage";
-import FilesPage from "@/pages/FilesPage";
-import SessionsPage from "@/pages/SessionsPage";
-import LogsPage from "@/pages/LogsPage";
-import AnalyticsPage from "@/pages/AnalyticsPage";
-import ModelsPage from "@/pages/ModelsPage";
-import CronPage from "@/pages/CronPage";
-import ProfilesPage from "@/pages/ProfilesPage";
-import ProfileBuilderPage from "@/pages/ProfileBuilderPage";
-import SkillsPage from "@/pages/SkillsPage";
-import PluginsPage from "@/pages/PluginsPage";
-import McpPage from "@/pages/McpPage";
-import PairingPage from "@/pages/PairingPage";
-import ChannelsPage from "@/pages/ChannelsPage";
-import WebhooksPage from "@/pages/WebhooksPage";
-import SystemPage from "@/pages/SystemPage";
-import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -114,12 +98,49 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   return <Navigate to="/sessions" replace />;
 }
 
+function PageLoadingFallback() {
+  return (
+    <div
+      className="flex min-h-[12rem] min-w-0 items-center justify-center"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Spinner />
+        <span>Loading…</span>
+      </div>
+    </div>
+  );
+}
+
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
   labelKey: "chat",
   label: "Chat",
   icon: Terminal,
 };
+
+type RouteComponent = ComponentType | LazyExoticComponent<ComponentType>;
+
+const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
+const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
+const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
+const CronPage = lazy(() => import("@/pages/CronPage"));
+const DocsPage = lazy(() => import("@/pages/DocsPage"));
+const EnvPage = lazy(() => import("@/pages/EnvPage"));
+const FilesPage = lazy(() => import("@/pages/FilesPage"));
+const LogsPage = lazy(() => import("@/pages/LogsPage"));
+const McpPage = lazy(() => import("@/pages/McpPage"));
+const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
+const PairingPage = lazy(() => import("@/pages/PairingPage"));
+const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
+const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
+const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
+const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
+const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
+const SystemPage = lazy(() => import("@/pages/SystemPage"));
+const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
@@ -130,7 +151,7 @@ const CHAT_NAV_ITEM: NavItem = {
  * Routing still owns the URL so /chat deep-links, browser back/forward,
  * and nav highlight keep working.
  */
-const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
+const BUILTIN_ROUTES_CORE: Record<string, RouteComponent> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/files": FilesPage,
@@ -282,7 +303,7 @@ function partitionSidebarNav(
 }
 
 function buildRoutes(
-  builtinRoutes: Record<string, ComponentType>,
+  builtinRoutes: Record<string, RouteComponent>,
   manifests: PluginManifest[],
 ): Array<{
   key: string;
@@ -738,17 +759,19 @@ export default function App() {
                 )}
               >
                 <ProfileKeyedRoutes>
-                  <Routes>
-                    {routes.map(({ key, path, element }) => (
-                      <Route key={key} path={path} element={element} />
-                    ))}
-                    <Route
-                      path="*"
-                      element={
-                        <UnknownRouteFallback pluginsLoading={pluginsLoading} />
-                      }
-                    />
-                  </Routes>
+                  <Suspense fallback={<PageLoadingFallback />}>
+                    <Routes>
+                      {routes.map(({ key, path, element }) => (
+                        <Route key={key} path={path} element={element} />
+                      ))}
+                      <Route
+                        path="*"
+                        element={
+                          <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                        }
+                      />
+                    </Routes>
+                  </Suspense>
                 </ProfileKeyedRoutes>
 
                 {embeddedChat &&
@@ -775,7 +798,9 @@ export default function App() {
                       )}
                       aria-hidden={!isChatRoute}
                     >
-                      <ChatPage isActive={isChatRoute} />
+                      <Suspense fallback={isChatRoute ? <PageLoadingFallback /> : null}>
+                        <ChatPage isActive={isChatRoute} />
+                      </Suspense>
                     </div>
                   ))}
               </div>
@@ -814,23 +839,18 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
-  const [hovered, setHovered] = useState(false);
+  const liRef = useRef<HTMLLIElement>(null);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
+  const showTooltip = () => setTooltipAnchor(liRef.current);
+  const hideTooltip = () => setTooltipAnchor(null);
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
     : label;
-  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
-  const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
 
   return (
     <li
+      ref={liRef}
       onMouseEnter={collapsed ? showTooltip : undefined}
       onMouseLeave={collapsed ? hideTooltip : undefined}
     >
@@ -886,7 +906,7 @@ function SidebarNavLink({
         )}
       </NavLink>
 
-      {collapsed && hovered && tooltipAnchor && (
+      {collapsed && tooltipAnchor && (
         <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
@@ -903,7 +923,6 @@ function SidebarSystemActions({
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
-  const canUpdateHermes = status?.can_update_hermes === true;
 
   const items: SystemActionItem[] = [
     {
@@ -913,16 +932,14 @@ function SidebarSystemActions({
       runningLabel: t.status.restartingGateway,
       spin: true,
     },
-  ];
-  if (canUpdateHermes) {
-    items.push({
+    {
       action: "update",
       icon: Download,
       label: t.status.updateHermes,
       runningLabel: t.status.updatingHermes,
       spin: false,
-    });
-  }
+    },
+  ];
 
   const handleClick = (action: SystemAction) => {
     if (isBusy) return;
@@ -983,21 +1000,16 @@ function SystemActionButton({
   tooltipWarmRef,
 }: SystemActionButtonProps) {
   const { icon: Icon, label, runningLabel, spin } = item;
-  const [hovered, setHovered] = useState(false);
+  const liRef = useRef<HTMLLIElement>(null);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
   const busy = isPending || isActionRunning;
   const displayLabel = isActionRunning ? runningLabel : label;
-  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
-  const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
+  const showTooltip = () => setTooltipAnchor(liRef.current);
+  const hideTooltip = () => setTooltipAnchor(null);
 
   return (
     <li
+      ref={liRef}
       onMouseEnter={collapsed ? showTooltip : undefined}
       onMouseLeave={collapsed ? hideTooltip : undefined}
     >
@@ -1055,7 +1067,7 @@ function SystemActionButton({
         )}
       </button>
 
-      {collapsed && hovered && tooltipAnchor && (
+      {collapsed && tooltipAnchor && (
         <SidebarTooltip anchor={tooltipAnchor} label={displayLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
@@ -1068,19 +1080,14 @@ function SidebarIconWithTooltip({
   label,
   tooltipWarmRef,
 }: SidebarIconWithTooltipProps) {
-  const [hovered, setHovered] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
-  const showTooltip = (event: MouseEvent<HTMLDivElement>) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
-  const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
+  const showTooltip = () => setTooltipAnchor(ref.current);
+  const hideTooltip = () => setTooltipAnchor(null);
 
   return (
     <div
+      ref={ref}
       className={cn(
         "relative w-fit",
         collapsed && "group/icon",
@@ -1097,7 +1104,7 @@ function SidebarIconWithTooltip({
         />
       )}
 
-      {collapsed && hovered && tooltipAnchor && (
+      {collapsed && tooltipAnchor && (
         <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
@@ -1106,7 +1113,7 @@ function SidebarIconWithTooltip({
 
 function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   const { t } = useI18n();
-  const [hovered, setHovered] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   const toneToColor: Record<string, string> = {
@@ -1127,17 +1134,13 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
     color = toneToColor[gw.tone] ?? "bg-muted-foreground";
     label = `${t.status.gateway} ${gw.label}`;
   }
-  const showTooltip = (event: MouseEvent<HTMLDivElement> | FocusEvent<HTMLDivElement>) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
-  const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
+
+  const showTooltip = () => setTooltipAnchor(ref.current);
+  const hideTooltip = () => setTooltipAnchor(null);
 
   return (
     <div
+      ref={ref}
       className={cn(
         "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
         collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
@@ -1155,7 +1158,7 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
         className={cn("h-1.5 w-1.5 rounded-full", color)}
       />
 
-      {hovered && tooltipAnchor && (
+      {tooltipAnchor && (
         <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
@@ -1163,23 +1166,32 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
 }
 
 function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
-  const rect = anchor.getBoundingClientRect();
-  const sidebar = document.getElementById("app-sidebar");
-  const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
-  const [isWarm, setIsWarm] = useState(false);
+  const [placement, setPlacement] = useState<{
+    isWarm: boolean;
+    left: number;
+    top: number;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    const rect = anchor.getBoundingClientRect();
+    const sidebar = document.getElementById("app-sidebar");
+    const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
+    const now = Date.now();
+    setPlacement({
+      isWarm: warmRef ? now - warmRef.current < 300 : false,
+      left: sidebarRight + 8,
+      top: rect.top + rect.height / 2,
+    });
+  }, [anchor, warmRef]);
 
   useEffect(() => {
-    if (!warmRef) {
-      setIsWarm(false);
-      return;
-    }
-    const now = Date.now();
-    setIsWarm(now - warmRef.current < 300);
-    warmRef.current = now;
+    if (warmRef) warmRef.current = Date.now();
     return () => {
       if (warmRef) warmRef.current = Date.now();
     };
   }, [warmRef]);
+
+  if (!placement) return null;
 
   return createPortal(
     <span
@@ -1190,11 +1202,11 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
         "font-mondwest text-display text-xs tracking-[0.1em] text-midground uppercase",
       )}
       style={{
-        top: rect.top + rect.height / 2,
-        left: sidebarRight + 8,
+        top: placement.top,
+        left: placement.left,
         transform: "translateY(-50%)",
-        opacity: isWarm ? 1 : undefined,
-        animation: isWarm ? "none" : "sidebar-tooltip-in 120ms ease-out",
+        opacity: placement.isWarm ? 1 : undefined,
+        animation: placement.isWarm ? "none" : "sidebar-tooltip-in 120ms ease-out",
       }}
     >
       {label}

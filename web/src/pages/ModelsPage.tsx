@@ -923,7 +923,8 @@ export default function ModelsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
-    load();
+    const id = window.setTimeout(load, 0);
+    return () => window.clearTimeout(id);
   }, [load]);
 
   // Model assignments can change outside this page (config editor, chat

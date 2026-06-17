@@ -26,6 +26,8 @@ export function PluginPage({ name }: { name: string }) {
   );
 
   if (Component) {
+    // Dynamic plugin bundles register their root component at runtime.
+    // eslint-disable-next-line react-hooks/static-components
     return <Component />;
   }
 

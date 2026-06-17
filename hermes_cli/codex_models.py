@@ -11,47 +11,19 @@ import os
 
 logger = logging.getLogger(__name__)
 
+ACTIVE_CODEX_MODEL_IDS: tuple[str, ...] = ("gpt-5.5",)
+
 DEFAULT_CODEX_MODELS: List[str] = [
-    "gpt-5.5",
-    "gpt-5.4-mini",
-    "gpt-5.4",
-    "gpt-5.3-codex",
-    # gpt-5.3-codex-spark is in research preview and is exposed *only* via
-    # the Codex CLI / OAuth backend (chatgpt.com/backend-api/codex/models)
-    # for ChatGPT Pro subscribers. It is NOT available in the public OpenAI
-    # API, so it intentionally stays out of the "openai" provider catalog
-    # in hermes_cli/models.py — only the openai-codex (OAuth) provider
-    # surfaces it. The Codex backend reports ``supported_in_api: false`` for
-    # this slug; that flag describes API availability, not Codex backend
-    # availability, so the fetch/cache code paths below intentionally do
-    # not filter on it. PR #12994 removed this entry on the assumption it
-    # was unsupported — that was wrong; restored here. Keep it in the
-    # curated fallback so Pro users still see Spark in `/model` when live
-    # discovery is unavailable (offline first run, transient API failure).
-    "gpt-5.3-codex-spark",
-    # NOTE: gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini were
-    # previously listed here but the chatgpt.com Codex backend returns
-    # HTTP 400 "The '<model>' model is not supported when using Codex with
-    # a ChatGPT account." for all three on every ChatGPT Pro account we've
-    # tested (verified live 2026-05-27). Keeping them in the fallback list
-    # leaked dead slugs into /model when live discovery was unavailable
-    # (transient API failure, first-run before refresh) and surfaced HTTP 400
-    # crashes on selection. The Codex CLI public catalog still references
-    # these slugs, which is why they survived previously — but those entries
-    # describe the public OpenAI API, not the OAuth-backed Codex backend
-    # Hermes uses. Removed here. If OpenAI re-enables them on Codex backend,
-    # live discovery will pick them up automatically via _fetch_models_from_api.
+    # Curated active fallback for the OAuth-backed Codex route.
+    # Older GPT-5.x Codex slugs may still appear in cached/API catalogs, but
+    # they must not be hardcoded or returned as active fallback recommendations.
+    *ACTIVE_CODEX_MODEL_IDS,
 ]
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+    # Only synthesize the current active Codex slug from older live templates.
+    # Do not synthesize stale slugs into model pickers.
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex",)),
-    ("gpt-5.4", ("gpt-5.3-codex",)),
-    # Surface Spark whenever any compatible Codex template is present so
-    # accounts hitting the live endpoint with an older lineup still see
-    # Spark in the picker. Backend gates real availability by ChatGPT Pro
-    # entitlement; Hermes does not.
-    ("gpt-5.3-codex-spark", ("gpt-5.3-codex",)),
 ]
 
 
@@ -79,8 +51,26 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+def _filter_active_codex_models(model_ids: List[str]) -> List[str]:
+    """Return only verified active Codex model recommendations.
+
+    Local/API catalogs can contain stale GPT-5.x slugs from prior Codex
+    generations. Hermes may still pass through explicit user-selected models
+    elsewhere, but discovery-driven recommendations must stay latest-only.
+    """
+    expanded = _add_forward_compat_models(model_ids)
+    active = [model_id for model_id in expanded if model_id in ACTIVE_CODEX_MODEL_IDS]
+    if active:
+        deduped: List[str] = []
+        for model_id in active:
+            if model_id not in deduped:
+                deduped.append(model_id)
+        return deduped
+    return list(DEFAULT_CODEX_MODELS)
+
+
+def _fetch_catalog_models_from_api(access_token: str) -> List[str]:
+    """Fetch visible Codex API catalog models sorted by priority."""
     try:
         import httpx
         resp = httpx.get(
@@ -116,7 +106,12 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         sortable.append((rank, slug))
 
     sortable.sort(key=lambda x: (x[0], x[1]))
-    return _add_forward_compat_models([slug for _, slug in sortable])
+    return [slug for _, slug in sortable]
+
+
+def _fetch_models_from_api(access_token: str) -> List[str]:
+    """Fetch available active Codex models from the API."""
+    return _filter_active_codex_models(_fetch_catalog_models_from_api(access_token))
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -188,7 +183,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _add_forward_compat_models(api_models)
+            return _filter_active_codex_models(api_models)
 
     # Fall back to local sources
     default_model = _read_default_model(codex_home)
@@ -203,4 +198,35 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if model_id not in ordered:
             ordered.append(model_id)
 
-    return _add_forward_compat_models(ordered)
+    return _filter_active_codex_models(ordered)
+
+
+def get_codex_catalog_model_ids(access_token: Optional[str] = None) -> List[str]:
+    """Return visible Codex catalog models for picker display.
+
+    Unlike ``get_codex_model_ids()``, this preserves live/cache Codex-only
+    slugs. The active recommendation path remains latest-only, but picker
+    display and provider ownership need the full Codex catalog.
+    """
+    codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
+    codex_home = Path(codex_home_str).expanduser()
+    ordered: List[str] = []
+
+    if access_token:
+        api_models = _fetch_catalog_models_from_api(access_token)
+        if api_models:
+            return api_models
+
+    default_model = _read_default_model(codex_home)
+    if default_model:
+        ordered.append(default_model)
+
+    for model_id in _read_cache_models(codex_home):
+        if model_id not in ordered:
+            ordered.append(model_id)
+
+    for model_id in DEFAULT_CODEX_MODELS:
+        if model_id not in ordered:
+            ordered.append(model_id)
+
+    return ordered

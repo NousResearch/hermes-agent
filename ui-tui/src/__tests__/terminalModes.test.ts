@@ -54,6 +54,7 @@ describe('terminal mode reset', () => {
 
     expect(write).toHaveBeenCalledTimes(1)
     const written = write.mock.calls[0]?.[0] as string
+
     for (const mode of ['\x1b[?1006l', '\x1b[?1003l', '\x1b[?1002l', '\x1b[?1000l']) {
       expect(written).toContain(mode)
     }

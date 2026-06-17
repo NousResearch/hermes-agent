@@ -170,7 +170,11 @@ def download_audio(url, dest_dir):
             info = ydl.extract_info(url, download=True)
     except Exception as e:
         msg = str(e)
-        if "ffmpeg" in msg.lower() or "ffprobe" in msg.lower():
+        low = msg.lower()
+        if "no video could be found" in low:
+            # X/Twitter (and similar) image/text/link-only posts: valid URL, no media.
+            return None, "", "no playable video in this post (image, text, or link-only - nothing to transcribe)"
+        if "ffmpeg" in low or "ffprobe" in low:
             msg = ("ffmpeg/ffprobe not found. Install ffmpeg "
                    "(brew install ffmpeg / apt install ffmpeg).")
         return None, "", "download failed: %s" % msg
@@ -196,7 +200,7 @@ def transcribe(audio_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transcribe a Twitch/Kick/Rumble clip or VOD as JSON")
+        description="Transcribe a Twitch/Kick/Rumble/X clip or VOD as JSON")
     parser.add_argument("url", help="Clip or VOD URL")
     parser.add_argument("--text-only", action="store_true",
                         help="Print plain transcript text instead of JSON")

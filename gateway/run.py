@@ -15268,20 +15268,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # speaking from inside a group, is NOT recognized by a raw comparison
         # against the phone-number home channel, and the gate wrongly hides
         # USER.md (the agent treats the owner as a stranger in his own group).
-        # Canonicalize WhatsApp identifiers (LID <-> phone-JID) on BOTH sides so
-        # the owner is matched regardless of which alias form WhatsApp used.
-        # The resolver is the same one build_session_key already relies on.
+        # Expand each WhatsApp identifier to its FULL transitive alias set
+        # (LID <-> phone-JID, walking the bridge's lid-mapping files) on BOTH
+        # sides, so the owner is matched regardless of which alias form WhatsApp
+        # used — and even when only one direction of the mapping file exists.
+        # ``expand_whatsapp_aliases`` is the same resolver build_session_key
+        # relies on, so this gate's notion of identity matches the session's.
         if platform == Platform.WHATSAPP:
             try:
-                from gateway.session import canonical_whatsapp_identifier as _canon_wa
-                for _val in list(source_values):
-                    _c = _canon_wa(_val) if _val else None
-                    if _c:
-                        source_values.add(str(_c))
-                for _hid in list(home_ids):
-                    _c = _canon_wa(_hid) if _hid else None
-                    if _c:
-                        home_ids.add(str(_c))
+                from gateway.session import expand_whatsapp_aliases as _wa_aliases
+                _expanded_src: set[str] = set()
+                for _val in source_values:
+                    if _val:
+                        _expanded_src |= _wa_aliases(_val)
+                source_values |= _expanded_src
+                _expanded_home: set[str] = set()
+                for _hid in home_ids:
+                    if _hid:
+                        _expanded_home |= _wa_aliases(_hid)
+                home_ids |= _expanded_home
             except Exception:
                 pass
 

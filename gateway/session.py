@@ -62,6 +62,7 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
+    expand_whatsapp_aliases,  # noqa: F401 - re-exported for gateway.session callers
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace

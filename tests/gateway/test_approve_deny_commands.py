@@ -41,10 +41,24 @@ def _make_event(text: str) -> MessageEvent:
 
 def _make_runner():
     from gateway.run import GatewayRunner
+    from gateway.config import HomeChannel
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                token="***",
+                # The /approve owner gate (added in 55d9d40e2) rejects approvals
+                # from sources that don't match the home channel. These tests
+                # exercise the owner's own approval flow, so the fixture source
+                # (chat_id "c1") must BE the home channel — otherwise the gate
+                # fails closed and the test asserts the wrong path.
+                home_channel=HomeChannel(
+                    platform=Platform.TELEGRAM, chat_id="c1", name="Home"
+                ),
+            )
+        }
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()

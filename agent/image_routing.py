@@ -336,13 +336,15 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
+    # auto — use native when the main model supports vision; fall back to
+    # text (pre-analyze via auxiliary if configured) only when it doesn't.
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+
+    if _explicit_aux_vision_override(cfg):
+        return "text"
+
     return "text"
 
 

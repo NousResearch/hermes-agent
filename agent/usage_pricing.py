@@ -27,19 +27,45 @@ CostSource = Literal[
 ]
 
 
-# Local subscription proxies / bridges that front the Anthropic API. Their
-# marginal cash cost is $0 (flat Claude subscription / tailnet failover), but we
-# price them at official Anthropic API rates for fleet cost *visibility* and
-# label the result "estimated". Provider names match the `provider:` keys used
-# in ~/.hermes/config.yaml across the fleet. Add new bridge/proxy aliases here.
+# Local subscription proxies / bridges / pools that front the Anthropic API.
+# Their marginal cash cost is $0 (flat Claude subscription / tailnet failover /
+# local relay), but we price them at official Anthropic API rates for fleet cost
+# *visibility* and label the result "estimated". Provider names match the
+# `provider:` keys used in ~/.hermes/config.yaml + plugins/model-providers/*
+# across the fleet.
+#
+# This is the set of EXACT BASE names. The numbered failover family
+# (claude-api-proxy-fN / claude-bridge-fN, any integer N) is matched by PATTERN
+# in is_notional_anthropic_provider() below — so a NEW failover lane (-f6, -f7,
+# …) can never again silently price as $0 the way -f2/-f3/-f4/-f5 did. Use the
+# predicate, not bare `in` membership, at every call site.
 NOTIONAL_ANTHROPIC_PROVIDERS = frozenset({
     "claude-api-proxy",
-    "claude-api-proxy-f1",
-    "claude-api-proxy-f2",
     "claude-bridge",
-    "claude-bridge-f1",
-    "claude-bridge-f2",
+    "claude-pool",
 })
+
+# claude-api-proxy-f1, claude-bridge-f2, … -f<any integer>. Anchored +
+# integer-only so it matches ONLY the disciplined failover naming and never an
+# unrelated "claude-bridge-frobnicate". claude-pool has no -fN family (failover
+# happens inside the relay), so it stays an exact base member above.
+_NOTIONAL_ANTHROPIC_FN_RE = re.compile(r"^claude-(?:api-proxy|bridge)-f\d+$")
+
+
+def is_notional_anthropic_provider(provider_name: Optional[str]) -> bool:
+    """True if a provider key should be priced at notional Anthropic rates.
+
+    Covers the exact base relays/proxies/pool AND the numbered -fN failover
+    family by pattern, so adding a new -fN lane (or a config that references
+    one) never needs a code change. Normalizes (strip/lower) defensively for
+    direct callers; resolve_billing_route already normalizes before calling.
+    """
+    p = (provider_name or "").strip().lower()
+    if not p:
+        return False
+    return p in NOTIONAL_ANTHROPIC_PROVIDERS or bool(
+        _NOTIONAL_ANTHROPIC_FN_RE.match(p)
+    )
 
 # Notional pricing for ChatGPT-subscription Codex providers (openai-codex).
 # Marginal cash cost is $0 (covered by a flat ChatGPT subscription), but for
@@ -600,7 +626,7 @@ def resolve_billing_route(
     # cost *visibility* we price these at official Anthropic API rates and label
     # the result "estimated" so /cost cards, top, and session rollups carry
     # meaningful numbers. See NOTIONAL_ANTHROPIC_PROVIDERS.
-    if provider_name in NOTIONAL_ANTHROPIC_PROVIDERS:
+    if is_notional_anthropic_provider(provider_name):
         return BillingRoute(
             provider="anthropic",
             model=model.split("/")[-1],

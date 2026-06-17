@@ -82,7 +82,7 @@ METERS_FILE = os.environ.get("CLAUDE_PROXY_METERS_FILE", "/opt/data/proxy/meters
 # co-tenant gateway shouldn't be able to OOM it with a giant body or exhaust
 # threads. Cap the request body and bound concurrent work; over the cap → 413,
 # saturated → 503 (both signals the gateway's fallback chain understands).
-MAX_BODY_BYTES = int(os.environ.get("CLAUDE_PROXY_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
+MAX_BODY_BYTES = int(os.environ.get("CLAUDE_PROXY_MAX_BODY_BYTES", "0"))
 MAX_WORKERS = int(os.environ.get("CLAUDE_PROXY_MAX_WORKERS", "64"))  # 0 disables the cap
 # Seconds a request will wait for a worker slot before shedding with 503.
 QUEUE_TIMEOUT = float(os.environ.get("CLAUDE_PROXY_QUEUE_TIMEOUT", "10"))

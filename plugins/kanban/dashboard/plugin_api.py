@@ -1990,6 +1990,7 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    archived: Optional[bool] = None
 
 
 def _board_counts(slug: str) -> dict[str, int]:
@@ -2058,17 +2059,36 @@ def rename_board(slug: str, payload: RenameBoardBody):
         description=payload.description,
         icon=payload.icon,
         color=payload.color,
+        archived=payload.archived,
     )
     return {"board": meta}
 
 
 @router.delete("/boards/{slug}")
 def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
-    """Archive (default) or hard-delete a board."""
+    """Archive (default) or hard-delete a board.
+
+    Archive is a REVERSIBLE metadata flag (``archived=true``) that hides the
+    board from the picker (it reappears under "Show archived" and is undone via
+    PATCH ``archived=false``). It deliberately does NOT move the board
+    directory: a moved board is auto-re-created the next time any read (e.g. the
+    dashboard polling the still-selected board) calls ``connect()`` /
+    ``init_db()``, so the board would reappear despite being "archived". Keeping
+    the directory in place and flagging it archived is what ``include_archived``
+    / the "Show archived" toggle already expect. Hard-delete (``?delete=true``)
+    removes the board outright.
+    """
     try:
-        res = kanban_db.remove_board(slug, archive=not delete)
+        normed = kanban_db._normalize_board_slug(slug)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if not normed or not kanban_db.board_exists(normed):
+        raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
+    if delete:
+        res = kanban_db.remove_board(normed, archive=False)
+    else:
+        kanban_db.write_board_metadata(normed, archived=True)
+        res = {"slug": normed, "action": "archived"}
     return {"result": res, "current": kanban_db.get_current_board()}
 
 

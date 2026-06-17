@@ -2252,3 +2252,45 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+# ---------------------------------------------------------------------------
+# Archiving a board must be a sticky, reversible flag — not a directory move
+# that auto-resurrects on the next read. Regression for: archived board keeps
+# reappearing in the picker.
+# ---------------------------------------------------------------------------
+
+
+def test_archive_board_is_sticky_flag_and_survives_reads(client):
+    # create a board
+    r = client.post("/api/plugins/kanban/boards", json={"slug": "toarchive", "name": "To Archive"})
+    assert r.status_code == 200
+
+    # archive it (the dashboard "Archive" action: DELETE ?delete=false)
+    r = client.delete("/api/plugins/kanban/boards/toarchive")
+    assert r.status_code == 200
+    assert r.json()["result"].get("action") == "archived"
+
+    # hidden from the default picker, visible only under "Show archived"
+    picker = {b["slug"] for b in client.get("/api/plugins/kanban/boards").json()["boards"]}
+    assert "toarchive" not in picker
+    witharch = {b["slug"]: b for b in client.get("/api/plugins/kanban/boards?include_archived=true").json()["boards"]}
+    assert witharch.get("toarchive", {}).get("archived") is True
+
+    # reading the board (as the dashboard does when it's the selected board)
+    # must NOT resurrect it as a fresh un-archived board
+    assert client.get("/api/plugins/kanban/board?board=toarchive").status_code == 200
+    picker_after = {b["slug"] for b in client.get("/api/plugins/kanban/boards").json()["boards"]}
+    assert "toarchive" not in picker_after  # still archived after a read
+
+    # un-archive via PATCH archived=false brings it back
+    r = client.patch("/api/plugins/kanban/boards/toarchive", json={"archived": False})
+    assert r.status_code == 200
+    assert "toarchive" in {b["slug"] for b in client.get("/api/plugins/kanban/boards").json()["boards"]}
+
+
+def test_hard_delete_board_still_removes(client):
+    client.post("/api/plugins/kanban/boards", json={"slug": "todelete", "name": "To Delete"})
+    r = client.delete("/api/plugins/kanban/boards/todelete?delete=true")
+    assert r.status_code == 200
+    assert "todelete" not in {b["slug"] for b in client.get("/api/plugins/kanban/boards?include_archived=true").json()["boards"]}

@@ -6076,6 +6076,10 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    route_watchdog_hits: list[tuple[str, str, str]] = field(default_factory=list)
+    """Route-watchdog decisions recorded during dispatch, as
+    ``(task_id, kind, action)`` triples. The watchdog is fail-open; this is
+    telemetry and review signal, not a hard dependency on spawning."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7274,6 +7278,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    route_watchdog: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7308,6 +7313,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_watchdog=route_watchdog,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7324,6 +7330,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_watchdog=route_watchdog,
         )
 
 
@@ -7340,6 +7347,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    route_watchdog: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7412,6 +7420,71 @@ def _dispatch_once_locked(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
             ).fetchone()[0]
         )
+
+    route_watchdog_cfg = None
+    route_watchdog_eval = None
+    route_watchdog_board_meta = None
+    if route_watchdog is not None:
+        try:
+            from hermes_cli.kanban_route_watchdog import evaluate_route as route_watchdog_eval_fn
+            from hermes_cli.kanban_route_watchdog import load_watchdog_config
+
+            route_watchdog_cfg = load_watchdog_config(route_watchdog)
+            if route_watchdog_cfg.enabled:
+                route_watchdog_eval = route_watchdog_eval_fn
+                route_watchdog_board_meta = read_board_metadata(board)
+        except Exception:
+            route_watchdog_cfg = None
+            route_watchdog_eval = None
+            route_watchdog_board_meta = None
+
+    def _apply_route_watchdog(task_id: str) -> bool:
+        """Best-effort route watchdog hook.
+
+        Returns True when the watchdog already held the task and the normal
+        spawn path should stop. Never raises.
+        """
+        if route_watchdog_cfg is None or route_watchdog_eval is None:
+            return False
+        try:
+            task = get_task(conn, task_id)
+            if task is None:
+                return False
+            child_ids = [
+                row["child_id"]
+                for row in conn.execute(
+                    "SELECT child_id FROM task_links WHERE parent_id = ?",
+                    (task_id,),
+                )
+            ]
+            decision = route_watchdog_eval(
+                task,
+                config=route_watchdog_cfg,
+                board_meta=route_watchdog_board_meta,
+                child_ids=child_ids,
+            )
+            if decision is None:
+                return False
+            action = "commented"
+            if not dry_run:
+                try:
+                    add_comment(conn, task_id, "route-watchdog", decision.comment_body())
+                except Exception:
+                    pass
+                if route_watchdog_cfg.mode == "hold":
+                    try:
+                        if block_task(conn, task_id, reason=decision.review_reason()):
+                            action = "blocked"
+                    except Exception:
+                        pass
+            else:
+                action = "would_block" if route_watchdog_cfg.mode == "hold" else "would_comment"
+            result.route_watchdog_hits.append((task_id, decision.kind, action))
+            if dry_run:
+                return route_watchdog_cfg.mode == "hold"
+            return route_watchdog_cfg.mode == "hold" and action == "blocked"
+        except Exception:
+            return False
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
@@ -7526,6 +7599,8 @@ def _dispatch_once_locked(
         # subprocess would crash on startup, get reaped as a zombie,
         # the task would loop back to ``ready`` on next tick, and we'd
         # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
+        if _apply_route_watchdog(row["id"]):
+            continue
         try:
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:

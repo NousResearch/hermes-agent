@@ -32,12 +32,32 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_TELEGRAM_TYPING_MAX_SECONDS_DEFAULT = 30.0
 
 
 def _platform_name(platform) -> str:
     """Normalize a Platform enum / raw string into a lowercase name."""
     value = getattr(platform, "value", platform)
     return str(value or "").lower()
+
+
+def _telegram_typing_max_seconds() -> float | None:
+    """Return Telegram's max continuous typing refresh duration.
+
+    Telegram has no explicit "stop typing" Bot API call; the indicator stops
+    only when the bot stops refreshing ``send_chat_action``.  Keep a short
+    default cap so an orphaned or very long gateway task cannot make one chat
+    look like Hermes is typing forever.  Set
+    ``HERMES_TELEGRAM_TYPING_MAX_SECONDS=0`` to opt out.
+    """
+    raw = os.getenv("HERMES_TELEGRAM_TYPING_MAX_SECONDS")
+    if raw is None or raw == "":
+        return _TELEGRAM_TYPING_MAX_SECONDS_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _TELEGRAM_TYPING_MAX_SECONDS_DEFAULT
+    return value if value > 0 else None
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
@@ -2173,9 +2193,21 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        _loop = asyncio.get_running_loop()
+        _typing_started_at = _loop.time()
+        _max_typing_seconds = (
+            _telegram_typing_max_seconds()
+            if _platform_name(getattr(self, "platform", None)) == "telegram"
+            else None
+        )
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
+                    return
+                if (
+                    _max_typing_seconds is not None
+                    and _loop.time() - _typing_started_at >= _max_typing_seconds
+                ):
                     return
                 if chat_id not in self._typing_paused:
                     try:

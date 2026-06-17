@@ -198,3 +198,38 @@ class TestKeepTypingTimeoutPerTick:
         assert calls == [], (
             f"send_typing was called on a paused chat: {calls}"
         )
+
+    @pytest.mark.asyncio
+    async def test_telegram_typing_refresh_stops_after_max_duration(self, monkeypatch):
+        """Telegram typing must not be refreshed forever.
+
+        Telegram has no explicit stop-typing call, so an orphaned keep-typing
+        task can make one DM look like Hermes is typing indefinitely. The
+        Telegram-specific cap lets the loop exit on its own even while the
+        outer gateway turn is still running.
+        """
+        monkeypatch.setenv("HERMES_TELEGRAM_TYPING_MAX_SECONDS", "0.35")
+        adapter = _StubAdapter()
+        calls = []
+
+        async def recording_send_typing(chat_id, metadata=None):
+            calls.append(chat_id)
+
+        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
+        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
+
+        # No stop_event.set(): the loop should exit because the Telegram max
+        # duration elapses, not because the surrounding gateway turn ended.
+        task = asyncio.create_task(
+            adapter._keep_typing(
+                chat_id="telegram-chat",
+                interval=0.1,
+                stop_event=asyncio.Event(),
+            )
+        )
+        await asyncio.wait_for(task, timeout=1.5)
+
+        assert 1 <= len(calls) <= 5, (
+            f"expected a short burst of typing refreshes before the cap, "
+            f"got {len(calls)} calls"
+        )

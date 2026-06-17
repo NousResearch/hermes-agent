@@ -313,8 +313,10 @@ def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path
     assert "files" in captured_kwargs
     assert "json" not in captured_kwargs
     headers = captured_kwargs["headers"]
-    assert headers["X-OpenViking-Account"] == "test-account"
-    assert headers["X-OpenViking-User"] == "test-user"
+    # With api_key set, tenant headers are omitted (OV v0.4.1+ derives
+    # tenancy from the key).
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
     assert headers["X-OpenViking-Agent"] == "test-agent"
     assert headers["X-API-Key"] == "test-key"
     assert "Content-Type" not in headers
@@ -353,10 +355,8 @@ def test_viking_client_headers_include_bearer_when_api_key_set():
 
 
 def test_viking_client_headers_send_tenant_when_default():
-    # account/user set to the literal string "default". OpenViking 0.3.x
-    # requires X-OpenViking-Account and X-OpenViking-User for ROOT API key
-    # requests to tenant-scoped APIs — omitting them causes
-    # INVALID_ARGUMENT errors even when account="default".
+    # With api_key set, tenant headers are NOT sent even when
+    # account/user are "default" — OV v0.4.1+ derives tenancy from the key.
     client = _VikingClient(
         "https://example.com",
         api_key="test-key",
@@ -365,8 +365,8 @@ def test_viking_client_headers_send_tenant_when_default():
         agent="hermes",
     )
     headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "default"
-    assert headers["X-OpenViking-User"] == "default"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
     assert headers["X-OpenViking-Agent"] == "hermes"
     assert headers["Authorization"] == "Bearer test-key"
 
@@ -389,6 +389,8 @@ def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
 
 
 def test_viking_client_headers_sent_with_real_tenant_values():
+    # With api_key set, tenant headers are NOT sent — OV v0.4.1+ derives
+    # tenancy from the key.
     client = _VikingClient(
         "https://example.com",
         api_key="test-key",
@@ -397,8 +399,8 @@ def test_viking_client_headers_sent_with_real_tenant_values():
         agent="hermes",
     )
     headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "real-account"
-    assert headers["X-OpenViking-User"] == "real-user"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
 
 
 def test_viking_client_health_sends_auth_headers(monkeypatch):
@@ -409,6 +411,7 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
         user="",
         agent="hermes",
     )
+    # With api_key set, tenant headers are NOT sent (OV v0.4.1+).
     captured = {}
 
     def capture_get(url, **kwargs):

@@ -954,6 +954,70 @@ def build_environment_hints() -> str:
     return "\n\n".join(hints)
 
 
+
+def build_frequent_files_hints() -> str:
+    """Return a list of frequently-used file paths for the system prompt.
+
+    The LLM often wastes iterations searching for files it should already
+    know the location of (MEMORY.md, config.yaml, etc.).  Injecting their
+    absolute paths into the system prompt eliminates these search rounds.
+
+    Standard paths are derived from ``hermes_constants`` helpers.  Users can
+    add their own entries via ``config.yaml`` ``agent.frequent_files``
+    (a list of file/directory paths).
+
+    Missing paths are silently skipped (debug-logged) so the list is always
+    valid regardless of profile layout.
+    """
+    from hermes_constants import (
+        get_hermes_home,
+        get_skills_dir,
+        get_memory_dir,
+        get_env_path,
+    )
+
+    home = get_hermes_home()
+    lines: list[str] = []
+
+    # ── Standard paths (always present in a healthy Hermes install) ──
+    standard_paths = [
+        ("Memory store", get_memory_dir() / "MEMORY.md"),
+        ("User profile", get_memory_dir() / "USER.md"),
+        ("Identity", home / "SOUL.md"),
+        ("Configuration", home / "config.yaml"),
+        ("Skills directory", get_skills_dir()),
+        ("Environment", get_env_path()),
+        ("Sessions DB", home / "sessions.db"),
+    ]
+
+    found = []
+    for label, path in standard_paths:
+        if path.exists():
+            found.append(f"- {label}: {path}")
+        else:
+            logger.debug("frequent_files: standard path missing: %s", path)
+
+    # ── User-configured paths from config.yaml ──
+    try:
+        from hermes_cli.config import get_config
+        cfg = get_config()
+        user_paths = (cfg.get("agent", {}) or {}).get("frequent_files", [])
+    except Exception:
+        user_paths = []
+
+    for raw in user_paths:
+        p = Path(raw).expanduser()
+        if p.exists():
+            found.append(f"- {p.name}: {p}")
+        else:
+            logger.debug("frequent_files: user path missing: %s", raw)
+
+    if not found:
+        return ""
+
+    return "## Frequent File Paths\n" + "\n".join(found)
+
+
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2

@@ -236,6 +236,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
+    # Frequently-used file paths so the model doesn't waste iterations
+    # searching for MEMORY.md, config.yaml, etc.  Small (~100 tokens)
+    # but saves many search iterations per session.
+    _freq_files = _r.build_frequent_files_hints()
+    if _freq_files:
+        stable_parts.append(_freq_files)
+
     # Coding posture (base Hermes, any interactive coding surface in a code
     # workspace — see agent/coding_context.py). The operating brief + the live
     # git/workspace snapshot are built once here and cached for the session;

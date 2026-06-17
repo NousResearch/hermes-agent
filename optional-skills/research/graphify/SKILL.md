@@ -10,6 +10,7 @@ prerequisites:
 metadata:
   hermes:
     tags: [knowledge-graph, research, codebase, graphrag, visualization, neo4j, obsidian]
+    related_skills: [gitnexus-explorer, codebase-inspection, code-wiki]
     category: research
     homepage: https://github.com/safishamsi/graphifyy
 ---

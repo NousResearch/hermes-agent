@@ -13,12 +13,15 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [validation, quality, review, subagent, testing, verification]
+    related_skills: [subagent-driven-development, requesting-code-review, test-driven-development]
     category: software-development
 ---
 
 # Implementation Validator — Quality Subagent
 
 You are a critical reviewer. Another skill or agent has just done work and wants you to check it. Your job is to verify that what was produced actually matches what was intended — not to be encouraging, but to catch real problems before the user sees them.
+
+**vs. `subagent-driven-development`:** That skill determines *how* to execute a plan (fan-out, parallel tasks, two-stage review). This skill validates *output quality after execution* — it answers "did what was produced actually match the goal?" You can use both together: `subagent-driven-development` to run the work, `impl-validator` to check the result before presenting it to the user.
 
 This skill runs in two modes:
 

@@ -5110,16 +5110,22 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
-def _electron_dist_binary(project_root: Path) -> Path:
-    """Return the path to the Electron main binary inside ``node_modules``.
+def _desktop_electron_package_dir(project_root: Path) -> Path:
+    """Return the desktop workspace's installed ``electron`` package dir."""
+    return project_root / "apps" / "desktop" / "node_modules" / "electron"
 
-    electron-builder reads the binary from ``build.electronDist``
-    (``node_modules/electron/dist``) since #38673, so this is the exact file
-    whose absence makes a pack fail with "The specified electronDist does not
-    exist". The basename differs per OS (the platform Electron is named for the
-    host the build runs on).
+
+def _electron_dist_binary(project_root: Path) -> Path:
+    """Return the path to the Electron main binary inside the desktop workspace.
+
+    electron-builder resolves ``build.electronDist`` relative to the desktop
+    project dir. With npm workspace installs, the Electron package lives at
+    ``apps/desktop/node_modules/electron``, so this is the exact file whose
+    absence makes a pack fail with "The specified electronDist does not exist".
+    The basename differs per OS (the platform Electron is named for the host the
+    build runs on).
     """
-    dist = project_root / "node_modules" / "electron" / "dist"
+    dist = _desktop_electron_package_dir(project_root) / "dist"
     if sys.platform == "darwin":
         return dist / "Electron.app" / "Contents" / "MacOS" / "Electron"
     if sys.platform == "win32":
@@ -5128,7 +5134,7 @@ def _electron_dist_binary(project_root: Path) -> Path:
 
 
 def _electron_dist_ok(project_root: Path) -> bool:
-    """True when ``node_modules/electron/dist`` holds a usable Electron binary.
+    """True when the desktop workspace Electron dist holds a usable binary.
 
     A directory that exists but is missing the binary (a partial extraction from
     a corrupt cached zip, or an interrupted postinstall) counts as NOT ok, since
@@ -5147,17 +5153,17 @@ def _redownload_electron_dist(
     *,
     mirror: Optional[str] = None,
 ) -> bool:
-    """(Re)populate ``node_modules/electron/dist`` via electron's own downloader.
+    """(Re)populate desktop Electron's ``dist`` via electron's own downloader.
 
-    Since #38673 the desktop build pins ``build.electronDist`` to
-    ``node_modules/electron/dist``, so electron-builder reads the Electron binary
-    straight from there and never downloads it during ``npm run pack``. That dist
-    tree is produced by the ``electron`` package's postinstall (``install.js``)
-    during ``npm ci``. When that download is blocked or throttled (GitHub's
-    release host is unreachable in some regions — #47266), the dist is missing
-    and re-running ``pack`` only re-throws "The specified electronDist does not
-    exist". The mirror fallback therefore has to drive *this* downloader, not
-    another ``pack``.
+    Since #38673 the desktop build pins ``build.electronDist``, so
+    electron-builder reads the Electron binary straight from there and never
+    downloads it during ``npm run pack``. That dist tree is produced by the
+    desktop workspace's ``electron`` package postinstall (``install.js``) during
+    ``npm ci``. When that download is blocked or throttled (GitHub's release host
+    is unreachable in some regions — #47266), the dist is missing and re-running
+    ``pack`` only re-throws "The specified electronDist does not exist". The
+    mirror fallback therefore has to drive *this* downloader, not another
+    ``pack``.
 
     No-op (returns True) when the dist binary is already present, so an unrelated
     build failure doesn't trigger a needless ~200 MB re-download. Otherwise drops
@@ -5169,7 +5175,7 @@ def _redownload_electron_dist(
     if _electron_dist_ok(project_root):
         return True
 
-    electron_dir = project_root / "node_modules" / "electron"
+    electron_dir = _desktop_electron_package_dir(project_root)
     installer = electron_dir / "install.js"
     if not installer.is_file():
         return False
@@ -5387,7 +5393,7 @@ def cmd_gui(args: argparse.Namespace):
                 print("  Pre-build first:  cd apps/desktop && npm run build")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
-            if not (PROJECT_ROOT / "node_modules" / "electron" / "package.json").exists():
+            if not (_desktop_electron_package_dir(PROJECT_ROOT) / "package.json").exists():
                 print("✗ --skip-build --source requires existing workspace dependencies.")
                 print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
@@ -5448,7 +5454,7 @@ def cmd_gui(args: argparse.Namespace):
                 # failure was something else, the clean re-download is harmless
                 # and the retry fails the same way.
                 purged = _purge_electron_build_cache(desktop_dir)
-                # electronDist is pinned to node_modules/electron/dist (#38673):
+                # electronDist is pinned to apps/desktop/node_modules/electron/dist (#38673):
                 # electron-builder reads the Electron binary from there and `pack`
                 # never downloads it, so purging the cache + re-running pack can't
                 # by itself repopulate a missing/partial dist. When the dist is
@@ -5495,7 +5501,7 @@ def cmd_gui(args: argparse.Namespace):
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
                 else:
                     print("  ✗ Could not re-download Electron from the mirror "
-                          "(node_modules/electron/dist still missing)")
+                          "(apps/desktop/node_modules/electron/dist still missing)")
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")

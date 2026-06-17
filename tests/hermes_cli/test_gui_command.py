@@ -246,6 +246,30 @@ def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch)
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 
 
+def test_gui_skip_build_source_accepts_desktop_workspace_electron(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    (desktop_dir / "dist").mkdir()
+    (desktop_dir / "dist" / "index.html").write_text("", encoding="utf-8")
+    (desktop_dir / "node_modules" / "electron").mkdir(parents=True)
+    (desktop_dir / "node_modules" / "electron" / "package.json").write_text("{}", encoding="utf-8")
+
+    launch_ok = subprocess.CompletedProcess(["npm", "exec", "--", "electron", "."], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(source=True, skip_build=True))
+
+    assert exc.value.code == 0
+    mock_install.assert_not_called()
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == ["/usr/bin/npm", "exec", "--", "electron", "."]
+    assert mock_run.call_args.kwargs["cwd"] == desktop_dir
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -605,7 +629,7 @@ def test_gui_does_not_override_user_electron_mirror(tmp_path, monkeypatch, capsy
 )
 def test_electron_dist_ok_per_platform(tmp_path, monkeypatch, platform, rel):
     monkeypatch.setattr(cli_main.sys, "platform", platform)
-    electron = tmp_path / "node_modules" / "electron"
+    electron = tmp_path / "apps" / "desktop" / "node_modules" / "electron"
     # A dist dir that exists but lacks the binary is NOT ok (partial extraction).
     (electron / "dist").mkdir(parents=True)
     assert cli_main._electron_dist_ok(tmp_path) is False
@@ -620,7 +644,7 @@ def test_redownload_electron_dist_noop_when_present(tmp_path, monkeypatch):
     """Already-healthy dist → no download, so an unrelated build failure can't
     trigger a needless ~200 MB refetch."""
     monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    binp = tmp_path / "node_modules" / "electron" / "dist" / "electron"
+    binp = tmp_path / "apps" / "desktop" / "node_modules" / "electron" / "dist" / "electron"
     binp.parent.mkdir(parents=True)
     binp.write_text("", encoding="utf-8")
 
@@ -632,7 +656,7 @@ def test_redownload_electron_dist_noop_when_present(tmp_path, monkeypatch):
 def test_redownload_electron_dist_missing_installer(tmp_path, monkeypatch):
     """No electron/install.js (deps never installed) → nothing to run."""
     monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    (tmp_path / "node_modules" / "electron").mkdir(parents=True)
+    (tmp_path / "apps" / "desktop" / "node_modules" / "electron").mkdir(parents=True)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
          patch("hermes_cli.main.subprocess.run") as mock_run:
@@ -644,7 +668,7 @@ def test_redownload_electron_dist_runs_installer_with_mirror(tmp_path, monkeypat
     """Missing dist → wipe any partial dist + version marker, run electron's own
     install.js with ELECTRON_MIRROR injected, and report success on the binary."""
     monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    electron = tmp_path / "node_modules" / "electron"
+    electron = tmp_path / "apps" / "desktop" / "node_modules" / "electron"
     electron.mkdir(parents=True)
     (electron / "install.js").write_text("// stub", encoding="utf-8")
     # A stale partial dist + version marker that MUST be cleared first, otherwise
@@ -684,7 +708,7 @@ def test_redownload_electron_dist_returns_false_when_download_fails(tmp_path, mo
     """install.js ran but produced no binary (still blocked) → False, so the
     caller skips a doomed pack."""
     monkeypatch.setattr(cli_main.sys, "platform", "linux")
-    electron = tmp_path / "node_modules" / "electron"
+    electron = tmp_path / "apps" / "desktop" / "node_modules" / "electron"
     electron.mkdir(parents=True)
     (electron / "install.js").write_text("// stub", encoding="utf-8")
 

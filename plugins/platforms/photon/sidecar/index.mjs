@@ -57,6 +57,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
+import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
@@ -89,7 +90,26 @@ if (!projectId || !projectSecret || !sharedToken) {
 }
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
-// instead of a cryptic module-resolution error during import.
+// instead of a cryptic module-resolution error during import. Apply Hermes'
+// pinned-sdk compatibility patch first so existing installs self-heal at
+// runtime, not only during npm postinstall.
+try {
+  const patchResult = patchSpectrumTs();
+  if (patchResult.patched) {
+    console.error(
+      `photon-sidecar: spectrum mixed attachment patch applied: ${patchResult.file}`
+    );
+  }
+} catch (e) {
+  console.error(
+    "photon-sidecar: spectrum mixed attachment patch failed. " +
+      "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
+      "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
+      "Original error: " +
+      (e && e.stack ? e.stack : String(e))
+  );
+  process.exit(3);
+}
 let Spectrum,
   imessage,
   attachment,
@@ -272,6 +292,16 @@ async function normalizeContent(content) {
   }
   if (content.type === "attachment" || content.type === "voice") {
     return await normalizeBinaryContent(content);
+  }
+  if (content.type === "group") {
+    const items = [];
+    for (const item of Array.isArray(content.items) ? content.items : []) {
+      items.push({
+        id: item && typeof item === "object" ? item.id ?? null : null,
+        content: await normalizeContent(item?.content),
+      });
+    }
+    return { type: "group", items };
   }
   if (content.type === "reaction") {
     return {

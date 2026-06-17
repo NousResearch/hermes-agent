@@ -2161,28 +2161,41 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
-# True when node_modules\electron\dist holds a usable Electron binary.
-# electron-builder reads the binary from build.electronDist
-# (node_modules\electron\dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing electron.exe (partial extraction / aborted
-# postinstall) is NOT ok.
+# Return the Electron package directory the desktop workspace installs. npm may
+# nest workspace-only dev dependencies under apps\desktop\node_modules instead
+# of hoisting them to the repo root; which layout you get depends on the npm
+# version and what else is installed. apps\desktop\package.json points
+# electron-builder's electronDist there, so prefer the workspace-local package
+# and fall back to the root hoist.
+function Get-ElectronDir {
+    param([string]$InstallDir)
+    $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
+    if (Test-Path -LiteralPath $desktopLocal) { return $desktopLocal }
+    return (Join-Path $InstallDir 'node_modules\electron')
+}
+
+# True when the desktop workspace electronDist holds a usable Electron binary.
+# electron-builder reads the binary from build.electronDist since #38673, so
+# this is the exact file whose absence makes a pack fail with "The specified
+# electronDist does not exist". A dist dir that exists but is missing
+# electron.exe (partial extraction / aborted postinstall) is NOT ok.
 function Test-ElectronDist {
     param([string]$InstallDir)
-    $distExe = Join-Path $InstallDir 'node_modules\electron\dist\electron.exe'
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
     return (Test-Path -LiteralPath $distExe)
 }
 
-# (Re)populate node_modules\electron\dist via electron's own downloader.
+# (Re)populate the desktop Electron dist via electron's own downloader.
 #
-# Since #38673 the desktop build pins build.electronDist to
-# node_modules\electron\dist, so electron-builder reads the Electron binary
-# straight from there and never downloads it during `npm run pack`. That dist
-# tree is produced by the electron package's postinstall (install.js) during
-# `npm ci`. When that download is blocked/throttled (GitHub's release host is
-# unreachable in some regions - #47266), dist is missing and re-running pack only
-# re-throws "The specified electronDist does not exist". The mirror fallback
-# therefore has to drive THIS downloader, not another pack.
+# Since #38673 the desktop build pins build.electronDist, so electron-builder
+# reads the Electron binary straight from there and never downloads it during
+# `npm run pack`. That dist tree is produced by the electron package's
+# postinstall (install.js) during `npm ci`. When that download is
+# blocked/throttled (GitHub's release host is unreachable in some regions -
+# #47266), dist is missing and re-running pack only re-throws "The specified
+# electronDist does not exist". The mirror fallback therefore has to drive THIS
+# downloader, not another pack.
 #
 # No-op (returns $true) when the dist binary is already present. Otherwise drops a
 # partial dist + version marker (electron's install.js short-circuits when
@@ -2193,7 +2206,7 @@ function Restore-ElectronDist {
     param([string]$InstallDir, [string]$Mirror)
     if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
 
-    $electronDir = Join-Path $InstallDir 'node_modules\electron'
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
     $distExe = Join-Path $electronDir 'dist\electron.exe'
     $installer = Join-Path $electronDir 'install.js'
     if (-not (Test-Path -LiteralPath $installer)) { return $false }

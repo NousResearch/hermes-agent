@@ -3725,6 +3725,78 @@ def _set_nested(config, dotted_key: str, value):
         current[last] = value
 
 
+_CONFIG_DEFAULT_MISSING = object()
+_CONFIG_BOOL_TRUE = {"true", "yes", "on", "1"}
+_CONFIG_BOOL_FALSE = {"false", "no", "off", "0"}
+
+
+def _default_config_value_for_key(dotted_key: str) -> Any:
+    current: Any = DEFAULT_CONFIG
+    for part in dotted_key.split("."):
+        if isinstance(current, dict):
+            if part not in current:
+                return _CONFIG_DEFAULT_MISSING
+            current = current[part]
+            continue
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+            except (TypeError, ValueError):
+                return _CONFIG_DEFAULT_MISSING
+            if idx < 0 or idx >= len(current):
+                return _CONFIG_DEFAULT_MISSING
+            current = current[idx]
+            continue
+        return _CONFIG_DEFAULT_MISSING
+    return current
+
+
+def _coerce_config_set_value(key: str, value: str) -> Any:
+    """Coerce ``hermes config set`` values only when the key's type is known.
+
+    The old global ``on/off`` heuristic corrupted string enums such as
+    ``approvals.mode=off``.  Keep numeric convenience for unknown extension
+    keys, but reserve boolean word parsing for keys whose default is boolean.
+    """
+    if not isinstance(value, str):
+        return value
+
+    default_value = _default_config_value_for_key(key)
+    stripped = value.strip()
+    lowered = stripped.lower()
+
+    if isinstance(default_value, bool):
+        if lowered in _CONFIG_BOOL_TRUE:
+            return True
+        if lowered in _CONFIG_BOOL_FALSE:
+            return False
+        return value
+
+    if isinstance(default_value, int) and not isinstance(default_value, bool):
+        try:
+            return int(stripped)
+        except ValueError:
+            return value
+
+    if isinstance(default_value, float):
+        try:
+            return float(stripped)
+        except ValueError:
+            return value
+
+    if default_value is _CONFIG_DEFAULT_MISSING or default_value is None:
+        try:
+            return int(stripped)
+        except ValueError:
+            pass
+        try:
+            return float(stripped)
+        except ValueError:
+            return value
+
+    return value
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
@@ -6295,15 +6367,7 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    value = _coerce_config_set_value(key, value)
 
     _set_nested(user_config, key, value)
     

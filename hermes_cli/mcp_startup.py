@@ -8,6 +8,7 @@ from typing import Optional
 _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
+DEFAULT_MCP_DISCOVERY_WAIT_SECONDS = 6.0
 
 
 def _has_configured_mcp_servers() -> bool:
@@ -40,7 +41,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 
                 discover_mcp_tools()
             except Exception:
-                logger.debug("Background MCP tool discovery failed", exc_info=True)
+                logger.warning("Background MCP tool discovery failed", exc_info=True)
 
         thread = threading.Thread(
             target=_discover,
@@ -51,7 +52,7 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
+def wait_for_mcp_discovery(timeout: float = DEFAULT_MCP_DISCOVERY_WAIT_SECONDS) -> None:
     """Briefly wait for background MCP discovery before the first tool snapshot."""
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():

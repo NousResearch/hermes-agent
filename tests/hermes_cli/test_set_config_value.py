@@ -5,6 +5,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_cli.config import set_config_value, config_command
 
@@ -123,6 +124,20 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_string_enum_off_stays_string(self, _isolated_hermes_home):
+        """String enum values like approvals.mode=off must not become False."""
+        set_config_value("approvals.mode", "off")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["approvals"]["mode"] == "off"
+
+    def test_unknown_on_off_values_stay_strings(self, _isolated_hermes_home):
+        """Unknown config keys must not guess that enum-looking strings are bools."""
+        set_config_value("custom_feature.mode", "on")
+        set_config_value("custom_feature.other_mode", "off")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["custom_feature"]["mode"] == "on"
+        assert reloaded["custom_feature"]["other_mode"] == "off"
 
 
 # ---------------------------------------------------------------------------

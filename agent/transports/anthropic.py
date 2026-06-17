@@ -4,10 +4,136 @@ Delegates to the existing adapter functions in agent/anthropic_adapter.py.
 This transport owns format conversion and normalization — NOT client lifecycle.
 """
 
-from typing import Any, Dict, List, Optional
+import html
+import json
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse
+from agent.transports.types import NormalizedResponse, ToolCall
+
+
+_NAME_ATTR_RE = re.compile(r"""\bname\s*=\s*(?P<quote>["'])(?P<name>.*?)(?P=quote)""", re.IGNORECASE)
+_TEXT_INVOKE_RE = re.compile(
+    r"""<(?:[A-Za-z_][\w.-]*:)?(?P<tag>invoke|function)\b(?P<attrs>[^>]*)>"""
+    r"""(?P<body>.*?)"""
+    r"""</(?:[A-Za-z_][\w.-]*:)?(?P=tag)>""",
+    re.DOTALL | re.IGNORECASE,
+)
+_TEXT_PARAMETER_RE = re.compile(
+    r"""<(?:[A-Za-z_][\w.-]*:)?parameter\b(?P<attrs>[^>]*)>"""
+    r"""(?P<value>.*?)"""
+    r"""</(?:[A-Za-z_][\w.-]*:)?parameter>""",
+    re.DOTALL | re.IGNORECASE,
+)
+_TEXT_JSON_TOOL_RE = re.compile(
+    r"""<(?P<tag>tool_call|function_call)\b[^>]*>(?P<body>.*?)</(?P=tag)>""",
+    re.DOTALL | re.IGNORECASE,
+)
+_TEXT_JSON_TOOL_LIST_RE = re.compile(
+    r"""<(?P<tag>tool_calls|function_calls)\b[^>]*>(?P<body>.*?)</(?P=tag)>""",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _parse_text_tool_value(raw: str) -> Any:
+    value = html.unescape(raw).strip()
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return value
+
+
+def _extract_attr_name(attrs: str) -> Optional[str]:
+    match = _NAME_ATTR_RE.search(attrs or "")
+    if not match:
+        return None
+    name = html.unescape(match.group("name")).strip()
+    return name or None
+
+
+def _tool_call_from_text_invoke(match: re.Match[str], index: int) -> Optional[ToolCall]:
+    name = _extract_attr_name(match.group("attrs"))
+    if not name:
+        return None
+
+    arguments: Dict[str, Any] = {}
+    for param in _TEXT_PARAMETER_RE.finditer(match.group("body") or ""):
+        param_name = _extract_attr_name(param.group("attrs"))
+        if not param_name:
+            continue
+        arguments[param_name] = _parse_text_tool_value(param.group("value"))
+
+    return ToolCall(
+        id=f"toolu_text_{index}",
+        name=name,
+        arguments=json.dumps(arguments, ensure_ascii=False),
+    )
+
+
+def _tool_calls_from_json_payload(payload: Any, start_index: int) -> List[ToolCall]:
+    if isinstance(payload, dict):
+        entries = [payload]
+    elif isinstance(payload, list):
+        entries = [entry for entry in payload if isinstance(entry, dict)]
+    else:
+        return []
+
+    calls: List[ToolCall] = []
+    for entry in entries:
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        arguments = entry.get("arguments", entry.get("input", {}))
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        calls.append(
+            ToolCall(
+                id=str(entry.get("id") or f"toolu_text_{start_index + len(calls)}"),
+                name=name.strip(),
+                arguments=json.dumps(arguments, ensure_ascii=False),
+            )
+        )
+    return calls
+
+
+def _salvage_text_tool_calls(text: str) -> Tuple[List[ToolCall], str]:
+    """Promote complete tool-call markup leaked into Anthropic text blocks."""
+    if not text:
+        return [], text
+
+    tool_calls: List[ToolCall] = []
+
+    def _replace_invoke(match: re.Match[str]) -> str:
+        tool_call = _tool_call_from_text_invoke(match, len(tool_calls) + 1)
+        if not tool_call:
+            return match.group(0)
+        tool_calls.append(tool_call)
+        return ""
+
+    stripped = _TEXT_INVOKE_RE.sub(_replace_invoke, text)
+
+    def _replace_json(match: re.Match[str]) -> str:
+        try:
+            payload = json.loads(match.group("body").strip())
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return match.group(0)
+        calls = _tool_calls_from_json_payload(payload, len(tool_calls) + 1)
+        if not calls:
+            return match.group(0)
+        tool_calls.extend(calls)
+        return ""
+
+    stripped = _TEXT_JSON_TOOL_RE.sub(_replace_json, stripped)
+    stripped = _TEXT_JSON_TOOL_LIST_RE.sub(_replace_json, stripped)
+    stripped = re.sub(r"[ \t]+\n", "\n", stripped)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip()
+    return tool_calls, stripped
 
 
 class AnthropicTransport(ProviderTransport):
@@ -83,9 +209,7 @@ class AnthropicTransport(ProviderTransport):
         Parses content blocks (text, thinking, tool_use), maps stop_reason
         to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
-        import json
         from agent.anthropic_adapter import _to_plain_data, _sanitize_replay_block
-        from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
         _MCP_PREFIX = "mcp_"
@@ -152,6 +276,13 @@ class AnthropicTransport(ProviderTransport):
                 )
 
         finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
+        content = "\n".join(text_parts) if text_parts else None
+        if not tool_calls and content:
+            salvaged_tool_calls, stripped_content = _salvage_text_tool_calls(content)
+            if salvaged_tool_calls:
+                tool_calls.extend(salvaged_tool_calls)
+                content = stripped_content or None
+                finish_reason = "tool_calls"
 
         provider_data = {}
         if reasoning_details:
@@ -175,7 +306,7 @@ class AnthropicTransport(ProviderTransport):
             provider_data["anthropic_content_blocks"] = ordered_blocks
 
         return NormalizedResponse(
-            content="\n".join(text_parts) if text_parts else None,
+            content=content,
             tool_calls=tool_calls or None,
             finish_reason=finish_reason,
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,

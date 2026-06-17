@@ -90,6 +90,60 @@ class TestCompressionBoundaryHook:
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
 
+    def test_old_session_messages_flushed_before_end_session(self):
+        """Compression must persist the old turn before closing its DB session."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "tail question"},
+            ]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+
+            messages = [
+                {"role": "user", "content": "unflushed question"},
+                {"role": "assistant", "content": "unflushed answer"},
+            ]
+            original_sid = agent.session_id
+            events = []
+
+            real_flush = agent._flush_messages_to_session_db
+
+            def _spy_flush(flush_messages, conversation_history=None):
+                events.append(("flush", agent.session_id))
+                return real_flush(flush_messages, conversation_history)
+
+            real_end_session = db.end_session
+
+            def _spy_end_session(session_id, end_reason=None):
+                events.append(("end_session", session_id))
+                return real_end_session(session_id, end_reason)
+
+            agent._flush_messages_to_session_db = _spy_flush
+            db.end_session = _spy_end_session
+
+            agent._compress_context(messages, "sys", approx_tokens=10_000)
+
+            assert events[:2] == [
+                ("flush", original_sid),
+                ("end_session", original_sid),
+            ]
+            rows = db.get_messages(original_sid)
+            assert [row["content"] for row in rows] == [
+                "unflushed question",
+                "unflushed answer",
+            ]
+
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
         from run_agent import AIAgent

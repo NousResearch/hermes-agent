@@ -202,6 +202,64 @@ class TestAnthropicTransport:
         assert tc.id == "toolu_123"
         assert '"command"' in tc.arguments
 
+    def test_normalize_response_salvages_text_invoke_tool_call(self, transport):
+        """Complete invoke markup in a text block should execute as a tool call."""
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text=(
+                        "Let me inspect that.\n"
+                        '<invoke name="read_file">\n'
+                        '  <parameter name="path">"/tmp/example.txt"</parameter>\n'
+                        '  <parameter name="offset">61</parameter>\n'
+                        '  <parameter name="include_hidden">true</parameter>\n'
+                        "</invoke>\n"
+                        "I will use the result next."
+                    ),
+                ),
+            ],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=20),
+            model="claude-sonnet-4-6",
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        tc = nr.tool_calls[0]
+        assert tc.name == "read_file"
+        assert '"path": "/tmp/example.txt"' in tc.arguments
+        assert '"offset": 61' in tc.arguments
+        assert '"include_hidden": true' in tc.arguments
+        assert "<invoke" not in (nr.content or "")
+        assert "read_file" not in (nr.content or "")
+        assert "Let me inspect that." in (nr.content or "")
+
+    def test_normalize_response_ignores_incomplete_text_invoke(self, transport):
+        """Partial invoke markup must remain visible text, not an executable call."""
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text=(
+                        '<invoke name="read_file">\n'
+                        '  <parameter name="path">"/tmp/example.txt"</parameter>\n'
+                    ),
+                ),
+            ],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=20),
+            model="claude-sonnet-4-6",
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.finish_reason == "stop"
+        assert nr.tool_calls is None
+        assert "<invoke" in (nr.content or "")
+
     def test_normalize_response_thinking(self, transport):
         """Test normalization preserves thinking content."""
         r = SimpleNamespace(

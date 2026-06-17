@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # agent build briefly joins this so already-spawning fast servers land before
 # the agent snapshots its tool list (see wait_for_mcp_discovery).
 _mcp_discovery_thread = None
+DEFAULT_MCP_DISCOVERY_WAIT_SECONDS = 6.0
 
 
 def _install_sidecar_publisher() -> None:
@@ -192,7 +193,7 @@ def _log_exit(reason: str) -> None:
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
+def wait_for_mcp_discovery(timeout: float = DEFAULT_MCP_DISCOVERY_WAIT_SECONDS) -> None:
     """Briefly block until background MCP discovery finishes, up to ``timeout``.
 
     MCP discovery runs in a daemon thread spawned at startup (see main()) so a

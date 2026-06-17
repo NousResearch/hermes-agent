@@ -308,6 +308,10 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["parallel_tool_calls"] is True
     assert isinstance(kwargs["prompt_cache_key"], str)
     assert len(kwargs["prompt_cache_key"]) > 0
+    assert kwargs.get("extra_headers") == {
+        "session_id": kwargs["prompt_cache_key"],
+        "x-client-request-id": kwargs["prompt_cache_key"],
+    }
     # ``timeout`` is now wired from ``_resolved_api_call_timeout`` (default 1800s)
     # so per-provider ``request_timeout_seconds`` actually reaches the SDK.
     assert isinstance(kwargs.get("timeout"), float)

@@ -7,6 +7,7 @@ discovery thread before building — bounded, so a dead server can't re-introduc
 the startup hang, and a no-op once discovery has finished.
 """
 
+import inspect
 import threading
 import time
 
@@ -28,6 +29,14 @@ def test_no_thread_is_noop():
         assert time.monotonic() - start < 0.1
     finally:
         _restore_thread_slot(saved)
+
+
+def test_default_wait_covers_slow_local_servers():
+    """Default first-snapshot wait should cover MCP discovery around 6 seconds."""
+    default_timeout = inspect.signature(
+        entry.wait_for_mcp_discovery
+    ).parameters["timeout"].default
+    assert default_timeout >= 6.0
 
 
 def test_already_finished_thread_is_noop():

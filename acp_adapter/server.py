@@ -147,12 +147,27 @@ def _image_data_url(data: bytes, mime_type: str) -> str:
     return f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
 
 
+def _is_wsl() -> bool:
+    """Return True when running inside Windows Subsystem for Linux."""
+    # WSL sets WSL_DISTRO_NAME; fall back to /proc/version containing "microsoft".
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        with open("/proc/version") as fv:
+            return "microsoft" in fv.read().lower()
+    except OSError:
+        return False
+
+
 def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
-    Zed may send POSIX file URIs from Linux/WSL workspaces or Windows-ish paths
-    when launched through wsl.exe. Translate the common Windows drive form to
-    /mnt/<drive>/... so Hermes running in WSL can read it.
+    Zed and other ACP clients may send Windows-style paths (C:\Users\... or
+    file:///C:/Users/...) regardless of whether Hermes itself runs on native
+    Windows or inside WSL.  On WSL, we must translate drive letters to
+    /mnt/<drive>/... so the Linux filesystem layer can resolve them.  On native
+    Windows, we must *not* do this translation — the Windows path is already
+    correct.
     """
     raw = (uri or "").strip()
     if not raw:
@@ -173,11 +188,15 @@ def _path_from_file_uri(uri: str) -> Path | None:
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
         drive = path_text[1].lower()
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        if _is_wsl():
+            return Path("/mnt") / drive / rest
+        return Path(f"{drive.upper()}:/{rest}")
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
         drive = path_text[0].lower()
         rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        if _is_wsl():
+            return Path("/mnt") / drive / rest
+        return Path(f"{drive.upper()}:/{rest}")
 
     return Path(path_text)
 

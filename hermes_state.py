@@ -2421,10 +2421,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
-<<<<<<< HEAD
         timestamp: Any = None,
-=======
->>>>>>> 466cdfa43 (fix: restore upstream changes accidentally reverted by a stale base)
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2933,14 +2930,9 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-<<<<<<< HEAD
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY timestamp, id",
-=======
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
-                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
->>>>>>> 466cdfa43 (fix: restore upstream changes accidentally reverted by a stale base)
                 tuple(session_ids),
             ).fetchall()
 

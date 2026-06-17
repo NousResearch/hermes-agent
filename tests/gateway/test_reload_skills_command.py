@@ -13,6 +13,7 @@ Verifies:
     message alternation must not be broken by a phantom user turn
 """
 
+import shutil
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -36,6 +37,15 @@ def _make_source() -> SessionSource:
 
 def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
+
+
+def _write_skill(skills_dir, name: str, description: str):
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\nRun {name}.\n"
+    )
+    return skill_dir
 
 
 def _make_runner():
@@ -71,8 +81,12 @@ def _make_runner():
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._active_session_leases = {}
+    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._busy_ack_ts = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -198,3 +212,38 @@ async def test_underscored_alias_not_flagged_unknown(monkeypatch):
     result = await runner._handle_message(_make_event("/reload_skills"))
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_gateway_skill_command_miss_refreshes_stale_cache(monkeypatch, tmp_path):
+    """A long-running gateway should pick up newly added skills on command miss."""
+    import agent.skill_commands as skill_commands_mod
+    import agent.skill_utils as skill_utils_mod
+    import tools.skills_tool as skills_tool_mod
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setattr(skills_tool_mod, "SKILLS_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(skill_utils_mod, "get_external_skills_dirs", lambda: [])
+    monkeypatch.setattr(skills_tool_mod, "_get_disabled_skill_names", lambda: set())
+    monkeypatch.setattr(skill_commands_mod, "_skill_commands", {}, raising=False)
+    monkeypatch.setattr(skill_commands_mod, "_skill_commands_platform", None, raising=False)
+
+    old_skill = _write_skill(tmp_path, "old-skill", "old skill")
+    skill_commands_mod.scan_skill_commands()
+    assert "/old-skill" in skill_commands_mod.get_skill_commands()
+
+    shutil.rmtree(old_skill)
+    _write_skill(tmp_path, "new-skill", "fresh skill")
+
+    async def capture_agent_message(self, event, source, quick_key, generation):
+        return event.text
+
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", capture_agent_message)
+
+    runner = _make_runner()
+    result = await runner._handle_message(_make_event("/new-skill use it"))
+
+    assert result is not None
+    assert 'The user has invoked the "new-skill" skill' in result
+    assert "The user has provided the following instruction alongside the skill invocation: use it" in result
+    assert "/old-skill" not in skill_commands_mod.get_skill_commands()

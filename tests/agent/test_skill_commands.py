@@ -410,6 +410,28 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("does_not_exist") is None
             assert resolve_skill_command_key("does-not-exist") is None
 
+    def test_miss_refreshes_stale_cache_from_current_skill_sources(self, tmp_path):
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+        ):
+            old_skill = _make_skill(tmp_path, "old-skill")
+            scan_skill_commands()
+            assert "/old-skill" in get_skill_commands()
+
+            _make_skill(tmp_path, "new-skill")
+            old_skill.joinpath("SKILL.md").unlink()
+
+            assert resolve_skill_command_key("new-skill") == "/new-skill"
+
+            refreshed = get_skill_commands()
+            assert "/new-skill" in refreshed
+            assert "/old-skill" not in refreshed
+
     def test_empty_command_returns_none(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()

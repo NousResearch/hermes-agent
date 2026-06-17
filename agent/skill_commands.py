@@ -506,12 +506,26 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     ``/claude_code`` and comes back in the underscored form).
 
     Returns the matching ``/slug`` key from ``get_skill_commands()`` or
-    ``None`` if no match.
+    ``None`` if no match. When an existing same-platform cache misses, rescan
+    once before returning ``None`` so long-running gateway processes can pick
+    up newly added, removed, or renamed skills without a restart.
     """
     if not command:
         return None
     cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in get_skill_commands() else None
+    current_platform = _resolve_skill_commands_platform()
+    had_current_cache = (
+        bool(_skill_commands)
+        and _skill_commands_platform == current_platform
+    )
+    commands = get_skill_commands()
+    if cmd_key in commands:
+        return cmd_key
+    if had_current_cache:
+        commands = scan_skill_commands()
+        if cmd_key in commands:
+            return cmd_key
+    return None
 
 
 def build_skill_invocation_message(

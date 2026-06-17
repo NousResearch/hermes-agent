@@ -90,6 +90,31 @@ class TestBuildToolPreview:
         assert result is not None
         assert "hello world" in result
 
+    @pytest.mark.parametrize("provider_name", ["Exa", "Parallel"])
+    def test_web_tool_progress_uses_active_provider_display_name(self, monkeypatch, provider_name):
+        from agent import web_search_registry
+        from tools import web_tools
+
+        provider = MagicMock(display_name=provider_name)
+        provider.supports_search.return_value = True
+        provider.supports_extract.return_value = True
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_get_search_backend", lambda: provider_name.lower())
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: provider_name.lower())
+        monkeypatch.setattr(web_search_registry, "get_provider", lambda _: provider)
+
+        search_preview = build_tool_preview("web_search", {"query": "hello world"})
+        search_completion = get_cute_tool_message("web_search", {"query": "hello world"}, 0.1)
+        extract_preview = build_tool_preview("web_extract", {"urls": ["https://example.com"]})
+        extract_completion = get_cute_tool_message(
+            "web_extract", {"urls": ["https://example.com"]}, 0.1
+        )
+
+        assert search_preview == f"{provider_name} search: hello world"
+        assert f"{provider_name} search" in search_completion
+        assert extract_preview == f"{provider_name} fetch: https://example.com"
+        assert f"{provider_name} fetch" in extract_completion
+
     def test_read_file_preview(self):
         result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
         assert result is not None

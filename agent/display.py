@@ -417,6 +417,50 @@ def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, li
     return len(goals), goals
 
 
+def _web_tool_label(capability: str) -> str:
+    """Return the active provider's human-readable label for a web operation.
+
+    ``web_search`` and ``web_extract`` are generic model tools, so resolve the
+    same provider used by their dispatchers to make tool progress auditable.
+    The imports remain lazy because display is imported on every agent startup.
+    """
+    operation = "search" if capability == "search" else "fetch"
+    try:
+        from tools.web_tools import (
+            _ensure_web_plugins_loaded,
+            _get_extract_backend,
+            _get_search_backend,
+        )
+        from agent.web_search_registry import (
+            get_active_extract_provider,
+            get_active_search_provider,
+            get_provider,
+        )
+
+        _ensure_web_plugins_loaded()
+        backend = _get_search_backend() if capability == "search" else _get_extract_backend()
+        provider = get_provider(backend)
+        supports_capability = (
+            provider.supports_search() if capability == "search" and provider else
+            provider.supports_extract() if provider else False
+        )
+        if not supports_capability:
+            provider = (
+                get_active_search_provider() if capability == "search"
+                else get_active_extract_provider()
+            )
+        if provider is not None:
+            display_name = provider.display_name.strip()
+            if display_name:
+                # Avoid redundant labels from providers such as "Brave Search".
+                if operation == "search" and "search" in display_name.lower():
+                    return display_name
+                return f"{display_name} {operation}"
+    except Exception:
+        pass
+    return operation
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -428,6 +472,17 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if not args:
         return None
     args = redact_tool_args_for_display(tool_name, args) or args
+    if tool_name == "web_search":
+        query = _oneline(str(args.get("query", "")))
+        if not query:
+            return None
+        return _truncate_preview(f"{_web_tool_label('search')}: {query}", max_len)
+    if tool_name == "web_extract":
+        urls = args.get("urls")
+        url = urls[0] if isinstance(urls, list) and urls else urls
+        if not url:
+            return None
+        return _truncate_preview(f"{_web_tool_label('extract')}: {_oneline(str(url))}", max_len)
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
@@ -1305,8 +1360,10 @@ def _get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
+        label = _web_tool_label("search")
+        return _wrap(f"┊ 🔍 {label:9} {_trunc(args.get('query', ''), 42)}  {dur}")
     if tool_name == "web_extract":
+        label = _web_tool_label("extract")
         urls = args.get("urls", [])
         if urls:
             url = _display_url(urls[0] if isinstance(urls, list) else urls)
@@ -1314,8 +1371,8 @@ def _get_cute_tool_message(
                 return _wrap(f"┊ 📄 fetch     pages  {dur}")
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
             extra = f" +{len(urls)-1}" if isinstance(urls, list) and len(urls) > 1 else ""
-            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
-        return _wrap(f"┊ 📄 fetch     pages  {dur}")
+            return _wrap(f"┊ 📄 {label:9} {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ 📄 {label:9} pages  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(build_tool_preview(tool_name, args) or args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":

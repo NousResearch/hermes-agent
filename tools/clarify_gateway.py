@@ -166,8 +166,10 @@ def get_pending_for_session(session_key: str) -> Optional[_ClarifyEntry]:
     """Return the OLDEST pending clarify entry for a session, or None.
 
     Used by the text-fallback intercept in ``_handle_message`` — when a
-    clarify is awaiting a free-form text response, the next user message
-    in that session is captured as the answer.
+    clarify is pending, the next non-slash user message in that session
+    is captured as the answer.  This covers both button/multiple-choice
+    prompts (where the user typed instead of tapping) and open-ended /
+    \"Other\" text-mode clarifies.
     """
     with _lock:
         ids = _session_index.get(session_key) or []
@@ -175,8 +177,7 @@ def get_pending_for_session(session_key: str) -> Optional[_ClarifyEntry]:
             entry = _entries.get(cid)
             if entry is None:
                 continue
-            if entry.awaiting_text:
-                return entry
+            return entry
         return None
 
 

@@ -9481,11 +9481,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
-                            await _foot_adapter.send(
-                                source.chat_id,
-                                _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
-                            )
+                            _streamed_msg_id = agent_result.get("_streamed_message_id")
+                            if (
+                                source.platform == Platform.FEISHU
+                                and _streamed_msg_id
+                                and getattr(_foot_adapter, '_card_mode_enabled', False)
+                            ):
+                                await _foot_adapter.edit_message(
+                                    chat_id=source.chat_id,
+                                    message_id=_streamed_msg_id,
+                                    content=response or "",
+                                    finalize=True,
+                                    metadata={
+                                        "footer_line": _footer_line,
+                                        "status_text": "✅ 回复完毕",
+                                    },
+                                )
+                            else:
+                                await _foot_adapter.send(
+                                    source.chat_id,
+                                    _footer_line,
+                                    metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
@@ -16377,6 +16394,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        if _sc and _sc.message_id:
+            if isinstance(response, dict):
+                response["_streamed_message_id"] = _sc.message_id
 
         return response
 

@@ -14,6 +14,21 @@ from typing import Callable
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
 
 
+def _add_compat_platform_flag(parser: argparse.ArgumentParser) -> None:
+    """Accept stale `gateway <verb> --platform X` docs without advertising it.
+
+    Gateway service lifecycle commands operate on the gateway process, not a
+    single messaging adapter.  Photon briefly printed a per-platform start
+    command during setup; keep that command parseable so users following the
+    old hint don't get blocked by argparse before the gateway can start.
+    """
+    parser.add_argument(
+        "--platform",
+        dest="platform",
+        help=argparse.SUPPRESS,
+    )
+
+
 def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callable) -> None:
     """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
     # =========================================================================
@@ -46,6 +61,16 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         help="Replace any existing gateway instance (useful for systemd)",
     )
     gateway_run.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Start a foreground gateway even when a systemd/launchd/s6 service "
+            "already supervises this profile. Without --force, the command "
+            "refuses because a second dispatcher escapes the service and can "
+            "corrupt shared gateway state."
+        ),
+    )
+    gateway_run.add_argument(
         "--no-supervise",
         action="store_true",
         help=(
@@ -75,6 +100,7 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         action="store_true",
         help="Kill ALL stale gateway processes across all profiles before starting",
     )
+    _add_compat_platform_flag(gateway_start)
 
     # gateway stop
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
@@ -103,6 +129,7 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
     )
+    _add_compat_platform_flag(gateway_restart)
 
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
@@ -118,6 +145,7 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         action="store_true",
         help="Target the Linux system-level gateway service",
     )
+    _add_compat_platform_flag(gateway_status)
 
     # gateway install
     gateway_install = gateway_subparsers.add_parser(

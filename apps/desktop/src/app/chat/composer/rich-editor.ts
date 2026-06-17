@@ -10,7 +10,10 @@ import {
   DIRECTIVE_CHIP_CLASS,
   directiveIconElement,
   directiveIconSvg,
-  formatRefValue
+  formatRefValue,
+  slashChipClass,
+  type SlashChipKind,
+  slashIconElement
 } from '@/components/assistant-ui/directive-text'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
@@ -77,6 +80,24 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   return chip
 }
 
+/** A non-editable pill for a picked slash command (`/skin nous`, `/tropes`).
+ *  `data-ref-text` carries the literal command so `composerPlainText` round-trips
+ *  it back to the exact text that gets submitted. */
+export function slashChipElement(command: string, kind: SlashChipKind, label?: string) {
+  const chip = document.createElement('span')
+  const text = document.createElement('span')
+
+  chip.contentEditable = 'false'
+  chip.dataset.refText = command
+  chip.dataset.slashKind = kind
+  chip.className = slashChipClass(kind)
+  text.className = 'truncate'
+  text.textContent = label || command
+  chip.append(slashIconElement(kind), text)
+
+  return chip
+}
+
 function appendTextWithBreaks(target: DocumentFragment | HTMLElement, text: string) {
   const lines = text.split('\n')
 
@@ -109,6 +130,63 @@ export function appendComposerContents(target: DocumentFragment | HTMLElement, t
 export function renderComposerContents(target: HTMLElement, text: string) {
   target.replaceChildren()
   appendComposerContents(target, text)
+}
+
+/** Caret range when the selection lives inside `editor`; else null. */
+function composerSelectionRange(editor: HTMLElement) {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  if (!selection || !range || !editor.contains(range.commonAncestorContainer)) {
+    return null
+  }
+
+  return { range, selection }
+}
+
+/** Insert plain text at the caret (replacing any selection). Pastes use this
+ *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
+ *  ~O(n²) on large multiline blobs. */
+export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+  const hit = composerSelectionRange(editor)
+  const fragment = document.createDocumentFragment()
+
+  appendTextWithBreaks(fragment, text)
+
+  const tail = fragment.lastChild
+
+  if (hit) {
+    hit.range.deleteContents()
+    hit.range.insertNode(fragment)
+  } else {
+    editor.append(fragment)
+  }
+
+  if (tail) {
+    const caret = document.createRange()
+    caret.setStartAfter(tail)
+    caret.collapse(true)
+    const selection = hit?.selection ?? window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(caret)
+  }
+}
+
+/** Remove a non-collapsed selection in-editor. Skips collapsed carets so word/
+ *  line delete (Opt/Cmd+Backspace) stays native. Returns whether anything ran. */
+export function deleteSelectionInEditor(editor: HTMLElement) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit || hit.range.collapsed) {
+    return false
+  }
+
+  hit.range.deleteContents()
+  hit.range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(hit.range)
+
+  return true
 }
 
 /** Serialize a draft string into chip-HTML for the contenteditable surface. */
@@ -162,4 +240,37 @@ export function placeCaretEnd(element: HTMLElement) {
   range.collapse(false)
   selection?.removeAllRanges()
   selection?.addRange(range)
+}
+
+/** Drop contenteditable junk that serializes as `\n` and falsely expands the composer. */
+export function normalizeComposerEditorDom(editor: HTMLElement) {
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+    editor.replaceChildren()
+
+    return
+  }
+
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeType === Node.ELEMENT_NODE) {
+    const wrapper = editor.firstChild as HTMLElement
+
+    if (wrapper.tagName === 'DIV' && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+      editor.replaceChildren(...Array.from(wrapper.childNodes))
+    }
+  }
+
+  const last = editor.lastChild
+
+  if (last?.nodeName !== 'BR') {
+    return
+  }
+
+  let prev: ChildNode | null = last.previousSibling
+
+  while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {
+    prev = prev.previousSibling
+  }
+
+  if ((prev as HTMLElement | null)?.dataset.refText) {
+    editor.removeChild(last)
+  }
 }

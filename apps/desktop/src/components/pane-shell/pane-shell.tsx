@@ -30,6 +30,8 @@ export interface PaneProps {
   children?: ReactNode
   className?: string
   defaultOpen?: boolean
+  /** Paints a persistent hairline on the resize edge (not just the hover sash) so the pane boundary is always visible. */
+  divider?: boolean
   /** Forces the pane closed (track→0, aria-hidden) without writing to the store — for transient route gates. */
   disabled?: boolean
   /** Like disabled, but keeps hoverReveal alive — collapses the track without writing to the store (e.g. narrow window). */
@@ -78,9 +80,12 @@ const HOVER_REVEAL_EASE = 'cubic-bezier(0.32,0.72,0,1)'
 // Offset shadow lifting the revealed panel off the content (same both sides;
 // the mirror axis is offset-x, which is 0). Same color on light + dark.
 const HOVER_REVEAL_SHADOW = '0px -18px 18px -5px #00000012'
-// Edge trigger strip, inset past the OS window-resize grab area.
+// Edge trigger strip, inset past the OS window-resize grab area AND the
+// adjacent pane's scrollbar (0.5rem, .scrollbar-dt) — the strip overlays the
+// neighboring scroller's edge, so any overlap makes the scrollbar reveal the
+// pane on hover and swallow its clicks (#44140).
 const HOVER_REVEAL_TRIGGER_WIDTH = 14
-const HOVER_REVEAL_EDGE_GUTTER = 6
+const HOVER_REVEAL_EDGE_GUTTER = 'calc(0.5rem + 2px)'
 
 // Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
 // from the keyboard, since its store-open toggle is a no-op while collapsed.
@@ -94,19 +99,35 @@ const remPx = () =>
     ? 16
     : Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16
 
-// Resolves PaneProps.minWidth/maxWidth (number | "Npx" | "Nrem") to pixels for drag clamping.
+const viewportPx = () => (typeof window === 'undefined' ? 1280 : window.innerWidth)
+
+// Resolves PaneProps.minWidth/maxWidth (number | "Npx" | "Nrem" | "Nvw" | "N%") to
+// pixels for drag clamping. Viewport units resolve against the current window width.
 function widthToPx(value: WidthValue | undefined) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : undefined
   }
 
-  const match = value?.trim().match(/^(-?\d*\.?\d+)(px|rem)?$/)
+  const match = value?.trim().match(/^(-?\d*\.?\d+)(px|rem|vw|%)?$/)
 
   if (!match) {
     return undefined
   }
 
-  return Number.parseFloat(match[1]) * (match[2] === 'rem' ? remPx() : 1)
+  const n = Number.parseFloat(match[1])
+
+  switch (match[2]) {
+    case 'rem':
+      return n * remPx()
+
+    case 'vw':
+
+    case '%':
+      return (n * viewportPx()) / 100
+
+    default:
+      return n
+  }
 }
 
 function isRole(child: unknown, role: 'pane' | 'main'): child is ReactElement {
@@ -217,6 +238,7 @@ export function Pane({
   children,
   className,
   defaultOpen = true,
+  divider = false,
   disabled = false,
   hoverReveal = false,
   id,
@@ -409,6 +431,7 @@ export function Pane({
           role="separator"
           tabIndex={0}
         >
+          {divider && <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-(--ui-stroke-secondary)" />}
           <span className="absolute inset-y-0 left-1/2 w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2 bg-(--ui-sash-hover-border) opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-visible:opacity-100" />
         </div>
       )}

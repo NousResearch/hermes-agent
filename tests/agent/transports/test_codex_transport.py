@@ -155,6 +155,65 @@ class TestCodexBuildKwargs:
         )
         assert "max_output_tokens" not in kw
 
+    def test_codex_backend_sets_cache_routing_headers(self, transport):
+        """Codex backend sends session_id / x-client-request-id as HTTP
+        headers (via extra_headers) for cache-scope routing."""
+        messages = [{"role": "user", "content": "Hi"}]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id="conv-codex-1",
+            is_codex_backend=True,
+        )
+
+        headers = kw.get("extra_headers", {})
+        assert headers.get("session_id") == "conv-codex-1"
+        assert headers.get("x-client-request-id") == "conv-codex-1"
+
+    def test_codex_backend_no_headers_without_session_id(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+        )
+
+        assert "extra_headers" not in kw
+
+    def test_codex_backend_preserves_caller_extra_headers(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id="conv-codex-1",
+            is_codex_backend=True,
+            request_overrides={"extra_headers": {"x-test": "1"}},
+        )
+
+        headers = kw.get("extra_headers", {})
+        assert headers.get("x-test") == "1"
+        assert headers.get("session_id") == "conv-codex-1"
+        assert headers.get("x-client-request-id") == "conv-codex-1"
+
+    def test_non_codex_responses_preserves_caller_extra_headers(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            is_codex_backend=False,
+            request_overrides={"extra_headers": {"x-test": "1"}},
+        )
+
+        assert kw["extra_headers"] == {"x-test": "1"}
+
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

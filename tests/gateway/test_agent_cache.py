@@ -1410,6 +1410,38 @@ class TestCachedAgentInactivityReset:
 
         assert agent._last_activity_ts == old_ts
 
+    def test_fresh_turn_resets_flush_cursor(self):
+        """interrupt_depth=0: _last_flushed_db_idx resets so new-turn
+        messages are fully persisted to the session DB (#44327)."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42  # stale from previous turn
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent._last_flushed_db_idx == 0, (
+            "_last_flushed_db_idx must be reset on a fresh turn so that "
+            "_flush_messages_to_session_db starts from index 0"
+        )
+
+    def test_interrupt_turn_preserves_flush_cursor(self):
+        """interrupt_depth=1: _last_flushed_db_idx preserved so an
+        in-progress flush is not disrupted by interrupt re-entry."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42
+
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
+
+        assert agent._last_flushed_db_idx == 42, (
+            "_last_flushed_db_idx must not be reset on interrupt-recursive "
+            "turns — the flush cursor tracks in-progress writes"
+        )
+
     def test_api_call_count_reset_regardless_of_depth(self):
         """_api_call_count is always reset to 0 for the new turn, at any depth."""
         from gateway.run import GatewayRunner
@@ -1514,3 +1546,163 @@ class TestAgentConfigSignatureUserId:
             user_id=None, user_id_alt=None,
         )
         assert sig_implicit == sig_explicit_none
+
+
+class TestAgentCacheMessageCountRebaseline:
+    """The cross-process coherence guard (#45966) must NOT invalidate the
+    cache on this process's OWN writes.
+
+    The guard snapshots ``message_count`` at agent-build time (before the
+    turn writes its own rows) and never refreshes it on reuse.  Without a
+    post-turn re-baseline, the gateway's own turn grows the count and the
+    next turn sees a mismatch and rebuilds the agent — every turn, for every
+    conversation — silently destroying per-conversation prompt caching.
+
+    ``_refresh_agent_cache_message_count`` re-baselines the stored count to
+    the now-current value after each turn, so the guard fires ONLY when a
+    different process changed the transcript.  These tests pin both halves of
+    the invariant against the REAL SessionDB + the REAL guard condition.
+    """
+
+    def _runner_with_db(self, db):
+        runner = _make_runner()
+        runner._session_db = db
+        return runner
+
+    @staticmethod
+    def _guard_would_reuse(runner, session_key, session_id):
+        """Mirror the production cache-hit guard's reuse decision exactly.
+
+        Reuse iff the live on-disk count equals the snapshot stored next to
+        the cached agent (or either side is None / it's a legacy 2-tuple).
+        """
+        try:
+            row = runner._session_db.get_session(session_id)
+            live = row.get("message_count", 0) if row else None
+        except Exception:
+            live = None
+        with runner._agent_cache_lock:
+            cached = runner._agent_cache.get(session_key)
+        cached_mc = cached[2] if cached and len(cached) > 2 else None
+        invalidate = (
+            cached_mc is not None
+            and live is not None
+            and live != cached_mc
+        )
+        return not invalidate
+
+    def test_same_process_turns_preserve_cached_agent(self, tmp_path):
+        """The regression guard: consecutive same-process turns must REUSE
+        the cached agent (prompt cache preserved), not rebuild every turn.
+
+        Drives the real lifecycle: snapshot at build (before this turn's
+        writes), turn appends its own rows, then the post-turn re-baseline
+        runs — so the NEXT turn's guard sees no external change and reuses.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        # Turn 1: cache miss -> build. Snapshot is the count BEFORE this
+        # turn's own writes (production stores _current_msg_count here).
+        _row = db.get_session("s1")
+        build_count = _row.get("message_count", 0) if _row else 0
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
+
+        reuses = 0
+        for _turn in range(1, 6):
+            # This process's own turn flushes its user + assistant rows.
+            db.append_message("s1", role="user", content="u")
+            db.append_message("s1", role="assistant", content="a")
+            # Post-turn re-baseline (the fix).
+            runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+            # Next turn's guard decision.
+            if self._guard_would_reuse(runner, "telegram:s1", "s1"):
+                reuses += 1
+
+        # All 5 follow-on turns must reuse — WITHOUT the re-baseline this is 0.
+        assert reuses == 5
+        # The same agent instance is still cached (never rebuilt).
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is agent
+
+    def test_cross_process_write_still_invalidates(self, tmp_path):
+        """After the re-baseline, a DIFFERENT process appending to the same
+        session must still flip the guard to rebuild (the #45966 fix holds).
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        with runner._agent_cache_lock:
+            _row = db.get_session("s1")
+            runner._agent_cache["telegram:s1"] = (
+                agent, "sig", (_row.get("message_count", 0) if _row else 0),
+            )
+
+        # Our own turn + re-baseline -> reuse next turn.
+        db.append_message("s1", role="user", content="u")
+        db.append_message("s1", role="assistant", content="a")
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+
+        # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
+        # to the SAME session in the shared DB — we have NOT re-baselined for it.
+        db.append_message("s1", role="user", content="external from dashboard")
+
+        # Guard must now reject reuse so the agent rebuilds from fresh disk.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+
+    def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
+        """Re-baseline must never crash and must leave legacy 2-tuples and
+        pending-sentinel entries untouched."""
+        from hermes_state import SessionDB
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        runner = self._runner_with_db(db)
+
+        # No session_db -> no-op, no crash.
+        runner._session_db = None
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        runner._session_db = db
+
+        # Falsy session_id -> no-op.
+        runner._refresh_agent_cache_message_count("telegram:s1", "")
+        runner._refresh_agent_cache_message_count("telegram:s1", None)
+
+        # Legacy 2-tuple is left untouched (it opts out of the guard).
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (object(), "sig")
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert len(runner._agent_cache["telegram:s1"]) == 2
+
+        # Pending sentinel entry is left untouched.
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (_AGENT_PENDING_SENTINEL, "sig", 0)
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is _AGENT_PENDING_SENTINEL
+            assert runner._agent_cache["telegram:s1"][2] == 0
+
+        # A probe that raises is swallowed (no crash, snapshot unchanged).
+        class _BoomDB:
+            def get_session(self, _sid):
+                raise RuntimeError("db locked")
+
+        runner._session_db = _BoomDB()  # type: ignore[assignment]
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (object(), "sig", 5)
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][2] == 5

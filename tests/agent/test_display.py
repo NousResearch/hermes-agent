@@ -9,6 +9,7 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    get_tool_preview_max_len,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
@@ -163,33 +164,34 @@ class TestCuteToolMessagePreviewLength:
         assert command in line
         assert "..." not in line
 
-    def test_terminal_preview_uses_positive_configured_limit(self):
+    def test_terminal_preview_uses_smaller_call_limit_when_configured_limit_is_positive(self):
         set_tool_preview_max_len(80)
         command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
 
         line = get_cute_tool_message("terminal", {"command": command}, 0.1)
 
-        assert command[:77] in line
+        assert command[:39] in line
         assert "..." in line
         assert "head -5" not in line
 
-    def test_search_files_preview_uses_positive_configured_limit_not_default(self):
+    def test_search_files_preview_uses_smaller_call_limit_when_configured_limit_is_positive(self):
         set_tool_preview_max_len(80)
         pattern = "function.formatToolCall.context.preview.compactPreview.maxLength.truncate"
 
         line = get_cute_tool_message("search_files", {"pattern": pattern}, 0.1)
 
-        assert pattern in line
-        assert "..." not in line
+        assert pattern[:32] in line
+        assert "..." in line
+        assert "maxLength" not in line
 
-    def test_path_preview_uses_positive_configured_limit_not_default(self):
+    def test_path_preview_uses_smaller_call_limit_when_configured_limit_is_positive(self):
         set_tool_preview_max_len(80)
         path = "/tmp/hermes-test-preview-length/deeply/nested/path/test-output.txt"
 
         line = get_cute_tool_message("read_file", {"path": path}, 0.1)
 
-        assert path in line
-        assert "..." not in line
+        assert "...eply/nested/path/test-output.txt" in line
+        assert "/tmp/hermes-test-preview-length" not in line
 
     def test_write_file_lint_error_result_is_not_marked_failed(self):
         result = json.dumps({
@@ -238,9 +240,13 @@ class TestCuteToolMessagePreviewLength:
         assert "import sys" not in line
 
     def test_execute_code_message_preview_uses_wider_limit(self):
-        set_tool_preview_max_len(55)
-        first_line = "x = '" + "a" * 70 + "'"
-        line = get_cute_tool_message("execute_code", {"code": first_line}, 0.1)
+        previous_limit = get_tool_preview_max_len()
+        try:
+            set_tool_preview_max_len(80)
+            first_line = "x = '" + "a" * 70 + "'"
+            line = get_cute_tool_message("execute_code", {"code": first_line}, 0.1)
+        finally:
+            set_tool_preview_max_len(previous_limit)
 
         assert first_line[:52] in line
         assert "..." in line

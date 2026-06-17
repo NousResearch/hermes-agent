@@ -884,6 +884,13 @@ platform_toolsets:
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
 #
+# Mattermost-specific settings (config.yaml top-level, not under platforms:):
+#
+# mattermost:
+#   # Default 4000; values below 500 fall back to 4000 and values above
+#   # Mattermost's 16383-character limit are clamped.
+#   max_post_length: 16000
+#
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:

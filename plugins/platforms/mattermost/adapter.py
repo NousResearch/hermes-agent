@@ -32,9 +32,31 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-# Mattermost post size limit (server default is 16383, but 4000 is the
-# practical limit for readable messages — matching OpenClaw's choice).
-MAX_POST_LENGTH = 4000
+# Mattermost post size limits.  Mattermost's current hard product limit is
+# 16,383 characters per post (65,535 bytes / worst-case 4 bytes per rune).
+# Keep the legacy 4,000-character default for upstream compatibility, but let
+# users raise it when they prefer fewer larger Mattermost posts.
+MATTERMOST_SERVER_MAX_POST_LENGTH = 16383
+MIN_MAX_POST_LENGTH = 500
+DEFAULT_MAX_POST_LENGTH = 4000
+MAX_POST_LENGTH = DEFAULT_MAX_POST_LENGTH
+
+
+def _coerce_max_post_length(value: Any, default: int = DEFAULT_MAX_POST_LENGTH) -> int:
+    """Return a safe Mattermost post length from config input."""
+    try:
+        limit = int(value)
+    except (TypeError, ValueError, OverflowError):
+        limit = default
+    if limit < MIN_MAX_POST_LENGTH:
+        limit = default
+    return min(limit, MATTERMOST_SERVER_MAX_POST_LENGTH)
+
+
+def _resolve_max_post_length(extra: Optional[Dict[str, Any]] = None) -> int:
+    """Resolve the effective Mattermost post length from ``config.yaml``."""
+    raw = extra.get("max_post_length") if isinstance(extra, dict) else None
+    return _coerce_max_post_length(raw)
 
 # Channel type codes returned by the Mattermost API.
 _CHANNEL_TYPE_MAP = {
@@ -77,7 +99,7 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
 class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
-    splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+    splits_long_messages = True  # send() chunks via self.max_post_length
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
@@ -97,6 +119,12 @@ class MattermostAdapter(BasePlatformAdapter):
         self._ws_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing = False
+
+        # Effective outbound post length.  Expose the same value through
+        # MAX_MESSAGE_LENGTH because streaming/progress code probes adapters
+        # with getattr(adapter, "MAX_MESSAGE_LENGTH", ...).
+        self.max_post_length: int = _resolve_max_post_length(config.extra)
+        self.MAX_MESSAGE_LENGTH: int = self.max_post_length
 
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
@@ -357,7 +385,7 @@ class MattermostAdapter(BasePlatformAdapter):
             return SendResult(success=True)
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
+        chunks = self.truncate_message(formatted, self.max_post_length)
 
         last_id = None
         for chunk in chunks:
@@ -1195,11 +1223,17 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     model and merely owns the YAML→env translation here, next to the
     adapter that consumes it.
 
-    Env vars take precedence over YAML — every assignment is guarded
-    by ``not os.getenv(...)`` so an explicit env var survives a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    Existing env vars take precedence over YAML for credential/connection
+    settings. ``max_post_length`` is behavioral config, so it is validated and
+    returned as ``PlatformConfig.extra`` without creating or mutating an env
+    variable.
     """
+    seeded: Dict[str, Any] = {}
+
+    if "max_post_length" in mattermost_cfg:
+        coerced_limit = _coerce_max_post_length(mattermost_cfg["max_post_length"])
+        seeded["max_post_length"] = coerced_limit
+
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
@@ -1213,7 +1247,7 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    return seeded or None  # auth/response settings flow through env; limits are seeded into extras
 
 
 # ---------------------------------------------------------------------------
@@ -1278,10 +1312,10 @@ def register(ctx) -> None:
         # adapter" when cron runs separately from the gateway.  Mirrors
         # the Discord / Teams pattern.
         standalone_sender_fn=_standalone_send,
-        # Mattermost practical post-length limit (server default is 16383
-        # but 4000 is the readable threshold the adapter has used since
-        # day one).
-        max_message_length=MAX_POST_LENGTH,
+        # Mattermost default post-length limit. Runtime adapter instances and
+        # direct sends can override this via ``mattermost.max_post_length`` in
+        # config.yaml, clamped to Mattermost's 16,383-character cap.
+        max_message_length=_resolve_max_post_length(),
         # Display
         emoji="💬",
         allow_update_command=True,

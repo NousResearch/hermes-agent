@@ -831,6 +831,18 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         except Exception:
             pass
 
+    # Mattermost's plugin registry exposes the default limit, but the live
+    # PlatformConfig can raise it per deployment. Resolve that here before
+    # chunking so cron/send_message delivery matches the gateway adapter.
+    if platform == Platform.MATTERMOST:
+        try:
+            from plugins.platforms.mattermost.adapter import (
+                _resolve_max_post_length,
+            )
+            _MAX_LENGTHS[platform] = _resolve_max_post_length(getattr(pconfig, "extra", {}))
+        except Exception:
+            pass
+
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
     # Telegram measures length in UTF-16 code units, not Unicode codepoints.

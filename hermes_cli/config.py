@@ -2612,6 +2612,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "max_post_length": 4000,       # Per-post chunk limit; max 16383 on Mattermost 5+
     },
 
     # Matrix platform settings (gateway mode)

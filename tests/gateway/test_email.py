@@ -12,7 +12,9 @@ Covers:
 9. Message dispatch and threading
 """
 
+import json
 import os
+import tempfile
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -88,6 +90,40 @@ class TestCheckRequirements(unittest.TestCase):
     def test_requirements_empty_env(self):
         from gateway.platforms.email import check_email_requirements
         self.assertFalse(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "a@gmail.com",
+        "EMAIL_IMAP_HOST": "imap.gmail.com",
+        "EMAIL_SMTP_HOST": "smtp.gmail.com",
+    }, clear=True)
+    def test_gmail_oauth_requires_stored_gmail_scopes(self):
+        from gateway.platforms.email import check_email_requirements
+
+        with tempfile.TemporaryDirectory() as tmp:
+            token_path = Path(tmp) / "google_token.json"
+            token_path.write_text(json.dumps({
+                "token": "tok",
+                "refresh_token": "refresh",
+                "client_id": "client",
+                "client_secret": "secret",
+                "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+            }))
+            with patch("gateway.platforms.email.get_hermes_home", return_value=Path(tmp)):
+                self.assertFalse(check_email_requirements())
+
+            token_path.write_text(json.dumps({
+                "token": "tok",
+                "refresh_token": "refresh",
+                "client_id": "client",
+                "client_secret": "secret",
+                "scopes": [
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                    "https://www.googleapis.com/auth/gmail.send",
+                    "https://www.googleapis.com/auth/gmail.modify",
+                ],
+            }))
+            with patch("gateway.platforms.email.get_hermes_home", return_value=Path(tmp)):
+                self.assertTrue(check_email_requirements())
 
 
 class TestHelperFunctions(unittest.TestCase):

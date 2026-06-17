@@ -21,6 +21,7 @@ import base64
 import email as email_lib
 import hashlib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -120,6 +121,28 @@ def _clear_outbound_email_dedup_cache() -> None:
     """Test helper to clear recent outbound email dedup state."""
     _OUTBOUND_EMAIL_DEDUP_CACHE.clear()
 
+
+def _load_gmail_token_payload(token_path: Path) -> Dict[str, Any]:
+    """Load a Google authorized-user token payload for scope checks."""
+    try:
+        return json.loads(token_path.read_text())
+    except Exception:
+        return {}
+
+
+def _missing_gmail_scopes_from_payload(payload: Dict[str, Any]) -> List[str]:
+    """Return required Gmail scopes absent from a stored Google token payload."""
+    raw = payload.get("scopes") or payload.get("scope")
+    if not raw:
+        return []
+    granted = {s.strip() for s in (raw.split() if isinstance(raw, str) else raw) if s.strip()}
+    return sorted(scope for scope in _GMAIL_API_SCOPES if scope not in granted)
+
+
+def _missing_gmail_scopes_from_token(token_path: Path) -> List[str]:
+    """Return missing Gmail scopes from a token file, when scope metadata exists."""
+    return _missing_gmail_scopes_from_payload(_load_gmail_token_payload(token_path))
+
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
 
@@ -165,7 +188,7 @@ def check_email_requirements() -> bool:
     if addr and imap and smtp and gmail_token.exists() and (
         "imap.gmail.com" in gmail_hosts or "smtp.gmail.com" in gmail_hosts
     ):
-        return True
+        return not _missing_gmail_scopes_from_token(gmail_token)
     if not all([addr, pwd, imap, smtp]):
         return False
     return True
@@ -355,7 +378,17 @@ class EmailAdapter(BasePlatformAdapter):
         hosts = {self._imap_host.lower(), self._smtp_host.lower()}
         if not self._gmail_token_path.exists():
             return False
-        return "imap.gmail.com" in hosts or "smtp.gmail.com" in hosts
+        if "imap.gmail.com" not in hosts and "smtp.gmail.com" not in hosts:
+            return False
+        missing_scopes = _missing_gmail_scopes_from_token(self._gmail_token_path)
+        if missing_scopes:
+            logger.warning(
+                "[Email] Gmail OAuth token at %s is missing required Gmail scopes: %s",
+                self._gmail_token_path,
+                ", ".join(missing_scopes),
+            )
+            return False
+        return True
 
     def _gmail_service(self):
         """Build an authenticated Gmail API client."""
@@ -363,7 +396,13 @@ class EmailAdapter(BasePlatformAdapter):
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
 
-        creds = Credentials.from_authorized_user_file(str(self._gmail_token_path), _GMAIL_API_SCOPES)
+        missing_scopes = _missing_gmail_scopes_from_token(self._gmail_token_path)
+        if missing_scopes:
+            raise RuntimeError(
+                "Gmail OAuth token is missing required Gmail scopes: "
+                + ", ".join(missing_scopes)
+            )
+        creds = Credentials.from_authorized_user_file(str(self._gmail_token_path))
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             self._gmail_token_path.write_text(creds.to_json())
@@ -821,6 +860,7 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
         file_path: Optional[str] = None,
         file_name: Optional[str] = None,
+        file_paths: Optional[List[str]] = None,
     ) -> str:
         """Build a stable duplicate-suppression key for outbound email sends."""
         ctx = self._thread_context.get(to_addr, {})
@@ -831,7 +871,9 @@ class EmailAdapter(BasePlatformAdapter):
         thread_id = ctx.get("thread_id", "")
         normalized_body = re.sub(r"\s+", " ", (body or "").strip())
         file_marker = ""
-        if file_path or file_name:
+        if file_paths:
+            file_marker = "|".join(str(path) for path in file_paths)
+        elif file_path or file_name:
             file_marker = f"{file_name or ''}|{file_path or ''}"
         key_material = "\n".join(
             [
@@ -853,6 +895,7 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
         file_path: Optional[str] = None,
         file_name: Optional[str] = None,
+        file_paths: Optional[List[str]] = None,
     ) -> str:
         """Send an email through the Gmail API."""
         dedup_key = self._outbound_dedup_key(
@@ -861,6 +904,7 @@ class EmailAdapter(BasePlatformAdapter):
             reply_to_msg_id=reply_to_msg_id,
             file_path=file_path,
             file_name=file_name,
+            file_paths=file_paths,
         )
         cached_message_id = _get_outbound_email_duplicate(dedup_key)
         if cached_message_id:
@@ -881,6 +925,15 @@ class EmailAdapter(BasePlatformAdapter):
                 part.set_payload(f.read())
                 encoders.encode_base64(part)
                 part.add_header("Content-Disposition", f"attachment; filename={fname}")
+                msg.attach(part)
+
+        for multi_file_path in file_paths or []:
+            p = Path(multi_file_path)
+            with open(p, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f"attachment; filename={p.name}")
                 msg.attach(part)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii").rstrip("=")
@@ -968,7 +1021,20 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         file_paths: List[str],
     ) -> str:
-        """Send an email with multiple file attachments via SMTP."""
+        """Send an email with multiple file attachments."""
+        if self._use_gmail_api:
+            return self._send_gmail_message(to_addr, body, file_paths=file_paths)
+
+        dedup_key = self._outbound_dedup_key(to_addr, body, file_paths=file_paths)
+        cached_message_id = _get_outbound_email_duplicate(dedup_key)
+        if cached_message_id:
+            logger.warning(
+                "[Email] Skipping duplicate SMTP multi-attachment send to %s within %.0fs window",
+                to_addr,
+                _OUTBOUND_EMAIL_DEDUP_TTL_SECONDS,
+            )
+            return cached_message_id
+
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -1015,6 +1081,7 @@ class EmailAdapter(BasePlatformAdapter):
                 smtp.close()
 
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        _remember_outbound_email(dedup_key, msg_id)
         return msg_id
 
     async def send_document(

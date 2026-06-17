@@ -1370,6 +1370,13 @@ async def _send_email(extra, chat_id, message):
                     "plus Gmail OAuth token or EMAIL_PASSWORD)"
                 )
             }
+        if not adapter._use_gmail_api and not adapter._password:
+            return {
+                "error": (
+                    "Email not configured (EMAIL_PASSWORD required for SMTP, or configure "
+                    "Gmail OAuth with ~/.hermes/google_token.json and required Gmail scopes)"
+                )
+            }
         loop = asyncio.get_running_loop()
         message_id = await loop.run_in_executor(None, adapter._send_email, chat_id, message, None)
         transport = "gmail_api" if adapter._use_gmail_api else "smtp"

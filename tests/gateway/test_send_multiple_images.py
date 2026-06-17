@@ -461,3 +461,28 @@ class TestEmailMultiImage:
         ) as mock_send:
             _run(adapter.send_multiple_images("user@example.com", []))
         mock_send.assert_not_called()
+
+    def test_multi_attachment_gmail_path_uses_gmail_api(self, adapter, tmp_path):
+        """Gmail OAuth mode sends the multi-attachment batch through Gmail API."""
+        paths = []
+        for i in range(2):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 20)
+            paths.append(str(p))
+
+        adapter._use_gmail_api = True
+        with patch.object(
+            adapter, "_send_gmail_message", MagicMock(return_value="gmail-msg-id")
+        ) as mock_send:
+            result = adapter._send_email_with_attachments(
+                "user@example.com",
+                "images attached",
+                paths,
+            )
+
+        assert result == "gmail-msg-id"
+        mock_send.assert_called_once_with(
+            "user@example.com",
+            "images attached",
+            file_paths=paths,
+        )

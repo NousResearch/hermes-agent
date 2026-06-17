@@ -246,13 +246,34 @@ class TestSendMessageTool:
 
         with patch("gateway.platforms.email.EmailAdapter._send_email", return_value="<msg@test.com>") as mock_send:
             result = asyncio.run(
-                _send_email({"address": "hermes@test.com", "smtp_host": "smtp.gmail.com"}, "user@test.com", "Hello")
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.gmail.com", "password": "secret"},
+                    "user@test.com",
+                    "Hello",
+                )
             )
 
         assert result["success"] is True
         assert result["message_id"] == "<msg@test.com>"
         assert result["transport"] in {"gmail_api", "smtp"}
         mock_send.assert_called_once_with("user@test.com", "Hello", None)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_shared_email_sender_rejects_smtp_without_password_or_gmail_token(self):
+        from tools.send_message_tool import _send_email
+
+        with patch("gateway.platforms.email.EmailAdapter._send_email") as mock_send:
+            result = asyncio.run(
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.example.com"},
+                    "user@test.com",
+                    "Hello",
+                )
+            )
+
+        assert "error" in result
+        assert "EMAIL_PASSWORD required for SMTP" in result["error"]
+        mock_send.assert_not_called()
 
 
 class TestSendTelegramMediaDelivery:

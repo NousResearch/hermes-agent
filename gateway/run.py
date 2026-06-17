@@ -9148,25 +9148,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATTERMOST
                     else getattr(self, "_show_reasoning", False)
                 )
-            if _show_reasoning_effective and response and not _intentional_silence:
+            if _show_reasoning_effective and response and not _intentional_silence and not agent_result.get("already_sent"):
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    # Send reasoning as a separate message BEFORE the response
+                    display_reasoning = last_reasoning.strip()
+                    # Send reasoning as a separate spoiler message BEFORE the response
                     try:
                         _r_adapter = self.adapters.get(source.platform)
                         if _r_adapter:
-                            _r_msg = f"💭 **Reasoning:**\n{display_reasoning}"
+                            _r_msg = f"💭 **Reasoning:**\n||{display_reasoning}||"
                             await _r_adapter.send(
                                 source.chat_id,
                                 _r_msg,
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                skip_rich=True,
                             )
                     except Exception as _re:
                         logger.debug("reasoning send failed: %s", _re)
@@ -9482,26 +9477,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # reasoning via last_reasoning but don't emit inline
                 # thinking tags.  Skip if the stream consumer already
                 # sent it (already_sent path means consumer was active).
-                if _show_reasoning_effective:
-                    _streamed_reasoning = agent_result.get("last_reasoning")
-                    if _streamed_reasoning:
-                        try:
-                            _lines = _streamed_reasoning.strip().splitlines()
-                            if len(_lines) > 15:
-                                _display_r = "\n".join(_lines[:15])
-                                _display_r += f"\n_... ({len(_lines) - 15} more lines)_"
-                            else:
-                                _display_r = _streamed_reasoning.strip()
-                            _r_msg = f"💭 **Reasoning:**\n{_display_r}"
-                            _r_adapter = self.adapters.get(source.platform)
-                            if _r_adapter:
-                                await _r_adapter.send(
-                                    source.chat_id,
-                                    _r_msg,
-                                    metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
-                                )
-                        except Exception as _re:
-                            logger.debug("trailing reasoning send failed: %s", _re)
+                # Reasoning already sent before the response via the
+                # non-streaming path. Skip here to avoid duplicate.
 
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
@@ -13583,9 +13560,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _show_reasoning_effective = getattr(self, "_show_reasoning", False)
 
         # When show_reasoning is enabled, disable streaming so reasoning
-        # appears BEFORE the response. Reasoning is only available after
-        # the agent completes (via last_reasoning), but streaming delivers
-        # the response live — mutually exclusive with reasoning-first.
+        # appears BEFORE the response.
         if _streaming_enabled and _show_reasoning_effective:
             _streaming_enabled = False
 
@@ -14701,8 +14676,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
             # When show_reasoning is enabled, disable streaming so reasoning
-            # appears BEFORE the response (reasoning is only available after
-            # the agent completes, but streaming delivers response live).
+            # appears BEFORE the response.
             if _streaming_enabled and _show_reasoning_effective:
                 _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled

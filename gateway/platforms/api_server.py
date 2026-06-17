@@ -4306,6 +4306,7 @@ class APIServerAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        skip_rich: bool = False,
     ) -> SendResult:
         """
         Not used — HTTP request/response cycle handles delivery directly.

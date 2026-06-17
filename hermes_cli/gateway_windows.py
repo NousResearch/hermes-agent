@@ -1187,6 +1187,19 @@ def start() -> None:
     startup_installed = is_startup_entry_installed()
 
     if not task_installed and not startup_installed:
+        # Non-interactive callers (detached restart watcher) have DEVNULL
+        # stdin — they can't answer prompts or approve UAC.  Skip straight
+        # to direct spawn so the gateway restarts immediately instead of
+        # silently failing and waiting for the external watchdog.
+        try:
+            _is_tty = sys.stdin and sys.stdin.isatty()
+        except (ValueError, OSError):
+            _is_tty = False
+        if not _is_tty:
+            pid = _spawn_detached()
+            _report_gateway_start(f"direct spawn (PID {pid})")
+            return
+
         from hermes_cli.setup import prompt_yes_no
 
         print("✗ Gateway service is not installed")

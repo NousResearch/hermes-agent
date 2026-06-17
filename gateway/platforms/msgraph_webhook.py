@@ -182,6 +182,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        skip_rich: bool = False,
     ) -> SendResult:
         logger.info("[msgraph_webhook] Response for %s: %s", chat_id, content[:200])
         return SendResult(success=True)

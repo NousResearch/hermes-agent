@@ -5149,6 +5149,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        skip_rich: bool = False,
         group_code: str = "",
     ) -> SendResult:
         """Send text message with auto-chunking. Delegates to OutboundManager."""

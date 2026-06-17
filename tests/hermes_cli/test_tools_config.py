@@ -91,6 +91,15 @@ def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_configurable_toolsets_include_xai_collections_search_default_off():
+    assert any(
+        ts_key == "xai_collections_search"
+        for ts_key, _, _ in CONFIGURABLE_TOOLSETS
+    )
+    assert "xai_collections_search" in _DEFAULT_OFF_TOOLSETS
+    assert "xai_collections_search" in TOOL_CATEGORIES
+
+
 def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 

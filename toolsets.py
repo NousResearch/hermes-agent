@@ -112,7 +112,17 @@ TOOLSETS = {
         "tools": ["x_search"],
         "includes": []
     },
-    
+
+    "xai_collections_search": {
+        "description": (
+            "Search existing xAI Collections / vector stores via xAI's "
+            "Responses API file_search tool. Off by default; enable in "
+            "`hermes tools` → xAI Collections Search."
+        ),
+        "tools": ["xai_collections_search"],
+        "includes": []
+    },
+
     "vision": {
         "description": "Image analysis and vision tools",
         "tools": ["vision_analyze"],

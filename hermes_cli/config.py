@@ -2507,6 +2507,26 @@ DEFAULT_CONFIG = {
         "retries": 2,
     },
 
+    # xAI Collections Search / RAG via the Responses API file_search tool.
+    # This searches existing xAI Collections / vector stores. It does not
+    # upload files or create collections. Requires xAI credentials and the
+    # xai_collections_search toolset to be enabled in `hermes tools`.
+    "xai_collections_search": {
+        # xAI model used for the Responses call.
+        "model": "grok-4.3",
+        # Optional default collection IDs. The tool call can also pass
+        # collection_ids explicitly.
+        "collection_ids": [],
+        # Default retrieval breadth for file_search.
+        "max_num_results": 10,
+        # Request timeout in seconds (minimum 30). Collection search can take
+        # longer than plain chat for larger stores.
+        "timeout_seconds": 180,
+        # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
+        # Each retry backs off (1.5x attempt seconds, capped at 5s).
+        "retries": 2,
+    },
+
     # =========================================================================
     # External secret sources
     # =========================================================================
@@ -2569,7 +2589,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 29,
+    "_config_version": 30,
 }
 
 # =============================================================================

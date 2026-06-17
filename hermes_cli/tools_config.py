@@ -63,6 +63,7 @@ CONFIGURABLE_TOOLSETS = [
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
+    ("xai_collections_search", "🗂️ xAI Collections Search", "xai_collections_search (RAG over existing xAI collections)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -112,7 +113,10 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+#
+# xAI Collections Search is also off by default — it requires xAI credentials
+# plus existing collection IDs, and does not create/upload collections.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "xai_collections_search"}
 
 
 def _xai_credentials_present() -> bool:
@@ -421,6 +425,39 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "xAI Grok OAuth (SuperGrok / Premium+)",
+                "badge": "subscription",
+                "tag": "Browser login at accounts.x.ai — no API key required",
+                "env_vars": [],
+                "post_setup": "xai_grok",
+            },
+            {
+                "name": "xAI API key",
+                "badge": "paid",
+                "tag": "Direct xAI API billing via XAI_API_KEY",
+                "env_vars": [
+                    {
+                        "key": "XAI_API_KEY",
+                        "prompt": "xAI API key",
+                        "url": "https://console.x.ai/",
+                    },
+                ],
+            },
+        ],
+    },
+    "xai_collections_search": {
+        "name": "xAI Collections Search",
+        "setup_title": "Select xAI Credential Source",
+        "setup_note": (
+            "Hermes routes RAG over existing xAI Collections through xAI's "
+            "Responses API file_search tool. This tool searches collections "
+            "that already exist on xAI; it does not upload files or create "
+            "new collections. SuperGrok OAuth is preferred when both "
+            "credential sources are set."
+        ),
+        "icon": "🗂️",
+        "providers": [
+            {
+                "name": "xAI Grok OAuth (SuperGrok Subscription)",
                 "badge": "subscription",
                 "tag": "Browser login at accounts.x.ai — no API key required",
                 "env_vars": [],

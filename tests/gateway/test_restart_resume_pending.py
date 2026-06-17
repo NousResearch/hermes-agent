@@ -40,6 +40,8 @@ from gateway.run import (
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
+    _resume_pending_history_needs_clean_reset,
+    _resume_pending_recovery_threshold_pct,
     _should_clear_resume_pending_after_turn,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -69,6 +71,164 @@ def test_resume_pending_is_cleared_only_after_successful_turn():
     assert _should_clear_resume_pending_after_turn({"failed": True}) is False
     assert _should_clear_resume_pending_after_turn({"partial": True}) is False
     assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
+
+
+def test_resume_pending_recovery_uses_conservative_threshold():
+    """Restart recovery must not use the normal 85% hygiene threshold.
+
+    The incident transcript recorded ~329k prompt tokens on a 400k context
+    model.  That is below the ordinary 85% hygiene gate, but above the agent's
+    50% compression gate; replaying it after an incomplete recovery turn can
+    wedge the channel indefinitely.
+    """
+    assert _resume_pending_recovery_threshold_pct(
+        {"compression": {"threshold": 0.85}}
+    ) == 0.5
+    assert _resume_pending_recovery_threshold_pct(
+        {"compression": {"threshold": 0.35}}
+    ) == 0.35
+
+
+def test_resume_pending_329k_prompt_on_400k_context_needs_clean_reset():
+    now = datetime.now()
+    entry = SessionEntry(
+        session_key="agent:main:discord:group:1490826686294392893:492823160601837596",
+        session_id="20260616_234010_2675ef",
+        created_at=now,
+        updated_at=now,
+        resume_pending=True,
+        resume_reason="shutdown_timeout",
+        last_prompt_tokens=329_227,
+    )
+    history = [
+        {"role": "user", "content": "what happened", "timestamp": time.time()}
+        for _ in range(192)
+    ]
+
+    needs_reset, approx_tokens, token_source, token_threshold = (
+        _resume_pending_history_needs_clean_reset(
+            entry,
+            history,
+            context_length=400_000,
+            threshold_pct=0.5,
+            hard_message_limit=400,
+            estimated_tokens=10,
+        )
+    )
+
+    assert needs_reset is True
+    assert approx_tokens == 329_227
+    assert token_source == "actual"
+    assert token_threshold == 200_000
+
+
+def test_non_resume_pending_large_session_keeps_normal_hygiene_path():
+    now = datetime.now()
+    entry = SessionEntry(
+        session_key="agent:main:discord:group:1:2",
+        session_id="sid",
+        created_at=now,
+        updated_at=now,
+        resume_pending=False,
+        last_prompt_tokens=329_227,
+    )
+    history = [{"role": "user", "content": "x"} for _ in range(192)]
+
+    needs_reset, *_ = _resume_pending_history_needs_clean_reset(
+        entry,
+        history,
+        context_length=400_000,
+        threshold_pct=0.5,
+        hard_message_limit=400,
+        estimated_tokens=10,
+    )
+
+    assert needs_reset is False
+
+
+def test_oversized_resume_pending_session_rotates_before_agent_start(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    now = datetime.now()
+    session_key = (
+        "agent:main:discord:group:1490826686294392893:492823160601837596"
+    )
+    old_entry = SessionEntry(
+        session_key=session_key,
+        session_id="20260616_234010_2675ef",
+        created_at=now,
+        updated_at=now,
+        platform=Platform.DISCORD,
+        chat_type="group",
+        resume_pending=True,
+        resume_reason="shutdown_timeout",
+        last_prompt_tokens=329_227,
+    )
+    new_entry = SessionEntry(
+        session_key=session_key,
+        session_id="20260617_020000_clean",
+        created_at=now,
+        updated_at=now,
+        platform=Platform.DISCORD,
+        chat_type="group",
+        is_fresh_reset=True,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = MagicMock()
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "what happened", "timestamp": time.time()}
+        for _ in range(192)
+    ]
+    runner.session_store.reset_session.return_value = new_entry
+    runner._session_model_overrides = {session_key: {"model": "old"}}
+    runner._pending_model_notes = {session_key: "stale note"}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    runner._set_session_reasoning_override = MagicMock()
+    runner._clear_session_boundary_security_state = MagicMock()
+    runner._sync_telegram_topic_binding = MagicMock()
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("gpt-5.5", {"provider": "openai-codex"})
+    )
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "model": {
+                "default": "gpt-5.5",
+                "provider": "openai-codex",
+                "context_length": 400_000,
+            },
+            "compression": {
+                "threshold": 0.5,
+                "hygiene_hard_message_limit": 400,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 400_000,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.estimate_messages_tokens_rough",
+        lambda _history: 10,
+    )
+
+    result_entry, context_note = runner._reset_oversized_resume_pending_session(
+        source=_make_source(platform=Platform.DISCORD, chat_id="492823160601837596"),
+        session_key=session_key,
+        session_entry=old_entry,
+    )
+
+    assert result_entry is new_entry
+    assert "automatically reset before this turn" in context_note
+    runner.session_store.reset_session.assert_called_once_with(session_key)
+    runner._set_session_reasoning_override.assert_called_once_with(session_key, None)
+    runner._clear_session_boundary_security_state.assert_called_once_with(session_key)
+    runner._sync_telegram_topic_binding.assert_called_once()
+    assert session_key not in runner._session_model_overrides
+    assert session_key not in runner._pending_model_notes
 
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):

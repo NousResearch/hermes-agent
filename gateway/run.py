@@ -1437,6 +1437,7 @@ from gateway.config import (
     load_gateway_config,
 )
 from gateway.session import (
+    SessionEntry,
     SessionStore,
     SessionSource,
     SessionContext,
@@ -2123,6 +2124,78 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     if agent_result.get("completed") is False:
         return False
     return True
+
+
+def _resume_pending_recovery_threshold_pct(user_config: Optional[dict]) -> float:
+    """Return the max context ratio safe for restart-recovery replay.
+
+    Normal gateway hygiene uses a high 85% threshold to avoid surprising
+    compression during ordinary long chats.  A ``resume_pending`` session is
+    different: a previous turn already failed or was interrupted, and replaying
+    a huge transcript can wedge the channel in the same failed turn forever.
+    Use the configured agent compression threshold, capped at 50%, so recovery
+    never feeds a transcript the agent itself would immediately compact.
+    """
+    threshold = 0.5
+    if isinstance(user_config, dict):
+        comp_cfg = user_config.get("compression", {})
+        if isinstance(comp_cfg, dict):
+            raw_threshold = comp_cfg.get("threshold", threshold)
+            try:
+                parsed = float(raw_threshold)
+            except (TypeError, ValueError):
+                parsed = threshold
+            if 0 < parsed < 1:
+                threshold = parsed
+    return min(threshold, 0.5)
+
+
+def _resume_pending_recovery_hard_message_limit(user_config: Optional[dict]) -> int:
+    """Return the message-count safety valve used for restart recovery."""
+    limit = 400
+    if isinstance(user_config, dict):
+        comp_cfg = user_config.get("compression", {})
+        if isinstance(comp_cfg, dict):
+            raw_limit = comp_cfg.get("hygiene_hard_message_limit")
+            if raw_limit is not None:
+                try:
+                    parsed = int(raw_limit)
+                except (TypeError, ValueError):
+                    parsed = limit
+                if parsed > 0:
+                    limit = parsed
+    return limit
+
+
+def _resume_pending_history_needs_clean_reset(
+    session_entry: Any,
+    history: list,
+    *,
+    context_length: int,
+    threshold_pct: float,
+    hard_message_limit: int,
+    estimated_tokens: int,
+) -> tuple[bool, int, str, int]:
+    """Decide whether a restart-recovery transcript is too large to replay."""
+    if not getattr(session_entry, "resume_pending", False):
+        return False, 0, "none", 0
+    if not history or len(history) < 4:
+        return False, 0, "none", 0
+
+    token_threshold = int(max(1, context_length) * threshold_pct)
+    stored_tokens = int(getattr(session_entry, "last_prompt_tokens", 0) or 0)
+    if stored_tokens > 0:
+        approx_tokens = stored_tokens
+        token_source = "actual"
+    else:
+        approx_tokens = int(estimated_tokens or 0)
+        token_source = "estimated"
+
+    needs_reset = (
+        approx_tokens >= token_threshold
+        or len(history) >= hard_message_limit
+    )
+    return needs_reset, approx_tokens, token_source, token_threshold
 
 
 def _preserve_queued_followup_history_offset(
@@ -8287,6 +8360,147 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    def _reset_oversized_resume_pending_session(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        session_entry: SessionEntry,
+    ) -> tuple[SessionEntry, Optional[str]]:
+        """Rotate poisoned restart-recovery sessions before agent startup."""
+        if not session_key or not getattr(session_entry, "resume_pending", False):
+            return session_entry, None
+
+        try:
+            history = self.session_store.load_transcript(session_entry.session_id)
+        except Exception as exc:
+            logger.debug(
+                "Resume-pending recovery: failed to load transcript for %s: %s",
+                session_entry.session_id,
+                exc,
+            )
+            return session_entry, None
+        if not history or len(history) < 4:
+            return session_entry, None
+
+        user_config: dict = {}
+        model = "anthropic/claude-sonnet-4.6"
+        provider = None
+        base_url = None
+        api_key = None
+        config_context_length = None
+        try:
+            loaded = _load_gateway_config()
+            if isinstance(loaded, dict):
+                user_config = loaded
+            model_cfg = user_config.get("model", {})
+            if isinstance(model_cfg, str):
+                model = model_cfg
+            elif isinstance(model_cfg, dict):
+                model = model_cfg.get("default") or model_cfg.get("model") or model
+                provider = model_cfg.get("provider") or None
+                base_url = model_cfg.get("base_url") or None
+                raw_context_length = model_cfg.get("context_length")
+                if raw_context_length is not None:
+                    try:
+                        config_context_length = int(raw_context_length)
+                    except (TypeError, ValueError):
+                        config_context_length = None
+        except Exception:
+            user_config = {}
+
+        try:
+            model, runtime = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=user_config,
+            )
+            provider = runtime.get("provider") or provider
+            base_url = runtime.get("base_url") or base_url
+            api_key = runtime.get("api_key") or api_key
+        except Exception:
+            pass
+
+        try:
+            from agent.model_metadata import (
+                estimate_messages_tokens_rough,
+                get_model_context_length,
+            )
+
+            context_length = get_model_context_length(
+                model,
+                base_url=base_url or "",
+                api_key=api_key or "",
+                config_context_length=config_context_length,
+                provider=provider or "",
+            )
+            estimated_tokens = estimate_messages_tokens_rough(history)
+        except Exception as exc:
+            logger.debug(
+                "Resume-pending recovery: token estimate failed for %s: %s",
+                session_entry.session_id,
+                exc,
+            )
+            return session_entry, None
+
+        threshold_pct = _resume_pending_recovery_threshold_pct(user_config)
+        hard_message_limit = _resume_pending_recovery_hard_message_limit(user_config)
+        needs_reset, approx_tokens, token_source, token_threshold = (
+            _resume_pending_history_needs_clean_reset(
+                session_entry,
+                history,
+                context_length=context_length,
+                threshold_pct=threshold_pct,
+                hard_message_limit=hard_message_limit,
+                estimated_tokens=estimated_tokens,
+            )
+        )
+        if not needs_reset:
+            return session_entry, None
+
+        logger.warning(
+            "Resume-pending recovery: auto-resetting oversized session %s "
+            "before agent run (%s messages, ~%s tokens %s; threshold=%s, "
+            "context=%s, recovery_pct=%s%%)",
+            session_entry.session_id,
+            len(history),
+            f"{approx_tokens:,}",
+            token_source,
+            f"{token_threshold:,}",
+            f"{context_length:,}",
+            int(threshold_pct * 100),
+        )
+
+        new_entry = self.session_store.reset_session(session_key)
+        if new_entry is None:
+            return session_entry, None
+
+        self._evict_cached_agent(session_key)
+        session_overrides = getattr(self, "_session_model_overrides", None)
+        if isinstance(session_overrides, dict):
+            session_overrides.pop(session_key, None)
+        try:
+            self._set_session_reasoning_override(session_key, None)
+        except Exception:
+            pass
+        pending_model_notes = getattr(self, "_pending_model_notes", None)
+        if isinstance(pending_model_notes, dict):
+            pending_model_notes.pop(session_key, None)
+        self._clear_session_boundary_security_state(session_key)
+        self._sync_telegram_topic_binding(
+            source,
+            new_entry,
+            reason="resume-pending-oversized-reset",
+        )
+
+        context_note = (
+            "[System note: The previous restart-recovery session was too large "
+            "to safely resume and was automatically reset before this turn. "
+            "This is a fresh conversation with no prior context; the old "
+            "transcript remains available in session history.]"
+        )
+        return new_entry, context_note
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -8375,6 +8589,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._record_telegram_topic_binding(source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
+
+        session_entry, _resume_recovery_context_note = (
+            self._reset_oversized_resume_pending_session(
+                source=source,
+                session_key=session_key,
+                session_entry=session_entry,
+            )
+        )
         if getattr(session_entry, "was_auto_reset", False):
             # Treat auto-reset as a full conversation boundary — drop every
             # session-scoped transient state so the fresh session does not
@@ -8421,6 +8643,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        if _resume_recovery_context_note:
+            context_prompt = _resume_recovery_context_note + "\n\n" + context_prompt
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

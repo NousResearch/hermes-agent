@@ -4,12 +4,13 @@
  *
  * Two WebSockets, one per concern:
  *
- *   1. **JSON-RPC sidecar** (`GatewayClient` → /api/ws) — drives the
- *      sidebar's own slot of the dashboard's in-process gateway.  Owns
- *      the model badge / picker / connection state / error banner.
- *      Independent of the PTY pane's session by design — those are the
- *      pieces the sidebar needs to be able to drive directly (model
- *      switch via slash.exec, etc.).
+ *   1. **JSON-RPC sidecar** (`GatewayClient` → /api/ws) — a lightweight
+ *      session used only for connection state (the "live" badge) and
+ *      credential warnings. Independent of the PTY pane's session by
+ *      design. The model badge does NOT come from here: it reads the
+ *      effective config model over REST (`/api/model/info`), and the model
+ *      picker writes config over REST (`/api/model/set`) then offers a
+ *      dashboard reload so the running chat adopts the new model.
  *
  *   2. **Event subscriber** (/api/events?channel=…) — passive, receives
  *      every dispatcher emit from the PTY-side `tui_gateway.entry` that
@@ -28,9 +29,10 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@nous-research/ui/ui/components/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { api, HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -92,11 +94,37 @@ export function ChatSidebar({
   const gw = useMemo(() => new GatewayClient(), [version]);
 
   const [state, setState] = useState<ConnectionState>("idle");
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [info, setInfo] = useState<SessionInfo>({});
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The badge shows config.yaml's main model (`model.default`) via
+  // `/api/model/info` — the same value the Models page writes and a new chat
+  // session boots from. We deliberately don't use the sidecar's `session.info`
+  // model: that's a one-time snapshot of the throwaway sidecar agent taken when
+  // its session is created, and it never updates when the model is changed
+  // elsewhere, so the badge would go stale. `/api/model/info` is profile-scoped
+  // by `fetchJSON`, so it reads the same profile this sidebar is scoped to.
+  const [effectiveModel, setEffectiveModel] = useState("");
+  // Set after the picker saves a model and the user declines the reload: config
+  // is updated but the running session keeps its model until rebuilt.
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
+  // Short name of a just-saved model awaiting confirm to reload (a fresh chat
+  // session is how the running chat adopts it; we confirm before discarding it).
+  const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
+    null,
+  );
+
+  const refreshEffectiveModel = useCallback(() => {
+    void api
+      .getModelInfo()
+      .then((r) => {
+        if (r?.model) setEffectiveModel(String(r.model));
+      })
+      .catch(() => {
+        // Best-effort: keep the last known label rather than blanking it.
+      });
+  }, []);
 
   // Profile or PTY channel change tears down both WebSockets. Bump `version`
   // (same path as the manual Reconnect button) so the gateway client is
@@ -120,17 +148,12 @@ export function ChatSidebar({
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setSessionId(null);
       setInfo({});
       setError(null);
     });
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
-      if (ev.session_id) {
-        setSessionId(ev.session_id);
-      }
-
       if (ev.payload) {
         setInfo((prev) => ({ ...prev, ...ev.payload }));
       }
@@ -144,9 +167,10 @@ export function ChatSidebar({
       }
     });
 
-    // Adopt whichever session the gateway hands us. session.create on the
-    // sidecar is independent of the PTY pane's session by design — we
-    // only need a sid to drive the model picker's slash.exec calls.
+    // Create the sidecar session so the gateway surfaces session-scoped
+    // signals (connection state, credential warnings). It's independent of the
+    // PTY pane's session by design. The model picker no longer rides this
+    // session — it writes config.yaml over REST — so we don't track its id.
     gw.connect()
       .then(() => {
         if (cancelled) {
@@ -158,12 +182,6 @@ export function ChatSidebar({
           close_on_disconnect: true,
           ...(profile ? { profile } : {}),
         });
-      })
-      .then((created) => {
-        if (cancelled || !created?.session_id) {
-          return;
-        }
-        setSessionId(created.session_id);
       })
       .catch((e: Error) => {
         if (!cancelled) {
@@ -322,14 +340,24 @@ export function ChatSidebar({
     };
   }, [channel, onDashboardNewSessionRequest, version]);
 
+  // Seed the badge on mount and re-read it whenever the sockets are rebuilt
+  // (a profile/channel switch bumps `version`).
+  useEffect(() => {
+    refreshEffectiveModel();
+  }, [refreshEffectiveModel, version]);
+
   const reconnect = useCallback(() => {
     setError(null);
     setTools([]);
+    setModelNotice(null);
+    setPendingReloadModel(null);
     setVersion((v) => v + 1);
   }, []);
 
-  const canPickModel = state === "open" && !!sessionId;
-  const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
+  // The picker writes config.yaml over REST and reloads — it doesn't ride the
+  // sidecar gateway session, so it's available whenever the sidebar is mounted.
+  const modelName = effectiveModel || info.model || "—";
+  const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
   const banner = error ?? info.credential_warning ?? null;
 
   return (
@@ -348,21 +376,18 @@ export function ChatSidebar({
           <Button
             ghost
             size="sm"
-            disabled={!canPickModel}
             onClick={() => setModelOpen(true)}
             className={cn(
               "max-w-full min-w-0 px-0 py-0",
               "self-start normal-case tracking-normal text-sm font-medium",
               "hover:underline disabled:no-underline",
             )}
-            title={info.model ?? "switch model"}
+            title={modelName === "—" ? "switch model" : modelName}
           >
             <span className="flex min-w-0 max-w-full items-center gap-1">
               <span className="truncate">{modelLabel}</span>
 
-              {canPickModel ? (
-                <ChevronDown className="size-3.5 shrink-0 text-text-secondary" />
-              ) : null}
+              <ChevronDown className="size-3.5 shrink-0 text-text-secondary" />
             </span>
           </Button>
         </div>
@@ -371,6 +396,16 @@ export function ChatSidebar({
           {STATE_LABEL[state]}
         </Badge>
       </Card>
+
+      {modelNotice && (
+        <Card className="flex items-start gap-2 border-warning/40 bg-warning/5 px-3 py-2 text-xs">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+
+          <div className="wrap-break-word min-w-0 flex-1 text-text-secondary">
+            {modelNotice}
+          </div>
+        </Card>
+      )}
 
       {banner && (
         <Card className="flex items-start gap-2 border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
@@ -410,13 +445,48 @@ export function ChatSidebar({
         </div>
       </Card>
 
-      {modelOpen && canPickModel && sessionId && (
+      {modelOpen && (
         <ModelPickerDialog
-          gw={gw}
-          sessionId={sessionId}
-          onClose={() => setModelOpen(false)}
+          // Same path the Models page uses (REST /api/model/set), not the
+          // sidecar config.set RPC, which didn't reliably land in the
+          // config.yaml the agent boots from. Always persisted (alwaysGlobal).
+          loader={api.getModelOptions}
+          alwaysGlobal
+          onApply={async ({ provider, model, confirmExpensiveModel }) => {
+            setModelNotice(null);
+            setPendingReloadModel(null);
+            const result = await api.setModelAssignment({
+              confirm_expensive_model: confirmExpensiveModel,
+              scope: "main",
+              provider,
+              model,
+            });
+            // confirm_required => the dialog shows the expensive-model prompt
+            // and calls back; don't announce until the user confirms.
+            if (!result.confirm_required) {
+              refreshEffectiveModel();
+              // Ask before reloading: applying the model starts a fresh chat.
+              setPendingReloadModel(model.split("/").slice(-1)[0]);
+            }
+            return result;
+          }}
+          onClose={() => {
+            setModelOpen(false);
+            refreshEffectiveModel();
+          }}
         />
       )}
+
+      <ModelReloadConfirm
+        model={pendingReloadModel}
+        onCancel={() => {
+          const m = pendingReloadModel;
+          setPendingReloadModel(null);
+          setModelNotice(
+            `Model set to ${m}. Run /new or refresh the page to apply it to this chat.`,
+          );
+        }}
+      />
     </aside>
   );
 }

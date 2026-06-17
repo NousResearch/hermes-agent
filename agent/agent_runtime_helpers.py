@@ -1060,6 +1060,23 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_activated = False
         agent._fallback_index = 0
 
+        # Re-sync auxiliary-routing globals back to the restored PRIMARY so a
+        # post-recovery aux task (compression, etc.) routes to the primary
+        # model again — the mirror of the sync done in try_activate_fallback.
+        # ``turn_context`` also sets these at turn start, but restoration can
+        # run mid-turn, so keep them in lockstep here too.
+        try:
+            from agent.auxiliary_client import set_runtime_main
+            _pri_aux_key = agent.api_key if isinstance(getattr(agent, "api_key", ""), str) else ""
+            set_runtime_main(
+                agent.provider, agent.model,
+                base_url=agent.base_url,
+                api_key=_pri_aux_key,
+                api_mode=agent.api_mode,
+            )
+        except Exception:  # noqa: BLE001 — never let aux-routing sync break restore
+            pass
+
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,

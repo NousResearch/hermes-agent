@@ -6,9 +6,13 @@
 # Model Configuration
 # =============================================================================
 model:
-  # Default model to use (can be overridden with --model flag)
+  # Default model to use (can be overridden with --model flag).
+  # Leave empty until you pick an authenticated provider/model with:
+  #   hermes setup model
+  # or:
+  #   hermes model
   # Both "default" and "model" work as the key name here.
-  default: "anthropic/claude-opus-4.6"
+  default: ""
   
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
@@ -110,7 +114,7 @@ model:
 #   anthropic:
 #     request_timeout_seconds: 30    # Fast-fail cloud requests
 #     models:
-#       claude-opus-4.6:
+#       claude-opus-4.8:
 #         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
 #   openai-codex:
 #     models:

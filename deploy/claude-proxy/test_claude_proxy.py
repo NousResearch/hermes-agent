@@ -685,3 +685,81 @@ def test_chat_completions_invalid_content_length_returns_400(monkeypatch):
         assert resp.status == 400
     finally:
         srv.shutdown()
+
+
+# ── DeepSeek routing ──
+
+DS_GOOD = {
+    "choices": [{"message": {"content": "DeepSeek says hi"}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+    "id": "ds-test-1",
+}
+
+
+def _mock_deepseek_ok(monkeypatch):
+    """Mock urllib to return a successful DeepSeek response."""
+    import io, urllib.request
+    class _Resp:
+        def __enter__(s): return s
+        def __exit__(s, *a): pass
+        def read(s):
+            import json as _j
+            return _j.dumps(DS_GOOD).encode()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=120: _Resp())
+
+
+def _mock_deepseek_http_error(monkeypatch, code=500):
+    """Mock urllib to raise HTTPError."""
+    import urllib.request, urllib.error
+    _code = code
+    class _Err:
+        code = _code
+        def read(s):
+            return b'{"error":"server error"}'
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=120: (_ for _ in ()).throw(
+                            urllib.error.HTTPError("url", _code, "msg", {}, _Err())))
+
+
+def test_deepseek_threshold_routing(monkeypatch):
+    """Prompt > threshold → DeepSeek, NOT Claude. Claude is never called."""
+    _mock_deepseek_ok(monkeypatch)
+    monkeypatch.setattr(cp, "DEEPSEEK_API_KEY", "sk-set")
+    monkeypatch.setattr(cp, "DEEPSEEK_THRESHOLD", 10)
+    claude_called = {"n": 0}
+    monkeypatch.setattr(cp, "_run_claude_once", lambda *a, **k: claude_called.__setitem__("n", 1) or GOOD)
+    result = cp.call_claude("sys", "X" * 15, "sonnet", tenant="acme")
+    assert claude_called["n"] == 0  # Claude was never called
+    assert result.get("result") == "DeepSeek says hi"
+    assert not cp._is_bad_result(result)
+
+
+def test_deepseek_no_routing_when_threshold_zero(monkeypatch):
+    """Threshold=0 disables routing — falls through to Claude."""
+    _mock_deepseek_ok(monkeypatch)
+    monkeypatch.setattr(cp, "DEEPSEEK_API_KEY", "sk-set")
+    monkeypatch.setattr(cp, "DEEPSEEK_THRESHOLD", 0)
+    monkeypatch.setattr(cp, "_run_claude_once", lambda *a, **k: GOOD)
+    result = cp.call_claude("sys", "X" * 25000, "sonnet", tenant="acme")
+    assert result == GOOD  # went to Claude, not DeepSeek
+
+
+def test_deepseek_last_resort_saves_bad_claude(monkeypatch):
+    """Claude returns empty → DeepSeek last-resort recovers."""
+    _mock_deepseek_ok(monkeypatch)
+    monkeypatch.setattr(cp, "DEEPSEEK_API_KEY", "sk-set")
+    monkeypatch.setattr(cp, "_run_claude_once", lambda *a, **k: EMPTY)
+    result = cp.call_claude("sys", "short prompt", "sonnet", tenant="acme")
+    # DeepSeek last-resort kicked in
+    assert result.get("result") == "DeepSeek says hi"
+    assert not cp._is_bad_result(result)
+
+
+def test_deepseek_http_error_returns_bad(monkeypatch):
+    """DeepSeek HTTPError → result is marked bad."""
+    _mock_deepseek_http_error(monkeypatch, code=500)
+    monkeypatch.setattr(cp, "DEEPSEEK_API_KEY", "sk-set")
+    monkeypatch.setattr(cp, "DEEPSEEK_THRESHOLD", 10)
+    result = cp.call_claude("sys", "X" * 15, "sonnet", tenant="acme")
+    assert cp._is_bad_result(result)
+    assert result.get("code") == 500

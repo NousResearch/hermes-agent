@@ -9375,11 +9375,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
-                self.session_store.append_to_transcript(
-                    session_entry.session_id,
-                    _user_entry,
-                    skip_db=agent_persisted,
-                )
+                    # Dedupe: skip if this platform message_id is already in the transcript
+                    # (prevents duplicate user turns on Telegram retries). #47237
+                    if self.session_store.has_platform_message_id(
+                        session_entry.session_id, str(event.message_id)
+                    ):
+                        logger.info(
+                            "Skipping duplicate user turn (message_id=%s) in session %s",
+                            event.message_id, session_entry.session_id,
+                        )
+                    else:
+                        self.session_store.append_to_transcript(
+                            session_entry.session_id,
+                            _user_entry,
+                            skip_db=agent_persisted,
+                        )
+                else:
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id,
+                        _user_entry,
+                        skip_db=agent_persisted,
+                    )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []

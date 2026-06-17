@@ -1309,3 +1309,52 @@ class TestRewriteTranscriptPreservesReasoning:
             "before user",
             "before assistant",
         ]
+
+
+class TestSessionStoreDedupe:
+    """Tests for duplicate user turn prevention on transient failures (#47237)."""
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        s = SessionStore(sessions_dir=tmp_path, config=config)
+        return s
+
+    def test_has_platform_message_id_returns_false_for_new_session(self, store):
+        """has_platform_message_id returns False for message_id not in session."""
+        session_id = "test_session"
+        store._db.create_session(session_id=session_id, source="test")
+        assert store.has_platform_message_id(session_id, "msg_123") is False
+
+    def test_has_platform_message_id_returns_true_after_append(self, store):
+        """has_platform_message_id returns True after message with message_id is appended."""
+        session_id = "test_session"
+        store._db.create_session(session_id=session_id, source="test")
+        store.append_to_transcript(session_id, {
+            "role": "user",
+            "content": "hello",
+            "message_id": "msg_123",
+        })
+        assert store.has_platform_message_id(session_id, "msg_123") is True
+
+    def test_has_platform_message_id_different_message_id_returns_false(self, store):
+        """has_platform_message_id returns False for different message_id."""
+        session_id = "test_session"
+        store._db.create_session(session_id=session_id, source="test")
+        store.append_to_transcript(session_id, {
+            "role": "user",
+            "content": "hello",
+            "message_id": "msg_123",
+        })
+        assert store.has_platform_message_id(session_id, "msg_456") is False
+
+    def test_has_platform_message_id_returns_false_when_db_unavailable(self, tmp_path):
+        """has_platform_message_id returns False when DB is not available."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        assert store.has_platform_message_id("any_session", "any_msg") is False

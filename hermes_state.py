@@ -3714,6 +3714,25 @@ class SessionDB:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
             return cursor.fetchone()[0]
 
+    def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
+        """Check if a message with the given platform_message_id exists in the session.
+
+        Uses the idx_messages_platform_msg_id index for efficient lookup.
+
+        Args:
+            session_id: The session to check
+            platform_message_id: The platform message ID to look for
+
+        Returns:
+            True if a message with this platform_message_id exists in the session
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
+                (session_id, platform_message_id),
+            )
+            return cursor.fetchone() is not None
+
     # =========================================================================
     # Export and cleanup
     # =========================================================================

@@ -1,13 +1,11 @@
 """
 Session management for the gateway.
-
 Handles:
 - Session context tracking (where messages come from)
 - Session storage (conversations persisted to disk)
 - Reset policy evaluation (when to start fresh)
 - Dynamic system prompt injection (agent knows its context)
 """
-
 import hashlib
 import logging
 import os
@@ -18,32 +16,21 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
-
 logger = logging.getLogger(__name__)
-
-
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
-
-
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
-
 def _hash_id(value: str) -> str:
     """Deterministic 12-char hex hash of an identifier."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-
-
 def _hash_sender_id(value: str) -> str:
     """Hash a sender ID to ``user_<12hex>``."""
     return f"user_{_hash_id(value)}"
-
-
 def _hash_chat_id(value: str) -> str:
     """Hash the numeric portion of a chat ID, preserving platform prefix.
-
     ``telegram:12345`` → ``telegram:<hash>``
     ``12345``          → ``<hash>``
     """
@@ -52,8 +39,6 @@ def _hash_chat_id(value: str) -> str:
         prefix = value[:colon]
         return f"{prefix}:{_hash_id(value[colon + 1:])}"
     return _hash_id(value)
-
-
 from .config import (
     Platform,
     GatewayConfig,
@@ -65,13 +50,10 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
-
-
 @dataclass
 class SessionSource:
     """
     Describes where a message originated from.
-    
     This information is used to:
     1. Route responses back to the right place
     2. Inject context into the system prompt
@@ -92,13 +74,11 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
-    
     @property
     def description(self) -> str:
         """Human-readable description of the source."""
         if self.platform == Platform.LOCAL:
             return "CLI terminal"
-        
         parts = []
         if self.chat_type == "dm":
             parts.append(f"DM with {self.user_name or self.user_id or 'user'}")
@@ -108,12 +88,9 @@ class SessionSource:
             parts.append(f"channel: {self.chat_name or self.chat_id}")
         else:
             parts.append(self.chat_name or self.chat_id)
-        
         if self.thread_id:
             parts.append(f"thread: {self.thread_id}")
-        
         return ", ".join(parts)
-    
     def to_dict(self) -> Dict[str, Any]:
         d = {
             "platform": self.platform.value,
@@ -136,7 +113,6 @@ class SessionSource:
         if self.message_id:
             d["message_id"] = self.message_id
         return d
-
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
         return cls(
@@ -154,14 +130,10 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
         )
-    
-
-
 @dataclass
 class SessionContext:
     """
     Full context for a session, used for dynamic system prompt injection.
-    
     The agent receives this information to understand:
     - Where messages are coming from
     - What platforms are available
@@ -171,13 +143,11 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
-    
     # Session metadata
     session_key: str = ""
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source.to_dict(),
@@ -191,8 +161,6 @@ class SessionContext:
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
-
-
 _PII_SAFE_PLATFORMS = frozenset({
     Platform.WHATSAPP,
     Platform.SIGNAL,
@@ -202,18 +170,14 @@ _PII_SAFE_PLATFORMS = frozenset({
 """Platforms where user IDs can be safely redacted (no in-message mention system
 that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
-
-
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session.
-
     Two conditions must hold:
       1. The `discord` or `discord_admin` toolset is enabled for the
          Discord platform via `hermes tools` (opt-in, default OFF).
       2. `DISCORD_BOT_TOKEN` is set — the tool's `check_fn` gates on it
          at registry time, so the toolset being enabled in config is not
          enough if the token isn't configured.
-
     Returns False (safe default — keeps the stale-API disclaimer) on any
     error so a bad config can't silently promise tools the agent lacks.
     """
@@ -227,8 +191,6 @@ def _discord_tools_loaded() -> bool:
         return "discord" in enabled or "discord_admin" in enabled
     except Exception:
         return False
-
-
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -236,12 +198,10 @@ def build_session_context_prompt(
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
-
     This is injected into the system prompt so the agent knows:
     - Where messages are coming from
     - What platforms are connected
     - Where it can deliver scheduled task outputs
-
     When *redact_pii* is True **and** the source platform is in
     ``_PII_SAFE_PLATFORMS``, phone numbers are stripped and user/chat IDs
     are replaced with deterministic hashes before being sent to the LLM.
@@ -264,7 +224,6 @@ def build_session_context_prompt(
         "## Current Session Context",
         "",
     ]
-
     # Source info
     platform_name = context.source.platform.value.title()
     if context.source.platform == Platform.LOCAL:
@@ -289,11 +248,9 @@ def build_session_context_prompt(
         else:
             desc = src.description
         lines.append(f"**Source:** {platform_name} ({desc})")
-
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
-
     if context.source.platform == Platform.MATRIX:
         src = context.source
         room_name = src.chat_name or src.chat_id
@@ -309,7 +266,6 @@ def build_session_context_prompt(
             "Matrix room/thread only. Do not assume unresolved references are "
             "about other Matrix rooms or projects unless the user explicitly says so."
         )
-
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
     # when group_sessions_per_user=False), multiple users contribute to the same
@@ -330,7 +286,6 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
-
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
         lines.append("")
@@ -391,15 +346,12 @@ def build_session_context_prompt(
             "their user_id). Your normal reply is delivered to the group you "
             "are responding in."
         )
-
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
     for p in context.connected_platforms:
         if p != Platform.LOCAL:
             platforms_list.append(f"{p.value}: Connected ✓")
-
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
-
     # Home channels
     if context.home_channels:
         lines.append("")
@@ -407,13 +359,10 @@ def build_session_context_prompt(
         for platform, home in context.home_channels.items():
             hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
             lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
-
     # Delivery options for scheduled tasks
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
-
     from hermes_constants import display_hermes_home
-
     # Origin delivery
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
@@ -422,43 +371,33 @@ def build_session_context_prompt(
             _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
         )
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
-
     # Local always available
     lines.append(
         f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
     )
-
     # Platform home channels
     for platform, home in context.home_channels.items():
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home.name})")
-
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
-
     return "\n".join(lines)
-
-
 @dataclass
 class SessionEntry:
     """
     Entry in the session store.
-    
     Maps a session key to its current session ID and metadata.
     """
     session_key: str
     session_id: str
     created_at: datetime
     updated_at: datetime
-    
     # Origin metadata for delivery routing
     origin: Optional[SessionSource] = None
-    
     # Display metadata
     display_name: Optional[str] = None
     platform: Optional[Platform] = None
     chat_type: str = "dm"
-    
     # Token tracking
     input_tokens: int = 0
     output_tokens: int = 0
@@ -467,16 +406,13 @@ class SessionEntry:
     total_tokens: int = 0
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
-    
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
-    
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
-
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
     # skill re-injection on the first message of the new session.  We can't
@@ -485,18 +421,15 @@ class SessionEntry:
     # context-note prepend — both wrong for an explicit manual reset.
     # See issue #6508.
     is_fresh_reset: bool = False
-    
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
     # agent).  Persisted to sessions.json so the flag survives gateway
     # restarts — prevents redundant finalization runs.
     expiry_finalized: bool = False
-
     # When True the next call to get_or_create_session() will auto-reset
     # this session (create a new session_id) so the user starts fresh.
     # Set by /stop to break stuck-resume loops (#7536).
     suspended: bool = False
-
     # When True the session was interrupted by a gateway restart/shutdown
     # drain timeout, but recovery is still expected.  Unlike ``suspended``,
     # ``resume_pending`` preserves the existing session_id on next access —
@@ -508,7 +441,6 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
-
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -543,20 +475,17 @@ class SessionEntry:
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
-    
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionEntry":
         origin = None
         if "origin" in data and data["origin"]:
             origin = SessionSource.from_dict(data["origin"])
-        
         platform = None
         if data.get("platform"):
             try:
                 platform = Platform(data["platform"])
             except ValueError as e:
                 logger.debug("Unknown platform value %r: %s", data["platform"], e)
-
         last_resume_marked_at = None
         _lrma = data.get("last_resume_marked_at")
         if _lrma:
@@ -564,7 +493,6 @@ class SessionEntry:
                 last_resume_marked_at = datetime.fromisoformat(_lrma)
             except (TypeError, ValueError):
                 last_resume_marked_at = None
-
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -592,8 +520,6 @@ class SessionEntry:
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
         )
-
-
 def is_shared_multi_user_session(
     source: SessionSource,
     *,
@@ -601,7 +527,6 @@ def is_shared_multi_user_session(
     thread_sessions_per_user: bool = False,
 ) -> bool:
     """Return True when a non-DM session is shared across participants.
-
     Mirrors the isolation rules in :func:`build_session_key`:
       - DMs are never shared.
       - Threads are shared unless ``thread_sessions_per_user`` is True.
@@ -613,23 +538,18 @@ def is_shared_multi_user_session(
     if source.thread_id:
         return not thread_sessions_per_user
     return not group_sessions_per_user
-
-
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
 ) -> str:
     """Build a deterministic session key from a message source.
-
     This is the single source of truth for session key construction.
-
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
       - thread_id further differentiates threaded DMs within the same DM chat.
       - Without chat_id, thread_id is used as a best-effort fallback.
       - Without thread_id or chat_id, DMs share a single session.
-
     Group/channel rules:
       - chat_id identifies the parent group/channel.
       - user_id/user_id_alt isolates participants within that parent chat when available when
@@ -648,7 +568,6 @@ def build_session_key(
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
-
         if dm_chat_id:
             if source.thread_id:
                 return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
@@ -672,7 +591,6 @@ def build_session_key(
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
         return f"agent:main:{platform}:dm"
-
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
         # Same JID/LID-flip bug as the DM case: without canonicalisation, a
@@ -680,33 +598,25 @@ def build_session_key(
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     key_parts = ["agent:main", platform, source.chat_type]
-
     if source.chat_id:
         key_parts.append(source.chat_id)
     if source.thread_id:
         key_parts.append(source.thread_id)
-
     # In threads, default to shared sessions (all participants see the same
     # conversation).  Per-user isolation only applies when explicitly enabled
     # via thread_sessions_per_user, or when there is no thread (regular group).
     isolate_user = group_sessions_per_user
     if source.thread_id and not thread_sessions_per_user:
         isolate_user = False
-
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
-
     return ":".join(key_parts)
-
-
 class SessionStore:
     """
     Manages session storage and retrieval.
-    
     Uses SQLite (via SessionDB) for session metadata and message transcripts.
     Falls back to legacy JSONL files if SQLite is unavailable.
     """
-    
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
                  has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
@@ -715,7 +625,6 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
-        
         # Initialize SQLite session database
         self._db = None
         try:
@@ -723,20 +632,16 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
-    
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
         with self._lock:
             self._ensure_loaded_locked()
-
     def _ensure_loaded_locked(self) -> None:
         """Load sessions index from disk. Must be called with self._lock held."""
         if self._loaded:
             return
-
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
-
         if sessions_file.exists():
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
@@ -749,15 +654,12 @@ class SessionStore:
                             continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
-
         self._loaded = True
-    
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
         import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
-
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
         fd, tmp_path = tempfile.mkstemp(
             dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
@@ -774,7 +676,6 @@ class SessionStore:
             except OSError as e:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
-    
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
@@ -782,10 +683,8 @@ class SessionStore:
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
-    
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
-        
         Works from the entry alone — no SessionSource needed.
         Used by the background expiry watcher to proactively flush memories.
         Sessions with active background processes are never considered expired.
@@ -793,22 +692,17 @@ class SessionStore:
         if self._has_active_processes_fn:
             if self._has_active_processes_fn(entry.session_key):
                 return False
-
         policy = self.config.get_reset_policy(
             platform=entry.platform,
             session_type=entry.chat_type,
         )
-
         if policy.mode == "none":
             return False
-
         now = _now()
-
         if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
                 return True
-
         if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour,
@@ -818,38 +712,29 @@ class SessionStore:
                 today_reset -= timedelta(days=1)
             if entry.updated_at < today_reset:
                 return True
-
         return False
-
     def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
         """
         Check if a session should be reset based on policy.
-        
         Returns the reset reason ("idle" or "daily") if a reset is needed,
         or None if the session is still valid.
-        
         Sessions with active background processes are never reset.
         """
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
                 return None
-
         policy = self.config.get_reset_policy(
             platform=source.platform,
             session_type=source.chat_type
         )
-        
         if policy.mode == "none":
             return None
-        
         now = _now()
-        
         if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
                 return "idle"
-        
         if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour, 
@@ -859,20 +744,15 @@ class SessionStore:
             )
             if now.hour < policy.at_hour:
                 today_reset -= timedelta(days=1)
-            
             if entry.updated_at < today_reset:
                 return "daily"
-        
         return None
-    
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
-
         Uses the SQLite database as the source of truth because it preserves
         historical session records (ended sessions still count).  The in-memory
         ``_entries`` dict replaces entries on reset, so ``len(_entries)`` would
         stay at 1 for single-platform users — which is the bug this fixes.
-
         The current session is already in the DB by the time this is called
         (get_or_create_session runs first), so we check ``> 1``.
         """
@@ -886,7 +766,6 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
-
     def get_or_create_session(
         self,
         source: SessionSource,
@@ -894,24 +773,19 @@ class SessionStore:
     ) -> SessionEntry:
         """
         Get an existing session or create a new one.
-
         Evaluates reset policy to determine if the existing session is stale.
         Creates a session record in SQLite when a new session starts.
         """
         session_key = self._generate_session_key(source)
         now = _now()
-
         # SQLite calls are made outside the lock to avoid holding it during I/O.
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
-
         with self._lock:
             self._ensure_loaded_locked()
-
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
-
                 # Auto-reset sessions marked as suspended (e.g. after /stop
                 # broke a stuck loop — #7536).  ``suspended`` is the hard
                 # forced-wipe signal and always wins over ``resume_pending``,
@@ -947,10 +821,8 @@ class SessionStore:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
-
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
             entry = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
@@ -964,7 +836,6 @@ class SessionStore:
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
             )
-
             self._entries[session_key] = entry
             self._save()
             db_create_kwargs = {
@@ -972,22 +843,18 @@ class SessionStore:
                 "source": source.platform.value,
                 "user_id": source.user_id,
             }
-
         # SQLite operations outside the lock
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
-
         return entry
-
     def update_session(
         self,
         session_key: str,
@@ -996,17 +863,14 @@ class SessionStore:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
             self._ensure_loaded_locked()
-
             if session_key in self._entries:
                 entry = self._entries[session_key]
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
-
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
-
         Used by ``/stop`` to prevent stuck sessions from being resumed
         after a gateway restart (#7536).  Returns True if the session
         existed and was marked.
@@ -1018,19 +882,16 @@ class SessionStore:
                 self._save()
                 return True
         return False
-
     def mark_resume_pending(
         self,
         session_key: str,
         reason: str = "restart_timeout",
     ) -> bool:
         """Mark a session as resumable after a restart interruption.
-
         Unlike ``suspend_session()``, this preserves the existing
         ``session_id`` and the transcript.  The next call to
         ``get_or_create_session()`` for this key returns the same entry
         so the user auto-resumes on the same conversation lane.
-
         Returns True if the session existed and was marked.
         """
         with self._lock:
@@ -1047,14 +908,11 @@ class SessionStore:
                 self._save()
                 return True
         return False
-
     def clear_resume_pending(self, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn.
-
         Called from the gateway after ``run_conversation()`` returns a
         final response for a session that had ``resume_pending=True``,
         signalling that recovery succeeded.
-
         Returns True if a flag was cleared.
         """
         with self._lock:
@@ -1067,31 +925,25 @@ class SessionStore:
             entry.last_resume_marked_at = None
             self._save()
             return True
-
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
-
         Pruning is based on ``updated_at`` (last activity), not ``created_at``.
         A session that's been active within the window is kept regardless of
         how old it is.  Entries marked ``suspended`` are kept — the user
         explicitly paused them for later resume.  Entries held by an active
         process (via has_active_processes_fn) are also kept so long-running
         background work isn't orphaned.
-
         Pruning is functionally identical to a natural reset-policy expiry:
         the transcript in SQLite stays, but the session_key → session_id
         mapping is dropped and the user starts a fresh session on return.
-
         ``max_age_days <= 0`` disables pruning; returns 0 immediately.
         Returns the number of entries removed.
         """
         if max_age_days is None or max_age_days <= 0:
             return 0
         from datetime import timedelta
-
         cutoff = _now() - timedelta(days=max_age_days)
         removed_keys: list[str] = []
-
         with self._lock:
             self._ensure_loaded_locked()
             for key, entry in list(self._entries.items()):
@@ -1117,34 +969,28 @@ class SessionStore:
                 self._entries.pop(key, None)
             if removed_keys:
                 self._save()
-
         if removed_keys:
             logger.info(
                 "SessionStore pruned %d entries older than %d days",
                 len(removed_keys), max_age_days,
             )
         return len(removed_keys)
-
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
         """Mark recently-active sessions as resumable after an unexpected exit.
-
         Called on gateway startup after a crash or fast restart to preserve
         in-flight sessions instead of destroying their conversation history
         (#7536).  Only marks sessions updated within *max_age_seconds* to
         avoid touching long-idle sessions.  Sets ``resume_pending=True`` so
         the next incoming message on the same session_key auto-resumes from
         the existing transcript.
-
         Entries already flagged ``resume_pending=True`` are skipped.  Entries
         explicitly ``suspended=True`` (from /stop or stuck-loop escalation)
         are also skipped.  Terminal escalation for genuinely stuck sessions
         is still handled by the existing ``.restart_failure_counts`` counter
         (threshold 3), which runs after this method and sets ``suspended=True``.
-
         Returns the number of sessions marked resumable.
         """
         from datetime import timedelta
-
         cutoff = _now() - timedelta(seconds=max_age_seconds)
         count = 0
         with self._lock:
@@ -1160,25 +1006,19 @@ class SessionStore:
             if count:
                 self._save()
         return count
-
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
         db_create_kwargs = None
         new_entry = None
-
         with self._lock:
             self._ensure_loaded_locked()
-
             if session_key not in self._entries:
                 return None
-
             old_entry = self._entries[session_key]
             db_end_session_id = old_entry.session_id
-
             now = _now()
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
             new_entry = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
@@ -1190,7 +1030,6 @@ class SessionStore:
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
             )
-
             self._entries[session_key] = new_entry
             self._save()
             db_create_kwargs = {
@@ -1198,24 +1037,19 @@ class SessionStore:
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
             }
-
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-
         return new_entry
-
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
-
         Used by ``/resume`` to restore a previously-named session.
         Ends the current session in SQLite (like reset), but instead of
         generating a fresh session ID, re-uses ``target_session_id`` so the
@@ -1224,21 +1058,15 @@ class SessionStore:
         """
         db_end_session_id = None
         new_entry = None
-
         with self._lock:
             self._ensure_loaded_locked()
-
             if session_key not in self._entries:
                 return None
-
             old_entry = self._entries[session_key]
-
             # Don't switch if already on that session
             if old_entry.session_id == target_session_id:
                 return old_entry
-
             db_end_session_id = old_entry.session_id
-
             now = _now()
             new_entry = SessionEntry(
                 session_key=session_key,
@@ -1250,38 +1078,29 @@ class SessionStore:
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
             )
-
             self._entries[session_key] = new_entry
             self._save()
-
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
-
         if self._db:
             try:
                 self._db.reopen_session(target_session_id)
             except Exception as e:
                 logger.debug("Session DB reopen_session failed: %s", e)
-
         return new_entry
-
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         with self._lock:
             self._ensure_loaded_locked()
             entries = list(self._entries.values())
-
         if active_minutes is not None:
             cutoff = _now() - timedelta(minutes=active_minutes)
             entries = [e for e in entries if e.updated_at >= cutoff]
-
         entries.sort(key=lambda e: e.updated_at, reverse=True)
-
         return entries
-
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
         """Return the active session entry for a persisted session ID, if any."""
         if not session_id:
@@ -1292,10 +1111,8 @@ class SessionStore:
                 if entry.session_id == session_id:
                     return entry
         return None
-    
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite).
-
         Args:
             skip_db: When True, skip the SQLite write. Used when the agent
                      already persisted messages to SQLite via its own
@@ -1327,10 +1144,8 @@ class SessionStore:
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-    
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
-
         Used by /retry, /undo, and /compress to persist modified conversation
         history. state.db is the canonical store.
         """
@@ -1339,10 +1154,8 @@ class SessionStore:
                 self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
-
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
-
         state.db is the canonical store. The legacy JSONL fallback was removed
         in spec 002 — pre-DB sessions on existing disks have already been
         migrated (their DB row holds the full message history).
@@ -1354,15 +1167,12 @@ class SessionStore:
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []
-
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete, keeping rows for audit.
-
         Unlike :meth:`rewrite_transcript` (a hard replace used by /retry),
         this flips the truncated rows to ``active=0`` in state.db so they
         survive for audit and stay hidden from re-prompts and search. Mirrors
         the CLI/TUI ``/undo [N]`` behavior via ``SessionDB.rewind_to_message``.
-
         Returns a dict ``{"rewound_count", "turns_undone", "target_text"}`` on
         success, or ``None`` if there's no DB or no user message to back up to.
         ``n`` clamps to the oldest user turn when it exceeds the turn count.
@@ -1406,8 +1216,21 @@ class SessionStore:
             "turns_undone": target_idx + 1,
             "target_text": target_text,
         }
-
-
+    def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
+        """Check if a message with the given platform_message_id exists in the session.
+        Args:
+            session_id: The session to check
+            platform_message_id: The platform message ID to look for
+        Returns:
+            True if a message with this platform_message_id exists in the session
+        """
+        if not self._db:
+            return False
+        try:
+            return self._db.has_platform_message_id(session_id, platform_message_id)
+        except Exception as e:
+            logger.debug("Could not check platform_message_id in DB: %s", e)
+            return False
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
@@ -1415,17 +1238,14 @@ def build_session_context(
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
-    
     This is used to inject context into the agent's system prompt.
     """
     connected = config.get_connected_platforms()
-    
     home_channels = {}
     for platform in connected:
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
-    
     context = SessionContext(
         source=source,
         connected_platforms=connected,
@@ -1436,11 +1256,9 @@ def build_session_context(
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
     )
-    
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
-    
     return context

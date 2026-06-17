@@ -725,7 +725,62 @@ async def _send_via_adapter(
                     metadata["publish_topic"] = chat_id
                 if not metadata:
                     metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+
+                if platform_name == "mattermost" and media_files:
+                    last_media_result = None
+                    for media in media_files:
+                        if isinstance(media, dict):
+                            file_path = media.get("path")
+                            is_voice = bool(
+                                media.get("is_voice") or media.get("voice")
+                            )
+                        elif isinstance(media, (tuple, list)):
+                            file_path = media[0] if media else None
+                            is_voice = bool(media[1]) if len(media) > 1 else False
+                        else:
+                            file_path = media
+                            is_voice = False
+                        if not file_path:
+                            return {"error": "Mattermost media entry has no file path"}
+
+                        caption = chunk if last_media_result is None else None
+                        if is_voice:
+                            result = await adapter.send_voice(
+                                chat_id=chat_id,
+                                audio_path=str(file_path),
+                                caption=caption,
+                                metadata=metadata,
+                            )
+                        else:
+                            result = await adapter.send_document(
+                                chat_id=chat_id,
+                                file_path=str(file_path),
+                                caption=caption,
+                                metadata=metadata,
+                            )
+                        if not result.success:
+                            return {"error": f"Adapter send failed: {result.error}"}
+                        if result.message_id is not None:
+                            last_media_result = result
+
+                    if last_media_result is not None:
+                        return {
+                            "success": True,
+                            "message_id": last_media_result.message_id,
+                        }
+                    if not chunk:
+                        return {"error": "Mattermost media files were not sent"}
+                    # Mattermost's local-file helpers return success with no
+                    # message_id when a path is missing. Preserve non-empty
+                    # caller text instead of silently reporting a no-op.
+                    result = await adapter.send(
+                        chat_id=chat_id, content=chunk, metadata=metadata
+                    )
+
+                else:
+                    result = await adapter.send(
+                        chat_id=chat_id, content=chunk, metadata=metadata
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1032,11 +1087,32 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # Mattermost supports native attachments through both the live adapter and
+    # its standalone sender (used by out-of-process cron workers). Send text
+    # chunks first and attach media only to the final chunk to avoid duplicates.
+    if platform == Platform.MATTERMOST and media_files:
+        last_result = None
+        for index, chunk in enumerate(chunks):
+            is_last = index == len(chunks) - 1
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else None,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, mattermost, weixin, signal, yuanbao, feishu and whatsapp; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1044,7 +1120,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and whatsapp"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, mattermost, weixin, signal, yuanbao, feishu and whatsapp"
         )
 
     last_result = None

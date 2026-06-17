@@ -19,6 +19,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
@@ -66,6 +67,13 @@ function ConfigField({
   const row = (action: ReactNode, wide = false) => (
     <ListRow action={action} description={description} title={label} wide={wide} />
   )
+
+  // `fallback_providers` is a list of {provider, model} objects; the generic
+  // `list` branch below would stringify them to "[object Object]". Render the
+  // dedicated structured editor instead.
+  if (schemaKey === 'fallback_providers') {
+    return row(<FallbackModelsField onChange={onChange} value={value} />, true)
+  }
 
   if (schema.type === 'boolean') {
     return row(

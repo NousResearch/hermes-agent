@@ -218,6 +218,52 @@ class TestTruncateContent:
         assert len(parent_warnings) == 1
         assert "parent.md" in parent_warnings[0]
 
+    def test_file_path_included_in_warning(self, monkeypatch):
+        """When file_path is provided, the warning shows the full path."""
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        _truncate_content(
+            content, "AGENTS.md", file_path="/home/user/.hermes/hermes-agent/AGENTS.md"
+        )
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        assert "/home/user/.hermes/hermes-agent/AGENTS.md" in warnings[0]
+        assert "AGENTS.md TRUNCATED" in warnings[0]
+
+    def test_file_path_in_marker(self, monkeypatch):
+        """When file_path is provided, the in-content marker still uses filename."""
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        result = _truncate_content(
+            content, "AGENTS.md", file_path="/some/path/AGENTS.md"
+        )
+
+        # The in-content marker uses filename (not file_path) for brevity
+        assert "truncated agents.md" in result.lower()
+
+    def test_file_path_none_uses_filename(self, monkeypatch):
+        """When file_path is None, the warning falls back to filename."""
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        _truncate_content(content, "fallback.md")
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        assert "fallback.md" in warnings[0]
+
 
 # =========================================================================
 # _parse_skill_file — single-pass skill file reading

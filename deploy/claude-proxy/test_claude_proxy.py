@@ -588,3 +588,46 @@ def test_health_root_returns_service_info(monkeypatch):
         assert "GET /health" in data["endpoints"]
     finally:
         srv.shutdown()
+
+
+# ── Auth edge cases ──
+
+def test_resolve_tenant_malformed_auth_header():
+    """'Bearer' with no token, or non-Bearer prefix → anon (or denied if locked)."""
+    # Malformed: just "Bearer" with nothing after
+    tenant, ok = cp.resolve_tenant("Bearer")
+    assert tenant == "anon"
+    # Non-Bearer prefix → treated as raw token
+    tenant2, ok2 = cp.resolve_tenant("Basic xyz")
+    assert tenant2 == "anon"
+
+
+def test_keys_file_deleted_revokes_keys(tmp_path, monkeypatch):
+    """Deleting keys.json clears the in-memory key map."""
+    import json as _j, os as _os, time as _t
+    f = tmp_path / "keys.json"
+    f.write_text(_j.dumps({"k1": "acme"}))
+    monkeypatch.setattr(cp, "KEYS_FILE", str(f))
+    cp._keys_map.clear()
+    cp._keys_mtime = 0.0
+    # Load → key works
+    assert cp.resolve_tenant("Bearer k1") == ("acme", True)
+    # Delete file → keys revoked
+    f.unlink()
+    _t.sleep(0.01)  # ensure mtime differs
+    cp._keys_mtime = 0.0  # force reload check
+    assert cp.resolve_tenant("Bearer k1") == ("anon", cp.ALLOW_ANON)
+    assert len(cp._keys_map) == 0
+
+
+def test_keys_json_not_a_dict_handled(tmp_path, monkeypatch):
+    """keys.json containing a list/string instead of dict → empty map, no crash."""
+    import json as _j
+    f = tmp_path / "keys.json"
+    f.write_text(_j.dumps(["not", "a", "dict"]))
+    monkeypatch.setattr(cp, "KEYS_FILE", str(f))
+    cp._keys_map.clear()
+    cp._keys_mtime = 0.0
+    # Must not crash
+    cp._load_keys_if_changed()
+    assert cp._keys_map == {}

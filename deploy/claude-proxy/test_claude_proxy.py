@@ -631,3 +631,57 @@ def test_keys_json_not_a_dict_handled(tmp_path, monkeypatch):
     # Must not crash
     cp._load_keys_if_changed()
     assert cp._keys_map == {}
+
+
+# ── Chat completions HTTP integration ──
+
+def _post_json(port, path, body_dict, auth=None):
+    """Helper: POST JSON to proxy, return (status, data)."""
+    import http.client, json as _j
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    headers = {"Content-Type": "application/json"}
+    if auth:
+        headers["Authorization"] = auth
+    conn.request("POST", path, body=_j.dumps(body_dict), headers=headers)
+    resp = conn.getresponse()
+    return resp.status, _j.loads(resp.read())
+
+
+def test_chat_completions_invalid_json_returns_400(monkeypatch):
+    """POST with invalid JSON body returns 400."""
+    import http.client
+    srv, port = _start_proxy(monkeypatch)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/v1/chat/completions",
+                     body="not json", headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        assert resp.status == 400
+    finally:
+        srv.shutdown()
+
+
+def test_chat_completions_wrong_path_returns_404(monkeypatch):
+    """POST to a non-existent endpoint returns 404."""
+    status, data = None, None
+    srv, port = _start_proxy(monkeypatch)
+    try:
+        status, data = _post_json(port, "/v1/nonexistent", {"x": 1})
+    finally:
+        srv.shutdown()
+    assert status == 404
+
+
+def test_chat_completions_invalid_content_length_returns_400(monkeypatch):
+    """POST with non-numeric Content-Length returns 400."""
+    import http.client
+    srv, port = _start_proxy(monkeypatch)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/v1/chat/completions")
+        conn.putheader("Content-Length", "not-a-number")
+        conn.endheaders()
+        resp = conn.getresponse()
+        assert resp.status == 400
+    finally:
+        srv.shutdown()

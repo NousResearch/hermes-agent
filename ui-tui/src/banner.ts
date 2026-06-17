@@ -53,25 +53,58 @@ const LOGO_ART = [
 ]
 
 const CADUCEUS_ART = [
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀',
-  '⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀',
-  '⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀',
-  '⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀'
+  '       ▫    ▫       ',
+  '       ▪    ▪       ',
+  '      ▪▫    ▫▪      ',
+  '     ▪▪      ▪▫     ',
+  '    ▫▪▪      ▪▪▫    ',
+  '    ▪▪▫      ▫▪▪    ',
+  '   ▪▪▪       ▫▪▪▪   ',
+  '  ▪▪▪▪        ▪▪▪▫  ',
+  ' ▫▪▪▪▫        ▪▪▪▪▫ ',
+  ' ▪▪▪▪▫        ▫▪▪▪▪ ',
+  '▪▪▪▪▪▫        ▫▪▪▪▪▪',
+  '▪▪▪▪▪▪▪▫    ▫▪▪▪▪▪▪▪',
+  '  ▫▪▪▪▪▫  ▫▪▪▪▪▪▪▫  ',
+  '    ▫▫  ▫▪▪▪▪▪▪▫    ',
+  '     ▫▪▪▪▪▪▪▪▫      ',
+  '   ▫▪▪▪▪▪▪▪▫  ▫▪▫   ',
+  ' ▫▪▪▪▪▪▪▪▫  ▫▪▪▪▪▪▫ ',
+  '▪▪▪▪▪▪▪▪    ▪▪▪▪▪▪▪▪',
+  ' ▫▪▪▪▪▪▪▪  ▪▪▪▪▪▪▪▫ ',
+  '    ▪▪▪▪▪▪▪▪▪▪▪▫    ',
+  '      ▫▪▪▪▪▪▪▫      ',
+  '        ▫▪▪▫        '
 ]
 
+// Garnet / dark-red gradient (top → bottom), independent of the active theme
+// so the Hades caduceus always renders in its signature deep reds.
+const CADUCEUS_COLORS = [
+  '#A31621',
+  '#A31621',
+  '#9B111E',
+  '#9B111E',
+  '#8B0000',
+  '#8B0000',
+  '#8B0000',
+  '#7B1113',
+  '#7B1113',
+  '#7B1113',
+  '#800020',
+  '#800020',
+  '#800020',
+  '#6E0D0D',
+  '#6E0D0D',
+  '#6E0D0D',
+  '#5C0011',
+  '#5C0011',
+  '#5C0011',
+  '#4A0E0E',
+  '#4A0E0E',
+  '#4A0E0E'
+] as const
+
 const LOGO_GRADIENT = [0, 0, 1, 1, 2, 2] as const
-const CADUC_GRADIENT = [2, 2, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 3, 3, 3] as const
 
 const colorize = (art: string[], gradient: readonly number[], c: ThemeColors): Line[] => {
   const p = [c.primary, c.accent, c.border, c.muted]
@@ -85,8 +118,8 @@ export const CADUCEUS_WIDTH = Math.max(...CADUCEUS_ART.map(line => line.length))
 export const logo = (c: ThemeColors, customLogo?: string): Line[] =>
   customLogo ? parseRichMarkup(customLogo) : colorize(LOGO_ART, LOGO_GRADIENT, c)
 
-export const caduceus = (c: ThemeColors, customHero?: string): Line[] =>
-  customHero ? parseRichMarkup(customHero) : colorize(CADUCEUS_ART, CADUC_GRADIENT, c)
+export const caduceus = (_c: ThemeColors, customHero?: string): Line[] =>
+  customHero ? parseRichMarkup(customHero) : CADUCEUS_ART.map((text, i) => [CADUCEUS_COLORS[i] ?? '#4A0E0E', text])
 
 export const artWidth = (lines: Line[]) => lines.reduce((m, [, t]) => Math.max(m, t.length), 0)
 

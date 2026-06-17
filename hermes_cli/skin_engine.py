@@ -164,24 +164,31 @@ class SkinConfig:
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
         "name": "default",
-        "description": "Classic Hades — gold and kawaii",
+        "description": "Classic Hades — garnet and kawaii",
         "colors": {
-            "banner_border": "#CD7F32",
-            "banner_title": "#FFD700",
-            "banner_accent": "#FFBF00",
-            "banner_dim": "#B8860B",
-            "banner_text": "#FFF8DC",
-            "ui_accent": "#FFBF00",
-            "ui_label": "#DAA520",
+            # Garnet / dark-red palette matching the Hades logo gradient
+            # (#A31621 → #4A0E0E). Functional status colors (ok/error/warn)
+            # stay green/red/amber for legibility.
+            "banner_border": "#7B1113",
+            "banner_title": "#A31621",
+            "banner_accent": "#C0392B",
+            "banner_dim": "#6E0D0D",
+            "banner_text": "#F0DCDC",
+            "ui_accent": "#C0392B",
+            "ui_label": "#B0182B",
             "ui_ok": "#4caf50",
             "ui_error": "#ef5350",
             "ui_warn": "#ffa726",
-            "prompt": "#FFF8DC",
-            "input_rule": "#CD7F32",
-            "response_border": "#FFD700",
-            "status_bar_bg": "#1a1a2e",
-            "session_label": "#DAA520",
-            "session_border": "#8B8682",
+            "prompt": "#F0DCDC",
+            "input_rule": "#7B1113",
+            "response_border": "#A31621",
+            # status_bar_* keys are intentionally omitted: builtin/user skins
+            # inherit the default's colors, and the status-bar style builder
+            # already derives them from banner_title/text/dim/accent. Adding
+            # explicit keys here would leak into other skins' fallbacks.
+            "status_bar_bg": "#1A0E0E",
+            "session_label": "#B0182B",
+            "session_border": "#6E4B4B",
         },
         "spinner": {
             # Empty = use hardcoded defaults in display.py

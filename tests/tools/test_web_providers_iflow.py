@@ -67,6 +67,7 @@ class TestIFlowSearch:
         result = IFlowWebSearchProvider().search("test", limit=5)
         assert result["success"] is False
         assert "IFLOW_API_KEY is not set" in result["error"]
+        assert "~/.hermes" not in result["error"]
 
     def test_web_search_success_normalizes_results(self, monkeypatch):
         monkeypatch.setenv("IFLOW_API_KEY", "test-key")

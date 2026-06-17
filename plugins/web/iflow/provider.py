@@ -30,10 +30,15 @@ from agent.web_search_provider import WebSearchProvider
 logger = logging.getLogger(__name__)
 
 DEFAULT_IFLOW_BASE_URL = "https://platform.iflow.cn"
-_MISSING_KEY_ERROR = (
-    "IFLOW_API_KEY is not set. Run hermes tools and select iFlow Search, "
-    "or set IFLOW_API_KEY in ~/.hermes/.env."
-)
+
+
+def _missing_key_error() -> str:
+    from hermes_constants import display_hermes_home
+
+    return (
+        "IFLOW_API_KEY is not set. Run hermes tools and select iFlow Search, "
+        f"or set IFLOW_API_KEY in {display_hermes_home()}/.env."
+    )
 
 
 def _env_value(name: str) -> str:
@@ -195,7 +200,7 @@ def _iflow_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
     api_key = _iflow_api_key()
     if not api_key:
-        raise ValueError(_MISSING_KEY_ERROR)
+        raise ValueError(_missing_key_error())
 
     url = f"{_iflow_base_url()}/{path.lstrip('/')}"
     try:

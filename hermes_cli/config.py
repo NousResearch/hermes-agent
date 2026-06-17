@@ -3004,6 +3004,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "IFLOW_BASE_URL": {
+        "description": "Override the iFlow Search API base URL (default: https://platform.iflow.cn)",
+        "prompt": "iFlow Search API base URL (leave empty for cloud)",
+        "url": "https://platform.iflow.cn/docs/",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
     "FIRECRAWL_GATEWAY_URL": {
         "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
         "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
@@ -6037,6 +6045,7 @@ def show_config():
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
         ("EXA_API_KEY", "Exa"),
+        ("IFLOW_API_KEY", "iFlow Search"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
@@ -6242,9 +6251,10 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
-        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
+        'EXA_API_KEY', 'IFLOW_API_KEY', 'IFLOW_BASE_URL', 'PARALLEL_API_KEY',
+        'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'FIRECRAWL_GATEWAY_URL',
+        'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME', 'TOOL_GATEWAY_USER_TOKEN',
+        'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',

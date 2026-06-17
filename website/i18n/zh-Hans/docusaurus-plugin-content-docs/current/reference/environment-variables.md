@@ -130,6 +130,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `SEARXNG_URL` | 免费自托管网络搜索的 SearXNG 实例 URL——无需 API 密钥（[searxng.github.io](https://searxng.github.io/searxng/)） |
 | `TAVILY_BASE_URL` | 覆盖 Tavily API 端点。适用于企业代理和自托管 Tavily 兼容搜索后端。与 `GROQ_BASE_URL` 模式相同。 |
 | `EXA_API_KEY` | Exa API 密钥，用于 AI 原生网络搜索和内容获取（[exa.ai](https://exa.ai/)） |
+| `IFLOW_API_KEY` | iFlow Search API 密钥，用于网络搜索和页面抓取（[platform.iflow.cn](https://platform.iflow.cn/docs/)） |
+| `IFLOW_BASE_URL` | 覆盖 iFlow Search API 基础 URL（默认：`https://platform.iflow.cn`）。适用于企业代理或私有部署。 |
 | `BROWSERBASE_API_KEY` | 浏览器自动化（[browserbase.com](https://browserbase.com/)） |
 | `BROWSERBASE_PROJECT_ID` | Browserbase 项目 ID |
 | `BROWSER_USE_API_KEY` | Browser Use 云浏览器 API 密钥（[browser-use.com](https://browser-use.com/)） |

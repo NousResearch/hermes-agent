@@ -101,7 +101,7 @@ export function CreateProfileDialog({
               aria-invalid={invalid}
               autoFocus
               id="new-profile-name"
-              onChange={event => setName(event.target.value)}
+              onChange={event => setName(event.target.value.toLowerCase())}
               placeholder="my-profile"
               value={name}
             />

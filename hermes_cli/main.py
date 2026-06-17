@@ -5110,16 +5110,16 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
-def _electron_dist_binary(project_root: Path) -> Path:
+def _electron_dist_binary(desktop_dir: Path) -> Path:
     """Return the path to the Electron main binary inside ``node_modules``.
 
     electron-builder reads the binary from ``build.electronDist``
-    (``node_modules/electron/dist``) since #38673, so this is the exact file
-    whose absence makes a pack fail with "The specified electronDist does not
-    exist". The basename differs per OS (the platform Electron is named for the
-    host the build runs on).
+    (``node_modules/electron/dist`` relative to ``apps/desktop``) since #38673,
+    so this is the exact file whose absence makes a pack fail with "The
+    specified electronDist does not exist". The basename differs per OS (the
+    platform Electron is named for the host the build runs on).
     """
-    dist = project_root / "node_modules" / "electron" / "dist"
+    dist = desktop_dir / "node_modules" / "electron" / "dist"
     if sys.platform == "darwin":
         return dist / "Electron.app" / "Contents" / "MacOS" / "Electron"
     if sys.platform == "win32":
@@ -5127,8 +5127,8 @@ def _electron_dist_binary(project_root: Path) -> Path:
     return dist / "electron"
 
 
-def _electron_dist_ok(project_root: Path) -> bool:
-    """True when ``node_modules/electron/dist`` holds a usable Electron binary.
+def _electron_dist_ok(desktop_dir: Path) -> bool:
+    """True when the desktop workspace Electron dist holds a usable binary.
 
     A directory that exists but is missing the binary (a partial extraction from
     a corrupt cached zip, or an interrupted postinstall) counts as NOT ok, since
@@ -5136,18 +5136,18 @@ def _electron_dist_ok(project_root: Path) -> bool:
     electronDist.
     """
     try:
-        return _electron_dist_binary(project_root).exists()
+        return _electron_dist_binary(desktop_dir).exists()
     except OSError:
         return False
 
 
 def _redownload_electron_dist(
-    project_root: Path,
+    desktop_dir: Path,
     env: dict,
     *,
     mirror: Optional[str] = None,
 ) -> bool:
-    """(Re)populate ``node_modules/electron/dist`` via electron's own downloader.
+    """(Re)populate desktop ``node_modules/electron/dist`` via electron's downloader.
 
     Since #38673 the desktop build pins ``build.electronDist`` to
     ``node_modules/electron/dist``, so electron-builder reads the Electron binary
@@ -5166,10 +5166,10 @@ def _redownload_electron_dist(
     mirror. Best-effort: never raises. Returns True iff the dist binary exists
     afterward.
     """
-    if _electron_dist_ok(project_root):
+    if _electron_dist_ok(desktop_dir):
         return True
 
-    electron_dir = project_root / "node_modules" / "electron"
+    electron_dir = desktop_dir / "node_modules" / "electron"
     installer = electron_dir / "install.js"
     if not installer.is_file():
         return False
@@ -5191,7 +5191,7 @@ def _redownload_electron_dist(
         subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False)
     except OSError:
         return False
-    return _electron_dist_ok(project_root)
+    return _electron_dist_ok(desktop_dir)
 
 
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
@@ -5456,8 +5456,8 @@ def cmd_gui(args: argparse.Namespace):
                 # a binary to read. Gated on the dist check so an unrelated build
                 # failure (tsc/vite) doesn't trigger a pointless ~200 MB refetch.
                 restored = False
-                if not _electron_dist_ok(PROJECT_ROOT):
-                    restored = _redownload_electron_dist(PROJECT_ROOT, env)
+                if not _electron_dist_ok(desktop_dir):
+                    restored = _redownload_electron_dist(desktop_dir, env)
                 if purged or restored:
                     print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
                     for p in purged:
@@ -5487,9 +5487,9 @@ def cmd_gui(args: argparse.Namespace):
                 # electron's own downloader. Re-fetch the binary through the
                 # mirror first; otherwise the retry just re-reads the same missing
                 # dist and re-throws "electronDist does not exist" (#47266).
-                have_dist = _electron_dist_ok(PROJECT_ROOT)
+                have_dist = _electron_dist_ok(desktop_dir)
                 if not have_dist:
-                    have_dist = _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
+                    have_dist = _redownload_electron_dist(desktop_dir, env, mirror=mirror)
                 if have_dist:
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)

@@ -20,6 +20,9 @@ specific version (which is allowed to move):
    installed binary to match ``electronVersion`` / ``electronDist``), and
 2. the dependency, ``build.electronVersion``, and the resolved lockfile entry
    all agree — so ``npm ci`` installs exactly what the build packages.
+3. ``build.electronDist`` points at the desktop workspace's own
+   ``node_modules/electron/dist`` directory, matching the root workspace
+   lockfile layout.
 """
 
 from __future__ import annotations
@@ -93,4 +96,23 @@ def test_lockfile_resolves_the_pinned_electron():
         f"package-lock.json resolves electron to {sorted(set(resolved))}, "
         f"but the pin is {spec!r}; run `npm install --package-lock-only` so "
         "`npm ci` stays consistent."
+    )
+
+
+def test_electron_dist_matches_workspace_install_location():
+    """electronDist must point where npm installs Electron for the workspace."""
+    pkg = _desktop_pkg()
+    electron_dist = pkg.get("build", {}).get("electronDist")
+    assert electron_dist == "node_modules/electron/dist", (
+        "build.electronDist is resolved relative to apps/desktop by "
+        "electron-builder, so it must point at the desktop workspace's own "
+        f"node_modules/electron/dist; got {electron_dist!r}."
+    )
+
+    if not ROOT_LOCK.is_file():
+        pytest.skip("root package-lock.json not present")
+    lock = json.loads(ROOT_LOCK.read_text(encoding="utf-8"))
+    assert "apps/desktop/node_modules/electron" in lock.get("packages", {}), (
+        "package-lock.json installs Electron under apps/desktop/node_modules, "
+        "so electronDist must remain relative to apps/desktop."
     )

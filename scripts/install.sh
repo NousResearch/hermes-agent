@@ -2407,15 +2407,15 @@ _desktop_pack() {
 # failed, and we never override a user-pinned ELECTRON_MIRROR.
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
-# True (returns 0) when node_modules/electron/dist holds a usable Electron
-# binary. electron-builder reads the binary from build.electronDist
-# (node_modules/electron/dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing the binary (partial extraction / aborted
-# postinstall) is NOT ok. $1 = the workspace root holding node_modules.
+# True (returns 0) when apps/desktop/node_modules/electron/dist holds a usable
+# Electron binary. electron-builder reads the binary from build.electronDist
+# (node_modules/electron/dist relative to apps/desktop) since #38673, so this is
+# the exact file whose absence makes a pack fail with "The specified
+# electronDist does not exist". A dist dir that exists but is missing the binary
+# (partial extraction / aborted postinstall) is NOT ok. $1 = apps/desktop.
 _electron_dist_ok() {
-    local install_dir="$1"
-    local electron_dir="$install_dir/node_modules/electron"
+    local desktop_dir="$1"
+    local electron_dir="$desktop_dir/node_modules/electron"
     if [ "$OS" = "macos" ]; then
         [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
     else
@@ -2436,14 +2436,14 @@ _electron_dist_ok() {
 #
 # No-op (returns 0) when the dist binary is already present. Otherwise drops a
 # partial dist + version marker (electron's install.js short-circuits when
-# path.txt already matches) and runs the downloader once. $1 = the workspace root
-# holding node_modules; optional $2 = an ELECTRON_MIRROR base URL. Best-effort:
+# path.txt already matches) and runs the downloader once. $1 = apps/desktop;
+# optional $2 = an ELECTRON_MIRROR base URL. Best-effort:
 # returns 0 iff the dist binary exists afterward.
 _restore_electron_dist() {
-    local install_dir="$1"
+    local desktop_dir="$1"
     local mirror="${2:-}"
-    local electron_dir="$install_dir/node_modules/electron"
-    _electron_dist_ok "$install_dir" && return 0
+    local electron_dir="$desktop_dir/node_modules/electron"
+    _electron_dist_ok "$desktop_dir" && return 0
 
     [ -f "$electron_dir/install.js" ] || return 1
     command -v node >/dev/null 2>&1 || return 1
@@ -2456,7 +2456,7 @@ _restore_electron_dist() {
     else
         ( cd "$electron_dir" && node install.js ) || true
     fi
-    _electron_dist_ok "$install_dir"
+    _electron_dist_ok "$desktop_dir"
 }
 
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
@@ -2539,8 +2539,8 @@ install_desktop() {
         # check so an unrelated build failure (tsc/vite) doesn't trigger a
         # pointless ~200MB refetch.
         local restored=false
-        if ! _electron_dist_ok "$INSTALL_DIR"; then
-            if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
+        if ! _electron_dist_ok "$desktop_dir"; then
+            if _restore_electron_dist "$desktop_dir"; then restored=true; fi
         fi
         if [ -n "$purged" ] || [ "$restored" = true ]; then
             log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
@@ -2560,9 +2560,9 @@ install_desktop() {
         log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
         local have_dist=false
-        if _electron_dist_ok "$INSTALL_DIR"; then
+        if _electron_dist_ok "$desktop_dir"; then
             have_dist=true
-        elif _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+        elif _restore_electron_dist "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
             have_dist=true
         fi
         if [ "$have_dist" = true ]; then

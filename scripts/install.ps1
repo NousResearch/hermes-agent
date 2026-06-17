@@ -2161,15 +2161,15 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
-# True when node_modules\electron\dist holds a usable Electron binary.
-# electron-builder reads the binary from build.electronDist
-# (node_modules\electron\dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing electron.exe (partial extraction / aborted
-# postinstall) is NOT ok.
+# True when apps\desktop\node_modules\electron\dist holds a usable Electron
+# binary. electron-builder reads the binary from build.electronDist
+# (node_modules\electron\dist relative to apps\desktop) since #38673, so this is
+# the exact file whose absence makes a pack fail with "The specified
+# electronDist does not exist". A dist dir that exists but is missing
+# electron.exe (partial extraction / aborted postinstall) is NOT ok.
 function Test-ElectronDist {
-    param([string]$InstallDir)
-    $distExe = Join-Path $InstallDir 'node_modules\electron\dist\electron.exe'
+    param([string]$DesktopDir)
+    $distExe = Join-Path $DesktopDir 'node_modules\electron\dist\electron.exe'
     return (Test-Path -LiteralPath $distExe)
 }
 
@@ -2190,10 +2190,10 @@ function Test-ElectronDist {
 # mirror. Best-effort: never throws. Returns $true iff the dist binary exists
 # afterward.
 function Restore-ElectronDist {
-    param([string]$InstallDir, [string]$Mirror)
-    if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
+    param([string]$DesktopDir, [string]$Mirror)
+    if (Test-ElectronDist -DesktopDir $DesktopDir) { return $true }
 
-    $electronDir = Join-Path $InstallDir 'node_modules\electron'
+    $electronDir = Join-Path $DesktopDir 'node_modules\electron'
     $distExe = Join-Path $electronDir 'dist\electron.exe'
     $installer = Join-Path $electronDir 'install.js'
     if (-not (Test-Path -LiteralPath $installer)) { return $false }
@@ -2378,8 +2378,8 @@ function Install-Desktop {
             # read. Gated on the dist check so an unrelated build failure
             # (tsc/vite) doesn't trigger a pointless ~200MB refetch.
             $restored = $false
-            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                $restored = Restore-ElectronDist -InstallDir $InstallDir
+            if (-not (Test-ElectronDist -DesktopDir $desktopDir)) {
+                $restored = Restore-ElectronDist -DesktopDir $desktopDir
             }
             if ($purged.Count -gt 0 -or $restored) {
                 Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
@@ -2406,8 +2406,8 @@ function Install-Desktop {
             # downloader. Re-fetch the binary through the mirror first; otherwise
             # the retry just re-reads the same missing dist and re-throws
             # "The specified electronDist does not exist" (#47266).
-            $haveDist = Test-ElectronDist -InstallDir $InstallDir
-            if (-not $haveDist) { $haveDist = Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror }
+            $haveDist = Test-ElectronDist -DesktopDir $desktopDir
+            if (-not $haveDist) { $haveDist = Restore-ElectronDist -DesktopDir $desktopDir -Mirror $mirror }
             if ($haveDist) {
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE

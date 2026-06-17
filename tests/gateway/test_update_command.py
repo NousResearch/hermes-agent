@@ -195,7 +195,7 @@ class TestHandleUpdateCommand:
         ):
             result = _resolve_hermes_bin()
 
-        assert result == [sys.executable, "-m", "hermes_cli"]
+        assert result == [sys.executable, "-m", "hermes_cli.main"]
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_returns_none_when_both_fail(self):

@@ -155,7 +155,7 @@ class TestStartupPlatformIsolation:
         monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
         runner = _make_runner()
 
-        assert runner._platform_connect_timeout_secs() == 90.0
+        assert runner._platform_connect_timeout_secs() == 30.0
 
 
 class TestStartupFailureQueuing:

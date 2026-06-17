@@ -62,7 +62,7 @@ def test_sanitize_drops_stale_send_message_region():
 @pytest.mark.parametrize(
     ("fork_ref", "merge_base"),
     [
-        ("1dd6b4fca5e22b05b966484373eb8aa73c1b1e63", "992b9223893453b3b1527b2ba728996ec81e83f2"),
+        ("6140cce1870a29dbdf78dca1dcba99428d5e99ae", "992b9223893453b3b1527b2ba728996ec81e83f2"),
     ],
 )
 def test_toolsets_three_way_overlay_clean_after_sanitize(fork_ref: str, merge_base: str):

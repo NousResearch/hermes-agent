@@ -4266,12 +4266,30 @@ class AIAgent:
 
         Used to gate user-facing "trying fallback..." status so we don't
         announce a fallback that will never be attempted (the user has no
-        fallback chain configured).  Mirrors the early-return guard in
+        fallback chain configured).  Mirrors the early guards in
         ``try_activate_fallback`` (#35314, #17446).
         """
         chain = getattr(self, "_fallback_chain", None) or []
-        index = getattr(self, "_fallback_index", 0)
-        return index < len(chain)
+        if not isinstance(chain, (list, tuple)):
+            return False
+
+        try:
+            index = int(getattr(self, "_fallback_index", 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if index < 0:
+            index = 0
+        if index >= len(chain):
+            return False
+
+        for entry in chain[index:]:
+            if not isinstance(entry, dict):
+                continue
+            provider = (entry.get("provider") or "").strip()
+            model = (entry.get("model") or "").strip()
+            if provider and model:
+                return True
+        return False
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 

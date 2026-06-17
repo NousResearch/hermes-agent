@@ -22,7 +22,7 @@ import {
   resetThreadScroll,
   setThreadAtBottom
 } from '@/store/thread-scroll'
-import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
+import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from './message-render-boundary'
 
@@ -134,13 +134,20 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const hiddenCount = firstVisible
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
   const restoreFromBottomRef = useRef<number | null>(null)
-  const newSessionWindow = isNewSessionWindow()
-  const newSessionTitlebarGap = 'calc(var(--titlebar-height)+0.75rem)'
-  const threadContentTopPad = newSessionWindow
+  // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
+  // hide the titlebar tool cluster + session header, but the OS traffic lights
+  // still sit in the top-left, so reserve the titlebar gap above the transcript.
+  const secondaryWindow = isSecondaryWindow()
+  // NB: CSS calc() requires whitespace around the +/- operator. This string is
+  // assigned verbatim to the --sticky-human-top inline style below (it does not
+  // go through Tailwind, which would auto-space it), so the spaces are load-
+  // bearing — without them the declaration is invalid, gets dropped, and the
+  // sticky user bubble falls back to its ~4px default and slides under the OS
+  // traffic lights.
+  const secondaryTitlebarGap = 'calc(var(--titlebar-height) + 0.75rem)'
+  const threadContentTopPad = secondaryWindow
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
-    : isSecondaryWindow()
-      ? 'pt-6'
-      : 'pt-[calc(var(--titlebar-height)+1.5rem)]'
+    : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
 
   useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
   useEffect(() => () => resetThreadScroll(), [])
@@ -247,10 +254,21 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       style={
         {
           height: clampToComposer ? 'var(--thread-viewport-height)' : '100%',
-          ...(newSessionWindow ? { '--sticky-human-top': newSessionTitlebarGap } : {})
+          ...(secondaryWindow ? { '--sticky-human-top': secondaryTitlebarGap } : {})
         } as CSSProperties
       }
     >
+      {secondaryWindow && (
+        // Secondary windows hide the titlebar chrome, so the scroller runs to
+        // the window's top edge and streamed text slides up under the OS
+        // traffic lights. Content padding alone scrolls away with the text — a
+        // fixed opaque strip (the titlebar's drag region) masks anything behind
+        // it and keeps the window draggable, matching the main window's header.
+        <div
+          aria-hidden="true"
+          className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
+        />
+      )}
       <div
         className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
         data-following={isAtBottom ? 'true' : 'false'}

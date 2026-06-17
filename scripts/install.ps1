@@ -2161,6 +2161,66 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
+# True when node_modules\electron\dist holds a usable Electron binary.
+# electron-builder reads the binary from build.electronDist
+# (node_modules\electron\dist) since #38673, so this is the exact file whose
+# absence makes a pack fail with "The specified electronDist does not exist". A
+# dist dir that exists but is missing electron.exe (partial extraction / aborted
+# postinstall) is NOT ok.
+function Test-ElectronDist {
+    param([string]$InstallDir)
+    $distExe = Join-Path $InstallDir 'node_modules\electron\dist\electron.exe'
+    return (Test-Path -LiteralPath $distExe)
+}
+
+# (Re)populate node_modules\electron\dist via electron's own downloader.
+#
+# Since #38673 the desktop build pins build.electronDist to
+# node_modules\electron\dist, so electron-builder reads the Electron binary
+# straight from there and never downloads it during `npm run pack`. That dist
+# tree is produced by the electron package's postinstall (install.js) during
+# `npm ci`. When that download is blocked/throttled (GitHub's release host is
+# unreachable in some regions - #47266), dist is missing and re-running pack only
+# re-throws "The specified electronDist does not exist". The mirror fallback
+# therefore has to drive THIS downloader, not another pack.
+#
+# No-op (returns $true) when the dist binary is already present. Otherwise drops a
+# partial dist + version marker (electron's install.js short-circuits when
+# path.txt already matches) and runs the downloader once, optionally via a
+# mirror. Best-effort: never throws. Returns $true iff the dist binary exists
+# afterward.
+function Restore-ElectronDist {
+    param([string]$InstallDir, [string]$Mirror)
+    if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
+
+    $electronDir = Join-Path $InstallDir 'node_modules\electron'
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
+    $installer = Join-Path $electronDir 'install.js'
+    if (-not (Test-Path -LiteralPath $installer)) { return $false }
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) { return $false }
+
+    $distDir = Join-Path $electronDir 'dist'
+    if (Test-Path -LiteralPath $distDir) {
+        Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath (Join-Path $electronDir 'path.txt') -Force -ErrorAction SilentlyContinue
+
+    $prevMirror = $env:ELECTRON_MIRROR
+    if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
+    try {
+        # Out-Host so the downloader's progress shows on the console WITHOUT
+        # leaking into this function's return value (PowerShell returns every
+        # object left on the output stream, so a bare pipe here would make the
+        # boolean below ambiguous).
+        & $node.Source $installer 2>&1 | ForEach-Object { "$_" } | Out-Host
+    } catch {
+    } finally {
+        $env:ELECTRON_MIRROR = $prevMirror
+    }
+    return (Test-Path -LiteralPath $distExe)
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -2310,8 +2370,19 @@ function Install-Desktop {
             # once; @electron/get re-downloads with its own SHASUM check. Without
             # this a corrupt download hard-fails the whole installer.
             $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-            if ($purged.Count -gt 0) {
-                Write-Warn "Desktop build failed - cleared cached Electron download, retrying once:"
+            # electronDist is pinned to node_modules\electron\dist (#38673):
+            # electron-builder reads the Electron binary from there and `pack`
+            # never downloads it, so purging the cache + re-running pack can't by
+            # itself repopulate a missing/partial dist. When the dist is actually
+            # gone, re-run electron's own downloader so the retry has a binary to
+            # read. Gated on the dist check so an unrelated build failure
+            # (tsc/vite) doesn't trigger a pointless ~200MB refetch.
+            $restored = $false
+            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                $restored = Restore-ElectronDist -InstallDir $InstallDir
+            }
+            if ($purged.Count -gt 0 -or $restored) {
+                Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
@@ -2326,14 +2397,23 @@ function Install-Desktop {
         # trade-off we only make AFTER the canonical GitHub download has failed,
         # and we never override a user-pinned ELECTRON_MIRROR.
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
-            $prevMirror = $env:ELECTRON_MIRROR
-            $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+            $mirror = "https://npmmirror.com/mirrors/electron/"
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
-            Write-Warn "Retrying once via a public Electron mirror ($($env:ELECTRON_MIRROR)):"
+            Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
             Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-            & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-            $code = $LASTEXITCODE
-            $env:ELECTRON_MIRROR = $prevMirror
+            # electronDist is pinned (#38673), so `npm run pack` never downloads
+            # Electron - the mirror only helps if it drives electron's own
+            # downloader. Re-fetch the binary through the mirror first; otherwise
+            # the retry just re-reads the same missing dist and re-throws
+            # "The specified electronDist does not exist" (#47266).
+            $haveDist = Test-ElectronDist -InstallDir $InstallDir
+            if (-not $haveDist) { $haveDist = Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror }
+            if ($haveDist) {
+                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                $code = $LASTEXITCODE
+            } else {
+                Write-Warn "Could not re-download Electron from the mirror (node_modules\electron\dist still missing)"
+            }
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {

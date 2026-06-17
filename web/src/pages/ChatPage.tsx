@@ -990,18 +990,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
 
+    // Session resume: strip ANSI codes that Ink's two-pass virtual
+    // scroll unmount emits into the PTY stream (blank-line bursts,
+    // erase-line, erase-char). Gate on resumeParam so short/new
+    // sessions never see the filter.
+    const decoder = new TextDecoder();
+    const sanitizeResumeOutput = (raw: string): string =>
+      resumeParam
+        ? raw.replace(/\n{3,}/g, "\n\n")
+             .replace(/\x1b\[\d*K/g, "")
+             .replace(/\x1b\[\d*X/g, "")
+        : raw;
+
     ws.onmessage = (ev) => {
-      let text: string;
-      if (typeof ev.data === "string") {
-        text = ev.data;
-      } else {
-        text = new TextDecoder().decode(new Uint8Array(ev.data as ArrayBuffer));
-      }
-      term.write(
-        text.replace(/\n{3,}/g, "\n\n")
-            .replace(/\x1b\[\d*K/g, "")
-            .replace(/\x1b\[\d*X/g, "")
-      );
+      const text =
+        typeof ev.data === "string"
+          ? ev.data
+          : decoder.decode(new Uint8Array(ev.data as ArrayBuffer));
+      term.write(sanitizeResumeOutput(text));
     };
 
     ws.onclose = (ev) => {

@@ -121,6 +121,15 @@ def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> st
     return "v1," + base64.b64encode(digest).decode()
 
 
+def _standard_webhook_signature(
+    body: bytes, secret: str, webhook_id: str, timestamp: str
+) -> str:
+    """Compute a Standard Webhooks v1 signature header for *body*."""
+    signed = webhook_id.encode() + b"." + timestamp.encode() + b"." + body
+    digest = hmac.new(secret.encode(), signed, hashlib.sha256).digest()
+    return "v1," + base64.b64encode(digest).decode()
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -355,6 +364,43 @@ class TestValidateSignature:
                 "svix-id": msg_id,
                 "svix-timestamp": timestamp,
                 "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, received_body, secret) is False
+
+    def test_validate_standard_webhooks_signature_valid(self):
+        """Valid Standard Webhooks headers are accepted."""
+        adapter = _make_adapter()
+        body = b'{"object_kind":"push"}'
+        secret = "gitlab-signing-secret"
+        webhook_id = "msg_gitlab_123"
+        timestamp = str(int(time.time()))
+        sig = _standard_webhook_signature(body, secret, webhook_id, timestamp)
+        req = _mock_request(
+            headers={
+                "webhook-id": webhook_id,
+                "webhook-timestamp": timestamp,
+                "webhook-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_standard_webhooks_signature_wrong_body_rejects(self):
+        """Standard Webhooks signatures are bound to the exact raw body."""
+        adapter = _make_adapter()
+        signed_body = b'{"object_kind":"push"}'
+        received_body = b'{"object_kind":"merge_request"}'
+        secret = "gitlab-signing-secret"
+        webhook_id = "msg_gitlab_123"
+        timestamp = str(int(time.time()))
+        sig = _standard_webhook_signature(
+            signed_body, secret, webhook_id, timestamp
+        )
+        req = _mock_request(
+            headers={
+                "webhook-id": webhook_id,
+                "webhook-timestamp": timestamp,
+                "webhook-signature": sig,
             }
         )
         assert adapter._validate_signature(req, received_body, secret) is False
@@ -1048,6 +1094,25 @@ class TestIdempotency:
             data = await resp2.json()
             assert data["status"] == "duplicate"
             assert data["delivery_id"] == "msg_duplicate"
+
+    @pytest.mark.asyncio
+    async def test_webhook_id_used_as_delivery_id_for_deduplication(self):
+        """Standard Webhooks retries reuse webhook-id, so use it for dedupe."""
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"webhook-id": "msg_standard_duplicate"}
+            resp1 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+
+            resp2 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp2.status == 200
+            data = await resp2.json()
+            assert data["status"] == "duplicate"
+            assert data["delivery_id"] == "msg_standard_duplicate"
 
 
 # ===================================================================

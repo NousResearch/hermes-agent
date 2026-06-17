@@ -54,6 +54,11 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.final_sentinel import (
+    FINAL_MESSAGE_SENTINEL,
+    should_send_final_sentinel,
+    strip_trailing_final_sentinel,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -9103,6 +9108,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+                if response:
+                    response = strip_trailing_final_sentinel(response)
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -9470,6 +9477,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                if should_send_final_sentinel(
+                    platform=source.platform,
+                    message_type=getattr(event, "message_type", None),
+                    response_delivered=True,
+                    failed=bool(agent_result.get("failed")),
+                ):
+                    try:
+                        _sentinel_adapter = self.adapters.get(source.platform)
+                        if _sentinel_adapter:
+                            await _sentinel_adapter.send(
+                                source.chat_id,
+                                FINAL_MESSAGE_SENTINEL,
+                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                            )
+                    except Exception as _e:
+                        logger.debug("final sentinel send failed: %s", _e)
                 return None
 
             return response

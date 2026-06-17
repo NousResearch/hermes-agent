@@ -491,6 +491,11 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.final_sentinel import (
+    FINAL_MESSAGE_SENTINEL,
+    should_send_final_sentinel,
+    strip_trailing_final_sentinel,
+)
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -4219,6 +4224,8 @@ class BasePlatformAdapter(ABC):
                     session_key,
                 )
                 response = None
+            if response:
+                response = strip_trailing_final_sentinel(response)
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
@@ -4479,6 +4486,25 @@ class BasePlatformAdapter(ABC):
                         "for %s (empty after extract, recovery yielded nothing).",
                         self.name, len(_response_pre_extract), event.source.chat_id,
                     )
+
+                # Send the standalone completion marker after the main visible
+                # response has been delivered. This is gateway-side user-facing
+                # completion clarity for Telegram/Discord, not model text and
+                # not runtime/footer telemetry.
+                if should_send_final_sentinel(
+                    platform=self.platform,
+                    message_type=event.message_type,
+                    response_delivered=delivery_succeeded,
+                    is_ephemeral_response=is_ephemeral_response,
+                ):
+                    try:
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=FINAL_MESSAGE_SENTINEL,
+                            metadata=_thread_metadata,
+                        )
+                    except Exception as _sentinel_err:
+                        logger.debug("[%s] final sentinel send failed: %s", self.name, _sentinel_err)
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)

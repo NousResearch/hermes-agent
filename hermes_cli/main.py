@@ -9061,6 +9061,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("user_modified"):
                 print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+                print(
+                    "    → see them: hermes skills list-modified  "
+                    "(diff/reset to resume updates)"
+                )
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
             if not result["copied"] and not result.get("updated"):

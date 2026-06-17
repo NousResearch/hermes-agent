@@ -943,6 +943,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if plat == Platform.SLACK and "strip_bot_mentions" in platform_cfg:
+                    bridged["strip_bot_mentions"] = platform_cfg["strip_bot_mentions"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
@@ -1037,6 +1039,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
                 if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
                     os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
+                if "strip_bot_mentions" in slack_cfg and not os.getenv("SLACK_STRIP_BOT_MENTIONS"):
+                    os.environ["SLACK_STRIP_BOT_MENTIONS"] = str(slack_cfg["strip_bot_mentions"]).lower()
                 if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
                     os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
                 frc = slack_cfg.get("free_response_channels")

@@ -312,6 +312,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # Force-clear on every test setup so the leak can't happen.
     "SLACK_REQUIRE_MENTION",
     "SLACK_STRICT_MENTION",
+    "SLACK_STRIP_BOT_MENTIONS",
     "SLACK_FREE_RESPONSE_CHANNELS",
     "SLACK_ALLOW_BOTS",
     "SLACK_REACTIONS",

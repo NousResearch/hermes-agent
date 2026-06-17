@@ -55,7 +55,13 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None, allowed_channels=None):
+def _make_adapter(
+    require_mention=None,
+    strict_mention=None,
+    free_response_channels=None,
+    allowed_channels=None,
+    strip_bot_mentions=None,
+):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -65,6 +71,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["free_response_channels"] = free_response_channels
     if allowed_channels is not None:
         extra["allowed_channels"] = allowed_channels
+    if strip_bot_mentions is not None:
+        extra["strip_bot_mentions"] = strip_bot_mentions
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -178,6 +186,32 @@ def test_strict_mention_env_var_fallback(monkeypatch):
     monkeypatch.setenv("SLACK_STRICT_MENTION", "true")
     adapter = _make_adapter()  # no config value -> falls back to env
     assert adapter._slack_strict_mention() is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: _slack_strip_bot_mentions
+# ---------------------------------------------------------------------------
+
+def test_strip_bot_mentions_defaults_to_true(monkeypatch):
+    monkeypatch.delenv("SLACK_STRIP_BOT_MENTIONS", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_strip_bot_mentions() is True
+
+
+def test_strip_bot_mentions_false():
+    adapter = _make_adapter(strip_bot_mentions=False)
+    assert adapter._slack_strip_bot_mentions() is False
+
+
+def test_strip_bot_mentions_string_off():
+    adapter = _make_adapter(strip_bot_mentions="off")
+    assert adapter._slack_strip_bot_mentions() is False
+
+
+def test_strip_bot_mentions_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_STRIP_BOT_MENTIONS", "false")
+    adapter = _make_adapter()
+    assert adapter._slack_strip_bot_mentions() is False
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +548,28 @@ def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     assert config is not None
     import os as _os
     assert _os.environ["SLACK_STRICT_MENTION"] == "true"
+
+
+def test_config_bridges_slack_strip_bot_mentions(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  strip_bot_mentions: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_STRIP_BOT_MENTIONS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert config.platforms[Platform.SLACK].extra.get("strip_bot_mentions") is False
+    import os as _os
+    assert _os.environ["SLACK_STRIP_BOT_MENTIONS"] == "false"
 
 
 # ---------------------------------------------------------------------------

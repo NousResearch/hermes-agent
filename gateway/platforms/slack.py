@@ -2522,9 +2522,10 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     return
 
-        if is_mentioned:
+        if is_mentioned and self._slack_strip_bot_mentions():
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
+        if is_mentioned:
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
@@ -3410,7 +3411,7 @@ class SlackAdapter(BasePlatformAdapter):
                     continue
 
                 # Strip bot mentions from context messages
-                if bot_uid:
+                if bot_uid and self._slack_strip_bot_mentions():
                     msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
 
                 prefix = "[thread parent] " if is_parent else ""
@@ -3480,7 +3481,7 @@ class SlackAdapter(BasePlatformAdapter):
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             text = (parent.get("text") or "").strip()
-            if bot_uid:
+            if bot_uid and self._slack_strip_bot_mentions():
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
         except Exception as exc:  # pragma: no cover - defensive
@@ -3778,6 +3779,24 @@ class SlackAdapter(BasePlatformAdapter):
             "1",
             "yes",
             "on",
+        }
+
+    def _slack_strip_bot_mentions(self) -> bool:
+        """Return whether Slack bot mention tokens are removed from prompt text.
+
+        Defaults to True to preserve existing behavior. Explicit false values
+        keep the raw ``<@U...>`` tokens in current and fetched thread text.
+        """
+        configured = self.config.extra.get("strip_bot_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("SLACK_STRIP_BOT_MENTIONS", "true").lower() not in {
+            "false",
+            "0",
+            "no",
+            "off",
         }
 
     def _slack_free_response_channels(self) -> set:

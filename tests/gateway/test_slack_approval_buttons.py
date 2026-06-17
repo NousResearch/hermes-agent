@@ -361,7 +361,7 @@ class TestSlackThreadContext:
         mock_client.conversations_replies = AsyncMock(return_value={
             "messages": [
                 {"ts": "1000.0", "user": "U1", "text": "This is the parent message"},
-                {"ts": "1000.1", "user": "U2", "text": "I think we should refactor"},
+                {"ts": "1000.1", "user": "U2", "text": "<@U_BOT> I think we should refactor"},
                 {"ts": "1000.2", "user": "U1", "text": "Good idea, <@U_BOT> what do you think?"},
             ]
         })
@@ -383,6 +383,31 @@ class TestSlackThreadContext:
         assert "what do you think" not in context
         # Bot mention should be stripped from context
         assert "<@U_BOT>" not in context
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_context_preserves_bot_mentions_when_config_false(self):
+        adapter = _make_adapter()
+        adapter.config.extra["strip_bot_mentions"] = False
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "<@U_BOT> parent"},
+                {"ts": "1000.1", "user": "U2", "text": "prior <@U_BOT> reply"},
+                {"ts": "1000.2", "user": "U1", "text": "current <@U_BOT>"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice", "U2": "Bob"}
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1",
+            thread_ts="1000.0",
+            current_ts="1000.2",
+            team_id="T1",
+        )
+
+        assert "[thread parent] Alice: <@U_BOT> parent" in context
+        assert "Bob: prior <@U_BOT> reply" in context
+        assert "current <@U_BOT>" not in context
 
     @pytest.mark.asyncio
     async def test_skips_bot_messages(self):
@@ -606,6 +631,39 @@ class TestSlackThreadContext:
         assert parent == "Parent summary"
         # No additional API call
         assert mock_client.conversations_replies.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_parent_text_strips_bot_mention_by_default(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "<@U_BOT> Parent summary"},
+            ]
+        })
+
+        parent = await adapter._fetch_thread_parent_text(
+            channel_id="C1", thread_ts="1000.0", team_id="T1"
+        )
+
+        assert parent == "Parent summary"
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_parent_text_preserves_bot_mention_when_config_false(self):
+        adapter = _make_adapter()
+        adapter.config.extra["strip_bot_mentions"] = False
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.0", "user": "U1", "text": "<@U_BOT> Parent summary"},
+            ]
+        })
+
+        parent = await adapter._fetch_thread_parent_text(
+            channel_id="C1", thread_ts="1000.0", team_id="T1"
+        )
+
+        assert parent == "<@U_BOT> Parent summary"
 
 
 # ===========================================================================

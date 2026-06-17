@@ -1802,6 +1802,21 @@ class TestMessageRouting:
         assert "<@U_BOT>" not in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_channel_mention_preserves_bot_id_when_config_false(self, adapter):
+        """strip_bot_mentions=false keeps the mention token in MessageEvent text."""
+        adapter.config.extra["strip_bot_mentions"] = False
+        event = {
+            "text": "<@U_BOT> what's the weather?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "<@U_BOT> what's the weather?"
+
+    @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):
         """Messages from bots should be ignored."""
         event = {
@@ -3474,7 +3489,7 @@ class TestSlackReplyToText:
                     {
                         "ts": "1000.0",
                         "bot_id": "B_CRON",
-                        "text": "メール要約: 新着メール3件あります",
+                        "text": "<@U_BOT> メール要約: 新着メール3件あります",
                     },
                     {"ts": "1000.5", "user": "U_USER", "text": "詳細を教えて"},
                 ]
@@ -3505,6 +3520,45 @@ class TestSlackReplyToText:
         # gateway can inject it when not already in the session history.
         assert msg_event.reply_to_text is not None
         assert "メール要約" in msg_event.reply_to_text
+        assert "<@U_BOT>" not in msg_event.reply_to_text
+
+    @pytest.mark.asyncio
+    async def test_slack_reply_to_text_preserves_bot_mention_when_config_false(
+        self, adapter
+    ):
+        adapter.config.extra["strip_bot_mentions"] = False
+        adapter._channel_team = {}
+        adapter._team_bot_user_ids = {}
+
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1000.0",
+                        "bot_id": "B_CRON",
+                        "text": "<@U_BOT> Parent summary",
+                    },
+                    {"ts": "1000.5", "user": "U_USER", "text": "details"},
+                ]
+            }
+        )
+
+        event = {
+            "text": "details",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1000.5",
+            "thread_ts": "1000.0",
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.reply_to_text == "<@U_BOT> Parent summary"
 
     @pytest.mark.asyncio
     async def test_slack_reply_to_text_none_for_top_level_message(self, adapter):

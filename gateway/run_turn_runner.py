@@ -672,10 +672,13 @@ class TurnRunner:
                     # Throttle edits: batch rapid tool updates into fewer API calls (grammY pattern:
                     # proactively rate-limit rather than react to 429s). Loop back to drain further
                     # queued messages before sending a single batched edit.
-                    remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
-                    if remaining > 0:
-                        await asyncio.sleep(remaining)
-                        continue
+                    # Separate grouping has no batched edit to flush a deferred line.
+                    # Keep accumulate throttling even after an edit failure disables editing.
+                    if ctx.progress_grouping != "separate":
+                        remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
+                        if remaining > 0:
+                            await asyncio.sleep(remaining)
+                            continue
                     if not ctx._run_still_current():
                         return
                     if not await self._progress_send_or_edit(st, msg):

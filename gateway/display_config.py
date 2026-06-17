@@ -51,9 +51,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # post-delivery cleanup; >0 waits for this much session inactivity before
     # deleting the collected meta bubbles.
     "cleanup_progress_idle_seconds": 0,
-    # Optional exchange-count trigger. 0 disables; N deletes collected meta
-    # bubbles after N successful cleanup-tracked turns even if the idle timer
-    # has not elapsed.
+    # Optional exchange-count trigger. 0 disables. When set to N, the Nth
+    # successful cleanup-tracked turn deletes collected meta bubbles
+    # immediately, independent of cleanup_progress_idle_seconds. Use this as
+    # a hard transcript-noise ceiling when long active conversations should
+    # not wait for the idle timer before cleanup.
     "cleanup_progress_max_exchanges": 0,
     # Reset/new-session trigger. When cleanup_progress is enabled, a reset
     # flushes any pending collected meta bubbles immediately by default.

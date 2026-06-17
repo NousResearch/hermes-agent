@@ -160,6 +160,9 @@ _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+# Feishu image embedded in content_v2 markdown text: ![alt](img_v...) with an
+# optional "title". Only matches feishu image_keys (img_v prefix), not URLs.
+_POST_MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\((img_v[0-9A-Za-z_\-]+)(?:\s+"[^"]*")?\)')
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -677,16 +680,78 @@ def _resolve_locale_payload(payload: Any) -> Dict[str, Any]:
     return {}
 
 
+def _select_post_content(candidate: Dict[str, Any]) -> Any:
+    """Prefer inbound content_v2 (markdown-native), fall back to legacy content.
+
+    content_v2 shares the legacy post format (a list of element rows) plus an
+    extra tag=="md" element type, so it flows through the existing render path.
+    Any malformed / empty / non-list / exception case degrades silently to the
+    legacy content (AC-M2-E1 / AC-M2-R1): never raise to the caller.
+    """
+    try:
+        raw_v2 = candidate.get("content_v2")
+        if isinstance(raw_v2, str):
+            raw_v2 = json.loads(raw_v2)
+        if isinstance(raw_v2, list) and raw_v2:
+            return raw_v2
+    except Exception:
+        pass
+    return candidate.get("content")
+
+
 def _to_post_payload(candidate: Any) -> Dict[str, Any]:
     if not isinstance(candidate, dict):
         return {}
-    content = candidate.get("content")
+    content = _select_post_content(candidate)
     if not isinstance(content, list):
         return {}
     return {
         "title": str(candidate.get("title", "") or ""),
         "content": content,
     }
+
+
+def _extract_md_image_keys(text: str, image_keys: List[str]) -> str:
+    """Resolve feishu images embedded in content_v2 tag=md markdown text.
+
+    Replaces ``![alt](img_v...)`` (optionally with a ``"title"``) found OUTSIDE
+    fenced code blocks with an ``[Image: alt]`` placeholder, and collects the
+    image_key into ``image_keys`` so the existing download -> vision path picks
+    it up (mirrors the structured ``tag=img`` element handling). Image markdown
+    inside fenced code blocks stays verbatim (literal source); non-feishu image
+    URLs (no ``img_v`` key) are left untouched.
+    """
+    if "img_v" not in text:
+        return text
+
+    def _sub(line: str) -> str:
+        def _repl(m: "re.Match[str]") -> str:
+            alt = m.group(1).strip()
+            key = m.group(2).strip()
+            if key and key not in image_keys:
+                image_keys.append(key)
+            return f"[Image: {alt}]" if alt else "[Image]"
+
+        return _POST_MD_IMAGE_RE.sub(_repl, line)
+
+    if "```" not in text:
+        return _sub(text)
+
+    rendered: List[str] = []
+    in_code = False
+    for raw_line in text.split("\n"):
+        stripped = raw_line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped)
+            if in_code
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped)
+        )
+        if is_fence:
+            in_code = not in_code
+            rendered.append(raw_line)
+            continue
+        rendered.append(raw_line if in_code else _sub(raw_line))
+    return "\n".join(rendered)
 
 
 def _render_post_element(
@@ -760,6 +825,14 @@ def _render_post_element(
         return _wrap_inline_code(code) if code else ""
     if tag in {"code_block", "pre"}:
         return _render_code_block_element(element)
+    if tag == "md":
+        # content_v2 markdown element: emit the raw markdown text verbatim so
+        # tables / code / headings keep their structure. Must come before the
+        # nested fallback, which would escape it via _escape_markdown_text.
+        # Embedded feishu images ![alt](img_v...) outside code fences are
+        # collected into image_keys + replaced with an [Image: alt] placeholder
+        # so they reach the download -> vision path (code-block ones stay literal).
+        return _extract_md_image_keys(str(element.get("text", "") or ""), image_keys)
 
     nested_parts: List[str] = []
     for key in ("text", "title", "content", "children", "elements"):
@@ -4375,13 +4448,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Tables are treated like any other markdown: render them natively via
+        # post + tag=md. A pure table does not match _MARKDOWN_HINT_RE, so the
+        # table regex is OR-ed in to make sure table-only content reaches post.
+        # If Feishu rejects the post ("content format of the post type is
+        # incorrect"), send()/edit_message() fall back to plain text.
+        if _MARKDOWN_HINT_RE.search(content) or _MARKDOWN_TABLE_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

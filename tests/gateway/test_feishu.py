@@ -4944,3 +4944,251 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuOutboundMarkdownTable(unittest.TestCase):
+    """M1: 含表格的出站内容与其它 markdown 一视同仁走 post+tag=md。"""
+
+    def _adapter(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        return FeishuAdapter(PlatformConfig())
+
+    def test_table_content_goes_to_post_md(self):
+        # AC-M1-H1: 含 markdown 表格 → msg_type=="post"，rows 为 tag=="md" 且含表格原文。
+        adapter = self._adapter()
+        content = "| Name | Age |\n|------|-----|\n| Bob | 30 |"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")
+        parsed = json.loads(payload)
+        rows = parsed["zh_cn"]["content"]
+        flat = [el for row in rows for el in row]
+        self.assertTrue(all(el["tag"] == "md" for el in flat))
+        self.assertIn("| Name | Age |", "".join(el["text"] for el in flat))
+
+    def test_plain_text_stays_text(self):
+        # AC-M1-H2: 纯文本 → msg_type=="text"，payload 为 {"text": content}。
+        adapter = self._adapter()
+        content = "just a plain sentence without markdown"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": content})
+
+    def test_non_table_markdown_stays_post(self):
+        # AC-M1-H3: 含非表格 md（标题/列表/加粗）→ 仍走 post+md（行为不变）。
+        adapter = self._adapter()
+        content = "# 标题\n\n- 列表项\n\n可以用 **粗体**。"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")
+        parsed = json.loads(payload)
+        flat = [el for row in parsed["zh_cn"]["content"] for el in row]
+        self.assertTrue(all(el["tag"] == "md" for el in flat))
+
+    def test_fenced_code_block_still_splits_rows(self):
+        # AC-M1-E1: 含围栏代码块 → 仍按既有逻辑拆为多 post row（行为不变）。
+        adapter = self._adapter()
+        content = "前言文字\n\n```python\nprint('x')\n```\n\n收尾文字"
+        msg_type, payload = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")
+        rows = json.loads(payload)["zh_cn"]["content"]
+        self.assertGreater(len(rows), 1)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_table_post_rejected_falls_back_to_text(self):
+        # AC-M1-R1: 表格构造出 post，被飞书 API 以 post content invalid 拒绝 →
+        # 复用既有回退分支以 msg_type=="text" 重发，不抛错给上层。
+        adapter = self._adapter()
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=230001,
+                        msg="content format of the post type is incorrect",
+                    )
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| Name | Age |\n|------|-----|\n| Bob | 30 |"
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+
+
+class TestFeishuInboundMarkdownV2(unittest.TestCase):
+    """M2: 入站优先取 content_v2 + 渲染层 tag==md 原文直出。"""
+
+    # --- Task 1: tag==md 原文直出 ---
+    def test_render_md_element_raw_passthrough(self):
+        # AC-M2-H2: tag=="md" 元素原文直出、不转义（表格 markdown 的 | 等字符保留）。
+        from plugins.platforms.feishu.adapter import _render_post_element
+
+        md_table = "| Name | Age |\n|------|-----|\n| Bob | 30 |"
+        out = _render_post_element({"tag": "md", "text": md_table}, [], [])
+        self.assertEqual(out, md_table)
+        # 未被 markdown 转义：管道符 / 连字符原样保留，无反斜杠转义。
+        self.assertNotIn("\\|", out)
+        self.assertNotIn("\\-", out)
+
+    # --- Task 2: content_v2 优先 + 防御式降级 ---
+    def _post_raw(self, payload: dict) -> str:
+        return json.dumps(payload, ensure_ascii=False)
+
+    def test_content_v2_preferred_over_legacy_content(self):
+        # AC-M2-H1: 含合法 content_v2 时，取 content_v2 的 md 原文作为 text_content。
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        md_table = "| Name | Age |\n|------|-----|\n| Bob | 30 |"
+        payload = {
+            "content": [[{"tag": "text", "text": "legacy plain"}]],
+            "content_v2": [[{"tag": "md", "text": md_table}]],
+        }
+        normalized = normalize_feishu_message(
+            message_type="post",
+            raw_content=self._post_raw(payload),
+        )
+        self.assertEqual(normalized.text_content, md_table)
+        self.assertNotIn("legacy plain", normalized.text_content)
+
+    def test_content_v2_inside_locale_wrapper(self):
+        # AC-M2-H1: content_v2 位于 locale（zh_cn）包裹层时同样被优先取用。
+        # NOTE: 每行经既有 _normalize_feishu_text 处理（会丢空行），故此用例用单行
+        # 表格 markdown 验证 content_v2 优先，避免依赖出域的空行保留行为。
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        md = "| 名称 | 年龄 |"
+        payload = {"zh_cn": {
+            "content": [[{"tag": "text", "text": "legacy"}]],
+            "content_v2": [[{"tag": "md", "text": md}]],
+        }}
+        normalized = normalize_feishu_message(
+            message_type="post",
+            raw_content=self._post_raw(payload),
+        )
+        self.assertEqual(normalized.text_content, md)
+        self.assertNotIn("legacy", normalized.text_content)
+
+    def test_no_content_v2_falls_back_to_content(self):
+        # AC-M2-H3: 无 content_v2 → 降级用传统 content，行为与改造前一致。
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        payload = {"content": [[{"tag": "text", "text": "hello legacy"}]]}
+        normalized = normalize_feishu_message(
+            message_type="post",
+            raw_content=self._post_raw(payload),
+        )
+        self.assertEqual(normalized.text_content, "hello legacy")
+
+    def test_empty_or_non_list_content_v2_falls_back(self):
+        # AC-M2-E1: content_v2 为空 list / 非 list → 安全降级回 content，不报错。
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        for bad_v2 in ([], {"not": "a list"}, 123):
+            payload = {
+                "content": [[{"tag": "text", "text": "legacy ok"}]],
+                "content_v2": bad_v2,
+            }
+            normalized = normalize_feishu_message(
+                message_type="post",
+                raw_content=self._post_raw(payload),
+            )
+            self.assertEqual(normalized.text_content, "legacy ok")
+
+    def test_outbound_contract_single_text_content(self):
+        # AC-M2-E2: 对外仍单一 text_content（post 契约不变，无新增对外字段）。
+        from plugins.platforms.feishu.adapter import normalize_feishu_message, FeishuNormalizedMessage
+        import dataclasses
+
+        md = "| a | b |\n|---|---|\n| 1 | 2 |"
+        payload = {"content_v2": [[{"tag": "md", "text": md}]]}
+        normalized = normalize_feishu_message(
+            message_type="post",
+            raw_content=self._post_raw(payload),
+        )
+        self.assertIsInstance(normalized, FeishuNormalizedMessage)
+        self.assertEqual(normalized.raw_type, "post")
+        self.assertEqual(normalized.text_content, md)
+        # 字段集合未因 content_v2 新增对外字段（与既有 dataclass 契约一致）。
+        field_names = {f.name for f in dataclasses.fields(FeishuNormalizedMessage)}
+        self.assertIn("text_content", field_names)
+        self.assertNotIn("content_v2", field_names)
+
+    def test_malformed_content_v2_string_degrades_without_raising(self):
+        # AC-M2-R1: content_v2 为非法 JSON 字符串 / 取用抛异常 → 捕获降级回 content，绝不抛错。
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        payload = {
+            "content": [[{"tag": "text", "text": "safe legacy"}]],
+            "content_v2": "{not-valid-json",
+        }
+        normalized = normalize_feishu_message(
+            message_type="post",
+            raw_content=self._post_raw(payload),
+        )
+        self.assertEqual(normalized.text_content, "safe legacy")
+
+
+class TestFeishuInboundMdImageExtraction(unittest.TestCase):
+    """content_v2 tag=md 文本里嵌入的飞书图片 ![alt](img_v...) 需被采集进
+    image_keys（触发下载→vision）并替换为 [Image: alt] 占位；代码块内保持字面。"""
+
+    def _render(self, md: str):
+        from plugins.platforms.feishu.adapter import _render_post_element
+        keys = []
+        out = _render_post_element({"tag": "md", "text": md}, keys, [])
+        return out, keys
+
+    def test_md_image_collects_key_and_replaces_with_placeholder(self):
+        out, keys = self._render("看这张图 ![架构图](img_v3_abc123) 谢谢")
+        self.assertEqual(keys, ["img_v3_abc123"])
+        self.assertIn("[Image: 架构图]", out)
+        self.assertNotIn("img_v3_abc123", out)
+
+    def test_md_image_with_title_form(self):
+        out, keys = self._render('![diagram](img_v3_xyz "标题")')
+        self.assertEqual(keys, ["img_v3_xyz"])
+        self.assertEqual(out, "[Image: diagram]")
+
+    def test_md_image_empty_alt(self):
+        out, keys = self._render("![](img_v3_noalt)")
+        self.assertEqual(keys, ["img_v3_noalt"])
+        self.assertEqual(out, "[Image]")
+
+    def test_md_image_inside_code_block_left_literal(self):
+        md = "示例：\n```markdown\n![](img_v3_incode)\n```\n完"
+        out, keys = self._render(md)
+        self.assertEqual(keys, [])            # 代码块内不采集
+        self.assertIn("![](img_v3_incode)", out)  # 字面保留
+
+    def test_md_non_feishu_image_url_left_untouched(self):
+        out, keys = self._render("![logo](https://example.com/a.png)")
+        self.assertEqual(keys, [])
+        self.assertEqual(out, "![logo](https://example.com/a.png)")
+
+    def test_md_plain_text_unchanged(self):
+        out, keys = self._render("# 标题\n普通正文，无图")
+        self.assertEqual(keys, [])
+        self.assertEqual(out, "# 标题\n普通正文，无图")
+
+    def test_md_dedup_repeated_key(self):
+        out, keys = self._render("![a](img_v3_dup) 和 ![b](img_v3_dup)")
+        self.assertEqual(keys, ["img_v3_dup"])

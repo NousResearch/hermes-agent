@@ -229,6 +229,28 @@ class TestQwenProfileParity:
         assert isinstance(out_msgs[1]["content"], list)
         assert out_msgs[1]["content"][0] == {"type": "text", "text": "hello"}
 
+    def test_tool_message_strings_remain_plain_strings(self, transport):
+        msgs = [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"ok\": true}"},
+        ]
+        profile = transport.build_kwargs(
+            model="qwen3.5",
+            messages=msgs,
+            tools=None,
+            provider_profile=get_provider_profile("qwen"),
+        )
+        legacy = transport.build_kwargs(
+            model="qwen3.5",
+            messages=msgs,
+            tools=None,
+            provider_profile=get_provider_profile("qwen-oauth"),
+        )
+        assert profile["messages"][0]["content"] == [{"type": "text", "text": ""}]
+        assert legacy["messages"][0]["content"] == [{"type": "text", "text": ""}]
+        assert profile["messages"][1]["content"] == "{\"ok\": true}"
+        assert legacy["messages"][1]["content"] == "{\"ok\": true}"
+
 
 class TestDeveloperRoleParity:
     """Developer role swap must work on BOTH legacy and profile paths."""

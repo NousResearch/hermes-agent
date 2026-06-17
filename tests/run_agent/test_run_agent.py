@@ -1770,6 +1770,18 @@ class TestBuildApiKwargs:
         assert user_content[0] == {"type": "text", "text": "hello"}
         assert user_content[1] == {"type": "text", "text": "world"}
 
+    def test_qwen_portal_preserves_tool_message_strings(self, agent):
+        agent.provider = "qwen-oauth"
+        agent.base_url = "https://portal.qwen.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        messages = [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"ok\": true}"},
+        ]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["messages"][0]["content"] == [{"type": "text", "text": ""}]
+        assert kwargs["messages"][1]["content"] == "{\"ok\": true}"
+
     def test_qwen_portal_no_system_message(self, agent):
         agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"

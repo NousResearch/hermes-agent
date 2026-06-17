@@ -3375,6 +3375,32 @@ def _aux_flow_provider_model(
 
     display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
 
+    # When configuring the vision auxiliary task, some providers expose a
+    # dedicated multimodal model that differs from their default chat model
+    # (e.g. xiaomi's mimo-v2.5 vs mimo-v2.5-pro, which does not support
+    # image input).  Use the known vision model directly instead of showing
+    # the full curated list — the curated list is ordered by general-agent
+    # preference, not vision capability, so the top pick can silently break
+    # vision with a cryptic 404 (\"No endpoints found that support image
+    # input\").
+    if task == "vision":
+        try:
+            from agent.auxiliary_client import _PROVIDER_VISION_MODELS
+
+            vision_model = _PROVIDER_VISION_MODELS.get(provider_slug)
+            if vision_model:
+                _save_aux_choice(
+                    task,
+                    provider=provider_slug,
+                    model=vision_model,
+                    base_url="",
+                    api_key="",
+                )
+                print(f"{display_name}: {provider_slug} · {vision_model} (vision model)")
+                return
+        except ImportError:
+            pass
+
     # Fetch live pricing for this provider (non-blocking)
     pricing: dict = {}
     try:

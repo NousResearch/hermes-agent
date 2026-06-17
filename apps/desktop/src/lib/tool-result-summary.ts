@@ -1,6 +1,8 @@
 // Heuristic JSON → human summary for tool results. Default view; technical
 // mode still gets the raw JSON section.
 
+import { redactSensitiveText } from '@/lib/secret-redaction'
+
 const WRAPPER_KEYS = ['data', 'result', 'output', 'response', 'payload'] as const
 
 const PRIORITY_KEYS = [
@@ -61,13 +63,13 @@ const titleCase = (k: string) =>
 const pluralize = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 function clipInline(value: string, max = 180): string {
-  const c = value.replace(/\s+/g, ' ').trim()
+  const c = redactSensitiveText(value).replace(/\s+/g, ' ').trim()
 
   return c.length > max ? `${c.slice(0, max - 1)}…` : c
 }
 
 function clipBlock(value: string, maxChars = 1800, maxLines = 18): string {
-  const t = value.trim()
+  const t = redactSensitiveText(value).trim()
 
   if (!t) {
     return ''

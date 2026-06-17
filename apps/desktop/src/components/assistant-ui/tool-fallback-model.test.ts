@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildToolView, type ToolPart } from './tool-fallback-model'
+import { buildToolView, toolCopyPayload, type ToolPart } from './tool-fallback-model'
 
 const part = (overrides: Partial<ToolPart>): ToolPart => ({
   args: {},
@@ -62,5 +62,34 @@ describe('buildToolView terminal exit-code status', () => {
     expect(buildToolView(part({ isError: true, result: { output: 'x' }, toolName: 'terminal' }), '').status).toBe(
       'error'
     )
+  })
+})
+
+describe('buildToolView secret redaction', () => {
+  it('redacts token-shaped values from terminal display and copy payloads', () => {
+    const fakeToken = 'fake_plex_token_for_tool_card_123456789'
+
+    const tool = part({
+      args: {
+        command: `PLEX_TOKEN='${fakeToken}' curl 'http://localhost:32400/library?X-Plex-Token=${fakeToken}'`
+      },
+      result: {
+        output: `Authorization: Bearer ${fakeToken}`,
+        stderr: `token=${fakeToken}`,
+        stdout: `http://localhost:32400/status?X-Plex-Token=${fakeToken}`
+      },
+      toolName: 'terminal'
+    })
+
+    const view = buildToolView(tool, '')
+    const copy = toolCopyPayload(tool, view)
+    const rendered = JSON.stringify({ view, copy })
+
+    expect(rendered).not.toContain(fakeToken)
+    expect(view.title).toContain('[REDACTED]')
+    expect(view.detail).toContain('[REDACTED]')
+    expect(view.rawArgs).toContain('[REDACTED]')
+    expect(view.rawResult).toContain('[REDACTED]')
+    expect(copy.text).toContain('[REDACTED]')
   })
 })

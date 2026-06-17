@@ -1062,7 +1062,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         # Record start time
         self.aggregate_metrics.processing_start_time = datetime.now().isoformat()
-        start_time = time.time()
+        start_time = time.monotonic()
         
         # Find all JSONL files
         jsonl_files = sorted(input_dir.glob("*.jsonl"))
@@ -1237,7 +1237,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         # Record end time
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
-        self.aggregate_metrics.processing_duration_seconds = time.time() - start_time
+        self.aggregate_metrics.processing_duration_seconds = time.monotonic() - start_time
         
         # Print summary
         self._print_summary()

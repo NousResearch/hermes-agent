@@ -164,7 +164,7 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
 
         result = await self.adapter.send("channel_1", "Hello!")
 
@@ -208,8 +208,8 @@ class TestMattermostSend:
         mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
         mock_get_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
-        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_get_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
 
@@ -229,7 +229,7 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
 
@@ -247,7 +247,7 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.post = AsyncMock(return_value=mock_resp)
 
         result = await self.adapter.send("channel_1", "Hello!")
 
@@ -526,7 +526,7 @@ class TestMattermostFileUpload:
         mock_post_resp.__aexit__ = AsyncMock(return_value=False)
 
         # Route calls: first GET (download), then POST (upload), then POST (create post)
-        self.adapter._session.get = MagicMock(return_value=mock_dl_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_dl_resp)
         post_call_count = 0
         original_post_returns = [mock_upload_resp, mock_post_resp]
 
@@ -536,7 +536,7 @@ class TestMattermostFileUpload:
             post_call_count += 1
             return resp
 
-        self.adapter._session.post = MagicMock(side_effect=post_side_effect)
+        self.adapter._session.post = AsyncMock(side_effect=post_side_effect)
 
         result = await self.adapter.send_image(
             "channel_1", "https://img.example.com/cat.png", caption="A cat"
@@ -696,7 +696,7 @@ class TestMattermostMediaTypes:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_resp)
 
         with patch("gateway.platforms.base.cache_image_from_bytes", return_value="/tmp/photo.png"):
             await self.adapter._handle_ws_event(self._make_event(["file1"]))
@@ -717,7 +717,7 @@ class TestMattermostMediaTypes:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_resp)
 
         with patch("gateway.platforms.base.cache_audio_from_bytes", return_value="/tmp/voice.ogg"), \
              patch("gateway.platforms.base.cache_image_from_bytes"), \
@@ -740,7 +740,7 @@ class TestMattermostMediaTypes:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
         self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = AsyncMock(return_value=mock_resp)
 
         with patch("gateway.platforms.base.cache_document_from_bytes", return_value="/tmp/report.pdf"), \
              patch("gateway.platforms.base.cache_image_from_bytes"):

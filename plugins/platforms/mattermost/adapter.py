@@ -28,6 +28,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    http_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,12 +115,16 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            resp = await http_request(self._session, "get", url, headers=self._headers())
+            async with resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logger.error("MM API GET %s timeout", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
             return {}
@@ -131,15 +136,16 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
+            resp = await http_request(self._session, "post", url, headers=self._headers(), json=payload)
+            async with resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logger.error("MM API POST %s timeout", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API POST %s network error: %s", path, exc)
             return {}
@@ -151,14 +157,16 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.put(
-                url, headers=self._headers(), json=payload
-            ) as resp:
+            resp = await http_request(self._session, "put", url, headers=self._headers(), json=payload)
+            async with resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logger.error("MM API PUT %s timeout", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
@@ -179,14 +187,19 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        try:
+            resp = await http_request(self._session, "post", url, headers=headers, data=form, timeout=60)
+            async with resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            logger.exception("MM file upload failed")
+            return None
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -201,7 +214,7 @@ class MattermostAdapter(BasePlatformAdapter):
             return False
 
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=None
         )
         self._closing = False
 
@@ -438,19 +451,21 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                resp = await http_request(self._session, "get", url)
+                async with resp:
                     if resp.status >= 500 or resp.status == 429:
                         if attempt < 2:
                             logger.debug("Mattermost download retry %d/2 for %s (status %d)",
                                          attempt + 1, url[:80], resp.status)
                             await asyncio.sleep(1.5 * (attempt + 1))
                             continue
+                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
                     if resp.status >= 400:
                         return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
                     file_data = await resp.read()
                     ct = resp.content_type or "application/octet-stream"
                     break
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
@@ -568,9 +583,8 @@ class MattermostAdapter(BasePlatformAdapter):
                             logger.warning("Mattermost: blocked unsafe image URL in batch")
                             continue
                         try:
-                            async with self._session.get(
-                                image_url, timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
+                            resp = await http_request(self._session, "get", image_url)
+                            async with resp:
                                 if resp.status >= 400:
                                     logger.warning(
                                         "Mattermost: failed to download image (HTTP %d): %s",
@@ -808,11 +822,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
                 import aiohttp
                 dl_url = f"{self._base_url}/api/v4/files/{fid}"
-                async with self._session.get(
-                    dl_url,
+                resp = await http_request(
+                    self._session, "get", dl_url,
                     headers={"Authorization": f"Bearer {self._token}"},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
+                )
+                async with resp:
                     if resp.status < 400:
                         file_data = await resp.read()
                         from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes

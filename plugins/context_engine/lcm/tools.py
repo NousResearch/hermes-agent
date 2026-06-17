@@ -783,7 +783,7 @@ def lcm_grep(args: Dict[str, Any], **kwargs) -> str:
     if engine is None:
         return json.dumps({"error": "LCM engine not initialized"})
 
-    query = args.get("query", "").strip()
+    query = str(args.get("query") or "").strip()
     if not query:
         return json.dumps({"error": "No query provided"})
 

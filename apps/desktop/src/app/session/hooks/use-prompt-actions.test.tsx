@@ -1,6 +1,7 @@
 import { cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
@@ -52,16 +53,7 @@ interface HarnessHandle {
   ) => Promise<boolean>
 }
 
-function Harness({
-  busyRef,
-  onReady,
-  onSeedState,
-  refreshSessions,
-  requestGateway,
-  resumeStoredSession,
-  seedMessages,
-  storedSessionId
-}: {
+interface HarnessProps {
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
@@ -70,7 +62,26 @@ function Harness({
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
   storedSessionId?: null | string
-}) {
+}
+
+function Harness(props: HarnessProps) {
+  return (
+    <MemoryRouter>
+      <HarnessInner {...props} />
+    </MemoryRouter>
+  )
+}
+
+function HarnessInner({
+  busyRef,
+  onReady,
+  onSeedState,
+  refreshSessions,
+  requestGateway,
+  resumeStoredSession,
+  seedMessages,
+  storedSessionId
+}: HarnessProps) {
   const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
@@ -270,6 +281,7 @@ describe('usePromptActions desktop slash pickers', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -395,6 +407,40 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(await handle!.submitText('sent while settling')).toBe(true)
     expect(attempt).toBe(2) // rode past the busy on the second try
     // No assistant-error message was appended for the transient busy.
+    expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
+      false
+    )
+  })
+
+  it('keeps the frontend busy instead of surfacing an error when the backend is still running', async () => {
+    vi.useFakeTimers()
+    const busyRef = { current: false }
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('4009: session busy')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const submitted = handle!.submitText('sent while backend is still running')
+    await vi.advanceTimersByTimeAsync(6_500)
+
+    expect(await submitted).toBe(false)
+    expect(busyRef.current).toBe(true)
+    expect(seeds.at(-1)).toMatchObject({ awaitingResponse: true, busy: true })
     expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
       false
     )

@@ -1,6 +1,6 @@
 model:
   provider: custom
-  model: nvidia/Qwen3.6-35B-A3B-NVFP4
+  default: nvidia/Qwen3.6-35B-A3B-NVFP4
   base_url: https://vllm.athena.cibertrs.cloud/v1
   context_length: 262144
 terminal:

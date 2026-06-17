@@ -4227,10 +4227,7 @@ def run_conversation(
                             "retry %d/3 (model=%s)",
                             agent._empty_content_retries, agent.model,
                         )
-                        agent._buffer_status(
-                            f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
-                        )
+                        # SILVRPLAN: suppress per-retry channel notice (still logged above)
                         continue
 
                     # ── Exhausted retries — try fallback provider ──
@@ -4289,10 +4286,7 @@ def run_conversation(
                             "after exhausting retries and fallback. "
                             "Reasoning: %s", reasoning_preview,
                         )
-                        agent._emit_status(
-                            "⚠️ Model produced reasoning but no visible "
-                            "response after all retries. Returning empty."
-                        )
+                        # SILVRPLAN: suppress empty-response channel notice (still logged above)
                     else:
                         logger.warning(
                             "Empty response (no content or reasoning) "
@@ -4301,11 +4295,7 @@ def run_conversation(
                             agent._empty_content_retries, agent.model,
                             agent.provider,
                         )
-                        agent._emit_status(
-                            "❌ Model returned no content after all retries"
-                            + (" and fallback attempts." if agent._fallback_chain else
-                               ". No fallback providers configured.")
-                        )
+                        # SILVRPLAN: suppress empty-response channel notice (still logged above)
 
                     final_response = "(empty)"
                     break

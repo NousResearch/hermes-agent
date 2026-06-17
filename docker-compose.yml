@@ -36,6 +36,8 @@ services:
     volumes:
       - /home/admin/.hermes:/opt/data
       - /home/admin/files/backup:/home/admin/files/backup
+      - /home/admin/.hermes/patches/volcano-coding-plan/__init__.py:/opt/hermes/plugins/model-providers/volcano-coding-plan/__init__.py:ro
+      - /home/admin/.hermes/patches/anthropic_adapter.py:/opt/hermes/agent/anthropic_adapter.py:ro
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
@@ -75,6 +77,8 @@ services:
     volumes:
       - /home/admin/.hermes:/opt/data
       - /home/admin/.hermes/hermes-agent/hermes_cli/container_boot.py:/opt/hermes/hermes_cli/container_boot.py:ro
+      - /home/admin/.hermes/patches/volcano-coding-plan/__init__.py:/opt/hermes/plugins/model-providers/volcano-coding-plan/__init__.py:ro
+      - /home/admin/.hermes/patches/anthropic_adapter.py:/opt/hermes/agent/anthropic_adapter.py:ro
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}

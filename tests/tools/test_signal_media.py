@@ -43,6 +43,9 @@ def _make_httpx_mock():
     httpx_mock.AsyncClient = lambda timeout=None: MockClient()
     httpx_mock.AsyncBaseTransport = AsyncBaseTransport  # Needed by Telegram adapter
     httpx_mock.Proxy = Proxy  # Needed by telegram-bot library
+    # gateway/platforms/signal.py annotates _response_succeeded(resp: httpx.Response);
+    # annotations are evaluated at class-def time, so the mock must expose Response.
+    httpx_mock.Response = MockResp
     return httpx_mock
 
 

@@ -29,6 +29,7 @@ Configuration in config.yaml::
           client_secret: "secret"               # confidential clients only
           scope: "read write"                   # default: server-provided
           redirect_port: 0                      # 0 = auto-pick free port
+          redirect_uri: "https://proxy/callback"  # default: loopback callback
           client_name: "My Custom Client"       # default: "Hermes Agent"
 """
 
@@ -575,12 +576,17 @@ def _make_callback_handler() -> tuple[type, dict]:
 # ---------------------------------------------------------------------------
 
 
-def _make_redirect_handler(port: int):
+def _make_redirect_handler(port: int, redirect_uri: str | None = None):
     """Return a redirect handler closure that closes over the given port.
 
     Using a closure instead of reading the module-level ``_oauth_port`` avoids
     cross-server state pollution when multiple MCP servers run OAuth
     concurrently (fixes #44588).
+
+    ``redirect_uri`` is the configured proxy callback (e.g. a Tailscale Funnel
+    URL), or ``None`` for the loopback default. It tailors the remote-session
+    hint: a proxied callback reaches this machine on its own, so the loopback
+    SSH-tunnel guidance would be misleading.
     """
     async def _redirect_handler(authorization_url: str) -> None:
         """Show the authorization URL to the user.
@@ -610,13 +616,23 @@ def _make_redirect_handler(port: int):
         )
         print(msg, file=sys.stderr)
 
-        # On a remote SSH session the OAuth provider redirects to
-        # http://127.0.0.1:<port>/callback, which reaches the callback server on
-        # the *remote* machine — not the user's local machine where the browser
-        # opened.  Two ways out: paste the redirect URL back (default fallback,
-        # offered by _wait_for_callback on interactive TTYs), or set up an SSH
-        # port forward so the redirect tunnels through.
-        if port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+        on_ssh = bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+        if on_ssh and redirect_uri:
+            # A configured proxy callback (e.g. Tailscale Funnel) forwards the
+            # redirect to the listener on this machine, so no tunnel/paste is needed.
+            print(
+                f"  Remote session detected. After you authorize, the provider redirects to\n"
+                f"    {redirect_uri}\n"
+                f"  which forwards to the callback listener on this machine — no SSH tunnel needed.\n",
+                file=sys.stderr,
+            )
+        elif on_ssh and port:
+            # Loopback default: the provider redirects to
+            # http://127.0.0.1:<port>/callback, which reaches the callback server on
+            # the *remote* machine — not the user's local machine where the browser
+            # opened. Two ways out: paste the redirect URL back (default fallback,
+            # offered by _wait_for_callback on interactive TTYs), or set up an SSH
+            # port forward so the redirect tunnels through.
             print(
                 f"  Remote session detected. After you authorize, the provider redirects to\n"
                 f"    http://127.0.0.1:{port}/callback\n"
@@ -902,6 +918,19 @@ def _configure_callback_port(cfg: dict) -> int:
     return port
 
 
+def _resolve_redirect_uri(cfg: dict, port: int) -> str:
+    """Resolve the OAuth callback URL: configured ``redirect_uri`` or loopback.
+
+    A configured ``redirect_uri`` lets the callback go through a proxy (e.g. a
+    Tailscale Funnel exposing a public HTTPS URL that forwards to localhost);
+    otherwise we default to ``http://127.0.0.1:<port>/callback``. An empty value
+    is treated as unset. Both the client metadata and any pre-registered client
+    info must derive the redirect_uri here so they stay identical — a mismatch
+    makes the authorization server reject the callback.
+    """
+    return cfg.get("redirect_uri") or f"http://127.0.0.1:{port}/callback"
+
+
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     """Build OAuthClientMetadata from the oauth config dict.
 
@@ -915,7 +944,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = cfg.get("redirect_uri") or f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _resolve_redirect_uri(cfg, port)
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
@@ -942,7 +971,7 @@ def _maybe_preregister_client(
     if not client_id:
         return
     port = cfg["_resolved_port"]
-    redirect_uri = cfg.get("redirect_uri") or f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _resolve_redirect_uri(cfg, port)
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,
@@ -1009,7 +1038,9 @@ def build_oauth_auth(
 
     # Use closure factories to avoid global state pollution (#44588).
     resolved_port = cfg.get("_resolved_port", _oauth_port)
-    redirect_handler = _make_redirect_handler(resolved_port)
+    redirect_handler = _make_redirect_handler(
+        resolved_port, redirect_uri=cfg.get("redirect_uri") or None
+    )
 
     return OAuthClientProvider(
         server_url=server_url,

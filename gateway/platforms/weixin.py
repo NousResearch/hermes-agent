@@ -1228,18 +1228,30 @@ class WeixinAdapter(BasePlatformAdapter):
         # timestamp to avoid resetting the iLink cooldown window. 0.0 = no cooldown.
         self._rate_limited_until: float = 0.0
 
-        # WeChat iLink typing keepalive interval — 5 s per protocol spec §7.2
-        # ("如果生成耗时较长，可以每 5 秒发送一次 status=1 作为 keepalive").
-        # The default 2 s (Telegram/Discord cadence) generates ~110 sendtyping
-        # calls during a 223 s agent run vs. ~44 at 5 s, a 2.5× reduction
-        # that avoids triggering iLink frequency limits (ret=-2).
-        self._typing_interval_seconds: float = 5.0
+        # WeChat iLink typing keepalive interval — 3 s.
+        # Originally 2 s (Telegram/Discord cadence); f96688644 misdiagnosed
+        # typing as the rate-limit root cause and raised it to 5 s, which
+        # suppressed the "processing visible" UX during long agent runs.
+        # With the cooldown gating now in send() / send_typing() and the
+        # stream_consumer retry aligned to adapter.rate_limited_until, the
+        # self-oscillation root cause is fixed and 3 s is safe while
+        # restoring real-time feel.
+        self._typing_interval_seconds: float = 3.0
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:
                 self._token = str(persisted.get("token") or "").strip()
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+
+    @property
+    def rate_limited_until(self) -> float:
+        """限流到期时间戳（epoch 秒）；0.0 表示无冷却。
+
+        覆盖 BasePlatformAdapter 默认值（0.0），暴露真实 _rate_limited_until，
+        供 stream_consumer 等上层做对齐重试而无需硬编码重试间隔。
+        """
+        return self._rate_limited_until
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:
@@ -1712,6 +1724,33 @@ class WeixinAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
+        # Cooldown gating at entry: if a prior send was rate-limited (ret=-2),
+        # _rate_limited_until marks when iLink will accept traffic again.
+        # Sleep until the window closes so this message is queued behind the
+        # cooldown rather than burning iLink calls (which would re-trigger the
+        # limit and amplify into a self-oscillation storm). Sleep (not fail)
+        # because the stream_consumer retry layer treats failures as a signal
+        # to retry on a fixed cadence that lands inside the cooldown window —
+        # see gateway/stream_consumer.py fallback flood retry.
+        now = time.time()
+        if now < self._rate_limited_until:
+            remaining = self._rate_limited_until - now
+            logger.debug(
+                "[%s] send gated by cooldown for %s; sleeping %.2fs",
+                self.name, _safe_id(chat_id), remaining,
+            )
+            await asyncio.sleep(remaining)
+            # Re-check after sleep: if still in cooldown (sleep was
+            # short-circuited, e.g. by a test mock, or interrupted), do NOT
+            # burn an iLink call. Returning here — instead of blindly
+            # continuing — is the guard that breaks the self-oscillation
+            # storm even when the sleep fails to actually block. The caller
+            # (stream_consumer / entry) retries after the window closes.
+            if time.time() < self._rate_limited_until:
+                return SendResult(
+                    success=False,
+                    error="[RATE_LIMITED] send deferred: cooldown still active",
+                )
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
 
@@ -1753,6 +1792,28 @@ class WeixinAdapter(BasePlatformAdapter):
             # Deliver text content.
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
+                # Re-check cooldown before each chunk: a prior chunk in this
+                # same send(), or a concurrent path, may have armed
+                # _rate_limited_until mid-loop. Wait it out rather than fire
+                # into the cooldown window (which would self-amplify).
+                now = time.time()
+                if now < self._rate_limited_until:
+                    remaining = self._rate_limited_until - now
+                    logger.debug(
+                        "[%s] chunk %d gated by cooldown for %s; sleeping %.2fs",
+                        self.name, idx, _safe_id(chat_id), remaining,
+                    )
+                    await asyncio.sleep(remaining)
+                    # Re-check: if still in cooldown after sleep (mock /
+                    # interrupt), halt the chunk loop rather than fire into
+                    # the window. Already-delivered chunks stay; the caller
+                    # retries the tail post-cooldown.
+                    if time.time() < self._rate_limited_until:
+                        logger.debug(
+                            "[%s] chunk loop halted: cooldown active at idx %d",
+                            self.name, idx,
+                        )
+                        break
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await self._send_text_chunk(
                     chat_id=chat_id,

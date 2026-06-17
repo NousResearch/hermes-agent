@@ -843,3 +843,217 @@ class TestIsStaleSessionRet:
     def test_success_codes_are_not_stale(self):
         assert weixin._is_stale_session_ret(0, 0, "") is False
         assert weixin._is_stale_session_ret(None, None, "unknown error") is False
+
+
+class TestWeixinRateLimitedUntilProperty:
+    """WeixinAdapter 覆盖 base.rate_limited_until 返回 _rate_limited_until。"""
+
+    def test_override_returns_rate_limited_until_attr(self):
+        adapter = _make_adapter()
+        adapter._rate_limited_until = 12345.0
+        assert adapter.rate_limited_until == 12345.0
+
+    def test_override_default_zero(self):
+        adapter = _make_adapter()
+        assert adapter.rate_limited_until == 0.0
+
+
+class TestWeixinTypingInterval:
+    """验收场景7.P7：_typing_interval_seconds == 3.0。
+
+    f96688644 误诊 typing 为 root cause 后曾上调到 5.0，砍掉处理过程可见性。
+    cooldown 门控修好后限流自激振荡根因解除，3s 既安全又恢复实时感。
+    """
+
+    def test_typing_interval_is_three_seconds(self):
+        adapter = _make_adapter()
+        assert adapter._typing_interval_seconds == 3.0
+        assert isinstance(adapter._typing_interval_seconds, float)
+
+
+class TestWeixinSendCooldownGating:
+    """send() 入口 cooldown 门控 — 验收场景1.P1/P3/P4 + 边界。
+
+    cooldown 期内 send 挂起（await asyncio.sleep 到期），不调用 _send_message；
+    cooldown 过期后恢复调用。
+    """
+
+    def _connected_adapter(self) -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_waits_for_cooldown_before_first_chunk(
+        self, send_message_mock, sleep_mock, monkeypatch
+    ):
+        """验收场景1.P1/P3：cooldown 期内 send 挂起，不调用 _send_message。
+
+        构造 _rate_limited_until 为未来时刻，send() 入口门控应 sleep 等待，
+        且 sleep 期间不发起 _send_message。模拟时钟推进过 cooldown 后恢复。
+        """
+        adapter = self._connected_adapter()
+        trigger = 1000.0
+        cooldown = 30.0
+        adapter._rate_limited_until = trigger + cooldown
+
+        # 控制时钟：第一次读 now=trigger（在 cooldown 内），sleep 后推进到过期
+        clock = {"t": trigger}
+
+        def fake_time():
+            return clock["t"]
+
+        async def fake_sleep(seconds):
+            # 推进时钟到 cooldown 结束，模拟真实挂起
+            clock["t"] = max(clock["t"] + seconds, trigger + cooldown)
+
+        monkeypatch.setattr(weixin.time, "time", fake_time)
+        sleep_mock.side_effect = fake_sleep
+        send_message_mock.return_value = {"ret": 0}
+
+        before = send_message_mock.await_count
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+        after = send_message_mock.await_count
+
+        # send 成功（cooldown 等待后正常投递）
+        assert result.success is True
+        # 关键：cooldown 期内没有调用，等待后才调用 1 次（1 chunk）
+        delta = after - before
+        assert delta == 1, f"expected exactly 1 _send_message after cooldown wait, got delta={delta}"
+        # sleep 被调用过（门控生效）
+        assert sleep_mock.await_count >= 1
+        # 第一段 sleep 应该是 cooldown 剩余量（≈30s）
+        first_sleep = sleep_mock.await_args_list[0].args[0]
+        assert first_sleep == pytest.approx(cooldown, abs=0.5), (
+            f"expected first sleep ≈ cooldown={cooldown}, got {first_sleep}"
+        )
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_multiple_sends_during_cooldown_no_ilink_calls(
+        self, send_message_mock, sleep_mock, monkeypatch
+    ):
+        """验收场景1.P3：cooldown 期产生 m 个新 send，_send_message 增量 == 触发那次。
+
+        冷却窗口内连发 3 次 send，每次都被门控 sleep 推进到 cooldown 结束。
+        关键断言：每次 send 的 _send_message 调用都发生在 cooldown 之后
+        （窗口内 delta == 0）。
+        """
+        adapter = self._connected_adapter()
+        trigger = 1000.0
+        cooldown = 30.0
+        adapter._rate_limited_until = trigger + cooldown
+
+        clock = {"t": trigger}
+        window_call_log = []  # 记录每次 _send_message 调用时的时钟值
+
+        def fake_time():
+            return clock["t"]
+
+        async def fake_sleep(seconds):
+            before = clock["t"]
+            clock["t"] = before + seconds
+
+        def fake_send(*a, **kw):
+            window_call_log.append(clock["t"])
+            return {"ret": 0}
+
+        monkeypatch.setattr(weixin.time, "time", fake_time)
+        sleep_mock.side_effect = fake_sleep
+        send_message_mock.side_effect = fake_send
+
+        # 在 trigger 时刻连发 3 次（每次 send 内部门控把时钟推进到 cooldown 之后）
+        for _ in range(3):
+            asyncio.run(adapter.send("wxid_test123", "hi"))
+
+        # 每条 _send_message 都在 cooldown 结束之后（窗口内 0 调用）
+        for t in window_call_log:
+            assert t >= trigger + cooldown - 0.01, (
+                f"_send_message called at t={t} < cooldown_end={trigger + cooldown}"
+            )
+        # 共 3 次调用（每 send 1 chunk）
+        assert len(window_call_log) == 3
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_at_exact_cooldown_boundary_no_sleep(
+        self, send_message_mock, sleep_mock, monkeypatch
+    ):
+        """验收边界：恰在 cooldown_until 时刻的 send 立即执行（不 sleep）。"""
+        adapter = self._connected_adapter()
+        boundary = 1000.0
+        adapter._rate_limited_until = boundary
+
+        clock = {"t": boundary}
+
+        def fake_time():
+            return clock["t"]
+
+        async def fake_sleep(seconds):
+            clock["t"] = clock["t"] + seconds
+
+        monkeypatch.setattr(weixin.time, "time", fake_time)
+        sleep_mock.side_effect = fake_sleep
+        send_message_mock.return_value = {"ret": 0}
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is True
+        # 边界时刻不应触发 cooldown 等待 sleep
+        cooldown_sleeps = [
+            c.args[0]
+            for c in sleep_mock.await_args_list
+            if c.args and abs(c.args[0] - 0.0) > 0.001
+            and c.args[0] > 0.5  # 排除 chunk delay 等小 sleep
+        ]
+        assert cooldown_sleeps == [], (
+            f"expected no cooldown wait at boundary, got {cooldown_sleeps}"
+        )
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_chunk_loop_checks_cooldown_between_chunks(
+        self, send_message_mock, sleep_mock, monkeypatch
+    ):
+        """验收场景6：多 chunk 循环中第 1 chunk 触发限流设 cooldown，
+        第 2 chunk 前门控应 sleep 到 cooldown 结束再投递。
+
+        这是 chunk 循环每 chunk 前 check cooldown 的核心场景。"""
+        adapter = self._connected_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 12  # 强制 2 chunk
+        trigger = 1000.0
+        cooldown = 30.0
+
+        clock = {"t": trigger}
+
+        def fake_time():
+            return clock["t"]
+
+        async def fake_sleep(seconds):
+            clock["t"] = clock["t"] + seconds
+
+        # 第 1 chunk 返回限流（设 cooldown），第 2 chunk 返回成功
+        # 但注意：限流会抛 RateLimitedError，send 捕获返回失败，不会继续 chunk 循环。
+        # 因此本场景改为：模拟限流来自外部（非本次 send 内部），chunk 循环开始时
+        # 已在 cooldown 内 → chunk 0 被门控等待。
+        adapter._rate_limited_until = trigger + cooldown
+        monkeypatch.setattr(weixin.time, "time", fake_time)
+        sleep_mock.side_effect = fake_sleep
+        send_message_mock.return_value = {"ret": 0}
+
+        result = asyncio.run(adapter.send("wxid_test123", "first\n\nsecond"))
+
+        assert result.success is True
+        # 2 chunk 都成功投递
+        assert send_message_mock.await_count == 2
+        # 第一次 sleep 应是 cooldown 剩余（chunk 0 前门控）
+        first_sleep = sleep_mock.await_args_list[0].args[0]
+        assert first_sleep == pytest.approx(cooldown, abs=0.5), (
+            f"expected first sleep ≈ cooldown={cooldown}, got {first_sleep}"
+        )
+

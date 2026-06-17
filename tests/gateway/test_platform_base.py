@@ -677,3 +677,54 @@ class TestProxyKwargsForAiohttp:
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
 
+
+# ---------------------------------------------------------------------------
+# rate_limited_until property — platform-agnostic cooldown exposure
+# ---------------------------------------------------------------------------
+
+class _RateLimitStubAdapter(BasePlatformAdapter):
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, *a, **kw):
+        pass
+
+    async def get_chat_info(self, *a):
+        return {}
+
+
+class TestRateLimitedUntilDefault:
+    """BasePlatformAdapter.rate_limited_until 默认 0.0，平台无关暴露 cooldown。"""
+
+    def _adapter(self):
+        from gateway.config import Platform, PlatformConfig
+
+        config = PlatformConfig(enabled=True, token="test")
+        return _RateLimitStubAdapter(config=config, platform=Platform.TELEGRAM)
+
+    def test_default_is_zero_float(self):
+        adapter = self._adapter()
+        assert adapter.rate_limited_until == 0.0
+        assert isinstance(adapter.rate_limited_until, float)
+
+    def test_default_means_no_cooldown(self):
+        adapter = self._adapter()
+        # 默认 0.0 表示无冷却，time.time() 始终 >= 0
+        import time
+        assert time.time() >= adapter.rate_limited_until
+
+    def test_is_read_only_property(self):
+        """rate_limited_until 是 property，非普通属性。"""
+        adapter = self._adapter()
+        # 通过类型检查确认是 property descriptor
+        assert isinstance(
+            type(adapter).__dict__.get(
+                "rate_limited_until",
+                BasePlatformAdapter.__dict__.get("rate_limited_until"),
+            ),
+            property,
+        )
+

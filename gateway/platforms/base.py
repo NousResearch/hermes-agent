@@ -1271,6 +1271,16 @@ class BasePlatformAdapter(ABC):
         self._typing_interval_seconds: float = 2.0
 
     @property
+    def rate_limited_until(self) -> float:
+        """限流到期时间戳（epoch 秒）；0.0 表示无冷却。
+
+        平台无关的 cooldown 暴露。默认 0.0（无冷却），平台 adapter 可
+        override 返回真实限流到期时间，供 stream_consumer 等上层做对齐
+        重试而无需硬编码重试间隔。
+        """
+        return 0.0
+
+    @property
     def has_fatal_error(self) -> bool:
         return self._fatal_error_message is not None
 

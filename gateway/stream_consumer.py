@@ -655,10 +655,20 @@ class GatewayStreamConsumer:
                 if result.success:
                     break
                 if attempt == 0 and self._is_flood_error(result):
+                    # Align retry to the platform cooldown, not a fixed 3 s.
+                    # A fixed 3 s retry on a 30 s iLink cooldown lands inside
+                    # the cooldown window on every iteration → self-oscillation
+                    # storm (observed 2167 ret=-2 in one incident). Wait out
+                    # the remaining cooldown when the adapter exposes one;
+                    # otherwise fall back to the original 3 s floor so
+                    # platforms without cooldown semantics are unaffected.
+                    wait = self._flood_retry_wait_seconds()
                     logger.debug(
-                        "Flood control on fallback send, retrying in 3s"
+                        "Flood control on fallback send, retrying in %.1fs "
+                        "(aligned to adapter cooldown)",
+                        wait,
                     )
-                    await asyncio.sleep(3.0)
+                    await asyncio.sleep(wait)
                 else:
                     break  # non-flood error or second attempt failed
 
@@ -698,6 +708,27 @@ class GatewayStreamConsumer:
         err = getattr(result, "error", "") or ""
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+
+    def _flood_retry_wait_seconds(self) -> float:
+        """How long to wait before a flood-control retry.
+
+        Aligns to the platform cooldown exposed via
+        ``adapter.rate_limited_until`` (BasePlatformAdapter default 0.0).
+        When a cooldown is active, waiting the remaining window keeps the
+        retry outside the cooldown so it does not re-trigger the limit and
+        amplify into a self-oscillation storm. When no cooldown is exposed
+        (non-rate-limited platforms, or adapter that does not override the
+        property), fall back to the legacy 3 s floor so behaviour is
+        unchanged for unaffected platforms.
+        """
+        rate_limited_until = getattr(self.adapter, "rate_limited_until", 0.0)
+        if not isinstance(rate_limited_until, (int, float)):
+            return 3.0
+        if rate_limited_until > 0.0:
+            remaining = rate_limited_until - time.time()
+            if remaining > 0.0:
+                return remaining
+        return 3.0
 
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Deliver un-sent tail content before a segment-break reset.
@@ -942,9 +973,28 @@ class GatewayStreamConsumer:
                         # edits after _MAX_FLOOD_STRIKES consecutive failures.
                         if self._is_flood_error(result):
                             self._flood_strikes += 1
+                            # Adaptive backoff: double the edit interval, then
+                            # align to the platform cooldown so the next edit
+                            # does not land inside the rate-limit window and
+                            # re-trigger it. We raise the interval (rather
+                            # than sleeping here) because the edit cadence is
+                            # enforced by ``elapsed >= _current_edit_interval``
+                            # on the next cycle, checked against
+                            # ``_last_edit_time`` (set just below). Sleeping
+                            # inline would block the consumer loop. When no
+                            # cooldown is exposed (non-rate-limited platforms,
+                            # base default 0.0), behaviour is unchanged: the
+                            # min(*2, 10.0) doubling stands on its own.
                             self._current_edit_interval = min(
                                 self._current_edit_interval * 2, 10.0,
                             )
+                            rate_limited_until = getattr(
+                                self.adapter, "rate_limited_until", 0.0
+                            )
+                            if isinstance(rate_limited_until, (int, float)) and rate_limited_until > 0.0:
+                                remaining = rate_limited_until - time.time()
+                                if remaining > self._current_edit_interval:
+                                    self._current_edit_interval = remaining
                             logger.debug(
                                 "Flood control on edit (strike %d/%d), "
                                 "backoff interval → %.1fs",

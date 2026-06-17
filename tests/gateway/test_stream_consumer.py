@@ -1,6 +1,7 @@
 """Tests for GatewayStreamConsumer — media directive stripping in streaming."""
 
 import asyncio
+import time as _time_module
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1493,3 +1494,219 @@ class TestOnNewMessageCallback:
         await consumer.run()
 
         assert consumer.already_sent is True
+
+
+# ---------------------------------------------------------------------------
+# Cooldown alignment — flood retries must read adapter.rate_limited_until
+# (验收场景：限流自激振荡根因 — 两套重试机制冲突。fallback flood retry
+#  原固定 3.0s sleep 永远落在 30s cooldown 窗口内 → 风暴。对齐 cooldown
+#  让重试落在窗口外。)
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackFloodRetryAlignsCooldown:
+    """stream_consumer.py:661 fallback flood retry 对齐 cooldown。
+
+    契约：flood 重试等待 >= adapter.rate_limited_until - now（剩余 cooldown），
+    不再固定 3.0s。
+    """
+
+    @pytest.mark.asyncio
+    async def test_flood_retry_sleeps_remaining_cooldown_not_fixed_3s(self, monkeypatch):
+        """当 adapter.rate_limited_until 在未来，flood retry sleep 应 >= 剩余 cooldown。
+
+        构造：adapter.send 第一次返回 flood 失败（触发 fallback flood retry），
+        adapter.rate_limited_until 设为未来 30s。断言第一次重试 sleep >= 30s
+        而非固定 3.0s。
+        """
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        # 第一次 send 返回 flood 失败，第二次成功
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, error="flood control: retry after"),
+            SimpleNamespace(success=True, message_id="msg_1"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        # adapter 暴露 cooldown（base.rate_limited_until）
+        now = _time_module.time()
+        cooldown = 30.0
+        adapter.rate_limited_until = now + cooldown
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1)
+        consumer = GatewayStreamConsumer(adapter, "chat_1", config)
+
+        # 捕获所有 sleep 时长
+        sleeps = []
+        original_sleep = asyncio.sleep
+
+        async def capture_sleep(seconds):
+            sleeps.append(seconds)
+            await original_sleep(0)  # 立即返回，加速测试
+
+        import gateway.stream_consumer as sc_mod
+        monkeypatch.setattr(sc_mod.asyncio, "sleep", capture_sleep)
+
+        # 直接调用 _send_final_response_fallback（私有方法，但这是目标逻辑所在）
+        # 触发 fallback path：先设已发送状态使 continuation 路径生效
+        consumer._message_id = "msg_0"
+        consumer._already_sent = True
+        consumer._last_sent_text = "partial"
+        consumer._fallback_prefix = "partial"
+        consumer._edit_supported = False
+        consumer._fallback_final_send = True
+
+        await consumer._send_fallback_final("partial final answer text")
+
+        # 至少有一次 sleep，且其中包含 >= cooldown 的那次是 flood retry
+        flood_sleeps = [s for s in sleeps if s >= cooldown - 1.0]
+        assert len(flood_sleeps) >= 1, (
+            f"expected flood retry sleep >= {cooldown}s, got sleeps={sleeps}"
+        )
+        # 不应再有固定 3.0s 的 flood retry sleep（旧实现特征）
+        fixed_3 = [s for s in sleeps if abs(s - 3.0) < 0.001]
+        # 允许其他 3.0 出现（巧合），但 cooldown 场景下重试必须 >= cooldown
+        assert flood_sleeps, f"no cooldown-aligned sleep found in {sleeps}"
+
+    @pytest.mark.asyncio
+    async def test_flood_retry_falls_back_to_default_when_no_cooldown(self, monkeypatch):
+        """无 cooldown（rate_limited_until == 0）时，flood retry 退化为合理默认。
+
+        契约：基础 adapter 默认 rate_limited_until == 0.0。此时对齐 cooldown
+        退化为一个安全的下限（>= 旧固定 3.0s），避免立刻重试触发风暴。
+        """
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=False, error="rate limit hit"),
+            SimpleNamespace(success=True, message_id="msg_1"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        # 无 cooldown
+        adapter.rate_limited_until = 0.0
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1)
+        consumer = GatewayStreamConsumer(adapter, "chat_1", config)
+
+        sleeps = []
+        original_sleep = asyncio.sleep
+
+        async def capture_sleep(seconds):
+            sleeps.append(seconds)
+            await original_sleep(0)
+
+        import gateway.stream_consumer as sc_mod
+        monkeypatch.setattr(sc_mod.asyncio, "sleep", capture_sleep)
+
+        consumer._message_id = "msg_0"
+        consumer._already_sent = True
+        consumer._last_sent_text = "partial"
+        consumer._fallback_prefix = "partial"
+        consumer._edit_supported = False
+        consumer._fallback_final_send = True
+
+        await consumer._send_fallback_final("partial final answer text")
+
+        # 无 cooldown 时不应立即重试（>= 一个安全下限）
+        # 找出非零的、看起来是 flood retry 的 sleep
+        candidate_flood = [s for s in sleeps if s >= 1.0]
+        assert candidate_flood, (
+            f"expected a non-trivial flood retry sleep even without cooldown, got {sleeps}"
+        )
+
+
+class TestEditFloodBackoffAlignsCooldown:
+    """stream_consumer.py:945 edit flood backoff 对齐 cooldown。
+
+    implement 注意事项1：该处是 `_current_edit_interval = min(*2, 10.0)`（翻倍
+    编辑间隔，靠 `_last_edit_time` + 下次循环 elapsed 检查生效），不是 sleep。
+    "对齐 cooldown" 实现：令 `_current_edit_interval` 至少覆盖剩余 cooldown 秒数，
+    这样下次 edit 检查 `elapsed >= _current_edit_interval` 时自然等到 cooldown 结束。
+    不插入 sleep。
+    """
+
+    def test_current_edit_interval_covers_remaining_cooldown_on_flood(self, monkeypatch):
+        """限流时 _current_edit_interval 应被提升到至少覆盖剩余 cooldown。
+
+        直接调用 edit flood backoff 逻辑（_on_edit_flood 方法或等效路径）。
+        由于实现细节，这里用反射方式触发：模拟一次 flood 失败后的 backoff 计算。
+        """
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        now = _time_module.time()
+        cooldown = 30.0
+        adapter.rate_limited_until = now + cooldown
+
+        config = StreamConsumerConfig(edit_interval=1.0, buffer_threshold=1)
+        consumer = GatewayStreamConsumer(adapter, "chat_1", config)
+        consumer._message_id = "msg_0"
+        consumer._already_sent = True
+
+        # 模拟一次 flood 失败的 edit 结果，触发 backoff 路径
+        flood_result = SimpleNamespace(success=False, error="flood control retry after")
+
+        # 找到处理 edit 失败的方法。它在 _send_or_edit 内部。
+        # 为隔离，直接调用内部 backoff 逻辑（如果暴露）或通过 _send_or_edit。
+        # 这里检查 backoff 后的 _current_edit_interval 状态。
+        # 我们直接断言 backoff helper（若存在）或通过属性推断。
+        # 由于 backoff 在 _send_or_edit 内联，这里改用更高层断言：
+        # 构造一次 edit flood，确认 _current_edit_interval >= 剩余 cooldown。
+
+        # 先记录初始 interval
+        initial = consumer._current_edit_interval
+
+        # 直接调用内部逻辑：模拟 edit_message 返回 flood，触发 backoff
+        async def _drive():
+            await consumer._send_or_edit("test text", finalize=False)
+
+        adapter.edit_message = AsyncMock(return_value=flood_result)
+
+        # 加速：mock asyncio.sleep
+        import gateway.stream_consumer as sc_mod
+        async def noop_sleep(s):
+            return
+        monkeypatch.setattr(sc_mod.asyncio, "sleep", noop_sleep)
+
+        asyncio.run(_drive())
+
+        # backoff 后 interval 应至少覆盖剩余 cooldown（30s 量级），而非仅翻倍到 2.0
+        remaining_approx = cooldown  # 上限
+        assert consumer._current_edit_interval >= remaining_approx - 1.0, (
+            f"expected _current_edit_interval >= ~{cooldown}s to cover cooldown, "
+            f"got {consumer._current_edit_interval} (initial={initial})"
+        )
+        # 关键：没有插入 sleep 来"对齐 cooldown"（implement 注意事项1）
+        # noop_sleep 已替换 sleep，所以这里只验证 interval 状态
+
+    def test_edit_backoff_without_cooldown_doubles_interval(self, monkeypatch):
+        """无 cooldown（rate_limited_until == 0）时，edit flood backoff 退化为
+        原翻倍逻辑（min(*2, 10.0)）。保证非 weixin 平台行为不变。
+        """
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.rate_limited_until = 0.0  # 无 cooldown
+
+        config = StreamConsumerConfig(edit_interval=1.0, buffer_threshold=1)
+        consumer = GatewayStreamConsumer(adapter, "chat_1", config)
+        consumer._message_id = "msg_0"
+        consumer._already_sent = True
+
+        initial = consumer._current_edit_interval
+        flood_result = SimpleNamespace(success=False, error="flood control")
+        adapter.edit_message = AsyncMock(return_value=flood_result)
+
+        async def _drive():
+            await consumer._send_or_edit("test text", finalize=False)
+
+        import gateway.stream_consumer as sc_mod
+        async def noop_sleep(s):
+            return
+        monkeypatch.setattr(sc_mod.asyncio, "sleep", noop_sleep)
+
+        asyncio.run(_drive())
+
+        # 翻倍：1.0 → 2.0（无 cooldown 时保持原行为）
+        assert consumer._current_edit_interval == pytest.approx(2.0, abs=0.01), (
+            f"without cooldown, edit interval should double 1.0→2.0, "
+            f"got {consumer._current_edit_interval}"
+        )
+

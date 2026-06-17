@@ -1473,6 +1473,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # ACK card: chat_id → message_id of the "⏳ 正在思考..." card sent on
+        # processing start; consumed by the first send() to patch in-place.
+        self._pending_ack_cards: Dict[str, str] = {}
         self._card_mode_enabled = True
         self._load_seen_message_ids()
 
@@ -1790,6 +1793,15 @@ class FeishuAdapter(BasePlatformAdapter):
             try:
                 from gateway.platforms.feishu_card import build_card_json
                 card = build_card_json(content=formatted)
+                # Consume pending ACK card — patch it instead of sending new
+                ack_msg_id = self._pending_ack_cards.pop(chat_id, None)
+                if ack_msg_id:
+                    logger.info("[Feishu] Consuming ACK card %s for %s", ack_msg_id, chat_id)
+                    result = await self._patch_card(message_id=ack_msg_id, card=card)
+                    if result.success:
+                        return result
+                    logger.warning("[Feishu] ACK card patch failed, sending new: %s", result.error)
+                logger.info("[Feishu] Card mode: sending interactive card to %s", chat_id)
                 result = await self._send_card(
                     chat_id=chat_id,
                     card=card,
@@ -1797,6 +1809,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
                 if result.success:
+                    logger.info("[Feishu] Card sent successfully: %s", result.message_id)
                     return result
                 logger.warning("[Feishu] Card send failed, falling back to text: %s", result.error)
             except Exception as exc:
@@ -3133,6 +3146,24 @@ class FeishuAdapter(BasePlatformAdapter):
         if reaction_id:
             self._remember_processing_reaction(message_id, reaction_id)
 
+        # Send an ACK card as reply so the user sees immediate feedback.
+        _src = getattr(event, "source", None)
+        chat_id = getattr(_src, "chat_id", None) or ""
+        if chat_id and getattr(self, "_card_mode_enabled", False):
+            try:
+                from gateway.platforms.feishu_card import build_card_json
+                ack_card = build_card_json(content="⏳ 正在思考...")
+                result = await self._send_card(
+                    chat_id=chat_id,
+                    card=ack_card,
+                    reply_to=message_id,
+                )
+                if result.success and result.message_id:
+                    self._pending_ack_cards[chat_id] = str(result.message_id)
+                    logger.info("[Feishu] ACK card sent: %s → %s", chat_id, result.message_id)
+            except Exception as exc:
+                logger.debug("[Feishu] ACK card send failed: %s", exc)
+
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
@@ -4016,6 +4047,11 @@ class FeishuAdapter(BasePlatformAdapter):
         display_name = await self._resolve_sender_name_from_api(
             name_lookup_id, is_bot=is_bot,
         )
+        # Cross-cache under open_id so approval card handler (which only has
+        # open_id from the operator event) can resolve the display name.
+        if display_name and open_id and open_id != name_lookup_id:
+            now = time.time()
+            self._sender_name_cache[open_id] = (display_name, now + _FEISHU_SENDER_NAME_TTL_SECONDS)
         return {
             "user_id": primary_id,
             "user_name": display_name,

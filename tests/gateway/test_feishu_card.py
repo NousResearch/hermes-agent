@@ -258,6 +258,7 @@ class TestFeishuSendCardIntegration:
         adapter._response_succeeded = MagicMock(return_value=True)
         adapter.send = FeishuAdapter.send.__get__(adapter)
         adapter._card_mode_enabled = True
+        adapter._pending_ack_cards = {}
         return adapter
 
     @pytest.mark.asyncio
@@ -283,6 +284,87 @@ class TestFeishuSendCardIntegration:
         )
         assert result.success
         mock_adapter._feishu_send_with_retry.assert_called()
+
+
+class TestAckCardConsumption:
+    """ACK card sent on processing_start is consumed by first send()."""
+
+    @pytest.fixture
+    def mock_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = MagicMock(spec=FeishuAdapter)
+        adapter._client = MagicMock()
+        adapter.format_message = MagicMock(side_effect=lambda x: x.strip())
+        adapter._send_card = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new", error=None),
+        )
+        adapter._patch_card = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_ack_1", error=None),
+        )
+        adapter._feishu_send_with_retry = AsyncMock(
+            return_value=MagicMock(code=0, data=MagicMock(message_id="msg_text")),
+        )
+        adapter._finalize_send_result = MagicMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_text", error=None),
+        )
+        adapter._build_outbound_payload = MagicMock(
+            return_value=("text", '{"text":"hello"}'),
+        )
+        adapter._response_succeeded = MagicMock(return_value=True)
+        adapter.send = FeishuAdapter.send.__get__(adapter)
+        adapter._card_mode_enabled = True
+        adapter._pending_ack_cards = {"oc_123": "msg_ack_1"}
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_patches_ack_card(self, mock_adapter):
+        result = await mock_adapter.send(chat_id="oc_123", content="response")
+        assert result.success
+        mock_adapter._patch_card.assert_called_once()
+        assert mock_adapter._patch_card.call_args[1]["message_id"] == "msg_ack_1"
+        mock_adapter._send_card.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ack_card_consumed_after_send(self, mock_adapter):
+        await mock_adapter.send(chat_id="oc_123", content="response")
+        assert "oc_123" not in mock_adapter._pending_ack_cards
+
+    @pytest.mark.asyncio
+    async def test_no_ack_card_sends_new(self, mock_adapter):
+        mock_adapter._pending_ack_cards = {}
+        result = await mock_adapter.send(chat_id="oc_123", content="response")
+        assert result.success
+        mock_adapter._send_card.assert_called_once()
+        mock_adapter._patch_card.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ack_patch_failure_falls_back_to_send(self, mock_adapter):
+        mock_adapter._patch_card = AsyncMock(
+            return_value=SimpleNamespace(success=False, message_id=None, error="patch failed"),
+        )
+        result = await mock_adapter.send(chat_id="oc_123", content="response")
+        assert result.success
+        mock_adapter._send_card.assert_called_once()
+
+
+class TestHeartbeatToolDisplay:
+    """Heartbeat tool name uses TOOL_SEMANTICS mapping."""
+
+    def test_known_tool_mapped(self):
+        from gateway.platforms.feishu_card import get_tool_display
+        assert get_tool_display("Read") == "Read · 阅读文件"
+        assert get_tool_display("Bash") == "Bash · 执行命令"
+        assert get_tool_display("Edit") == "Edit · 改代码"
+
+    def test_alias_mapped(self):
+        from gateway.platforms.feishu_card import get_tool_display
+        assert get_tool_display("terminal") == "Bash · 执行命令"
+        assert get_tool_display("read_file") == "Read · 阅读文件"
+
+    def test_unknown_tool_passthrough(self):
+        from gateway.platforms.feishu_card import get_tool_display
+        assert get_tool_display("unknown_tool") == "unknown_tool"
 
 
 class TestFeishuEditCardIntegration:
@@ -371,6 +453,24 @@ class TestBuildCardFooterLine:
             model="gpt-5.5",
         )
         assert result == "📊 ↑100 | ↓200 | $0.0010 | ⏳5s | 🧠gpt-5.5"
+
+    def test_elapsed_over_60s_uses_min_format(self):
+        result = build_card_footer_line(
+            input_tokens=100,
+            output_tokens=200,
+            elapsed_seconds=375.0,
+            model="gpt-5.5",
+        )
+        assert "⏳6m15s" in result
+
+    def test_elapsed_exactly_60s(self):
+        result = build_card_footer_line(
+            input_tokens=100,
+            output_tokens=200,
+            elapsed_seconds=60.0,
+            model="gpt-5.5",
+        )
+        assert "⏳1m0s" in result
 
 
 class TestRunFooterMetrics:

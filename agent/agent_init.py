@@ -79,10 +79,9 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
-        f"ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
-        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+        f"ℹ Codex gpt-5.5 上下文上限 272K，自动压缩阈值已从 {from_pct}% 提升到 {to_pct}%，"
+        f"以便在压缩前充分利用上下文窗口。\n"
+        f"  关闭此功能：hermes config set compression.codex_gpt55_autoraise false"
     )
 
 

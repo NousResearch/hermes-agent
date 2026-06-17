@@ -4194,14 +4194,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = "正在重启" if self._restart_requested else "正在关闭"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "当前任务将被中断。重启后发送任意消息，我会尝试从中断处继续。"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "当前任务将被中断。"
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = f"⚠️ 网关{action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -8896,11 +8895,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else "/sethome"
                 )
                 notice = (
-                    f"📬 No home channel is set for {platform_name.title()}. "
-                    f"A home channel is where Hermes delivers cron job results "
-                    f"and cross-platform messages.\n\n"
-                    f"Type {sethome_cmd} to make this chat your home channel, "
-                    f"or ignore to skip."
+                    f"📬 尚未设置 {platform_name.title()} 的主频道。"
+                    f"主频道用于接收定时任务结果和跨平台消息。\n\n"
+                    f"输入 {sethome_cmd} 将当前群设为主频道，或忽略跳过。"
                 )
                 await self._deliver_platform_notice(source, notice)
         
@@ -9181,8 +9178,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
+            _feishu_card_footer = False
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
-                response = f"{response}\n\n{_footer_line}"
+                # Feishu card mode: build a richer footer line with icons and
+                # pass it via send() metadata so the card renders it as a
+                # separate note element (hr + footer + status).
+                if source.platform == Platform.FEISHU:
+                    _fc_adapter = self.adapters.get(source.platform)
+                    if getattr(_fc_adapter, '_card_mode_enabled', False):
+                        _feishu_card_footer = True
+                        try:
+                            from gateway.platforms.feishu_card import build_card_footer_line
+                            _footer_line = build_card_footer_line(
+                                input_tokens=agent_result.get("input_tokens", 0) or 0,
+                                output_tokens=agent_result.get("output_tokens", 0) or 0,
+                                cache_tokens=agent_result.get("cache_read_tokens", 0) or 0,
+                                cost_usd=agent_result.get("estimated_cost_usd", 0.0) or 0.0,
+                                git_context=_footer_git_context,
+                                elapsed_seconds=_turn_elapsed,
+                                model=agent_result.get("model") or "",
+                                context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+                                context_length=agent_result.get("context_length") or 0,
+                            )
+                        except Exception:
+                            _feishu_card_footer = False
+
+                if not _feishu_card_footer:
+                    response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -9507,8 +9529,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            # Feishu card mode (non-streaming): send card with proper footer
+            # elements (hr + note) instead of returning plain text for base to send.
+            if _feishu_card_footer and response:
+                try:
+                    from gateway.platforms.feishu_card import build_card_json
+                    _fc_adapter = self.adapters.get(source.platform)
+                    card = build_card_json(
+                        content=_fc_adapter.format_message(response),
+                        footer_line=_footer_line,
+                        status_text="✅ 回复完毕",
+                    )
+                    # Consume pending ACK card if available
+                    _ack_id = getattr(_fc_adapter, '_pending_ack_cards', {}).pop(source.chat_id, None)
+                    if _ack_id:
+                        _ack_res = await _fc_adapter._patch_card(message_id=_ack_id, card=card)
+                        if _ack_res.success:
+                            return None
+                    await _fc_adapter._send_card(
+                        chat_id=source.chat_id,
+                        card=card,
+                        reply_to=self._reply_anchor_for_event(event),
+                        metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                    )
+                    return None
+                except Exception as _card_err:
+                    logger.debug("Feishu card send failed, falling back to text: %s", _card_err)
+                    response = f"{response}\n\n{_footer_line}"
+
             return response
-            
+
         except Exception as e:
             # Stop typing indicator on error too
             try:
@@ -15742,7 +15792,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                         _action = _a.get("current_tool") or _a.get("last_activity_desc")
                         if _action:
-                            _parts.append(str(_action))
+                            try:
+                                from gateway.platforms.feishu_card import get_tool_display
+                                _action = get_tool_display(str(_action))
+                            except Exception:
+                                _action = str(_action)
+                            _parts.append(_action)
                         if _parts:
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:

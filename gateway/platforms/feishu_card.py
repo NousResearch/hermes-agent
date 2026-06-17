@@ -159,7 +159,19 @@ def detect_git_context(cwd: str) -> str:
         )
         if toplevel.returncode != 0:
             return ""
-        repo_name = os.path.basename(toplevel.stdout.strip())
+
+        repo_name = ""
+        remote = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=cwd, capture_output=True, text=True, timeout=1,
+        )
+        if remote.returncode == 0 and remote.stdout.strip():
+            url = remote.stdout.strip()
+            repo_name = url.rstrip("/").rsplit("/", 1)[-1]
+            if repo_name.endswith(".git"):
+                repo_name = repo_name[:-4]
+        if not repo_name:
+            repo_name = os.path.basename(toplevel.stdout.strip())
 
         branch = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -189,16 +201,22 @@ def build_card_footer_line(
     git_context: str = "",
     elapsed_seconds: float = 0.0,
     model: str = "",
+    context_tokens: int = 0,
+    context_length: int = 0,
 ) -> str:
     parts: list[str] = []
     parts.append(f"↑{format_token_count(input_tokens)}")
     parts.append(f"↓{format_token_count(output_tokens)}")
     if cache_tokens > 0:
         parts.append(f"cache:{format_token_count(cache_tokens)}")
+    if context_length and context_length > 0 and context_tokens >= 0:
+        pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+        parts.append(f"ctx:{pct}%")
     parts.append(f"${cost_usd:.4f}")
     if git_context:
         parts.append(f"@{git_context}")
-    parts.append(f"⏳{int(elapsed_seconds)}s")
+    _secs = int(elapsed_seconds)
+    parts.append(f"⏳{_secs // 60}m{_secs % 60}s" if _secs >= 60 else f"⏳{_secs}s")
     m = _model_short(model)
     if m:
         parts.append(f"🧠{m}")

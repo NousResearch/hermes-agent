@@ -6839,9 +6839,13 @@ class AIAgent:
                 if terminal_response is None and isinstance(event, dict):
                     terminal_response = event.get("response")
                 if terminal_response is not None:
-                    # Backfill empty output from collected stream events
+                    # Backfill empty/None output from collected stream events.
+                    # The chatgpt.com codex backend can send response.completed
+                    # with `output=None` (output items arrive via separate
+                    # response.output_item.done events), so treat None the same
+                    # as an empty list here.
                     _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             terminal_response.output = list(collected_output_items)
                             logger.debug(

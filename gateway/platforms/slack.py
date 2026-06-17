@@ -78,6 +78,18 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+@dataclass
+class _SlackNativeStreamState:
+    """Bookkeeping for one active Slack chat.*Stream message."""
+
+    channel: str
+    ts: str
+    thread_ts: Optional[str]
+    user_id: str
+    team_id: str
+    last_text: str = ""
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available.
 
@@ -373,6 +385,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Socket Mode resilience: track runtime connection state so we can
         # self-heal when Slack silently drops the websocket.
         self._app_token: Optional[str] = None
+        # Active Slack-native chat.*Stream messages keyed by (chat_id, thread_ts).
+        # The generic gateway stream consumer calls send_draft() with cumulative
+        # preview text and later calls send() for the final answer; send() stops
+        # the matching stream instead of posting a duplicate final message.
+        self._native_streams: Dict[Tuple[str, str], _SlackNativeStreamState] = {}
         self._proxy_url: Optional[str] = None
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
@@ -1127,6 +1144,187 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    @staticmethod
+    def _native_stream_key(
+        chat_id: str,
+        thread_ts: Optional[str],
+    ) -> Tuple[str, str]:
+        return (str(chat_id or ""), str(thread_ts or ""))
+
+    def _clean_native_stream_text(self, content: str) -> str:
+        """Convert Hermes' cumulative preview text into Slack stream text."""
+        text = self.format_message(content or "")
+        # The generic stream consumer appends a visual cursor for edit-based
+        # transports. Slack's native stream UI has its own in-progress affordance,
+        # so strip the common cursor glyph if it is present at the tail.
+        return re.sub(r"\s*▉\s*$", "", text)
+
+    def _slack_stream_team_id(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> str:
+        md = metadata or {}
+        return str(md.get("team_id") or self._channel_team.get(chat_id, "") or "")
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Use Slack's native chat.*Stream APIs when routing data is available.
+
+        The gateway's draft transport passes cumulative preview frames through
+        send_draft(). Slack's native stream API is append-only, but it provides
+        exactly the right UX. We only opt in when the SDK exposes the new methods
+        and the gateway supplied the Slack user id needed by chat.startStream.
+        send_draft() resolves team_id from the channel map, because the support
+        probe does not receive chat_id.
+        """
+        if not self._app:
+            return False
+        if not hasattr(self._get_client(""), "chat_startStream"):
+            return False
+        md = metadata or {}
+        return bool(str(md.get("user_id") or ""))
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Append a frame to Slack's native chat.*Stream message.
+
+        The generic gateway stream consumer calls send_draft() with cumulative
+        text. Slack wants incremental markdown chunks, so this method diffs the
+        new preview against the last accepted preview and appends only the tail.
+        The matching final send() later calls chat.stopStream.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        md = metadata or {}
+        thread_ts = self._resolve_thread_ts(None, md)
+        user_id = str(md.get("user_id") or "")
+        team_id = self._slack_stream_team_id(chat_id, md)
+        if not thread_ts:
+            return SendResult(success=False, error="Slack stream requires thread_ts")
+        if not user_id or not team_id:
+            return SendResult(
+                success=False,
+                error="Slack stream requires recipient user_id and team_id",
+            )
+
+        key = self._native_stream_key(chat_id, thread_ts)
+        text = self._clean_native_stream_text(content)
+        if not text.strip():
+            return SendResult(success=True)
+
+        try:
+            client = self._get_client(chat_id)
+            state = self._native_streams.get(key)
+            if state is None:
+                result = await client.chat_startStream(
+                    channel=chat_id,
+                    thread_ts=thread_ts,
+                    recipient_user_id=user_id,
+                    recipient_team_id=team_id,
+                    markdown_text=text,
+                )
+                stream_ts = str(result.get("ts") or "")
+                if not stream_ts:
+                    return SendResult(success=False, error="chat.startStream did not return ts")
+                state = _SlackNativeStreamState(
+                    channel=chat_id,
+                    ts=stream_ts,
+                    thread_ts=thread_ts,
+                    user_id=user_id,
+                    team_id=team_id,
+                    last_text=text,
+                )
+                self._native_streams[key] = state
+                self._bot_message_ts.add(stream_ts)
+                self._bot_message_ts.add(thread_ts)
+                logger.debug(
+                    "[Slack] Started native stream channel=%s thread=%s ts=%s",
+                    chat_id,
+                    thread_ts,
+                    stream_ts,
+                )
+                return SendResult(success=True, message_id=stream_ts, raw_response=result)
+
+            if text == state.last_text:
+                return SendResult(success=True, message_id=state.ts)
+            if text.startswith(state.last_text):
+                delta = text[len(state.last_text):]
+            else:
+                # Slack streams are append-only. If markdown cleanup changed bytes
+                # already sent, append a separated current frame rather than
+                # raising and losing the rest of the response.
+                delta = "\n" + text
+            if delta:
+                result = await client.chat_appendStream(
+                    channel=chat_id,
+                    ts=state.ts,
+                    markdown_text=delta,
+                )
+                state.last_text = text
+                logger.debug(
+                    "[Slack] Appended native stream channel=%s thread=%s ts=%s chars=%d",
+                    chat_id,
+                    thread_ts,
+                    state.ts,
+                    len(delta),
+                )
+                return SendResult(success=True, message_id=state.ts, raw_response=result)
+            return SendResult(success=True, message_id=state.ts)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[Slack] chat.*Stream append error: %s", e, exc_info=True)
+            self._native_streams.pop(key, None)
+            return SendResult(success=False, error=str(e))
+
+    async def _stop_native_stream_if_active(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SendResult]:
+        """Stop an active chat.*Stream instead of posting a duplicate final."""
+        md = metadata or {}
+        thread_ts = self._resolve_thread_ts(None, md)
+        if not thread_ts:
+            return None
+        key = self._native_stream_key(chat_id, thread_ts)
+        state = self._native_streams.pop(key, None)
+        if state is None:
+            return None
+
+        final_text = self._clean_native_stream_text(content)
+        try:
+            client = self._get_client(chat_id)
+            if final_text and final_text != state.last_text:
+                if final_text.startswith(state.last_text):
+                    delta = final_text[len(state.last_text):]
+                else:
+                    delta = "\n" + final_text
+                if delta:
+                    await client.chat_appendStream(
+                        channel=chat_id,
+                        ts=state.ts,
+                        markdown_text=delta,
+                    )
+                    state.last_text = final_text
+            result = await client.chat_stopStream(channel=chat_id, ts=state.ts)
+            await self.stop_typing(chat_id)
+            logger.debug(
+                "[Slack] Stopped native stream channel=%s thread=%s ts=%s",
+                chat_id,
+                thread_ts,
+                state.ts,
+            )
+            return SendResult(success=True, message_id=state.ts, raw_response=result)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[Slack] chat.stopStream error: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     async def send(
         self,
         chat_id: str,
@@ -1139,6 +1337,14 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            native_stream_result = await self._stop_native_stream_if_active(
+                chat_id,
+                content,
+                metadata,
+            )
+            if native_stream_result is not None:
+                return native_stream_result
+
             # Check for a pending slash-command context.  When the user ran a
             # native slash command (e.g. /q, /stop, /model), the initial ack
             # already showed an ephemeral "Running /cmd…" message.  If we have

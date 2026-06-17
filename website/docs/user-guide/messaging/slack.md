@@ -25,6 +25,20 @@ the steps below.
 | **Auth tokens needed** | Bot Token (`xoxb-`) + App-Level Token (`xapp-`) |
 | **User identification** | Slack Member IDs (e.g., `U01ABC2DEF3`) |
 
+### Streaming replies
+
+Hermes can progressively stream Slack replies. When `streaming.enabled: true`, the Slack adapter prefers Slack's native `chat.startStream` → `chat.appendStream` → `chat.stopStream` API when the installed `slack_sdk` exposes those methods and the incoming event has the recipient user/team metadata Slack requires. If native streaming is unavailable or Slack rejects the stream call (for example because of an older SDK, missing API support, or missing routing metadata), Hermes falls back to the older edit-based streaming path (`chat.postMessage` + `chat.update`).
+
+Native Slack streaming uses the same gateway configuration as other platform streaming:
+
+```yaml
+streaming:
+  enabled: true
+  transport: auto   # prefer native streaming where supported, fall back to edits
+```
+
+No extra OAuth scope is currently required beyond `chat:write`, but the app still needs the normal Slack setup below so Hermes can receive the user's message and resolve the channel, user, team, and thread IDs.
+
 ---
 
 ## Step 1: Create a Slack App

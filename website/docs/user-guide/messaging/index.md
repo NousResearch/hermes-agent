@@ -41,7 +41,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
 
-**Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+**Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates; most adapters use message editing, while adapters with native streaming APIs (for example Slack `chat.*Stream`) may use the platform-native streaming UI.
 
 ## Architecture
 

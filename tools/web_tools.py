@@ -339,9 +339,46 @@ def _get_default_summarizer_model() -> Optional[str]:
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 
+# ── Aggregate wall-clock caps for web_extract sub-phases ─────────────────────
+# `auxiliary.web_extract.timeout` (default 60s) bounds a *single* HTTP attempt to
+# the summarizer. But _call_summarizer_llm retries, and async_call_llm walks the
+# whole provider fallback chain underneath it, so the per-attempt timeout can
+# stack into the tens of minutes. On 2026-06-17 one flaky summarizer stream
+# (incomplete chunked read) ran 3,362s and idle-killed the morning-brief cron.
+# These caps bound the *total* time of each sub-phase so one bad source degrades
+# gracefully (summary → truncated raw content; fetch → per-URL error) instead of
+# hanging the caller well past the 600s cron idle limit.
+_DEFAULT_SUMMARIZE_CAP_S = 120.0
+_DEFAULT_FETCH_CAP_S = 180.0
+
+
+def _web_extract_caps() -> tuple[float, float]:
+    """Return ``(summarize_cap_s, fetch_cap_s)``, overridable via config.
+
+    Reads optional ``auxiliary.web_extract.summarize_timeout`` /
+    ``auxiliary.web_extract.fetch_timeout``. Absent those, the summarize cap
+    derives as ``max(default, 2× the per-attempt timeout)`` and the fetch cap
+    uses its default.
+    """
+    summarize = _DEFAULT_SUMMARIZE_CAP_S
+    fetch = _DEFAULT_FETCH_CAP_S
+    try:
+        from hermes_cli.config import load_config
+        we = (load_config().get("auxiliary", {}) or {}).get("web_extract", {}) or {}
+        per_attempt = float(we.get("timeout") or 60.0)
+        summarize = float(
+            we.get("summarize_timeout")
+            or max(_DEFAULT_SUMMARIZE_CAP_S, per_attempt * 2)
+        )
+        fetch = float(we.get("fetch_timeout") or _DEFAULT_FETCH_CAP_S)
+    except Exception:
+        pass
+    return summarize, fetch
+
+
 async def process_content_with_llm(
-    content: str, 
-    url: str = "", 
+    content: str,
+    url: str = "",
     title: str = "",
     model: Optional[str] = None,
     min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
@@ -394,17 +431,28 @@ async def process_content_with_llm(
             context_info.append(f"Source: {url}")
         context_str = "\n".join(context_info) + "\n\n" if context_info else ""
         
+        # Aggregate wall-clock cap so a flaky summarizer (retries × provider
+        # fallback chain) can't run past the cron idle limit — on timeout the
+        # except below degrades to truncated raw content.
+        summarize_cap_s, _ = _web_extract_caps()
+
         # Check if we need chunked processing
         if content_len > CHUNK_THRESHOLD:
             logger.info("Content large (%d chars). Using chunked processing...", content_len)
-            return await _process_large_content_chunked(
-                content, context_str, model, CHUNK_SIZE, MAX_OUTPUT_SIZE
+            return await asyncio.wait_for(
+                _process_large_content_chunked(
+                    content, context_str, model, CHUNK_SIZE, MAX_OUTPUT_SIZE
+                ),
+                timeout=summarize_cap_s,
             )
-        
+
         # Standard single-pass processing for normal content
         logger.info("Processing content with LLM (%d characters)", content_len)
-        
-        processed_content = await _call_summarizer_llm(content, context_str, model)
+
+        processed_content = await asyncio.wait_for(
+            _call_summarizer_llm(content, context_str, model),
+            timeout=summarize_cap_s,
+        )
         
         if processed_content:
             # Enforce output cap
@@ -423,7 +471,7 @@ async def process_content_with_llm(
             "web_extract LLM summarization failed (%s). "
             "Tip: increase auxiliary.web_extract.timeout in config.yaml "
             "or switch to a faster auxiliary model.",
-            str(e)[:120],
+            (str(e) or type(e).__name__)[:120],
         )
         # Fall back to truncated raw content instead of returning a useless
         # error message.  The first ~5000 chars are almost always more useful
@@ -1033,14 +1081,38 @@ async def web_extract_tool(
             # Async-or-sync dispatch: parallel + firecrawl have async
             # extract(); exa + tavily are sync.
             import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+            _, fetch_cap_s = _web_extract_caps()
+            try:
+                if inspect.iscoroutinefunction(provider.extract):
+                    results = await asyncio.wait_for(
+                        provider.extract(safe_urls, format=format),
+                        timeout=fetch_cap_s,
+                    )
+                else:
+                    # Run sync extract() in a thread so we don't block the
+                    # event loop on network I/O.
+                    results = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        ),
+                        timeout=fetch_cap_s,
+                    )
+            except asyncio.TimeoutError:
+                # One slow/flaky source must not stall the whole tool (and, via
+                # the cron idle limit, the morning brief). Degrade to per-URL
+                # error entries so the caller still gets every other result.
+                logger.warning(
+                    "web_extract fetch via %s exceeded %.0fs cap for %d URL(s); "
+                    "returning timeout errors for this batch",
+                    provider.name, fetch_cap_s, len(safe_urls),
                 )
+                results = [
+                    {
+                        "url": u, "title": "", "content": "",
+                        "error": f"Extraction timed out after {fetch_cap_s:.0f}s",
+                    }
+                    for u in safe_urls
+                ]
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:

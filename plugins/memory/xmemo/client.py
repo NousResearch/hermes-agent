@@ -322,15 +322,20 @@ class XMemoClient:
         context: str = "",
         action: str = "used",
         usage_tracking_id: str = "",
-        bucket: str = "work",
-        scope: str = "hermes/default",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Record that a recalled memory was used in the answer."""
-        payload: Dict[str, Any] = {"bucket": bucket, "scope": scope, "action": action}
+        """Record that a recalled memory was used in the answer.
+
+        Payload matches Memory OS MemoryUsageRequest: only usage_tracking_id,
+        action, context, and metadata are accepted (extra="forbid").
+        """
+        payload: Dict[str, Any] = {"action": action}
         if context:
             payload["context"] = context
         if usage_tracking_id:
             payload["usage_tracking_id"] = usage_tracking_id
+        if metadata:
+            payload["metadata"] = metadata
         return self._request(
             "POST", f"/v1/memories/{memory_id}/usage", json_body=payload
         )

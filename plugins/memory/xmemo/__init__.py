@@ -408,13 +408,13 @@ def _is_high_signal_turn(user_content: str, assistant_content: str) -> bool:
 
 
 def _redact_for_log(text: str, max_len: int = 200) -> str:
-    """Truncate and lightly redact sensitive-looking content for debug logs."""
+    """Truncate and redact sensitive-looking content before storing/logging."""
     if not text:
         return ""
     if len(text) > max_len:
         text = text[:max_len] + "..."
     # Mask likely tokens/keys in logs (best-effort).
-    return re.sub(r"\b([a-zA-Z0-9_-]{24,})\b", r"\1[:redacted]", text)
+    return re.sub(r"\b[a-zA-Z0-9_-]{24,}\b", "[REDACTED]", text)
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +433,9 @@ class XMemoMemoryProvider(MemoryProvider):
         self._prefetch_results: Dict[str, str] = {}
         self._prefetch_threads: Dict[str, threading.Thread] = {}
         self._prefetch_lock = threading.Lock()
+
+        # Background worker references for clean shutdown
+        self._snapshot_thread: Optional[threading.Thread] = None
 
         # Circuit breaker state
         self._consecutive_failures = 0
@@ -677,13 +680,17 @@ class XMemoMemoryProvider(MemoryProvider):
 
         self._turn_count += 1
 
-        capture_timeline = _as_bool(self._config.get("capture_timeline", False))
-        if not capture_timeline and not _is_high_signal_turn(user_content, assistant_content):
+        # Automatic timeline writes are opt-in only. When disabled, do not record
+        # any turn — even high-signal ones — to avoid surprising privacy behavior.
+        if not _as_bool(self._config.get("capture_timeline", False)):
+            return
+
+        # When enabled, still only persist high-signal turns to avoid noise.
+        if not _is_high_signal_turn(user_content, assistant_content):
             return
 
         # Defensive truncation to avoid storing long raw outputs or secrets.
         safe_user = _redact_for_log(user_content, max_len=240)
-        safe_asst = _redact_for_log(assistant_content, max_len=240)
         summary = f"Turn {self._turn_count}: {safe_user[:120]}..."
 
         try:
@@ -701,10 +708,14 @@ class XMemoMemoryProvider(MemoryProvider):
             logger.debug("XMemo sync_turn failed: %s", exc)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        # Must be callable BEFORE initialize() because MemoryManager.add_provider()
+        # indexes tool names for routing immediately after loading. Read config
+        # from disk if we have not been initialized yet.
+        cfg = self._config if self._config else load_config(create_instance=False)
         schemas = list(_CORE_TOOL_SCHEMAS)
-        if _as_bool(self._config.get("enable_workflow_tools", False)):
+        if _as_bool(cfg.get("enable_workflow_tools", False)):
             schemas.extend(_WORKFLOW_TOOL_SCHEMAS)
-        if _as_bool(self._config.get("enable_destructive_tools", False)):
+        if _as_bool(cfg.get("enable_destructive_tools", False)):
             schemas.extend(_DESTRUCTIVE_TOOL_SCHEMAS)
         # Feedback tools remain internal by default; can be exposed via config later.
         return schemas
@@ -983,8 +994,6 @@ class XMemoMemoryProvider(MemoryProvider):
             result = client.mark_used(
                 memory_id=memory_id,
                 context=context,
-                bucket=self._config.get("bucket", "work"),
-                scope=self._config.get("scope", "hermes/default"),
             )
             self._record_success()
             return json.dumps({
@@ -1023,6 +1032,8 @@ class XMemoMemoryProvider(MemoryProvider):
         for t in list(self._prefetch_threads.values()):
             if t and t.is_alive():
                 t.join(timeout=1.0)
+        if self._snapshot_thread and self._snapshot_thread.is_alive():
+            self._snapshot_thread.join(timeout=5.0)
         with self._client_lock:
             if self._client is not None:
                 try:
@@ -1109,7 +1120,10 @@ class XMemoMemoryProvider(MemoryProvider):
                 self._record_failure()
                 logger.debug("XMemo session-end snapshot failed: %s", exc)
 
-        threading.Thread(target=_snapshot, daemon=True, name="xmemo-snapshot").start()
+        self._snapshot_thread = threading.Thread(
+            target=_snapshot, daemon=True, name="xmemo-snapshot"
+        )
+        self._snapshot_thread.start()
 
 
 def register(ctx) -> None:

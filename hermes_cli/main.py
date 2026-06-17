@@ -9345,6 +9345,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except OSError:
                 pass
 
+        _truthy_env_values = {"1", "true", "yes", "on"}
+        _skip_gateway_restart_env = None
+        for _env_name in (
+            "HERMES_SKIP_GATEWAY_RESTART",
+            "HERMES_UPDATE_SKIP_GATEWAY_RESTART",
+        ):
+            if str(os.environ.get(_env_name, "")).strip().lower() in _truthy_env_values:
+                _skip_gateway_restart_env = _env_name
+                break
+        if _skip_gateway_restart_env:
+            print()
+            print(
+                "  ℹ Skipping inline gateway restart "
+                f"({_skip_gateway_restart_env} is set)."
+            )
+            print("    Restart the gateway later to pick up the updated code.")
+            return
+
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.

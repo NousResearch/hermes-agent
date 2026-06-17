@@ -203,6 +203,33 @@ class TestCmdUpdateBranchFallback:
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
+    @pytest.mark.parametrize(
+        "env_name",
+        ["HERMES_SKIP_GATEWAY_RESTART", "HERMES_UPDATE_SKIP_GATEWAY_RESTART"],
+    )
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_skip_gateway_restart_env_honored(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch, env_name
+    ):
+        """Skip-restart env vars let gateway-hosted cron finish delivery."""
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        monkeypatch.setenv(env_name, "1")
+
+        cmd_update(mock_args)
+
+        out = capsys.readouterr().out
+        assert "Skipping inline gateway restart" in out
+        assert env_name in out
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        gateway_restart_probes = [
+            c for c in commands
+            if "hermes-gateway" in c and ("list-units" in c or "restart" in c)
+        ]
+        assert gateway_restart_probes == []
+
     @patch("shutil.which")
     @patch("subprocess.run")
     def test_update_refreshes_repo_and_tui_node_dependencies(

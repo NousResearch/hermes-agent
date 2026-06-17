@@ -66,6 +66,21 @@ def test_tool_search_sorts_missing_raw_score_after_negative_scores():
     assert result["total"] == 3
 
 
+def test_tool_search_sends_limit_not_legacy_top_k():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "result": {"memories": [], "resources": [], "skills": [], "total": 0}
+    }
+
+    provider._tool_search({"query": "session switch", "limit": 7})
+
+    provider._client.post.assert_called_once()
+    payload = provider._client.post.call_args.args[1]
+    assert payload["limit"] == 7
+    assert "top_k" not in payload
+
+
 def test_tool_add_resource_uploads_existing_local_file(tmp_path):
     sample = tmp_path / "sample.md"
     sample.write_text("# Local resource\n", encoding="utf-8")
@@ -534,11 +549,13 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     started = threading.Event()
     release = threading.Event()
     captured_paths = []
+    captured_payloads = []
 
     def fake_post(path, payload=None, **kwargs):
         started.set()
         release.wait(timeout=2.0)
         captured_paths.append(path)
+        captured_payloads.append(payload)
         return {}
 
     # Patch _VikingClient inside the worker by stubbing post on a client
@@ -566,11 +583,59 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     finally:
         _mod._VikingClient = real_client_cls
 
-    # Both writes must target the OLD session id captured at call time.
-    assert captured_paths == [
-        "/api/v1/sessions/old-sid/messages",
-        "/api/v1/sessions/old-sid/messages",
-    ]
+    # The whole turn must target the OLD session id as a single ordered batch.
+    assert captured_paths == ["/api/v1/sessions/old-sid/messages/batch"]
+    assert captured_payloads == [{
+        "messages": [
+            {"role": "user", "parts": [{"type": "text", "text": "u"}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": "a"}]},
+        ]
+    }]
+
+
+def test_sync_turn_retries_batch_write_with_fresh_client():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-1"
+
+    clients = []
+    captured = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            self.index = len(clients)
+            clients.append(self)
+
+        def post(self, path, payload=None, **kwargs):
+            if self.index == 0:
+                raise RuntimeError("transient")
+            captured.append((path, payload))
+            return {}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.sync_turn("u", "a")
+        assert provider._drain_writers("sid-1", timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert len(clients) == 2
+    assert captured == [(
+        "/api/v1/sessions/sid-1/messages/batch",
+        {
+            "messages": [
+                {"role": "user", "parts": [{"type": "text", "text": "u"}]},
+                {"role": "assistant", "parts": [{"type": "text", "text": "a"}]},
+            ]
+        },
+    )]
 
 
 def test_sync_turn_noop_when_session_id_blank():
@@ -606,6 +671,16 @@ def test_on_session_end_keeps_dirty_when_commit_fails():
     provider.on_session_end([])
 
     assert provider._turn_count == 3
+
+
+def test_on_session_end_commits_pending_tokens_without_turn_count():
+    provider = _make_provider_with_session("old-sid", turn_count=0)
+    provider._client.get.return_value = {"result": {"pending_tokens": 42}}
+
+    provider.on_session_end([])
+
+    provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
+    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
 
 
 def test_end_then_switch_does_not_double_commit():
@@ -708,6 +783,34 @@ def test_on_session_switch_waits_for_all_writers_not_just_latest():
     provider._client.post.assert_not_called()
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
+
+
+def test_on_session_switch_defers_old_commit_when_writers_finish_after_initial_drain():
+    import threading
+
+    provider = _make_provider_with_session("old-sid", turn_count=2)
+    committed = threading.Event()
+    drain_timeouts = []
+
+    def fake_post(path):
+        committed.set()
+        return {}
+
+    def fake_drain(sid, timeout):
+        drain_timeouts.append(timeout)
+        return len(drain_timeouts) > 1
+
+    provider._client.post.side_effect = fake_post
+    provider._drain_writers = fake_drain
+
+    provider.on_session_switch("new-sid")
+
+    assert provider._session_id == "new-sid"
+    assert provider._turn_count == 0
+    assert committed.wait(timeout=2.0), "old session was not finalized after writers drained"
+    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    assert drain_timeouts[0] == 10.0
+    assert drain_timeouts[1] > 10.0
 
 
 def test_sync_turn_tracks_writer_under_session_id():

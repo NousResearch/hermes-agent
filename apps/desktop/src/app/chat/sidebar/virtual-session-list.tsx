@@ -28,6 +28,7 @@ interface VirtualSessionListProps {
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   sessions: SessionInfo[]
+  showProfileBadge?: boolean
   sortable: boolean
   workingSessionIdSet: Set<string>
 }
@@ -44,6 +45,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onTogglePin,
   pinned,
   sessions,
+  showProfileBadge = false,
   sortable,
   workingSessionIdSet
 }) => {
@@ -88,6 +90,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
         measureRef={virtualizer.measureElement}
         rowProps={commonProps}
         session={session}
+        showProfileBadge={showProfileBadge}
       />
     ) : (
       <SidebarSessionRow
@@ -96,6 +99,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
         key={session.id}
         ref={virtualizer.measureElement}
         session={session}
+        showProfileBadge={showProfileBadge}
       />
     )
   })
@@ -117,9 +121,10 @@ interface VirtualSortableRowProps {
   measureRef: (node: Element | null) => void
   rowProps: SessionRowCommonProps
   session: SessionInfo
+  showProfileBadge?: boolean
 }
 
-function VirtualSortableRow({ index, measureRef, rowProps, session }: VirtualSortableRowProps) {
+function VirtualSortableRow({ index, measureRef, rowProps, session, showProfileBadge = false }: VirtualSortableRowProps) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: session.id })
 
   // Merge dnd-kit's setNodeRef with the virtualizer's measureElement so
@@ -142,6 +147,7 @@ function VirtualSortableRow({ index, measureRef, rowProps, session }: VirtualSor
       ref={refMerged}
       reorderable
       session={session}
+      showProfileBadge={showProfileBadge}
       style={{ transform: CSS.Transform.toString(transform), transition }}
     />
   )

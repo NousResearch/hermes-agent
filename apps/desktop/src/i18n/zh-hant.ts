@@ -1277,7 +1277,8 @@ export const zhHant = defineLocale({
       ageNow: '剛才',
       ageDay: '天',
       ageHour: '時',
-      ageMin: '分'
+      ageMin: '分',
+      profileBadge: (name: string) => `設定檔：${name}`
     }
   },
 

@@ -1194,7 +1194,8 @@ export const en: Translations = {
       ageNow: 'now',
       ageDay: 'd',
       ageHour: 'h',
-      ageMin: 'm'
+      ageMin: 'm',
+      profileBadge: (name: string) => `Profile: ${name}`
     }
   },
 

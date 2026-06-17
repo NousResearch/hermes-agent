@@ -1510,14 +1510,21 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
-def _truncate_content(content: str, filename: str, max_chars: Optional[int] = None) -> str:
-    """Head/tail truncation with a marker in the middle."""
+def _truncate_content(content: str, filename: str, max_chars: Optional[int] = None, full_path: Optional[Path] = None) -> str:
+    """Head/tail truncation with a marker in the middle.
+
+    *full_path*, when provided, is included in the warning so users can
+    distinguish which file was truncated (e.g. their project's AGENTS.md
+    vs the Hermes runtime repo's AGENTS.md when the launcher changes into
+    ~/.hermes/hermes-agent before starting the agent).
+    """
     if max_chars is None:
         max_chars = _get_context_file_max_chars()
     if len(content) <= max_chars:
         return content
+    path_note = f" ({full_path}" + ")" if full_path else ""
     msg = (
-        f"⚠️  Context file {filename} TRUNCATED: "
+        f"⚠️  Context file {filename}{path_note} TRUNCATED: "
         f"{len(content)} chars exceeds limit of {max_chars} — "
         f"increase context_file_max_chars or trim the file!"
     )
@@ -1592,7 +1599,7 @@ def _load_agents_md(cwd_path: Path) -> str:
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
+                    return _truncate_content(result, "AGENTS.md", full_path=candidate)
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
@@ -1608,7 +1615,7 @@ def _load_claude_md(cwd_path: Path) -> str:
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "CLAUDE.md")
+                    return _truncate_content(result, "CLAUDE.md", full_path=candidate)
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
@@ -1644,6 +1651,32 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
+def _is_hermes_runtime_repo(cwd_path: Path) -> bool:
+    """Return True when *cwd_path* resolves to the Hermes runtime/install repo.
+
+    The standard installer launcher does::
+
+        cd "$HOME/.hermes/hermes-agent" && exec uv run hermes "$@"
+
+    This means ``os.getcwd()`` (and hence *cwd_path* when TERMINAL_CWD is
+    unset) is the Hermes source tree, not the user's project. Loading
+    AGENTS.md from that path contaminates the agent context with Hermes'
+    own development instructions — irrelevant to the user's actual task.
+
+    We detect this by checking whether *cwd_path* is the same filesystem
+    node as the directory that contains this module (``agent/prompt_builder.py``
+    lives inside the runtime repo at ``<repo>/agent/``).  This avoids any
+    hardcoded path and handles symlinks and profile-aware installs correctly.
+    """
+    try:
+        # The runtime repo root is the *parent* of this file's parent dir
+        # (i.e. <repo>/agent/prompt_builder.py → <repo>).
+        repo_root = Path(__file__).resolve().parent.parent
+        return cwd_path.resolve() == repo_root.resolve()
+    except Exception:
+        return False
+
+
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
@@ -1658,6 +1691,13 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
+
+    Guard: if the resolved *cwd* is detected to be the Hermes runtime/install
+    repository itself (a side-effect of the standard ``cd ~/.hermes/hermes-agent
+    && exec uv run hermes`` launcher pattern), project-context discovery is
+    skipped entirely. This prevents Hermes' own AGENTS.md from leaking into
+    the agent's system prompt when the user's task targets an unrelated
+    external workspace. SOUL.md and memory are unaffected.
     """
     if cwd is None:
         cwd = os.getcwd()
@@ -1665,15 +1705,27 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
-    if project_context:
-        sections.append(project_context)
+    # Guard: skip project-context discovery when the resolved cwd IS the
+    # Hermes runtime repo. This happens when the standard launcher runs
+    # `cd ~/.hermes/hermes-agent` before exec-ing the agent.
+    if _is_hermes_runtime_repo(cwd_path):
+        logger.debug(
+            "build_context_files_prompt: cwd resolves to the Hermes runtime repo (%s) — "
+            "skipping project-context discovery so the internal AGENTS.md is not "
+            "injected into the agent's system prompt. Set TERMINAL_CWD to the actual "
+            "project workspace to load its context files.",
+            cwd_path,
+        )
+    else:
+        # Priority-based project context: first match wins
+        project_context = (
+            _load_hermes_md(cwd_path)
+            or _load_agents_md(cwd_path)
+            or _load_claude_md(cwd_path)
+            or _load_cursorrules(cwd_path)
+        )
+        if project_context:
+            sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

@@ -319,7 +319,7 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     return _models_dev_cache
 
 
-def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
+def lookup_models_dev_context(provider: str, model: str, base_url: str = "") -> Optional[int]:
     """Look up context_length for a provider+model combo in models.dev.
 
     Returns the context window in tokens, or None if not found.
@@ -374,6 +374,28 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
                 ctx = _extract_context(mdata)
                 if ctx:
                     return ctx
+
+    # Z.AI coding-plan fallback: the user's provider may use the
+    # coding/paas endpoint (e.g. api.z.ai/api/coding/paas/v4) while
+    # models.dev lists the model under "zai-coding-plan" instead of
+    # "zai".  Try the coding-plan variant if the base URL hints at it.
+    # (#47970)
+    if mdev_provider_id == "zai" and base_url and "coding" in base_url.lower():
+        alt_provider = data.get("zai-coding-plan")
+        if isinstance(alt_provider, dict):
+            alt_models = alt_provider.get("models", {})
+            if isinstance(alt_models, dict):
+                entry = alt_models.get(model)
+                if entry:
+                    ctx = _extract_context(entry)
+                    if ctx:
+                        return ctx
+                # Case-insensitive fallback
+                for mid, mdata in alt_models.items():
+                    if mid.lower() == model_lower:
+                        ctx = _extract_context(mdata)
+                        if ctx:
+                            return ctx
 
     return None
 

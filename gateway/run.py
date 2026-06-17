@@ -1679,9 +1679,11 @@ def _status_model_label(config: dict) -> str:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         model = model_cfg.get("default", "") or model_cfg.get("model", "")
+    elif isinstance(model_cfg, str):
+        model = model_cfg
     else:
-        model = model_cfg or ""
-    return str(model) or "unknown"
+        model = ""
+    return model or "unknown"
 
 
 def _status_context_limit(config: dict) -> int | None:

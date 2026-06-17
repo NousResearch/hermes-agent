@@ -1438,6 +1438,17 @@ function Install-Venv {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
             & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
+            # Also kill python.exe / pythonw.exe processes running from inside
+            # this venv — they hold .pyd native extensions as loaded DLLs which
+            # Windows locks, causing Remove-Item to fail with "The directory is
+            # not empty".  See: https://github.com/NousResearch/hermes-agent/issues/47557
+            $venvScripts = Join-Path $InstallDir "venv\Scripts"
+            Get-Process -Name "python","pythonw" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -and $_.Path.StartsWith($venvScripts) } |
+                ForEach-Object {
+                    Write-Info "Stopping $($_.ProcessName) (PID $($_.Id)) from old venv..."
+                    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                }
             Start-Sleep -Milliseconds 800
         }
         Remove-Item -Recurse -Force "venv"

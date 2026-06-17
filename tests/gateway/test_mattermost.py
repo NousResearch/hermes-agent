@@ -1,4 +1,5 @@
 """Tests for Mattermost platform adapter."""
+import asyncio
 import json
 import os
 import time
@@ -194,15 +195,50 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert payload["root_id"] == "root_post"
 
+    @pytest.mark.asyncio
+    async def test_send_without_thread_no_root_id(self):
+        """When reply_mode is 'off', reply_to should NOT set root_id."""
+        self.adapter._reply_mode = "off"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post789"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_thread_id_for_progress_messages(self):
+        """Progress/status messages pass Mattermost thread context via metadata."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "root_post_123", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value=({"id": "progress_post"}, 200, ""))
+
+        result = await self.adapter.send(
+            "channel_1",
+            "⚡ terminal...",
+            metadata={"thread_id": "root_post_123"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert payload["root_id"] == "root_post_123"
 
     @pytest.mark.asyncio
     async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value=(
+            {}, 400, "api.context.invalid_param.app_error: invalid root_id"))
 
         result = await self.adapter.send(
             "channel_1",
@@ -220,9 +256,10 @@ class TestMattermostSend:
         """Notify-worthy replies may fall back flat so the answer is not lost."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(side_effect=[{}, {"id": "flat_final"}])
+        self.adapter._api_post = AsyncMock(side_effect=[
+            ({}, 400, "api.context.invalid_param.app_error: invalid root_id"),
+            ({"id": "flat_final"}, 200, ""),
+        ])
 
         result = await self.adapter.send(
             "channel_1",
@@ -242,13 +279,73 @@ class TestMattermostSend:
         assert "Mattermost thread delivery failed" in flat_payload["message"]
         assert "Final answer body" in flat_payload["message"]
 
+    @pytest.mark.asyncio
+    async def test_notify_send_with_server_error_does_not_fall_back_flat(self):
+        """Notify fallback is only for broken thread roots, not generic API failures."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "root_post", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value=({}, 500, "Internal Server Error"))
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Final answer body",
+            reply_to="root_post",
+            metadata={"notify": True},
+        )
+
+        assert result.success is False
+        assert self.adapter._api_post.call_count == 1
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_sends_do_not_clobber_each_others_status(self):
+        """Regression: two overlapping sends must not share HTTP result state.
+
+        Call A's initial post is slow and gets a broken-root 400 (should fall
+        back flat). Call B's post resolves first with a generic 500 (should
+        NOT fall back). Under the old shared `self._last_post_status` /
+        `self._last_post_error` design, B's fast 500 would overwrite the
+        instance state before A's fallback check ran, making A wrongly skip
+        its flat-channel fallback. With per-call (data, status, error)
+        tuples this cannot happen regardless of await ordering.
+        """
+        self.adapter._reply_mode = "thread"
+
+        async def fake_api_post(path, payload):
+            if payload.get("root_id") == "bad_root":
+                await asyncio.sleep(0.02)  # resolves AFTER call B below
+                return {}, 400, "api.context.invalid_param.app_error: invalid root_id"
+            if "root_id" not in payload:
+                # This is A's flat-fallback retry (root_id popped).
+                return {"id": "flat_final"}, 200, ""
+            return {}, 500, "Internal Server Error"  # call B, resolves first
+
+        self.adapter._api_post = AsyncMock(side_effect=fake_api_post)
+
+        result_a, result_b = await asyncio.gather(
+            self.adapter._post_preserving_thread(
+                "channel_1", {"channel_id": "channel_1", "message": "A", "root_id": "bad_root"},
+                {"notify": True},
+            ),
+            self.adapter._post_preserving_thread(
+                "channel_2", {"channel_id": "channel_2", "message": "B", "root_id": "other_root"},
+                {"notify": True},
+            ),
+        )
+
+        # A's broken root_id must still trigger its own flat fallback,
+        # unaffected by B's 500 resolving first.
+        assert result_a == {"id": "flat_final"}
+        # B's generic 500 must never be mistaken for a broken thread root.
+        assert result_b == {}
 
     @pytest.mark.asyncio
     async def test_progress_send_with_broken_thread_and_no_recorded_error_stays_quiet(self):
         """Same rule when no post error was recorded: still no flat fallback."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._api_post = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value=({}, 0, ""))
 
         result = await self.adapter.send(
             "channel_1",

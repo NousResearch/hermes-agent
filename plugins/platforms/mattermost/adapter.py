@@ -119,8 +119,6 @@ class MattermostAdapter(BasePlatformAdapter):
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
-        self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
-        self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
 
     # --- HTTP helpers ---
@@ -132,15 +130,12 @@ class MattermostAdapter(BasePlatformAdapter):
         return {"Authorization": f"Bearer {self._token}"}
 
     async def _api(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """{method} /api/v4/{path}; POST also records _last_post_status/_last_post_error."""
+        """{method} /api/v4/{path}."""
         import aiohttp
         if ".." in path:
             logger.error("MM API path traversal blocked: %s", path)
             return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
-        is_post = method == "POST"
-        if is_post:
-            self._last_post_status, self._last_post_error = None, ""
         kwargs: Dict[str, Any] = {"headers": self._headers()}
         if payload is not None:
             kwargs["json"] = payload
@@ -148,47 +143,83 @@ class MattermostAdapter(BasePlatformAdapter):
             kwargs["timeout"] = aiohttp.ClientTimeout(total=30)
         try:
             async with getattr(self._session, method.lower())(url, **kwargs) as resp:
-                if is_post:
-                    self._last_post_status = resp.status
                 if resp.status >= 400:
                     body = await resp.text()
-                    if is_post:
-                        self._last_post_error = body or ""
                     logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
-            if is_post:
-                self._last_post_error = str(exc)
             logger.error("MM API %s %s network error: %s", method, path, exc)
             return {}
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
         return await self._api("GET", path)
 
-    async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return await self._api("POST", path, payload)
+    async def _api_post(
+        self, path: str, payload: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], int, str]:
+        """POST /api/v4/{path} with JSON body.
 
-    def _last_post_failure_is_broken_thread_root(self) -> bool:
+        Returns a (data, status, error) tuple so callers can inspect the
+        HTTP status without relying on a shared instance variable, which
+        would be clobbered under concurrent async sends. status is 0 for a
+        network error or timeout (no HTTP response was received).
+        """
+        import aiohttp
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return {}, 0, ""
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.post(
+                url, headers=self._headers(), json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                status = resp.status
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
+                    return {}, status, body or ""
+                return await resp.json(), status, ""
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.error("MM API POST %s network error: %s", path, exc)
+            return {}, 0, str(exc)
+
+    @staticmethod
+    def _is_broken_thread_root_error(status: int, error: str) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
-        body = (self._last_post_error or "").lower()
-        if self._last_post_status not in {400, 404} or not body:
+        if status not in {400, 404}:
             return False
-        return (any(marker in body for marker in ("root_id", "rootid", "root id", "thread", "post"))
+        body = (error or "").lower()
+        if not body:
+            return False
+        return (any(marker in body for marker in ("root_id", "rootid", "root id", "root post", "thread"))
                 and any(marker in body for marker in ("invalid", "not found", "does not exist", "missing")))
 
     async def _post_preserving_thread(
         self, chat_id: str, payload: Dict[str, Any], metadata: _Metadata) -> Dict[str, Any]:
         """Post once, optionally falling back flat for final notify content."""
-        data = await self._api_post("posts", payload)
-        if (data or "root_id" not in payload or not (isinstance(metadata, dict) and metadata.get("notify"))
-                or not self._last_post_failure_is_broken_thread_root()):
+        data, status, error = await self._api_post("posts", payload)
+        if data or "root_id" not in payload:
             return data
-        flat_payload = {k: v for k, v in payload.items() if k != "root_id"}
-        flat_payload["message"] = ("⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
-                                   + str(flat_payload.get("message") or "")).strip()
-        logger.warning("Mattermost: falling back to flat channel delivery for notify-worthy post in %s", chat_id)
-        return await self._api_post("posts", flat_payload)
+        if not (isinstance(metadata, dict) and metadata.get("notify")):
+            return data
+        if not self._is_broken_thread_root_error(status, error):
+            return data
+
+        flat_payload = dict(payload)
+        flat_payload.pop("root_id", None)
+        original = str(flat_payload.get("message") or "")
+        flat_payload["message"] = (
+            "⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
+            + original
+        ).strip()
+        logger.warning(
+            "Mattermost: falling back to flat channel delivery for notify-worthy post in %s",
+            chat_id,
+        )
+        data, _, _ = await self._api_post("posts", flat_payload)
+        return data
 
     async def _post_message(self, chat_id: str, message: str, reply_to: Optional[str], metadata: _Metadata,
                             file_ids: Optional[List[str]] = None) -> Dict[str, Any]:

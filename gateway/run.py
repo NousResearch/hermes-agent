@@ -7447,6 +7447,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
 
+        # HERMES_LOCAL_NO_LLM_PREEMPT: let explicitly configured local quick
+        # commands override built-ins. This keeps family task reads/writes off
+        # the agent loop and avoids LLM calls for deterministic Telegram commands.
+        if command:
+            if isinstance(self.config, dict):
+                _nl_cfg = self.config
+            else:
+                _nl_cfg = getattr(self.config, "__dict__", {}) or {}
+            _nl_commands = set(_nl_cfg.get("no_llm_commands", []) or [])
+            _nl_qcmds = _nl_cfg.get("quick_commands", {}) or {}
+            if command in _nl_commands and isinstance(_nl_qcmds, dict) and command in _nl_qcmds:
+                _nl_qcmd = _nl_qcmds[command]
+                if _nl_qcmd.get("type") == "exec":
+                    _nl_exec_cmd = _nl_qcmd.get("command", "")
+                    if _nl_exec_cmd:
+                        try:
+                            from tools.environments.local import _sanitize_subprocess_env
+                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+                            sanitized_env["HERMES_QUICK_ARGS"] = event.get_command_args().strip()
+                            import shlex
+                            _nl_argv = shlex.split(_nl_exec_cmd)
+                            if not _nl_argv or not _nl_argv[0].startswith("/home/hermes/.hermes/bin/"):
+                                return "Quick command denied: command is outside the approved Hermes bin directory."
+                            proc = await asyncio.create_subprocess_exec(
+                                *_nl_argv,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                env=sanitized_env,
+                            )
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            output = (stdout or stderr).decode().strip()
+                            if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
+                            return output if output else "Command returned no output."
+                        except asyncio.TimeoutError:
+                            return "Quick command timed out (30s)."
+                        except Exception as e:
+                            return f"Quick command error: {e}"
+
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
         # vs group). When unset → backward-compat: every allowed user can

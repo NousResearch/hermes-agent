@@ -1984,11 +1984,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name,
             )
             return False
-        
+
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
             return False
-        
+
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
@@ -2078,7 +2078,7 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            
+
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
@@ -2098,7 +2098,7 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -2197,7 +2197,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
-            
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
@@ -2240,7 +2239,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
-            
+
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
@@ -2257,7 +2256,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
             return True
-            
+
         except Exception as e:
             self._release_platform_lock()
             message = f"Telegram startup failed: {e}"
@@ -2367,12 +2366,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
                     for chunk in chunks
                 ]
-            
+
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
-            
+
             try:
                 from telegram.error import NetworkError as _NetErr
             except ImportError:
@@ -2588,7 +2587,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "thread_fallback": used_thread_fallback,
                 },
             )
-            
+
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             err_str = str(e).lower()
@@ -4154,13 +4153,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Pop state and resolve
                 self._clarify_state.pop(clarify_id, None)
-                try:
-                    from tools.clarify_gateway import resolve_gateway_clarify
-                    resolved = resolve_gateway_clarify(clarify_id, resolved_text)
-                except Exception as exc:
-                    logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
-                    resolved = False
 
+                # Acknowledge the callback and remove the keyboard before
+                # resuming the heavier agent-side clarification flow.
                 await query.answer(text=f"✓ {resolved_text[:60]}")
                 try:
                     await query.edit_message_text(
@@ -4170,6 +4165,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
+
+                # Resume the agent-side clarification flow after Telegram UI
+                # feedback has been sent.
+                try:
+                    from tools.clarify_gateway import resolve_gateway_clarify
+                    resolved = resolve_gateway_clarify(clarify_id, resolved_text)
+                except Exception as exc:
+                    logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
+                    resolved = False
 
                 if resolved:
                     logger.info(
@@ -4389,11 +4393,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
-            
+
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
@@ -4803,7 +4807,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Telegram photo.
-        
+
         Tries URL-based send first (fast, works for <5MB images).
         Falls back to downloading and uploading as file (supports up to 10MB).
         """
@@ -4899,7 +4903,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             _anim_thread = self._metadata_thread_id(metadata)
             reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
@@ -4974,10 +4978,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """Get information about a Telegram chat."""
         if not self._bot:
             return {"name": "Unknown", "type": "dm"}
-        
+
         try:
             chat = await self._bot.get_chat(int(chat_id))
-            
+
             chat_type = "dm"
             if chat.type == ChatType.GROUP:
                 chat_type = "group"
@@ -4987,7 +4991,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_type = "forum"
             elif chat.type == ChatType.CHANNEL:
                 chat_type = "channel"
-            
+
             return {
                 "name": chat.title or chat.full_name or str(chat_id),
                 "type": chat_type,
@@ -6139,11 +6143,11 @@ class TelegramAdapter(BasePlatformAdapter):
         msg_type = self._media_message_type(msg)
 
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        
+
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
-        
+
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)
@@ -6598,7 +6602,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         chat = message.chat
         user = message.from_user
-        
+
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
@@ -6685,7 +6689,7 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
             message_id=str(message.message_id),
         )
-        
+
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)
         # so a user replying to a single selected substring of a prior

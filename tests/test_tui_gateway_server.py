@@ -58,6 +58,45 @@ def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
         reset_hermes_home_override(token)
 
 
+def test_session_create_normalizes_bare_custom_provider(monkeypatch, tmp_path):
+    for session in list(server._sessions.values()):
+        server._teardown_session(session)
+    server._sessions.clear()
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    monkeypatch.setattr(
+        server,
+        "_configured_model_provider_for_profile",
+        lambda profile_home=None: "custom:herstory-api",
+    )
+
+    try:
+        resp = server._methods["session.create"](
+            "r1",
+            {
+                "cols": 80,
+                "model": "claude-sonnet-4-6",
+                "provider": "custom",
+            },
+        )
+
+        assert "result" in resp
+        sid = resp["result"]["session_id"]
+        assert resp["result"]["info"]["provider"] == "custom:herstory-api"
+        assert server._sessions[sid]["model_override"] == {
+            "model": "claude-sonnet-4-6",
+            "provider": "custom:herstory-api",
+        }
+    finally:
+        for session in list(server._sessions.values()):
+            server._teardown_session(session)
+        server._sessions.clear()
+
+
 def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
     """Desktop/TUI sessions must pin the agent cwd per session.
 
@@ -1143,6 +1182,14 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert "provider_override" not in ov
     assert ov["model_override"]["provider"] is None
 
+    # Bare model_config.provider is also only a runtime class unless a base_url
+    # is present for the custom-provider identity repair path.
+    ov = server._stored_session_runtime_overrides(
+        {"model": "my-model", "model_config": {"provider": "custom"}}
+    )
+    assert "provider_override" not in ov
+    assert ov["model_override"]["provider"] is None
+
     for bare in ("auto", "openrouter", "custom"):
         ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": bare})
         assert "provider_override" not in ov
@@ -1923,6 +1970,34 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
     assert row["model_config"]["provider"] == "openrouter"
     assert row["model_config"]["reasoning_config"] == {"effort": "high"}
     assert row["model_config"]["service_tier"] == "priority"
+
+
+def test_ensure_session_db_row_normalizes_bare_custom_provider(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append({"key": key, "model": model, "model_config": model_config})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
+    monkeypatch.setattr(
+        server,
+        "_configured_model_provider_for_profile",
+        lambda profile_home=None: "custom:herstory-api",
+    )
+
+    server._ensure_session_db_row(
+        {
+            "session_key": "k1",
+            "model_override": {"model": "claude-sonnet-4-6", "provider": "custom"},
+        }
+    )
+
+    assert len(created) == 1
+    row = created[0]
+    assert row["model"] == "claude-sonnet-4-6"
+    assert row["model_config"]["provider"] == "custom:herstory-api"
 
 
 def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
@@ -6717,6 +6792,40 @@ def test_make_agent_uses_session_runtime_overrides(monkeypatch):
     assert mock_agent.call_args.kwargs["provider"] == "openai-codex"
     assert mock_agent.call_args.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
     assert mock_agent.call_args.kwargs["service_tier"] == "priority"
+
+
+def test_make_agent_ignores_bare_custom_override_without_base_url(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {})
+    resolved = {}
+
+    def fake_resolve_runtime_provider(requested=None, target_model=None):
+        resolved["requested"] = requested
+        resolved["target_model"] = target_model
+        return {
+            "provider": "custom",
+            "base_url": "https://configured.example/v1",
+            "api_key": "not-secret",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent(
+            "sid1",
+            "key1",
+            model_override={"model": "claude-sonnet-4-6", "provider": "custom"},
+        )
+
+    assert resolved == {"requested": None, "target_model": "claude-sonnet-4-6"}
+    assert mock_agent.call_args.kwargs["provider"] == "custom"
+    assert mock_agent.call_args.kwargs["base_url"] == "https://configured.example/v1"
 
 
 def test_make_agent_handles_null_agent_config(monkeypatch):

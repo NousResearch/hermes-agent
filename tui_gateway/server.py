@@ -1205,14 +1205,19 @@ def _ensure_session_db_row(session: dict) -> None:
     override = override if isinstance(override, dict) else {}
     row_model = str(override.get("model") or "").strip() or _resolve_model()
     model_config: dict = {}
+    normalized_provider = _normalize_bare_custom_provider(
+        override.get("provider"),
+        profile_home=profile_home,
+    )
     for src_key, cfg_key in (
         ("model", "model"),
-        ("provider", "provider"),
         ("base_url", "base_url"),
         ("api_mode", "api_mode"),
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
+    if normalized_provider:
+        model_config["provider"] = normalized_provider
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
     if tier := session.get("create_service_tier_override"):
@@ -1491,6 +1496,35 @@ def _config_model_target() -> tuple[str, str]:
     return model, provider
 
 
+def _configured_model_provider_for_profile(profile_home: str | None = None) -> str:
+    home_token = None
+    try:
+        if profile_home:
+            home_token = set_hermes_home_override(profile_home)
+        _model, provider = _config_model_target()
+        return provider
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+
+def _normalize_bare_custom_provider(
+    provider: str | None,
+    *,
+    profile_home: str | None = None,
+) -> str | None:
+    normalized = str(provider or "").strip()
+    if not normalized:
+        return None
+    if normalized.lower() != "custom":
+        return normalized
+
+    configured = _configured_model_provider_for_profile(profile_home)
+    if configured.lower().startswith("custom:"):
+        return configured
+    return None
+
+
 def _resolve_startup_runtime() -> tuple[str, str | None]:
     model = _resolve_model()
     explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
@@ -1563,13 +1597,19 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     # Only restore an explicit provider; otherwise leave it unset so resume falls back to
     # the configured default, matching the working CLI path.
     explicit_provider = str(model_config.get("provider") or "").strip()
+    base_url = str(model_config.get("base_url") or "").strip()
+    if explicit_provider.lower() == "custom" and not base_url:
+        # Bare ``custom`` is a billing/runtime class, not a recoverable endpoint
+        # identity. Without a base_url we cannot map it back to ``custom:<name>``,
+        # so let the profile config resolve the provider instead of falling back
+        # through the generic custom/OpenRouter path.
+        explicit_provider = ""
     billing_provider = str(
         model_config.get("billing_provider") or row.get("billing_provider") or ""
     ).strip()
     provider = explicit_provider
     if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
         provider = billing_provider
-    base_url = str(model_config.get("base_url") or "").strip()
     api_mode = str(model_config.get("api_mode") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
@@ -3465,6 +3505,11 @@ def _make_agent(
         override_api_mode = model_override.get("api_mode")
         resolve_kwargs = {}
         if (
+            str(requested_provider or "").strip().lower() == "custom"
+            and not override_base_url
+        ):
+            requested_provider = None
+        if (
             override_base_url
             and str(requested_provider or "").strip().lower() == "custom"
         ):
@@ -4015,8 +4060,12 @@ def _(rid, params: dict) -> dict:
     # for a new chat can't mutate the profile default. provider is optional
     # (resolved at build).
     create_model = str(params.get("model") or "").strip()
+    create_provider = _normalize_bare_custom_provider(
+        params.get("provider"),
+        profile_home=str(profile_home) if profile_home is not None else None,
+    )
     session_model_override = (
-        {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
+        {"model": create_model, "provider": create_provider}
         if create_model
         else None
     )

@@ -159,6 +159,44 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+    def test_normalize_interactive_card_extracts_table_row_data(self):
+        """Regression test: table rows must appear in text_content so that
+        ``[Replying to: \"...\"]`` includes data from cronjob cards."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(
+                {
+                    "header": {"title": {"tag": "plain_text", "content": "📋 Weekly Report"}},
+                    "elements": [
+                        {"tag": "markdown", "content": "**Summary**"},
+                        {
+                            "tag": "table",
+                            "columns": [
+                                {"name": "member", "display_name": "Member"},
+                                {"name": "bugs", "display_name": "Bugs"},
+                                {"name": "status", "display_name": "Status"},
+                            ],
+                            "rows": [
+                                {"member": "Alice", "bugs": "12", "status": "🟢"},
+                                {"member": "Bob", "bugs": "45", "status": "🔴"},
+                            ],
+                        },
+                        {"tag": "markdown", "content": "**Actions**"},
+                    ],
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.relation_kind, "interactive")
+        self.assertIn("📋 Weekly Report", normalized.text_content)
+        self.assertIn("Summary", normalized.text_content)
+        self.assertIn("Actions", normalized.text_content)
+        # Table row data must be present
+        self.assertIn("Alice  12  🟢", normalized.text_content)
+        self.assertIn("Bob  45  🔴", normalized.text_content)
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {

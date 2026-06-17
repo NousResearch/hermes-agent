@@ -940,6 +940,7 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
         _find_first_text(card_payload, keys=("title", "summary", "subtitle")),
     )
     body_lines = _collect_card_lines(card_payload)
+    table_lines = _collect_table_row_text(card_payload)
     actions = _collect_action_labels(card_payload)
 
     lines: List[str] = []
@@ -948,6 +949,8 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     for line in body_lines:
         if line != title:
             lines.append(line)
+    for line in table_lines:
+        lines.append(line)
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
 
@@ -1007,6 +1010,45 @@ def _collect_card_lines(payload: Any) -> List[str]:
     lines = _collect_text_segments(payload, in_rich_block=False)
     normalized = [_normalize_feishu_text(line) for line in lines]
     return _unique_lines([line for line in normalized if line])
+
+
+def _collect_table_row_text(payload: Any) -> List[str]:
+    """Extract formatted text from table rows in an interactive card.
+
+    Walks the card JSON looking for ``tag: \"table\"`` elements and
+    joins each row's cell values into a space-separated line.  Column
+    metadata (name, display_name, data_type) is skipped so the output
+    stays concise and data-focused.
+    """
+    lines: List[str] = []
+    for node in _walk_nodes(payload):
+        if not isinstance(node, dict):
+            continue
+        tag = str(node.get("tag", "")).strip().lower()
+        if tag != "table":
+            continue
+        columns = node.get("columns") or []
+        if not isinstance(columns, list):
+            continue
+        col_names = [
+            c.get("name", "")
+            for c in columns
+            if isinstance(c, dict)
+        ]
+        rows = node.get("rows") or []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            cell_values: List[str] = []
+            for cn in col_names:
+                val = row.get(cn, "")
+                cell_values.append(str(val))
+            line = "  ".join(cell_values).strip()
+            if line:
+                lines.append(line)
+    return lines
 
 
 def _collect_action_labels(payload: Any) -> List[str]:

@@ -716,6 +716,11 @@ agent:
   # window on /restart, and keep it well under systemd's TimeoutStopSec.
   # restart_drain_timeout: 0
 
+  # Idle TTL for cached gateway agents between messages (seconds).
+  # Increase for long-lived messaging threads; set to 0 to disable idle eviction.
+  # The hard cache size cap still applies.
+  # cache_idle_ttl_seconds: 3600
+
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
   # to 1 if you use fallback providers and want fast failover on flaky

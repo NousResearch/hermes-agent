@@ -30,6 +30,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -56,7 +57,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, load_config
 from hermes_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -2001,6 +2002,57 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
     return None
 
 
+def _resolve_agent_cache_idle_ttl_secs(config: Optional[Dict[str, Any]] = None) -> float:
+    """Return the configured agent-cache idle TTL in seconds.
+
+    ``0`` disables idle eviction. Missing, negative, non-finite, or non-numeric
+    values keep the historical one-hour default so a bad config cannot
+    accidentally disable cache cleanup for long-lived gateways.
+    """
+    cfg = config
+    if cfg is None:
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+
+    raw = cfg_get(
+        cfg,
+        "agent",
+        "cache_idle_ttl_seconds",
+        default=_AGENT_CACHE_IDLE_TTL_SECS,
+    )
+    if raw is False:
+        return 0.0
+    if raw is True:
+        return _AGENT_CACHE_IDLE_TTL_SECS
+
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid agent.cache_idle_ttl_seconds=%r; using default %.0fs",
+            raw,
+            _AGENT_CACHE_IDLE_TTL_SECS,
+        )
+        return _AGENT_CACHE_IDLE_TTL_SECS
+    if not math.isfinite(ttl):
+        logger.warning(
+            "Ignoring non-finite agent.cache_idle_ttl_seconds=%r; using default %.0fs",
+            raw,
+            _AGENT_CACHE_IDLE_TTL_SECS,
+        )
+        return _AGENT_CACHE_IDLE_TTL_SECS
+    if ttl < 0:
+        logger.warning(
+            "Ignoring negative agent.cache_idle_ttl_seconds=%r; using default %.0fs",
+            raw,
+            _AGENT_CACHE_IDLE_TTL_SECS,
+        )
+        return _AGENT_CACHE_IDLE_TTL_SECS
+    return ttl
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -3102,6 +3154,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        self._agent_cache_idle_ttl_secs = _resolve_agent_cache_idle_ttl_secs()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
@@ -18251,7 +18304,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ).start()
 
     def _sweep_idle_cached_agents(self) -> int:
-        """Evict cached agents whose AIAgent has been idle > _AGENT_CACHE_IDLE_TTL_SECS.
+        """Evict cached agents whose AIAgent has been idle past the configured TTL.
 
         Safe to call from the session expiry watcher without holding the
         cache lock — acquires it internally.  Returns the number of entries
@@ -18264,6 +18317,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cache = getattr(self, "_agent_cache", None)
         _lock = getattr(self, "_agent_cache_lock", None)
         if _cache is None or _lock is None:
+            return 0
+        idle_ttl_secs = float(
+            getattr(self, "_agent_cache_idle_ttl_secs", _AGENT_CACHE_IDLE_TTL_SECS)
+        )
+        if idle_ttl_secs <= 0:
             return 0
         now = time.time()
         to_evict: List[tuple] = []
@@ -18282,7 +18340,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_activity = getattr(agent, "_last_activity_ts", None)
                 if last_activity is None:
                     continue
-                if (now - last_activity) > _AGENT_CACHE_IDLE_TTL_SECS:
+                if (now - last_activity) > idle_ttl_secs:
                     # Check whether the session has actually expired in the
                     # session store.  If it hasn't (e.g. daily-reset mode
                     # where the reset fires hours after the user's last

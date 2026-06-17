@@ -781,12 +781,71 @@ class TestAgentCacheBoundedGrowth:
         assert "stale" not in runner._agent_cache
         assert "fresh" in runner._agent_cache
 
+    def test_idle_ttl_sweep_can_be_disabled(self):
+        """agent.cache_idle_ttl_seconds=0 disables idle eviction."""
+        runner = self._bounded_runner()
+        runner._agent_cache_idle_ttl_secs = 0
+        runner._cleanup_agent_resources = MagicMock()
+
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+        runner._agent_cache["stale"] = (stale, "sig")
+
+        assert runner._sweep_idle_cached_agents() == 0
+        assert "stale" in runner._agent_cache
+        runner._cleanup_agent_resources.assert_not_called()
+
+    def test_idle_ttl_sweep_uses_runner_configured_ttl(self):
+        """The runner's configured TTL controls stale cache eviction."""
+        runner = self._bounded_runner()
+        runner._agent_cache_idle_ttl_secs = 60.0
+        runner._cleanup_agent_resources = MagicMock()
+
+        import time as _t
+        fresh = self._fake_agent(last_activity=_t.time() - 30.0)
+        stale = self._fake_agent(last_activity=_t.time() - 90.0)
+        runner._agent_cache["fresh"] = (fresh, "s1")
+        runner._agent_cache["stale"] = (stale, "s2")
+
+        assert runner._sweep_idle_cached_agents() == 1
+        assert "fresh" in runner._agent_cache
+        assert "stale" not in runner._agent_cache
+
+    def test_agent_cache_idle_ttl_config_parser(self, monkeypatch):
+        """TTL config accepts 0/positive values and falls back on invalid input."""
+        from gateway import run as gw_run
+
+        assert gw_run._resolve_agent_cache_idle_ttl_secs({
+            "agent": {"cache_idle_ttl_seconds": 0}
+        }) == 0.0
+        assert gw_run._resolve_agent_cache_idle_ttl_secs({
+            "agent": {"cache_idle_ttl_seconds": "7200"}
+        }) == 7200.0
+        assert gw_run._resolve_agent_cache_idle_ttl_secs({
+            "agent": {"cache_idle_ttl_seconds": -1}
+        }) == gw_run._AGENT_CACHE_IDLE_TTL_SECS
+        assert gw_run._resolve_agent_cache_idle_ttl_secs({
+            "agent": {"cache_idle_ttl_seconds": "not-a-number"}
+        }) == gw_run._AGENT_CACHE_IDLE_TTL_SECS
+        for raw in ("nan", "NaN", "inf", "-inf", float("nan"), float("inf")):
+            assert gw_run._resolve_agent_cache_idle_ttl_secs({
+                "agent": {"cache_idle_ttl_seconds": raw}
+            }) == gw_run._AGENT_CACHE_IDLE_TTL_SECS
+
+        monkeypatch.setattr(
+            gw_run,
+            "load_config",
+            lambda: {"agent": {"cache_idle_ttl_seconds": 123}},
+        )
+        assert gw_run._resolve_agent_cache_idle_ttl_secs() == 123.0
+
     def test_idle_sweep_skips_agents_without_activity_ts(self, monkeypatch):
         """Agents missing _last_activity_ts are left alone (defensive)."""
         from gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
         runner = self._bounded_runner()
+        runner._agent_cache_idle_ttl_secs = 0.01
         runner._cleanup_agent_resources = MagicMock()
 
         no_ts = MagicMock(spec=[])  # no _last_activity_ts attribute
@@ -807,6 +866,7 @@ class TestAgentCacheBoundedGrowth:
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
         runner = self._bounded_runner()
+        runner._agent_cache_idle_ttl_secs = 0.01
         runner._cleanup_agent_resources = MagicMock()
 
         import time as _t
@@ -833,6 +893,7 @@ class TestAgentCacheBoundedGrowth:
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
         runner = self._bounded_runner()
+        runner._agent_cache_idle_ttl_secs = 0.01
         runner._cleanup_agent_resources = MagicMock()
 
         import time as _t

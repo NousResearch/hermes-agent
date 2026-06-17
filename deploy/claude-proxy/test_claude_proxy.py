@@ -763,3 +763,96 @@ def test_deepseek_http_error_returns_bad(monkeypatch):
     result = cp.call_claude("sys", "X" * 15, "sonnet", tenant="acme")
     assert cp._is_bad_result(result)
     assert result.get("code") == 500
+
+
+# ── Vision / image handling ──
+
+B64_PIXEL = "iVBORw0KGgo="  # valid-enough base64 for tests
+
+
+def test_extract_data_url_image():
+    """Extract base64 and media_type from data: URLs; reject remote URLs and malformed."""
+    # Valid data: URL with explicit media type
+    img = cp._extract_data_url_image({
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64," + B64_PIXEL},
+    })
+    assert img is not None
+    assert img["data"] == B64_PIXEL
+    assert img["media_type"] == "image/png"
+
+    # No explicit media type → defaults to image/jpeg
+    img2 = cp._extract_data_url_image({
+        "image_url": {"url": "data:," + B64_PIXEL},
+    })
+    assert img2 is not None
+    assert img2["media_type"] == "image/jpeg"
+
+    # Remote URL → None (no network access in sandbox)
+    assert cp._extract_data_url_image({
+        "image_url": {"url": "https://example.com/img.jpg"},
+    }) is None
+
+    # Empty data → None
+    assert cp._extract_data_url_image({
+        "image_url": {"url": "data:image/png;base64,"},
+    }) is None
+
+    # Malformed (no comma) → None
+    assert cp._extract_data_url_image({
+        "image_url": {"url": "data:image/png"},
+    }) is None
+
+
+def test_build_prompt_text_only():
+    """Simple text messages → system + prompt, no images."""
+    sys, prompt, images = cp.build_prompt([
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Hello"},
+    ])
+    assert sys == "You are helpful."
+    assert "User: Hello" in prompt
+    assert images == []
+
+
+def test_build_prompt_multimodal_with_image():
+    """Multimodal message with text + image → image extracted, text preserved."""
+    sys, prompt, images = cp.build_prompt([
+        {"role": "user", "content": [
+            {"type": "text", "text": "Describe this"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + B64_PIXEL}},
+        ]},
+    ])
+    assert "User: Describe this" in prompt
+    assert len(images) == 1
+    assert images[0]["data"] == B64_PIXEL
+    assert images[0]["media_type"] == "image/jpeg"
+
+
+def test_build_prompt_skips_remote_images():
+    """Remote image URLs are skipped (sandbox has no network)."""
+    sys, prompt, images = cp.build_prompt([
+        {"role": "user", "content": [
+            {"type": "text", "text": "Look"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}},
+        ]},
+    ])
+    assert images == []  # remote image skipped
+
+
+def test_build_stream_json_input_no_images():
+    """Text-only prompt → simple JSON line."""
+    result = cp.build_stream_json_input("", "Hello world", [])
+    assert "Hello world" in result
+    assert '"type": "text"' in result
+
+
+def test_build_stream_json_input_with_images():
+    """Prompt with images → interleaves text + base64 image blocks."""
+    result = cp.build_stream_json_input("", "Analyze this:", [
+        {"data": B64_PIXEL, "media_type": "image/png"},
+    ])
+    assert "Analyze this:" in result
+    assert B64_PIXEL in result
+    assert '"type": "image"' in result
+    assert '"source"' in result

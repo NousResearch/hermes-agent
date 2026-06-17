@@ -150,7 +150,7 @@ class TestOpenVikingSkillQuerySafety:
         assert RecordingVikingClient.calls == [
             (
                 "/api/v1/search/find",
-                {"query": "make a skill for release triage", "top_k": 5},
+                {"query": "make a skill for release triage", "limit": 5},
             )
         ]
 
@@ -181,7 +181,7 @@ class TestOpenVikingSkillQuerySafety:
         assert RecordingVikingClient.calls == [
             (
                 "/api/v1/search/find",
-                {"query": "fix the failing retrieval test", "top_k": 5},
+                {"query": "fix the failing retrieval test", "limit": 5},
             )
         ]
 
@@ -223,17 +223,25 @@ class TestOpenVikingSkillQuerySafety:
         )
 
         provider.sync_turn(skill_message, "Done.")
-        assert provider._sync_thread is not None
-        provider._sync_thread.join(timeout=5.0)
+        assert provider._drain_writers("session-1", timeout=5.0)
 
         assert RecordingVikingClient.calls == [
             (
-                "/api/v1/sessions/session-1/messages",
-                {"role": "user", "content": "make a skill for release triage"},
-            ),
-            (
-                "/api/v1/sessions/session-1/messages",
-                {"role": "assistant", "content": "Done."},
+                "/api/v1/sessions/session-1/messages/batch",
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"type": "text", "text": "make a skill for release triage"},
+                            ],
+                        },
+                        {
+                            "role": "assistant",
+                            "parts": [{"type": "text", "text": "Done."}],
+                        },
+                    ]
+                },
             ),
         ]
 
@@ -251,7 +259,8 @@ class TestOpenVikingSkillQuerySafety:
 
         provider.sync_turn(skill_message, "Done.")
 
-        assert provider._sync_thread is None
+        assert provider._turn_count == 0
+        assert provider._inflight_writers == {}
         assert RecordingVikingClient.calls == []
 
 

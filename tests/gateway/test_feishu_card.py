@@ -97,3 +97,59 @@ class TestParseMarkdownTables:
         assert result[0][0] == "table"
         assert result[1] == ("text", "middle")
         assert result[2][0] == "table"
+
+
+import json
+from gateway.platforms.feishu_card import build_card_json
+
+class TestBuildCardJson:
+    def test_simple_text(self):
+        card = build_card_json(content="hello world")
+        assert card["config"]["wide_screen_mode"] is True
+        assert card["config"]["update_multi"] is True
+        assert len(card["elements"]) == 1
+        assert card["elements"][0]["tag"] == "markdown"
+        assert card["elements"][0]["content"] == "hello world"
+        assert "header" not in card
+
+    def test_with_footer(self):
+        card = build_card_json(
+            content="response text",
+            footer_line="📊 ↑48 | ↓11.1k | $0.01 | ⏳12s | 🧠gpt-5.5",
+            status_text="✅ 回复完毕",
+        )
+        elements = card["elements"]
+        assert elements[0]["tag"] == "markdown"
+        assert elements[0]["content"] == "response text"
+        assert elements[1]["tag"] == "hr"
+        assert elements[2]["tag"] == "note"
+        assert "📊" in elements[2]["elements"][0]["content"]
+        assert elements[3]["tag"] == "note"
+        assert "✅" in elements[3]["elements"][0]["content"]
+
+    def test_with_tool_status(self):
+        card = build_card_json(
+            content="some text",
+            tool_status="⏳ Bash · 执行命令...",
+        )
+        elements = card["elements"]
+        assert len(elements) == 1
+        assert "⏳ Bash · 执行命令..." in elements[0]["content"]
+
+    def test_with_table_content(self):
+        md = "intro\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nend"
+        card = build_card_json(content=md)
+        tags = [e["tag"] for e in card["elements"]]
+        assert "table" in tags
+        assert tags.count("markdown") == 2
+
+    def test_ack_card(self):
+        card = build_card_json(content="⏳ 正在思考...")
+        assert card["elements"][0]["content"] == "⏳ 正在思考..."
+
+    def test_error_card(self):
+        card = build_card_json(
+            content="❌ 处理出错，请重试",
+            status_text="❌ 出错",
+        )
+        assert card["elements"][-1]["tag"] == "note"

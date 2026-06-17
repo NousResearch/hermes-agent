@@ -100,3 +100,47 @@ def parse_markdown_tables(text: str) -> list[tuple[str, ...]]:
         result.append(("text", text))
 
     return result
+
+
+from typing import Optional
+
+
+def build_card_json(
+    *,
+    content: str,
+    footer_line: Optional[str] = None,
+    status_text: Optional[str] = None,
+    tool_status: Optional[str] = None,
+) -> dict:
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "elements": [],
+    }
+
+    if tool_status and content:
+        display = f"{content}\n\n{tool_status}"
+        card["elements"].append({"tag": "markdown", "content": display})
+    elif tool_status:
+        card["elements"].append({"tag": "markdown", "content": tool_status})
+    else:
+        segments = parse_markdown_tables(content)
+        for seg_type, seg_data in segments:
+            if seg_type == "table":
+                card["elements"].append({"tag": "table", **seg_data})
+            else:
+                card["elements"].append({"tag": "markdown", "content": seg_data})
+
+    if footer_line:
+        card["elements"].append({"tag": "hr"})
+        card["elements"].append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": footer_line}],
+        })
+
+    if status_text:
+        card["elements"].append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": status_text}],
+        })
+
+    return card

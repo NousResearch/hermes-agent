@@ -501,3 +501,90 @@ def test_anthropic_backend_missing_key(monkeypatch):
     monkeypatch.setattr(cp, "ANTHROPIC_API_KEY", "")
     out = cp.AnthropicApiBackend().complete("sys", "hi", "sonnet", "acme")
     assert out.get("error") and cp._is_bad_result(out)
+
+
+# ── /health endpoint ──
+
+def test_health_returns_200_and_valid_json(monkeypatch):
+    """GET /health returns 200 with the expected top-level keys."""
+    import http.client, json as _j
+    srv, port = _start_proxy(monkeypatch)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/health")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        data = _j.loads(resp.read())
+        # Required top-level keys — presence, not values (values are env-dependent)
+        for key in ("status", "claude_bin_exists", "backend", "requests",
+                     "auth", "tenants", "limits", "cache", "breaker", "deepseek"):
+            assert key in data, f"Missing key: {key}"
+        assert data["status"] == "ok"
+    finally:
+        srv.shutdown()
+
+
+def test_health_deepseek_routing_disabled_when_no_key(monkeypatch):
+    """When DEEPSEEK_API_KEY is empty, deepseek.routing reports 'disabled'."""
+    import http.client, json as _j
+    srv, port = _start_proxy(monkeypatch, DEEPSEEK_API_KEY="")
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/health")
+        data = _j.loads(conn.getresponse().read())
+        assert data["deepseek"]["routing"] == "disabled"
+        assert data["deepseek"]["key_set"] is False
+    finally:
+        srv.shutdown()
+
+
+def test_health_deepseek_routing_enabled_with_key_and_threshold(monkeypatch):
+    """With a key AND threshold>0, deepseek.routing reports 'enabled'."""
+    import http.client, json as _j
+    srv, port = _start_proxy(
+        monkeypatch, DEEPSEEK_API_KEY="sk-fake", DEEPSEEK_THRESHOLD=20000,
+    )
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/health")
+        data = _j.loads(conn.getresponse().read())
+        assert data["deepseek"]["routing"] == "enabled"
+        assert data["deepseek"]["key_set"] is True
+    finally:
+        srv.shutdown()
+
+
+def test_health_breaker_open_reflected(monkeypatch):
+    """After the breaker trips, /health reports breaker.open=true."""
+    import http.client, json as _j
+    monkeypatch.setattr(cp, "_run_claude_once", lambda *a, **k: EMPTY)
+    # Force breaker open with many distinct bad prompts
+    for i in range(cp.BREAKER_THRESHOLD + 2):
+        cp.call_claude("sys", f"breaker-test-{i}", "sonnet", tenant="acme")
+    assert cp._breaker_is_open()
+    srv, port = _start_proxy(monkeypatch)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/health")
+        data = _j.loads(conn.getresponse().read())
+        assert data["breaker"]["open"] is True
+        assert data["breaker"]["trips"] >= 1
+    finally:
+        srv.shutdown()
+
+
+def test_health_root_returns_service_info(monkeypatch):
+    """GET / (non-health) returns service info with endpoints list."""
+    import http.client, json as _j
+    srv, port = _start_proxy(monkeypatch)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        data = _j.loads(resp.read())
+        assert data["service"] == "Claude Code Proxy"
+        assert "POST /v1/chat/completions" in data["endpoints"]
+        assert "GET /health" in data["endpoints"]
+    finally:
+        srv.shutdown()

@@ -7728,8 +7728,25 @@ class GatewayRunner:
             return await self._handle_help_command(event)
 
         if canonical == "start":
-            logger.info("Ignoring /start platform ping for session %s", _quick_key)
-            return ""
+            # Telegram sends /start when users open the bot. Only ignore it
+            # as a platform ping when a real session already exists.  When
+            # there is no session yet (new user, /stop-cleared, cold start),
+            # fall through to normal message handling so /start triggers
+            # first-time onboarding instead of being silently swallowed.
+            _has_session = False
+            if hasattr(self, "session_store") and self.session_store is not None:
+                try:
+                    self.session_store._ensure_loaded()
+                    entry = self.session_store._entries.get(_quick_key)
+                    if entry is not None and not entry.suspended and not entry.expiry_finalized:
+                        _has_session = True
+                except Exception:
+                    pass
+            if _has_session:
+                logger.info("Ignoring /start platform ping for existing session %s", _quick_key)
+                return ""
+            logger.info("No existing session for %s — routing /start as normal message", _quick_key)
+            # Fall through to normal dispatch (first-time onboarding)
 
         if canonical == "commands":
             return await self._handle_commands_command(event)

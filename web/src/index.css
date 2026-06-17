@@ -126,6 +126,23 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
   --font-sans: var(--theme-font-sans);
   --font-mono: var(--theme-font-mono);
+  /* Display/heading stack — themes set `--theme-font-display` (falls back
+     to the sans stack when unset). Exposed as a `font-display` utility so
+     the shell chrome (brand lockup, section headers) and pages can opt into
+     the heading face without inline styles. */
+  --font-display: var(--theme-font-display);
+}
+
+/* Crisper type rendering for the redesigned, lower-contrast luxury chrome:
+   antialias the whole document and let the display face use its optical
+   ligatures + contextual alternates where available. */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+.font-display {
+  font-feature-settings: "ss01", "cv01", "liga", "calt";
 }
 
 #root {

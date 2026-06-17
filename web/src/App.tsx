@@ -493,7 +493,7 @@ export default function App() {
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
           "flex items-center gap-2 px-4 py-2",
-          "border-b border-current/20",
+          "border-b border-midground/10",
           "bg-background-base/90 backdrop-blur-sm",
         )}
         style={{
@@ -514,12 +514,17 @@ export default function App() {
           <Menu />
         </Button>
 
-        <Typography
-          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
-        >
-          {t.app.brand}
-        </Typography>
+        <span className="flex items-center gap-2">
+          <span
+            aria-hidden
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/15 ring-1 ring-primary/30 font-display text-[0.8125rem] font-extrabold text-primary"
+          >
+            J
+          </span>
+          <Typography className="font-display text-[0.95rem] font-bold tracking-[0.16em] text-midground">
+            {t.app.brand}
+          </Typography>
+        </span>
       </header>
 
       {mobileOpen && (
@@ -544,7 +549,7 @@ export default function App() {
             aria-label={t.app.navigation}
             className={cn(
               "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
-              "border-r border-current/20",
+              "border-r border-midground/10",
               "bg-background-base/95 backdrop-blur-sm",
               "transition-[transform] duration-200 ease-out",
               mobileOpen ? "translate-x-0" : "-translate-x-full",
@@ -560,27 +565,38 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center gap-2",
-                "border-b border-current/20",
+                "flex h-16 shrink-0 items-center gap-2",
+                "border-b border-midground/10",
                 collapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
               )}
             >
               <div
                 className={cn(
-                  "flex items-center gap-2",
+                  "flex items-center gap-2.5",
                   collapsed && "lg:hidden",
                 )}
               >
                 <PluginSlot name="header-left" />
 
-                <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
-                  style={{ mixBlendMode: "plus-lighter" }}
+                <span
+                  aria-hidden
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl",
+                    "bg-primary/15 ring-1 ring-primary/30",
+                    "font-display text-base font-extrabold text-primary",
+                  )}
                 >
-                  Hermes
-                  <br />
-                  Agent
-                </Typography>
+                  J
+                </span>
+
+                <span className="flex flex-col">
+                  <Typography className="font-display text-[1.05rem] font-bold leading-none tracking-[0.16em] text-midground">
+                    JARVIS
+                  </Typography>
+                  <span className="mt-[3px] text-[0.5625rem] font-medium uppercase leading-none tracking-[0.32em] text-text-tertiary">
+                    Console
+                  </span>
+                </span>
               </div>
 
               <Button
@@ -613,10 +629,10 @@ export default function App() {
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
+              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-midground/[0.08] py-3"
               aria-label={t.app.navigation}
             >
-              <ul className="flex flex-col">
+              <ul className="flex flex-col gap-0.5">
                 {sidebarNav.coreItems.map((item) => (
                   <SidebarNavLink
                     closeMobile={closeMobile}
@@ -632,13 +648,13 @@ export default function App() {
               {sidebarNav.pluginItems.length > 0 && (
                 <div
                   aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
+                  className="mt-3 flex flex-col border-t border-midground/[0.08] pb-2 pt-3"
                   role="group"
                 >
                   <span
                     className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+                      "px-5 pb-1.5",
+                      "text-[0.625rem] font-semibold uppercase tracking-[0.18em] text-text-tertiary/80",
                       isDesktopCollapsed && "lg:hidden",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
@@ -646,7 +662,7 @@ export default function App() {
                     {t.app.pluginNavSection}
                   </span>
 
-                  <ul className="flex flex-col">
+                  <ul className="flex flex-col gap-0.5">
                     {sidebarNav.pluginItems.map((item) => (
                       <SidebarNavLink
                         closeMobile={closeMobile}
@@ -673,7 +689,7 @@ export default function App() {
               className={cn(
                 "flex shrink-0 items-center gap-2",
                 "px-3 py-2",
-                "border-t border-current/20",
+                "border-t border-midground/[0.08]",
                 isDesktopCollapsed
                   ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
                   : "justify-between",
@@ -843,14 +859,15 @@ function SidebarNavLink({
         onBlur={collapsed ? hideTooltip : undefined}
         className={({ isActive }) =>
           cn(
-            "group/nav relative flex items-center gap-3",
-            "px-5 py-2.5",
-            "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
-            "whitespace-nowrap transition-colors cursor-pointer",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+            "group/nav relative mx-2 flex items-center gap-3 rounded-xl",
+            "py-2.5",
+            collapsed ? "lg:justify-center lg:px-0 px-3" : "px-3",
+            "text-[0.8125rem] font-medium tracking-[0.005em]",
+            "whitespace-nowrap transition-all duration-200 cursor-pointer",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60",
             isActive
-              ? "text-midground"
-              : "text-text-secondary hover:text-midground",
+              ? "bg-primary/[0.12] text-midground"
+              : "text-text-secondary hover:text-midground hover:bg-midground/[0.05]",
           )
         }
         style={{
@@ -859,7 +876,21 @@ function SidebarNavLink({
       >
         {({ isActive }) => (
           <>
-            <Icon className="h-3.5 w-3.5 shrink-0" />
+            {isActive && (
+              <span
+                aria-hidden
+                className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary"
+              />
+            )}
+
+            <Icon
+              className={cn(
+                "h-[1.05rem] w-[1.05rem] shrink-0 transition-colors duration-200",
+                isActive
+                  ? "text-primary"
+                  : "text-text-tertiary group-hover/nav:text-midground",
+              )}
+            />
 
             <span
               className={cn(
@@ -869,19 +900,6 @@ function SidebarNavLink({
             >
               {navLabel}
             </span>
-
-            <span
-              aria-hidden
-              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/nav:opacity-5"
-            />
-
-            {isActive && (
-              <span
-                aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
-              />
-            )}
           </>
         )}
       </NavLink>
@@ -935,14 +953,14 @@ function SidebarSystemActions({
     <div
       className={cn(
         "shrink-0 flex flex-col",
-        "border-t border-current/10",
-        "py-1",
+        "border-t border-midground/[0.08]",
+        "py-2",
       )}
     >
       <span
         className={cn(
-          "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+          "px-5 pb-1 pt-1",
+          "text-[0.625rem] font-semibold uppercase tracking-[0.18em] text-text-tertiary/80",
           collapsed && "lg:hidden",
         )}
       >
@@ -1010,25 +1028,36 @@ function SystemActionButton({
         onBlur={collapsed ? hideTooltip : undefined}
         type="button"
         className={cn(
-          "group/action relative flex w-full items-center gap-3",
-          "px-5 py-2.5",
-          "font-mondwest text-display text-xs tracking-[0.1em]",
-          "whitespace-nowrap transition-colors cursor-pointer",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+          "group/action relative mx-2 flex items-center gap-3 rounded-xl",
+          "py-2.5",
+          collapsed ? "lg:justify-center lg:px-0 px-3" : "px-3",
+          "text-[0.8125rem] font-medium tracking-[0.005em]",
+          "whitespace-nowrap transition-all duration-200 cursor-pointer",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60",
           busy
-            ? "text-midground"
-            : "text-text-secondary hover:text-midground",
-          "disabled:text-text-disabled disabled:cursor-not-allowed",
+            ? "bg-primary/[0.12] text-midground"
+            : "text-text-secondary hover:text-midground hover:bg-midground/[0.05]",
+          "disabled:text-text-disabled disabled:cursor-not-allowed disabled:hover:bg-transparent",
         )}
       >
+        {busy && (
+          <span
+            aria-hidden
+            className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary"
+          />
+        )}
+
         {isPending ? (
-          <Spinner className="shrink-0 text-[0.875rem]" />
+          <Spinner className="shrink-0 text-[0.875rem] text-primary" />
         ) : isActionRunning && spin ? (
-          <Spinner className="shrink-0 text-[0.875rem]" />
+          <Spinner className="shrink-0 text-[0.875rem] text-primary" />
         ) : (
           <Icon
             className={cn(
-              "h-3.5 w-3.5 shrink-0",
+              "h-[1.05rem] w-[1.05rem] shrink-0 transition-colors duration-200",
+              busy
+                ? "text-primary"
+                : "text-text-tertiary group-hover/action:text-midground",
               isActionRunning && !spin && "animate-pulse",
             )}
           />
@@ -1040,19 +1069,6 @@ function SystemActionButton({
         )}>
           {displayLabel}
         </span>
-
-        <span
-          aria-hidden
-          className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/action:opacity-5"
-        />
-
-        {busy && (
-          <span
-            aria-hidden
-            className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-            style={{ mixBlendMode: "plus-lighter" }}
-          />
-        )}
       </button>
 
       {collapsed && hovered && tooltipAnchor && (
@@ -1185,9 +1201,9 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
     <span
       className={cn(
         "fixed z-[100] pointer-events-none",
-        "px-2 py-1",
-        "bg-background-base/95 border border-current/20 backdrop-blur-sm shadow-lg",
-        "font-mondwest text-display text-xs tracking-[0.1em] text-midground uppercase",
+        "rounded-lg px-2.5 py-1.5",
+        "bg-background-base/90 border border-midground/10 backdrop-blur-md shadow-xl",
+        "text-[0.75rem] font-medium tracking-[0.01em] text-midground",
       )}
       style={{
         top: rect.top + rect.height / 2,

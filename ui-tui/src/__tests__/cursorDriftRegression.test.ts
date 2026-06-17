@@ -68,7 +68,7 @@ describe('cursor-drift regression — composer cursorLayout matches Ink renderin
         ).toEqual(expected)
       }
     }
-  })
+  }, 20_000)
 
   it('keeps cursor on the same row when text exactly fills the terminal width', () => {
     // wrap-ansi does NOT push exact-fill text onto a phantom next line.

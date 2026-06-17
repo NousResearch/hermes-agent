@@ -36,6 +36,11 @@ def _make_adapter():
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@bot:example.org",
+            # These media-routing unit tests exercise voice/audio handling, not
+            # room mention gating. Keep the fixture in free-response mode so
+            # Matrix's production default (require mention in rooms) does not
+            # drop the synthetic group-room events before media dispatch.
+            "require_mention": False,
         },
     )
     adapter = MatrixAdapter(config)

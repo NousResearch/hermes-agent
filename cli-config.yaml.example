@@ -483,6 +483,10 @@ prompt_caching:
 #                           # reasoning controls:
 #                           # extra_body:
 #                           #   enable_thinking: false
+#                           # Some vLLM/Qwen deployments expect this nested:
+#                           # extra_body:
+#                           #   chat_template_kwargs:
+#                           #     enable_thinking: false
 
 # =============================================================================
 # Persistent Memory

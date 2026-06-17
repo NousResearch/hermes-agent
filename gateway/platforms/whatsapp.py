@@ -449,6 +449,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
             bare_id = bot_id.split("@", 1)[0]
             if bare_id:
                 cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
+        # Also strip custom mention_patterns wake words so they don't leak
+        # into the agent prompt.  The gate in _message_matches_mention_patterns
+        # honours these patterns but _clean_bot_mention_text only removed the
+        # bot's real WhatsApp JID above.
+        for pat in self._mention_patterns:
+            cleaned = pat.sub("", cleaned)
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:

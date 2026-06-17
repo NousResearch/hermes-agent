@@ -16,6 +16,7 @@ from tools.credential_files import (
     map_cache_path_to_container,
     register_credential_file,
     register_credential_files,
+    to_agent_visible_cache_path,
 )
 
 
@@ -100,6 +101,24 @@ class TestRegisterCredentialFiles:
         mounts = get_credential_file_mounts()
         assert "real.json" in mounts[0]["container_path"]
 
+    def test_ignores_empty_and_non_mapping_entries(self, tmp_path, monkeypatch):
+        """Malformed skill frontmatter entries should not become missing files."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        missing = register_credential_files([
+            "",
+            "   ",
+            {"path": ""},
+            {"name": "   "},
+            123,
+            None,
+        ])
+
+        assert missing == []
+        assert get_credential_file_mounts() == []
+
 
 class TestSkillsDirectoryMount:
     def test_returns_mount_when_skills_dir_exists(self, tmp_path):
@@ -173,6 +192,43 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["host_path"] == str(skills_dir)
 
+    def test_external_skill_dirs_are_mounted(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        external = tmp_path / "external-skills"
+        external.mkdir()
+        (external / "SKILL.md").write_text("# external")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "agent.skill_utils.get_external_skills_dirs",
+            lambda: [external],
+        )
+
+        mounts = get_skills_directory_mount(container_base="/sandbox/.hermes")
+
+        assert mounts == [{
+            "host_path": str(external),
+            "container_path": "/sandbox/.hermes/external_skills/0",
+        }]
+
+    def test_symlink_safe_copy_is_rebuilt_on_next_call(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# skill")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("secret")
+        (skills_dir / "link").symlink_to(secret)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        first = Path(get_skills_directory_mount()[0]["host_path"])
+        second = Path(get_skills_directory_mount()[0]["host_path"])
+
+        assert first != second
+        assert not first.exists()
+        assert (second / "SKILL.md").read_text() == "# skill"
+        assert not (second / "link").exists()
+
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):
@@ -202,6 +258,29 @@ class TestIterSkillsFiles:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
             assert iter_skills_files() == []
+
+    def test_external_skill_files_are_listed(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        external = tmp_path / "external"
+        (external / "nested").mkdir(parents=True)
+        (external / "nested" / "SKILL.md").write_text("# external")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("secret")
+        (external / "nested" / "secret-link").symlink_to(secret)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "agent.skill_utils.get_external_skills_dirs",
+            lambda: [external],
+        )
+
+        files = iter_skills_files(container_base="/sandbox/.hermes")
+
+        assert files == [{
+            "host_path": str(external / "nested" / "SKILL.md"),
+            "container_path": "/sandbox/.hermes/external_skills/0/nested/SKILL.md",
+        }]
+
 
 class TestPathTraversalSecurity:
     """Path traversal and absolute path rejection.
@@ -364,6 +443,30 @@ class TestConfigPathTraversal:
         assert len(mounts) == 1
         assert "oauth.json" in mounts[0]["container_path"]
 
+    def test_config_file_list_is_cached(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "oauth.json").write_text("{}")
+        self._write_config(hermes_home, ["oauth.json"])
+
+        first = get_credential_file_mounts()
+        (hermes_home / "config.yaml").write_text("terminal:\n  credential_files: []\n")
+        second = get_credential_file_mounts()
+
+        assert first == second
+
+    def test_config_read_failure_falls_back_to_empty_mounts(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        assert get_credential_file_mounts() == []
+
 
 # ---------------------------------------------------------------------------
 # Cache directory mounts
@@ -476,6 +579,19 @@ class TestMapCachePathToContainer:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert map_cache_path_to_container(str(hermes_home / "cache" / "images" / "x.png")) is None
+
+    def test_agent_visible_cache_path_only_translates_for_docker(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        image_dir = hermes_home / "cache" / "images"
+        image_dir.mkdir(parents=True)
+        host_path = str(image_dir / "plot.png")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        assert to_agent_visible_cache_path(host_path) == host_path
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        assert to_agent_visible_cache_path(host_path) == "/root/.hermes/cache/images/plot.png"
 
 
 class TestIterCacheFiles:

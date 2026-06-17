@@ -43,6 +43,14 @@ const UPDATE_EXIT_CONCURRENT: i32 = 2;
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
 
+/// How long to retry the .app bundle rename when the old desktop process
+/// still holds file handles inside the bundle (macOS EBUSY). macOS has no
+/// mandatory file locking so `wait_for_venv_free` returns instantly; the old
+/// Electron process may still be alive after `app.quit()`, and `rename(2)`
+/// on the bundle directory fails until every handle is released.
+const BUNDLE_SWAP_RETRY_TIMEOUT: Duration = Duration::from_secs(30);
+const BUNDLE_SWAP_RETRY_POLL: Duration = Duration::from_millis(500);
+
 /// Guards against concurrent update runs. The frontend kicks `startUpdate()`
 /// from a mount effect, which can fire more than once (React strict-mode
 /// double-invokes effects in dev; a window reload or stray re-init can do it
@@ -751,18 +759,37 @@ async fn install_macos_app_update(
 /// bundle — either the original (rolled back from `old`) or untouched — and we
 /// never delete the running app with no replacement in place. The staged `tmp`
 /// copy is cleaned up on failure.
+///
+/// macOS note: the old Electron process may still hold file handles inside the
+/// `.app` bundle after `app.quit()` (no mandatory file locking, so
+/// `wait_for_venv_free` returns instantly). We retry the rename for up to
+/// `BUNDLE_SWAP_RETRY_TIMEOUT` to let the OS release those handles before
+/// giving up.
 async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()> {
     let moved_old = if target.exists() {
-        if let Err(err) = tokio::fs::rename(target, old).await {
-            // Could not move the existing app aside. Leave it untouched and
-            // bail — a failed update must not brick the install.
-            remove_dir_if_exists(tmp).await;
-            return Err(anyhow!(
-                "could not move existing app aside at {} (leaving it in place): {err}",
-                target.display()
-            ));
+        let deadline = Instant::now() + BUNDLE_SWAP_RETRY_TIMEOUT;
+        loop {
+            match tokio::fs::rename(target, old).await {
+                Ok(()) => break true,
+                Err(err) if Instant::now() < deadline => {
+                    // The old desktop may still have file handles inside the
+                    // .app bundle. Wait briefly and retry.
+                    tokio::time::sleep(BUNDLE_SWAP_RETRY_POLL).await;
+                    continue;
+                }
+                Err(err) => {
+                    // Could not move the existing app aside. Leave it untouched
+                    // and bail — a failed update must not brick the install.
+                    remove_dir_if_exists(tmp).await;
+                    return Err(anyhow!(
+                        "could not move existing app aside at {} (left in place after {}.{}s): {err}",
+                        target.display(),
+                        BUNDLE_SWAP_RETRY_TIMEOUT.as_secs(),
+                        BUNDLE_SWAP_RETRY_TIMEOUT.subsec_millis() / 100,
+                    ));
+                }
+            }
         }
-        true
     } else {
         false
     };

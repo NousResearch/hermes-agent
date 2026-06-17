@@ -47,7 +47,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.session import SessionSource, build_session_key  # noqa: E402
 
 
@@ -96,6 +96,8 @@ def _make_adapter(*, require_mention=True, session_keys=(), session_store="fake"
         token="fake-token",
         extra={
             "require_mention": require_mention,
+            "free_response_chats": [],
+            "mention_patterns": [],
             "allowed_topics": [],
             "allowed_chats": [],
             "group_allowed_chats": [],
@@ -268,18 +270,18 @@ def test_dm_photo_routes_to_dm_session_unchanged():
 # 2. Forum-topic thread-id helper (single source of truth)
 # ---------------------------------------------------------------------------
 
-def test_forum_topic_thread_id_helper():
+def test_effective_message_thread_id_helper():
     adapter = _make_adapter()
     # Real forum topic message.
-    assert adapter._forum_topic_thread_id(_forum_message(text="hi"), "group") == str(TOPIC_ID)
+    assert adapter._effective_message_thread_id(_forum_message(text="hi")) == str(TOPIC_ID)
     # Forum group with no explicit topic falls back to the General topic.
     no_topic = _forum_message(text="hi", thread_id=None)
-    assert adapter._forum_topic_thread_id(no_topic, "group") == adapter._GENERAL_TOPIC_THREAD_ID
+    assert adapter._effective_message_thread_id(no_topic) == adapter._GENERAL_TOPIC_THREAD_ID
     # Plain (non-forum) group reply anchor is dropped.
     plain = _forum_message(text="hi")
     plain.is_topic_message = False
     plain.chat.is_forum = False
-    assert adapter._forum_topic_thread_id(plain, "group") is None
+    assert adapter._effective_message_thread_id(plain) is None
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +305,26 @@ def test_uncaptioned_media_processed_when_topic_has_active_session():
     assert adapter._should_process_message(_forum_message(caption=None)) is True
     assert adapter._should_process_message(_forum_message(text=None)) is True
     assert adapter._session_store.ensure_loaded_called is True
+
+
+def test_active_session_accepts_every_media_shape():
+    """The gate is media-type agnostic: once the topic has a session, a photo
+    with a plain caption (no mention), an uncaptioned photo, and a document all
+    pass. Without a session each is still dropped under require_mention."""
+    active = _make_adapter(require_mention=True)
+    active._session_store = _FakeSessionStore({_topic_session_key()})
+
+    captioned_photo = _forum_message(caption="here is the screenshot")
+    uncaptioned_photo = _forum_message(caption=None)
+    document = _forum_message(caption=None)  # a file is gated identically
+
+    assert active._should_process_message(captioned_photo) is True
+    assert active._should_process_message(uncaptioned_photo) is True
+    assert active._should_process_message(document) is True
+
+    idle = _make_adapter(require_mention=True, session_keys=())
+    assert idle._should_process_message(_forum_message(caption="here is the screenshot")) is False
+    assert idle._should_process_message(_forum_message(caption=None)) is False
 
 
 def test_active_session_bypass_is_scoped_to_the_matching_topic():
@@ -384,7 +406,7 @@ async def test_captioned_topic_photo_preserves_caption_and_attachment():
     adapter._enqueue_photo_event = lambda key, event: captured.append((key, event))
 
     with patch(
-        "gateway.platforms.telegram.cache_image_from_bytes",
+        "plugins.platforms.telegram.adapter.cache_image_from_bytes",
         return_value="/cache/user-photo.jpg",
     ):
         await adapter._handle_media_message(update, None)
@@ -412,7 +434,7 @@ async def test_uncaptioned_topic_photo_reaches_pipeline_when_session_active():
     adapter._enqueue_photo_event = lambda key, event: captured.append((key, event))
 
     with patch(
-        "gateway.platforms.telegram.cache_image_from_bytes",
+        "plugins.platforms.telegram.adapter.cache_image_from_bytes",
         return_value="/cache/user-photo.jpg",
     ):
         await adapter._handle_media_message(update, None)
@@ -420,6 +442,40 @@ async def test_uncaptioned_topic_photo_reaches_pipeline_when_session_active():
     assert captured, "uncaptioned photo in an active-session topic must not be dropped"
     _key, event = captured[0]
     assert event.media_urls == ["/cache/user-photo.jpg"]
+    assert event.source.thread_id == str(TOPIC_ID)
+
+
+@pytest.mark.asyncio
+async def test_uncaptioned_topic_document_reaches_pipeline_when_session_active():
+    adapter = _make_adapter(require_mention=True)
+    adapter._session_store = _FakeSessionStore({_topic_session_key()})
+    adapter.handle_message = AsyncMock()
+
+    file_obj = AsyncMock()
+    file_obj.download_as_bytearray = AsyncMock(return_value=bytearray(b"%PDF-1.4 ..."))
+    file_obj.file_path = "documents/report.pdf"
+    document = MagicMock()
+    document.file_name = "report.pdf"
+    document.mime_type = "application/pdf"
+    document.file_size = 2048
+    document.get_file = AsyncMock(return_value=file_obj)
+
+    msg = _forum_message(caption=None)
+    msg.photo = msg.video = msg.audio = msg.voice = msg.sticker = None
+    msg.document = document
+    msg.media_group_id = None
+    update = SimpleNamespace(message=msg, update_id=3)
+
+    with patch(
+        "plugins.platforms.telegram.adapter.cache_document_from_bytes",
+        return_value="/cache/report.pdf",
+    ):
+        await adapter._handle_media_message(update, None)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.media_urls == ["/cache/report.pdf"]
+    assert event.media_types == ["application/pdf"]
     assert event.source.thread_id == str(TOPIC_ID)
 
 

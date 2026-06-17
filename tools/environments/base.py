@@ -141,6 +141,10 @@ def _popen_bash(
     Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
     this and call :func:`_pipe_stdin` directly.
     """
+    # Ensure UTF-8 with replacement so non-decodable bytes (e.g. GBK on
+    # Chinese Windows) never crash Python's internal _readerthread.
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

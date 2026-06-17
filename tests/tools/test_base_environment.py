@@ -194,3 +194,48 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestPopenBashEncodingDefaults:
+    """_popen_bash must pass encoding='utf-8' and errors='replace' to Popen.
+
+    On Windows, text=True without explicit encoding uses the system ANSI code
+    page (e.g. GBK on Chinese Windows). When a child process outputs non-UTF-8
+    bytes, Python's internal _readerthread crashes with UnicodeDecodeError.
+    See: https://github.com/NousResearch/hermes-agent/issues/47939
+    """
+
+    def test_popen_bash_defaults_to_utf8_replace(self):
+        """_popen_bash should set encoding='utf-8' and errors='replace' by default."""
+        from unittest.mock import patch, MagicMock
+        from tools.environments.base import _popen_bash
+
+        with patch("tools.environments.base.subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_popen.return_value = mock_proc
+
+            _popen_bash(["echo", "test"])
+
+            _, kwargs = mock_popen.call_args
+            assert kwargs.get("encoding") == "utf-8", (
+                f"Expected encoding='utf-8', got {kwargs.get('encoding')!r}"
+            )
+            assert kwargs.get("errors") == "replace", (
+                f"Expected errors='replace', got {kwargs.get('errors')!r}"
+            )
+            assert kwargs.get("text") is True
+
+    def test_popen_bash_caller_can_override_encoding(self):
+        """Callers passing encoding/errors via kwargs should override defaults."""
+        from unittest.mock import patch, MagicMock
+        from tools.environments.base import _popen_bash
+
+        with patch("tools.environments.base.subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_popen.return_value = mock_proc
+
+            _popen_bash(["echo", "test"], encoding="latin-1", errors="ignore")
+
+            _, kwargs = mock_popen.call_args
+            assert kwargs.get("encoding") == "latin-1"
+            assert kwargs.get("errors") == "ignore"

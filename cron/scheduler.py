@@ -1109,6 +1109,12 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 if not output_files:
                     continue  # silent skip — no output yet
                 latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                # Extract only the ## Response section to avoid injecting
+                # prompt/skill boilerplate that bloats downstream context.
+                _RESPONSE_MARKER = "\n## Response\n"
+                _resp_idx = latest_output.find(_RESPONSE_MARKER)
+                if _resp_idx != -1:
+                    latest_output = latest_output[_resp_idx + len(_RESPONSE_MARKER):].strip()
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
@@ -2061,7 +2067,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 

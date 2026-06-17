@@ -3656,42 +3656,21 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
 def save_config_value(key_path: str, value: any) -> bool:
     """
     Save a value to the active config file at the specified key path.
-    
+
     Respects the same lookup order as load_cli_config():
     1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
     2. ./cli-config.yaml (project config - fallback)
-    
+
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
         value: Value to save
-    
+
     Returns:
         True if successful, False otherwise
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = _hermes_home / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    config_path = user_config_path if user_config_path.exists() else project_config_path
-    
-    try:
-        # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save back atomically while preserving comments, ordering, quotes, and
-        # readable Unicode in user-edited config.yaml.
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
-        
-        # Enforce owner-only permissions on config files (contain API keys)
-        try:
-            os.chmod(config_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        
-        return True
-    except Exception as e:
-        logger.error("Failed to save config: %s", e)
-        return False
+    from hermes_cli.config import save_config_value as _save_config_value
+
+    return _save_config_value(key_path, value)
 
 
 
@@ -8520,12 +8499,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"  ✗ {result.message}")
             return
 
-        _cprint(f"  ✓ {result.message}")
-        _cprint(f"    Provider: {result.provider or '(inherit from parent)'}")
-        _cprint(f"    Model:    {result.model or '(inherit from parent)'}")
-        _cprint(f"    Key:      {mask_api_key(result.api_key)}")
+        _cprint(f"  ✓ Delegation key hotswapped for {result.provider}")
         if result.saved_to_config:
             _cprint("    Saved to config.yaml")
+        _cprint(f"    Model: {result.model or '(inherit from parent)'}")
+        _cprint(f"    Key:   {mask_api_key(result.api_key)}")
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.

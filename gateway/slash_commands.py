@@ -2293,13 +2293,12 @@ class GatewaySlashCommandsMixin:
             return f"✗ {result.message}"
 
         lines = [
-            f"✓ {result.message}",
-            f"Provider: {result.provider or '(inherit from parent)'}",
-            f"Model:    {result.model or '(inherit from parent)'}",
-            f"Key:      {mask_api_key(result.api_key)}",
+            f"✓ Delegation key hotswapped for {result.provider}",
         ]
         if result.saved_to_config:
             lines.append("Saved to config.yaml")
+        lines.append(f"Model: {result.model or '(inherit from parent)'}")
+        lines.append(f"Key:   {mask_api_key(result.api_key)}")
         return "\n".join(lines)
 
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:

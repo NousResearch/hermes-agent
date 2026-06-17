@@ -7606,6 +7606,37 @@ def _parse_env_value(raw_value: str) -> str:
     return value
 
 
+def save_config_value(key_path: str, value: Any) -> bool:
+    """Save a single value to the active config file at the specified key path.
+
+    Respects the same lookup order as :func:`load_config`:
+    1. ~/.hermes/config.yaml (user config - preferred, used if it exists)
+    2. ./cli-config.yaml (project config - fallback)
+
+    Args:
+        key_path: Dot-separated path like "agent.system_prompt".
+        value: Value to save.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    user_config_path = get_config_path()
+    project_config_path = get_project_root() / "cli-config.yaml"
+    config_path = user_config_path if user_config_path.exists() else project_config_path
+
+    try:
+        ensure_hermes_home()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        from utils import atomic_roundtrip_yaml_update
+
+        atomic_roundtrip_yaml_update(config_path, key_path, value)
+        _secure_file(config_path)
+        return True
+    except Exception as exc:
+        logger.error("Failed to save config value %s: %s", key_path, exc)
+        return False
+
+
 def load_env() -> Dict[str, str]:
     """Load environment variables from ~/.hermes/.env.
 

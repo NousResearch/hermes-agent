@@ -1,5 +1,6 @@
 """Basic unit tests for hermes_cli/delegation_switch.py."""
 
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -53,11 +54,15 @@ class FormatStatusTests(unittest.TestCase):
 
 
 class ApplySwitchTests(unittest.TestCase):
+    def _patch_runtime(self, cfg):
+        """Install a fake ``cli`` module with the given CLI_CONFIG."""
+        cli_module = MagicMock()
+        cli_module.CLI_CONFIG = cfg
+        return patch.dict(sys.modules, {"cli": cli_module})
+
     def test_updates_runtime_config(self):
         cli_config = {"delegation": {"provider": "deepseek", "model": "deepseek-v4-flash"}}
-        cli_module = MagicMock()
-        cli_module.CLI_CONFIG = cli_config
-        with patch.dict("sys.modules", {"cli": cli_module}):
+        with self._patch_runtime(cli_config):
             result = apply_api_d_switch(
                 provider="openrouter",
                 model="sonnet",
@@ -72,9 +77,7 @@ class ApplySwitchTests(unittest.TestCase):
 
     def test_partial_update(self):
         cli_config = {"delegation": {"provider": "deepseek", "model": "deepseek-v4-flash", "api_key": "old"}}
-        cli_module = MagicMock()
-        cli_module.CLI_CONFIG = cli_config
-        with patch.dict("sys.modules", {"cli": cli_module}):
+        with self._patch_runtime(cli_config):
             result = apply_api_d_switch(
                 provider="",
                 model="",
@@ -88,10 +91,10 @@ class ApplySwitchTests(unittest.TestCase):
 
     def test_save_to_config(self):
         cli_config = {"delegation": {}}
-        cli_module = MagicMock()
-        cli_module.CLI_CONFIG = cli_config
-        cli_module.save_config_value = MagicMock(return_value=True)
-        with patch.dict("sys.modules", {"cli": cli_module}):
+        with self._patch_runtime(cli_config), patch(
+            "hermes_cli.config.save_config_value",
+            return_value=True,
+        ) as mock_save:
             result = apply_api_d_switch(
                 provider="openrouter",
                 model="sonnet",
@@ -100,9 +103,30 @@ class ApplySwitchTests(unittest.TestCase):
             )
         self.assertTrue(result.success)
         self.assertTrue(result.saved_to_config)
-        cli_module.save_config_value.assert_any_call("delegation.provider", "openrouter")
-        cli_module.save_config_value.assert_any_call("delegation.model", "sonnet")
-        cli_module.save_config_value.assert_any_call("delegation.api_key", "sk-new")
+        mock_save.assert_any_call("delegation.provider", "openrouter")
+        mock_save.assert_any_call("delegation.model", "sonnet")
+        mock_save.assert_any_call("delegation.api_key", "sk-new")
+
+    def test_no_runtime_config_persists_automatically(self):
+        """When cli is not loaded, the change must be written to disk to take effect."""
+        # Ensure cli is not in sys.modules.
+        modules = {k: v for k, v in sys.modules.items() if k != "cli"}
+        with patch.dict(sys.modules, modules, clear=True), patch(
+            "hermes_cli.delegation_switch._persistent_config",
+            return_value={"delegation": {"provider": "deepseek", "model": "deepseek-v4-flash"}},
+        ), patch(
+            "hermes_cli.config.save_config_value",
+            return_value=True,
+        ) as mock_save:
+            result = apply_api_d_switch(
+                provider="",
+                model="",
+                api_key="sk-new",
+                save_to_config=False,
+            )
+        self.assertTrue(result.success)
+        self.assertTrue(result.saved_to_config)
+        mock_save.assert_called_once_with("delegation.api_key", "sk-new")
 
 
 if __name__ == "__main__":

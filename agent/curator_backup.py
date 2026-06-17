@@ -209,13 +209,19 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
     )
 
 
-def snapshot_skills(reason: str = "manual") -> Optional[Path]:
+def snapshot_skills(reason: str = "manual",
+                    exclude_from_prune: Optional[Path] = None) -> Optional[Path]:
     """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones.
 
     Returns the snapshot directory path, or ``None`` if the snapshot was
     skipped (backup disabled, skills dir missing, or an IO error occurred —
     in which case we log at debug and return None so the curator never
     aborts a pass because of a backup failure).
+
+    If *exclude_from_prune* is provided, that backup directory will not
+    be pruned even if it falls outside the keep window. This is used
+    during rollback so the target snapshot survives the safety-snapshot
+    prune step.
     """
     if not is_enabled():
         logger.debug("Curator backup disabled by config; skipping snapshot")
@@ -277,15 +283,21 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
             pass
         return None
 
-    _prune_old(keep=get_keep())
+    _prune_old(keep=get_keep(), exclude=exclude_from_prune)
     logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
     return dest
 
 
-def _prune_old(keep: int) -> List[str]:
+def _prune_old(keep: int, exclude: Optional[Path] = None) -> List[str]:
     """Delete regular snapshots beyond the newest *keep*. Returns deleted
     ids. Staging dirs (``.rollback-staging-*``) are implementation detail
-    and pruned independently on every call."""
+    and pruned independently on every call.
+
+    If *exclude* is provided, that backup directory is never pruned even
+    if it would otherwise fall outside the *keep* window. This is used
+    during rollback so the target snapshot is not deleted by the safety
+    snapshot's prune step.
+    """
     backups = _backups_dir()
     if not backups.exists():
         return []
@@ -306,6 +318,9 @@ def _prune_old(keep: int) -> List[str]:
     entries.sort(key=lambda t: t[0], reverse=True)
     deleted: List[str] = []
     for _, path in entries[keep:]:
+        # Never prune the snapshot we're about to restore.
+        if exclude is not None and path == exclude:
+            continue
         try:
             shutil.rmtree(path)
             deleted.append(path.name)
@@ -565,7 +580,8 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # out before touching anything — otherwise a failed extract could leave
     # the user with no skills.
     try:
-        snapshot_skills(reason=f"pre-rollback to {target.name}")
+        snapshot_skills(reason=f"pre-rollback to {target.name}",
+                        exclude_from_prune=target)
     except Exception as e:
         return (False, f"pre-rollback safety snapshot failed: {e}", None)
 

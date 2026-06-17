@@ -111,7 +111,19 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {
+    "moa",
+    "homeassistant",
+    "spotify",
+    "discord",
+    "discord_admin",
+    "video",
+    "video_gen",
+    "x_search",
+    # Health/wearable data is sensitive. Keep WHOOP explicit opt-in even
+    # when the plugin is installed and OAuth tokens are present.
+    "whoop",
+}
 
 
 def _xai_credentials_present() -> bool:

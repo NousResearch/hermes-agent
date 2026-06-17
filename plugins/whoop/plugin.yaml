@@ -1,0 +1,11 @@
+name: whoop
+version: 1.0.0
+description: "Native WHOOP integration — read-only profile, cycles, recovery, sleep, and workout tools using WHOOP Developer API OAuth. Auth via `hermes auth whoop`. Tools gate on `providers.whoop` in ~/.hermes/auth.json."
+author: NousResearch
+kind: backend
+provides_tools:
+  - whoop_profile
+  - whoop_cycles
+  - whoop_recovery
+  - whoop_sleep
+  - whoop_workouts

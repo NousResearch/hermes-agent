@@ -544,6 +544,20 @@ def auth_spotify_command(args) -> None:
     raise SystemExit(f"Unknown Spotify auth action: {action}")
 
 
+def auth_whoop_command(args) -> None:
+    action = str(getattr(args, "whoop_action", "") or "login").strip().lower()
+    if action in {"", "login"}:
+        auth_mod.login_whoop_command(args)
+        return
+    if action == "status":
+        auth_status_command(SimpleNamespace(provider="whoop"))
+        return
+    if action == "logout":
+        auth_logout_command(SimpleNamespace(provider="whoop"))
+        return
+    raise SystemExit(f"Unknown WHOOP auth action: {action}")
+
+
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
@@ -797,6 +811,9 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "whoop":
+        auth_whoop_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

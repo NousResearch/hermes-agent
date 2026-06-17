@@ -317,6 +317,14 @@ TOOLSETS = {
         "includes": []
     },
 
+    "whoop": {
+        "description": "Read-only WHOOP profile, cycles, recovery, sleep, and workout tools",
+        "tools": [
+            "whoop_profile", "whoop_cycles", "whoop_recovery", "whoop_sleep", "whoop_workouts",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

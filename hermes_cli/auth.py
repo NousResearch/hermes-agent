@@ -118,6 +118,12 @@ DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
 SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
 SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
 SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+DEFAULT_WHOOP_OAUTH_BASE_URL = "https://api.prod.whoop.com/oauth/oauth2"
+DEFAULT_WHOOP_API_BASE_URL = "https://api.prod.whoop.com/developer/v2"
+DEFAULT_WHOOP_REDIRECT_URI = "http://127.0.0.1:43828/whoop/callback"
+WHOOP_DOCS_URL = "https://developer.whoop.com/api"
+WHOOP_DASHBOARD_URL = "https://developer.whoop.com/api"
+WHOOP_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
 XAI_OAUTH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth"
 OAUTH_OVER_SSH_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh"
@@ -133,8 +139,18 @@ DEFAULT_SPOTIFY_SCOPE = " ".join((
     "user-library-read",
     "user-library-modify",
 ))
+DEFAULT_WHOOP_SCOPE = " ".join((
+    "offline",
+    "read:recovery",
+    "read:sleep",
+    "read:workout",
+    "read:profile",
+    "read:body_measurement",
+    "read:cycles",
+))
 SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
+    "whoop": "WHOOP",
 }
 
 # Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
@@ -3098,6 +3114,612 @@ def login_spotify_command(args) -> None:
     print(f"  Auth state: {saved_to}")
     print("  Provider state saved under providers.spotify")
     print(f"  Docs: {SPOTIFY_DOCS_URL}")
+
+
+# =============================================================================
+# WHOOP OAuth helpers (service-provider auth, separate from inference providers)
+# =============================================================================
+
+def _whoop_scope_list(raw_scope: Optional[str] = None) -> List[str]:
+    scope_text = (raw_scope or DEFAULT_WHOOP_SCOPE).strip()
+    scopes = [part for part in scope_text.split() if part]
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for scope in scopes:
+        if scope not in seen:
+            seen.add(scope)
+            ordered.append(scope)
+    return ordered
+
+
+def _whoop_scope_string(raw_scope: Optional[str] = None) -> str:
+    return " ".join(_whoop_scope_list(raw_scope))
+
+
+def _whoop_state_token() -> str:
+    """WHOOP requires manually-generated OAuth state values to be 8 chars."""
+    return uuid.uuid4().hex[:8]
+
+
+def _whoop_client_id(
+    explicit: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        explicit,
+        get_env_value("HERMES_WHOOP_CLIENT_ID"),
+        get_env_value("WHOOP_CLIENT_ID"),
+        state.get("client_id") if isinstance(state, dict) else None,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip()
+        if cleaned:
+            return cleaned
+    raise AuthError(
+        "WHOOP client_id is required. Set HERMES_WHOOP_CLIENT_ID or run `hermes auth whoop`.",
+        provider="whoop",
+        code="whoop_client_id_missing",
+    )
+
+
+def _whoop_client_secret(
+    explicit: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        explicit,
+        get_env_value("HERMES_WHOOP_CLIENT_SECRET"),
+        get_env_value("WHOOP_CLIENT_SECRET"),
+        state.get("client_secret") if isinstance(state, dict) else None,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip()
+        if cleaned:
+            return cleaned
+    raise AuthError(
+        "WHOOP client_secret is required. Set HERMES_WHOOP_CLIENT_SECRET or run `hermes auth whoop`.",
+        provider="whoop",
+        code="whoop_client_secret_missing",
+    )
+
+
+def _whoop_redirect_uri(
+    explicit: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        explicit,
+        get_env_value("HERMES_WHOOP_REDIRECT_URI"),
+        get_env_value("WHOOP_REDIRECT_URI"),
+        state.get("redirect_uri") if isinstance(state, dict) else None,
+        DEFAULT_WHOOP_REDIRECT_URI,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip()
+        if cleaned:
+            return cleaned
+    return DEFAULT_WHOOP_REDIRECT_URI
+
+
+def _whoop_api_base_url(state: Optional[Dict[str, Any]] = None) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        get_env_value("HERMES_WHOOP_API_BASE_URL"),
+        state.get("api_base_url") if isinstance(state, dict) else None,
+        DEFAULT_WHOOP_API_BASE_URL,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip().rstrip("/")
+        if cleaned:
+            return cleaned
+    return DEFAULT_WHOOP_API_BASE_URL
+
+
+def _whoop_oauth_base_url(state: Optional[Dict[str, Any]] = None) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        get_env_value("HERMES_WHOOP_OAUTH_BASE_URL"),
+        state.get("oauth_base_url") if isinstance(state, dict) else None,
+        DEFAULT_WHOOP_OAUTH_BASE_URL,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip().rstrip("/")
+        if cleaned:
+            return cleaned
+    return DEFAULT_WHOOP_OAUTH_BASE_URL
+
+
+def _whoop_build_authorize_url(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    scope: str,
+    state: str,
+    oauth_base_url: str,
+) -> str:
+    query = urlencode({
+        "client_id": client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "state": state,
+    })
+    return f"{oauth_base_url}/auth?{query}"
+
+
+def _whoop_validate_redirect_uri(redirect_uri: str) -> tuple[str, int, str]:
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme != "http":
+        raise AuthError(
+            "WHOOP OAuth redirect_uri must use http://localhost or http://127.0.0.1.",
+            provider="whoop",
+            code="whoop_redirect_invalid",
+        )
+    host = parsed.hostname or ""
+    if host not in {"127.0.0.1", "localhost"}:
+        raise AuthError(
+            "WHOOP OAuth redirect_uri must point to localhost or 127.0.0.1.",
+            provider="whoop",
+            code="whoop_redirect_invalid",
+        )
+    if not parsed.port:
+        raise AuthError(
+            "WHOOP OAuth redirect_uri must include an explicit localhost port.",
+            provider="whoop",
+            code="whoop_redirect_invalid",
+        )
+    return host, parsed.port, parsed.path or "/"
+
+
+def _make_whoop_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
+    result: dict[str, Any] = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+
+    class _WHOOPCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not found.")
+                return
+            params = parse_qs(parsed.query)
+            result["code"] = params.get("code", [None])[0]
+            result["state"] = params.get("state", [None])[0]
+            result["error"] = params.get("error", [None])[0]
+            result["error_description"] = params.get("error_description", [None])[0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            if result["error"]:
+                body = "<html><body><h1>WHOOP authorization failed.</h1>You can close this tab.</body></html>"
+            else:
+                body = "<html><body><h1>WHOOP authorization received.</h1>You can close this tab.</body></html>"
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+            return
+
+    return _WHOOPCallbackHandler, result
+
+
+def _whoop_wait_for_callback(
+    redirect_uri: str,
+    *,
+    timeout_seconds: float = 180.0,
+) -> dict[str, Any]:
+    host, port, path = _whoop_validate_redirect_uri(redirect_uri)
+    handler_cls, result = _make_whoop_callback_handler(path)
+
+    class _ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
+    try:
+        server = _ReuseHTTPServer((host, port), handler_cls)
+    except OSError as exc:
+        raise AuthError(
+            f"Could not bind WHOOP callback server on {host}:{port}: {exc}",
+            provider="whoop",
+            code="whoop_callback_bind_failed",
+        ) from exc
+
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + max(5.0, timeout_seconds)
+    try:
+        while time.monotonic() < deadline:
+            if result["code"] or result["error"]:
+                return result
+            time.sleep(0.1)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+    raise AuthError(
+        "WHOOP authorization timed out waiting for the local callback.",
+        provider="whoop",
+        code="whoop_callback_timeout",
+    )
+
+
+def _whoop_token_payload_to_state(
+    token_payload: Dict[str, Any],
+    *,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+    requested_scope: str,
+    oauth_base_url: str,
+    api_base_url: str,
+    previous_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    expires_in = _coerce_ttl_seconds(token_payload.get("expires_in", 0))
+    expires_at = datetime.fromtimestamp(now.timestamp() + expires_in, tz=timezone.utc)
+    state = dict(previous_state or {})
+    # Keep the long-lived WHOOP app secret in the local .env/secret store, not duplicated
+    # into provider auth state. Existing states that already contain it are scrubbed on refresh.
+    state.pop("client_secret", None)
+    state.update({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "oauth_base_url": oauth_base_url,
+        "api_base_url": api_base_url,
+        "scope": requested_scope,
+        "granted_scope": str(token_payload.get("scope") or requested_scope).strip(),
+        "token_type": str(token_payload.get("token_type", "Bearer") or "Bearer").strip() or "Bearer",
+        "access_token": str(token_payload.get("access_token", "") or "").strip(),
+        "refresh_token": str(
+            token_payload.get("refresh_token")
+            or state.get("refresh_token")
+            or ""
+        ).strip(),
+        "obtained_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "expires_in": expires_in,
+        "auth_type": "oauth_authorization_code",
+    })
+    return state
+
+
+def _whoop_exchange_code_for_tokens(
+    *,
+    client_id: str,
+    client_secret: str,
+    code: str,
+    redirect_uri: str,
+    oauth_base_url: str,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    try:
+        response = httpx.post(
+            f"{oauth_base_url}/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"WHOOP token exchange failed: {exc}",
+            provider="whoop",
+            code="whoop_token_exchange_failed",
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise AuthError(
+            "WHOOP token exchange failed."
+            + (f" Response: {detail}" if detail else ""),
+            provider="whoop",
+            code="whoop_token_exchange_failed",
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise AuthError(
+            "WHOOP token response did not include an access_token.",
+            provider="whoop",
+            code="whoop_token_exchange_invalid",
+        )
+    return payload
+
+
+def _refresh_whoop_oauth_state(
+    state: Dict[str, Any],
+    *,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    refresh_token = str(state.get("refresh_token", "") or "").strip()
+    if not refresh_token:
+        raise AuthError(
+            "WHOOP refresh token missing. Run `hermes auth whoop` again.",
+            provider="whoop",
+            code="whoop_refresh_token_missing",
+            relogin_required=True,
+        )
+
+    client_id = _whoop_client_id(state=state)
+    client_secret = _whoop_client_secret(state=state)
+    oauth_base_url = _whoop_oauth_base_url(state)
+    try:
+        response = httpx.post(
+            f"{oauth_base_url}/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"WHOOP token refresh failed: {exc}",
+            provider="whoop",
+            code="whoop_refresh_failed",
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise AuthError(
+            "WHOOP token refresh failed. Run `hermes auth whoop` again."
+            + (f" Response: {detail}" if detail else ""),
+            provider="whoop",
+            code="whoop_refresh_failed",
+            relogin_required=True,
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise AuthError(
+            "WHOOP refresh response did not include an access_token.",
+            provider="whoop",
+            code="whoop_refresh_invalid",
+            relogin_required=True,
+        )
+    return _whoop_token_payload_to_state(
+        payload,
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=_whoop_redirect_uri(state=state),
+        requested_scope=str(state.get("scope") or DEFAULT_WHOOP_SCOPE),
+        oauth_base_url=oauth_base_url,
+        api_base_url=_whoop_api_base_url(state),
+        previous_state=state,
+    )
+
+
+def resolve_whoop_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: int = WHOOP_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    with _auth_store_lock():
+        # Match get_whoop_auth_status() semantics: in profile mode, a WHOOP
+        # login stored at the global Hermes root should be visible until the
+        # profile shadows it with its own provider state. If a refresh is
+        # needed, persist the refreshed state into the active profile store
+        # without changing the active LLM provider.
+        auth_store = _load_auth_store()
+        state = get_provider_auth_state("whoop")
+        if not state:
+            raise AuthError(
+                "WHOOP is not authenticated. Run `hermes auth whoop` first.",
+                provider="whoop",
+                code="whoop_auth_missing",
+                relogin_required=True,
+            )
+
+        should_refresh = bool(force_refresh)
+        if not should_refresh and refresh_if_expiring:
+            should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
+        if should_refresh:
+            state = _refresh_whoop_oauth_state(state)
+            _store_provider_state(auth_store, "whoop", state, set_active=False)
+            _save_auth_store(auth_store)
+
+    access_token = str(state.get("access_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "WHOOP access token missing. Run `hermes auth whoop` again.",
+            provider="whoop",
+            code="whoop_access_token_missing",
+            relogin_required=True,
+        )
+    return {
+        "provider": "whoop",
+        "access_token": access_token,
+        "api_key": access_token,
+        "token_type": str(state.get("token_type", "Bearer") or "Bearer"),
+        "base_url": _whoop_api_base_url(state),
+        "scope": str(state.get("granted_scope") or state.get("scope") or "").strip(),
+        "client_id": _whoop_client_id(state=state),
+        "redirect_uri": _whoop_redirect_uri(state=state),
+        "expires_at": state.get("expires_at"),
+    }
+
+
+def get_whoop_auth_status() -> Dict[str, Any]:
+    state = get_provider_auth_state("whoop")
+    if not state:
+        return {"logged_in": False}
+    expires_at = state.get("expires_at")
+    refresh_token = str(state.get("refresh_token", "") or "").strip()
+    return {
+        "logged_in": bool(refresh_token or not _is_expiring(expires_at, 0)),
+        "auth_type": state.get("auth_type", "oauth_authorization_code"),
+        "client_id": state.get("client_id"),
+        "redirect_uri": state.get("redirect_uri"),
+        "scope": state.get("granted_scope") or state.get("scope"),
+        "expires_at": expires_at,
+        "api_base_url": state.get("api_base_url"),
+        "has_refresh_token": bool(refresh_token),
+    }
+
+
+def _whoop_interactive_setup(redirect_uri_hint: str) -> str:
+    """Collect local WHOOP OAuth app credentials and persist them to ~/.hermes/.env."""
+    from hermes_cli.config import save_env_value
+
+    print()
+    print("=" * 70)
+    print("WHOOP first-time setup")
+    print("=" * 70)
+    print()
+    print("WHOOP requires a developer app for local OAuth. Create one in the")
+    print("WHOOP Developer Dashboard, allow-list the redirect URI below, then paste")
+    print("the Client ID and Client Secret into this local terminal prompt.")
+    print()
+    print(f"Docs: {WHOOP_DOCS_URL}")
+    print(f"Dashboard: {WHOOP_DASHBOARD_URL}")
+    print(f"Redirect URI: {redirect_uri_hint}")
+    print()
+
+    if not _is_remote_session():
+        try:
+            webbrowser.open(WHOOP_DASHBOARD_URL)
+        except Exception:
+            pass
+
+    try:
+        client_id = input("WHOOP Client ID: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise SystemExit("WHOOP setup cancelled.")
+    if not client_id:
+        print()
+        print(f"No Client ID entered. See {WHOOP_DOCS_URL} for setup instructions.")
+        raise SystemExit("WHOOP setup cancelled: empty Client ID.")
+
+    try:
+        import getpass
+
+        client_secret = getpass.getpass("WHOOP Client Secret: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise SystemExit("WHOOP setup cancelled.")
+    if not client_secret:
+        print()
+        print(f"No Client Secret entered. See {WHOOP_DOCS_URL} for setup instructions.")
+        raise SystemExit("WHOOP setup cancelled: empty Client Secret.")
+
+    save_env_value("HERMES_WHOOP_CLIENT_ID", client_id)
+    save_env_value("HERMES_WHOOP_CLIENT_SECRET", client_secret)
+    if redirect_uri_hint and redirect_uri_hint != DEFAULT_WHOOP_REDIRECT_URI:
+        save_env_value("HERMES_WHOOP_REDIRECT_URI", redirect_uri_hint)
+    print()
+    print("Saved WHOOP OAuth app settings to ~/.hermes/.env")
+    print()
+    return client_id
+
+
+def login_whoop_command(args) -> None:
+    existing_state = get_provider_auth_state("whoop") or {}
+    explicit_client_id = getattr(args, "client_id", None)
+    explicit_client_secret = getattr(args, "client_secret", None)
+    try:
+        client_id = _whoop_client_id(explicit_client_id, existing_state)
+        client_secret = _whoop_client_secret(explicit_client_secret, existing_state)
+    except AuthError as exc:
+        if getattr(exc, "code", "") not in {"whoop_client_id_missing", "whoop_client_secret_missing"}:
+            raise
+        client_id = _whoop_interactive_setup(
+            redirect_uri_hint=getattr(args, "redirect_uri", None) or DEFAULT_WHOOP_REDIRECT_URI,
+        )
+        client_secret = _whoop_client_secret(explicit_client_secret, existing_state)
+
+    redirect_uri = _whoop_redirect_uri(getattr(args, "redirect_uri", None), existing_state)
+    scope = _whoop_scope_string(getattr(args, "scope", None) or existing_state.get("scope"))
+    oauth_base_url = _whoop_oauth_base_url(existing_state)
+    api_base_url = _whoop_api_base_url(existing_state)
+    open_browser = not getattr(args, "no_browser", False)
+
+    state_nonce = _whoop_state_token()
+    authorize_url = _whoop_build_authorize_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scope=scope,
+        state=state_nonce,
+        oauth_base_url=oauth_base_url,
+    )
+
+    print("Starting WHOOP OAuth login...")
+    print(f"Client ID: {client_id}")
+    print(f"Redirect URI: {redirect_uri}")
+    print("Make sure this redirect URI is allow-listed in your WHOOP developer app.")
+    print()
+    print("Open this URL to authorize Hermes:")
+    print(authorize_url)
+    print()
+    print(f"Docs: {WHOOP_DOCS_URL}")
+    print()
+    _print_loopback_ssh_hint(redirect_uri, docs_url=WHOOP_DOCS_URL)
+
+    if open_browser and not _is_remote_session():
+        try:
+            opened = webbrowser.open(authorize_url)
+        except Exception:
+            opened = False
+        if opened:
+            print("Browser opened for WHOOP authorization.")
+        else:
+            print("Could not open the browser automatically; use the URL above.")
+
+    callback = _whoop_wait_for_callback(
+        redirect_uri,
+        timeout_seconds=float(getattr(args, "timeout", None) or 180.0),
+    )
+    if callback.get("error"):
+        detail = callback.get("error_description") or callback["error"]
+        raise SystemExit(f"WHOOP authorization failed: {detail}")
+    if callback.get("state") != state_nonce:
+        raise SystemExit("WHOOP authorization failed: state mismatch.")
+
+    token_payload = _whoop_exchange_code_for_tokens(
+        client_id=client_id,
+        client_secret=client_secret,
+        code=str(callback.get("code") or ""),
+        redirect_uri=redirect_uri,
+        oauth_base_url=oauth_base_url,
+        timeout_seconds=float(getattr(args, "timeout", None) or 20.0),
+    )
+    whoop_state = _whoop_token_payload_to_state(
+        token_payload,
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        requested_scope=scope,
+        oauth_base_url=oauth_base_url,
+        api_base_url=api_base_url,
+    )
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _store_provider_state(auth_store, "whoop", whoop_state, set_active=False)
+        saved_to = _save_auth_store(auth_store)
+
+    print("WHOOP login successful!")
+    print(f"  Auth state: {saved_to}")
+    print("  Provider state saved under providers.whoop")
+    print(f"  Docs: {WHOOP_DOCS_URL}")
 
 # =============================================================================
 # SSH / remote session detection
@@ -6148,6 +6770,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return {"logged_in": False}
     if target == "spotify":
         return get_spotify_auth_status()
+    if target == "whoop":
+        return get_whoop_auth_status()
     if target == "nous":
         return get_nous_auth_status()
     if target == "openai-codex":

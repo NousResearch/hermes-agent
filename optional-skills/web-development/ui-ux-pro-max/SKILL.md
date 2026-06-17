@@ -1,6 +1,6 @@
 ---
 name: ui-ux-pro-max
-description: "UI/UX design intelligence covering 67 styles, 96 palettes, 57 font pairings, and 25 chart types across 10 stacks (React, Next.js, Vue, Svelte, SwiftUI, Flutter, Tailwind, shadcn/ui, and more)."
+description: "UI/UX design intelligence covering 67 styles, 96 palettes, 57 font pairings, and 25 chart types across 13 stacks (React, Next.js, Vue, Nuxt, Svelte, Astro, SwiftUI, Flutter, Tailwind, shadcn/ui, and more)."
 version: 1.0.0
 author: Jason Colapietro
 license: MIT
@@ -14,7 +14,7 @@ metadata:
 ---
 # UI/UX Pro Max - Design Intelligence
 
-Comprehensive design guide for web and mobile applications. Contains 67 styles, 96 color palettes, 57 font pairings, 99 UX guidelines, and 25 chart types across 10 technology stacks. Searchable database with priority-based recommendations.
+Comprehensive design guide for web and mobile applications. Contains 67 styles, 96 color palettes, 57 font pairings, 99 UX guidelines, and 25 chart types across 13 technology stacks. Searchable database with priority-based recommendations.
 
 ## When to Use
 
@@ -247,6 +247,9 @@ Available stacks: `html-tailwind`, `react`, `nextjs`, `vue`, `svelte`, `swiftui`
 | `flutter` | Widgets, State, Layout, Theming |
 | `shadcn` | shadcn/ui components, theming, forms, patterns |
 | `jetpack-compose` | Composables, Modifiers, State Hoisting, Recomposition |
+| `astro` | Islands Architecture, partial hydration, content collections |
+| `nuxtjs` | File-based routing, SSR, Nuxt modules, composables |
+| `nuxt-ui` | Nuxt UI component library, UApp, theming, overlays |
 
 ---
 

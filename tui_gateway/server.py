@@ -2021,6 +2021,21 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
+_BLOCKING_PROMPT_TOOLS = {"clarify"}
+
+
+def _should_emit_tool_lifecycle(sid: str, name: str | None) -> bool:
+    """Whether desktop/TUI clients need a live tool row for this call.
+
+    ``display.tool_progress=off`` suppresses ordinary tool progress, but tools
+    that block on user input still need their pending row rendered.  The
+    desktop clarify UI mounts from the ``clarify`` tool-call row while the
+    request id arrives separately via ``clarify.request``; hiding that row makes
+    the agent wait until timeout with no visible choices.
+    """
+    return _tool_progress_enabled(sid) or name in _BLOCKING_PROMPT_TOOLS
+
+
 def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
     if worker:
@@ -2733,7 +2748,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         except Exception:
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
-    if _tool_progress_enabled(sid):
+    if _should_emit_tool_lifecycle(sid, name):
         payload = {
             "tool_id": tool_call_id,
             "name": name,
@@ -2791,7 +2806,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
         pass
-    if _tool_progress_enabled(sid) or payload.get("inline_diff"):
+    if _should_emit_tool_lifecycle(sid, name) or payload.get("inline_diff"):
         _emit("tool.complete", sid, payload)
 
 

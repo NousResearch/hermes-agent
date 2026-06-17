@@ -1598,6 +1598,58 @@ def _session(agent=None, **extra):
     }
 
 
+def test_clarify_lifecycle_emits_when_tool_progress_off(monkeypatch):
+    """Blocking clarify prompts must stay visible even in silent tool mode."""
+    emitted = []
+
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
+    server._sessions["sid"] = _session(tool_progress_mode="off")
+    try:
+        server._on_tool_start(
+            "sid",
+            "tc-clarify",
+            "clarify",
+            {"question": "Pick one", "choices": ["A", "B"]},
+        )
+        server._on_tool_complete(
+            "sid",
+            "tc-clarify",
+            "clarify",
+            {"question": "Pick one", "choices": ["A", "B"]},
+            '{"user_response":"A"}',
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert [event for event, _, _ in emitted] == ["tool.start", "tool.complete"]
+    assert emitted[0][2]["name"] == "clarify"
+    assert emitted[0][2]["tool_id"] == "tc-clarify"
+    assert emitted[1][2]["result"] == {"user_response": "A"}
+
+
+def test_non_blocking_tool_lifecycle_stays_hidden_when_tool_progress_off(monkeypatch):
+    """The clarify exception must not turn silent mode back on globally."""
+    emitted = []
+
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
+    server._sessions["sid"] = _session(tool_progress_mode="off")
+    try:
+        server._on_tool_start("sid", "tc-read", "read_file", {"path": "README.md"})
+        server._on_tool_complete("sid", "tc-read", "read_file", {"path": "README.md"}, "contents")
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert emitted == []
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

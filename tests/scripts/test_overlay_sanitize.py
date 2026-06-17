@@ -60,12 +60,18 @@ def test_sanitize_drops_stale_send_message_region():
 
 
 @pytest.mark.parametrize(
-    ("fork_ref", "merge_base"),
+    ("fork_ref", "merge_base", "upstream_ref"),
     [
-        ("6140cce1870a29dbdf78dca1dcba99428d5e99ae", "992b9223893453b3b1527b2ba728996ec81e83f2"),
+        (
+            "6140cce1870a29dbdf78dca1dcba99428d5e99ae",
+            "992b9223893453b3b1527b2ba728996ec81e83f2",
+            "33b1d144590a211100f42aa911fd7f91ba031507",
+        ),
     ],
 )
-def test_toolsets_three_way_overlay_clean_after_sanitize(fork_ref: str, merge_base: str):
+def test_toolsets_three_way_overlay_clean_after_sanitize(
+    fork_ref: str, merge_base: str, upstream_ref: str,
+):
     from apply_three_way_overlay import three_way_merge  # noqa: E402
 
     path = MERGE_TOOLS / "hermes-merge-conflict-strategies.json"
@@ -73,7 +79,7 @@ def test_toolsets_three_way_overlay_clean_after_sanitize(fork_ref: str, merge_ba
     code, merged = three_way_merge(
         "toolsets.py",
         merge_base,
-        "upstream/main",
+        upstream_ref,
         fork_ref,
         sanitizers=sanitizers,
     )

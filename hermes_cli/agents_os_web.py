@@ -35,16 +35,21 @@ from hermes_cli.agents_os_idea_factory import draft_idea, idea_factory_schema
 from hermes_cli.agents_os_seo import seo_mission_control_payload
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
-SOURCE_DEFAULTS = {
-    "video:q13OqknCh-c": "https://youtu.be/q13OqknCh-c",
-    "transcript:q13OqknCh-c": "/mnt/d/HermesAgent/home/transcripts/q13OqknCh-c_transcript.txt",
-    "youtube-note:q13OqknCh-c": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/01-INBOX/YouTube/2026-06-08-q13OqknCh-c-claude-agent-operating-system.md",
-    "plan:parity-q13OqknCh-c": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/08-OPERATIONS/ACTIVE-WORK/2026-06-08-agent-os-parity-build-plan-q13OqknCh-c.md",
-    "plan:full-product": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/08-OPERATIONS/ACTIVE-WORK/2026-06-08-agent-os-full-product-plan.md",
-    "contract:idea-factory-v0": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/08-OPERATIONS/ACTIVE-WORK/2026-06-08-idea-factory-v0-contract.md",
+# Source registry: a mapping of well-known source keys to their canonical paths.
+# These are intentionally profile-agnostic and only resolve to absolute paths when
+# the corresponding AGENTS_OS_SOURCE_* environment variable is set. Operators are
+# expected to wire these to their own vault / transcript locations at deploy time.
+SOURCE_DEFAULTS: dict[str, str] = {
+    # Each entry: logical source key -> default placeholder
+    "video:demo": "https://youtu.be/<video-id-placeholder>",
+    "transcript:demo": "${AGENTS_OS_SOURCE_TRANSCRIPTS}/<video-id-placeholder>.txt",
+    "youtube-note:demo": "${AGENTS_OS_SOURCE_VAULT}/01-INBOX/YouTube/<video-id-placeholder>.md",
+    "plan:parity-demo": "${AGENTS_OS_SOURCE_VAULT}/08-OPERATIONS/ACTIVE-WORK/<plan-name-placeholder>.md",
+    "plan:full-product": "${AGENTS_OS_SOURCE_VAULT}/08-OPERATIONS/ACTIVE-WORK/<plan-name-placeholder>.md",
+    "contract:idea-factory-v0": "${AGENTS_OS_SOURCE_VAULT}/08-OPERATIONS/ACTIVE-WORK/<contract-name-placeholder>.md",
 }
 SOURCE_ENV = {
-    "transcript:q13OqknCh-c": "AGENTS_OS_SOURCE_TRANSCRIPT",
+    "transcript:demo": "AGENTS_OS_SOURCE_TRANSCRIPT",
     "plan:full-product": "AGENTS_OS_SOURCE_FULL_PLAN",
 }
 MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".wav", ".ogg", ".mp4", ".webm", ".mov"}
@@ -105,37 +110,41 @@ def _path_info(path: str) -> dict[str, Any]:
 
 
 def _default_agent_cards(paths: AgentsOSPaths) -> list[dict[str, Any]]:
+    # NOTE: Agent cards are operator-customisable. Defaults below are
+    # profile-agnostic placeholders that resolve paths at runtime from the
+    # active Hermes home (no hardcoded absolute user paths or vendor names).
+    primary_home = str(paths.home)
     return [
         {
-            "id": "doni-local",
-            "name": "Doni Local",
+            "id": "primary-agent",
+            "name": "Primary agent",
             "status": "available",
             "capabilities": ["local planning", "TDD", "reports", "Mission Control"],
-            "runtime_home": str(paths.home),
+            "runtime_home": primary_home,
             "reference_home": str(paths.root),
-            "memory_boundary": "Doni Hermes home only",
-            "auth_boundary": "Doni auth only; credentials are never displayed",
+            "memory_boundary": "active Hermes home only; no cross-profile read/write",
+            "auth_boundary": "active profile auth only; credentials are never displayed",
             "allowed_actions": ["safe local files", "tests", "local API smoke", "local reports"],
             "approval_gates": ["deploy", "public send", "credential use", "gateway restart", "destructive changes"],
         },
         {
-            "id": "kodi-codex",
-            "name": "Kodi/Codex",
+            "id": "coding-delegate",
+            "name": "Coding delegate",
             "status": "reference",
             "capabilities": ["coding delegate", "review", "patch suggestions"],
             "runtime_home": "external/approval-gated",
             "reference_home": "repo-local only when explicitly invoked",
-            "memory_boundary": "no Doni memory merge",
-            "auth_boundary": "no credential sharing from Doni",
+            "memory_boundary": "no active-agent memory merge",
+            "auth_boundary": "no credential sharing from active profile",
             "allowed_actions": ["local branch work after explicit routing"],
             "approval_gates": ["push", "PR", "public GitHub action", "credential use"],
         },
         {
-            "id": "marija-profile",
-            "name": "Marija profile",
+            "id": "peer-profile",
+            "name": "Peer profile (separate Hermes home)",
             "status": "separate_profile",
             "capabilities": ["separate Hermes profile"],
-            "runtime_home": "/home/goran/.hermes-marija-clean",
+            "runtime_home": "<peer profile home — configured at deploy>",
             "reference_home": "read-only boundary reference",
             "memory_boundary": "separate personal memory; no merge",
             "auth_boundary": "separate profile auth; no cross-copy",
@@ -143,12 +152,12 @@ def _default_agent_cards(paths: AgentsOSPaths) -> list[dict[str, Any]]:
             "approval_gates": ["any profile write", "auth change", "gateway lifecycle"],
         },
         {
-            "id": "ero-openclaw",
-            "name": "ERO/OpenClaw reference layer",
+            "id": "external-runtime",
+            "name": "External runtime (reference layer)",
             "status": "separate_runtime",
             "capabilities": ["reference bridge", "source artefacts"],
-            "runtime_home": "/home/goran/.openclaw/workspace",
-            "reference_home": "/mnt/d/AI_Memory/communication",
+            "runtime_home": "<external runtime home — configured at deploy>",
+            "reference_home": "<shared bridge path — configured at deploy>",
             "memory_boundary": "separate runtime memory; reference only",
             "auth_boundary": "no auth/session sharing",
             "allowed_actions": ["read-only reference when useful"],
@@ -427,7 +436,7 @@ def _jarvis_preview_from_text(transcript_text: str) -> dict[str, Any]:
         draft["plan_steps"] = [
             "Prikazati namjeru i rizičnu radnju u command preview kartici.",
             "Ne izvršiti javnu, deploy, push ili outbound akciju iz glasa.",
-            "Čekati eksplicitno Goranovo odobrenje prije side-effecta.",
+            "Čekati eksplicitno odobrenje operatera prije side-effecta.",
         ]
     return draft
 
@@ -801,7 +810,7 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 </style>
 </head>
 <body>
-<header><h1>Agents OS Mission Control</h1><div class=\"sub\">Local-only Doni operator cockpit · gateway restart: false · vault/reference graph, not runtime memory merge</div></header>
+<header><h1>Agents OS Mission Control</h1><div class=\"sub\">Local-only operator cockpit · gateway restart: false · vault/reference graph, not runtime memory merge</div></header>
 <nav class=\"tabs\">
 <button data-tab=\"overview\" class=\"active\">Overview</button><button data-tab=\"idea\">Idea Factory</button><button data-tab=\"agents\">Agent Registry</button><button data-tab=\"knowledge\">Knowledge Galaxy</button><button data-tab=\"artifacts\">Artifact Library</button><button data-tab=\"seo\">SEO Mission Control</button><button data-tab=\"operator\">Operator Loop</button><button data-tab=\"media\">Media Studio</button><button data-tab=\"manage\">Manage / Status</button><button data-tab=\"voice\">Voice / Jarvis</button>
 </nav>

@@ -91,6 +91,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onRestoreToMessage?: (messageId: string) => Promise<void>
   onRetryResume: (sessionId: string) => void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
+  onDismissError?: (messageId: string) => void
 }
 
 interface ChatHeaderProps {
@@ -277,7 +278,8 @@ export function ChatView({
   onReload,
   onRestoreToMessage,
   onRetryResume,
-  onTranscribeAudio
+  onTranscribeAudio,
+  onDismissError
 }: ChatViewProps) {
   const location = useLocation()
   const { t } = useI18n()
@@ -451,6 +453,7 @@ export function ChatView({
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={onCancel}
+            onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
             sessionId={activeSessionId}
             sessionKey={threadKey}

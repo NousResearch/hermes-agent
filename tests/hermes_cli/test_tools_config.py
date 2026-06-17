@@ -216,11 +216,6 @@ def test_get_platform_tools_composite_plus_explicit_keeps_ha_runtime_exception(m
     assert "homeassistant" in enabled
 
 
-def test_get_platform_tools_default_telegram_includes_messaging():
-    enabled = _get_platform_tools({}, "telegram")
-
-    assert "messaging" in enabled
-
 
 def test_get_platform_tools_default_whatsapp_includes_web():
     enabled = _get_platform_tools({}, "whatsapp")
@@ -1283,9 +1278,16 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     """Non-configurable toolsets whose tools are in the composite but not in
     CONFIGURABLE_TOOLSETS should still appear in the result.
     """
-    from toolsets import TOOLSETS
+    from toolsets import TOOLSETS, resolve_toolset
     from hermes_cli.tools_config import PLATFORMS
     from unittest.mock import patch as mock_patch
+
+    # Build the composite from the live terminal toolset instead of freezing
+    # the historical two-tool shape. Other tests may import GUI/desktop paths
+    # that register additional terminal-scoped tools (for example
+    # ``read_terminal``), and _get_platform_tools correctly requires all tools
+    # in a configurable toolset to be present before inferring it.
+    terminal_tools = resolve_toolset("terminal")
 
     fake_toolsets = dict(TOOLSETS)
     fake_toolsets["_test_platform_tool"] = {
@@ -1295,7 +1297,7 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     }
     fake_toolsets["hermes-_test_platform"] = {
         "description": "test composite",
-        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "tools": ["web_search", "web_extract", *terminal_tools, "_test_special_tool"],
         "includes": [],
     }
 

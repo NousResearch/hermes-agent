@@ -1119,8 +1119,22 @@ def execute_code(
             "duration_seconds": 0,
         }, ensure_ascii=False)
 
+    from tools.approval import (
+        mark_gateway_approval_completed,
+        mark_gateway_approval_executing,
+    )
+    approval_record_id = _guard.get("approval_record_id")
+
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        mark_gateway_approval_executing(approval_record_id)
+        _remote_result = _execute_remote(code, task_id, enabled_tools)
+        try:
+            _remote_payload = json.loads(_remote_result)
+            _remote_exit = -1 if _remote_payload.get("status") == "error" else 0
+        except Exception:
+            _remote_exit = 0
+        mark_gateway_approval_completed(approval_record_id, exit_code=_remote_exit)
+        return _remote_result
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1163,6 +1177,7 @@ def execute_code(
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
+    mark_gateway_approval_executing(approval_record_id)
     exec_start = time.monotonic()
     server_sock = None
     stop_event = threading.Event()
@@ -1477,6 +1492,7 @@ def execute_code(
             if stderr_text:
                 result["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
 
+        mark_gateway_approval_completed(approval_record_id, exit_code=exit_code)
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as exc:
@@ -1489,6 +1505,7 @@ def execute_code(
             exc,
             exc_info=True,
         )
+        mark_gateway_approval_completed(approval_record_id, exit_code=-1)
         return json.dumps({
             "status": "error",
             "error": str(exc),

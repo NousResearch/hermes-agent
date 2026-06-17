@@ -491,6 +491,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+
+    # --- repair (self-heal for DB corruption) ---
+    p_repair = sub.add_parser(
+        "repair",
+        help="Attempt to repair the kanban DB (e.g. index desync). Safe, creates backups.",
+    )
+    p_repair.add_argument("--force", action="store_true", help="Force even if DB appears healthy")
+    p_repair.add_argument("--json", action="store_true", help="JSON output")
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -932,6 +941,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
             "diag":     _cmd_diagnostics,
+            "repair":   _cmd_repair,
             "link":     _cmd_link,
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
@@ -1795,6 +1805,24 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         print()
     return 0
 
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    """Handler for ``hermes kanban repair``."""
+    import json as _json
+    from hermes_cli import kanban_db as kb
+
+    result = kb.repair(force=getattr(args, "force", False))
+    if getattr(args, "json", False):
+        print(_json.dumps(result, indent=2, default=str))
+    else:
+        if result.get("healed"):
+            print(f"[SUCCESS] {result.get('message', 'Repair completed')}")
+        else:
+            print(f"[WARNING] {result.get('message', 'Repair attempted')}")
+        if result.get("backup"):
+            print(f"  Backup: {result['backup']}")
+    return 0 if result.get("healed", True) else 1
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:

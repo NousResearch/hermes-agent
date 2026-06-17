@@ -1356,7 +1356,7 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
 
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
-
+    
     Opens the probe in read/write mode so SQLite can recover or
     checkpoint a healthy WAL/hot-journal DB before we declare it
     corrupt. If the file is malformed, copy it (and any WAL/SHM
@@ -1378,6 +1378,11 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     user's own machine. We additionally resolve the path here and
     confine all filesystem writes to its parent directory so any
     accidental ``..`` segments are collapsed before any I/O happens.
+    
+    **Modifications for automatic recovery:**
+    If integrity check fails, attempts to automatically trigger
+    the recovery script in case of corruption instead of raising 
+    KanbanDbCorruptError. This allows graceful application recovery.
     """
     # Resolve before any I/O. ``Path.resolve()`` normalizes ``..`` and
     # symlinks, giving us a canonical path whose parent dir we can pin.
@@ -1408,8 +1413,143 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
         return
-    backup = _backup_corrupt_db(resolved)
-    raise KanbanDbCorruptError(resolved, backup, reason)
+
+    # Self-heal for the dominant corruption we see (index entry count mismatch on idx_events_run).
+    # This is the exact error that has been recurring under agent load.
+    # Table data is intact; only the index is desynced. Heal in place.
+    if reason and "wrong # of entries in index" in reason.lower():
+        print(f"[HEAL] Recoverable index desync detected: {reason}")
+        try:
+            _backup_corrupt_db(resolved)
+            conn = _sqlite_connect(resolved)
+            try:
+                conn.execute("DROP INDEX IF EXISTS idx_events_run")
+                conn.execute("CREATE INDEX idx_events_run ON task_events(run_id, id)")
+                conn.execute("REINDEX idx_events_run")
+            finally:
+                conn.close()
+
+            probe = _sqlite_connect(resolved)
+            try:
+                r = probe.execute("PRAGMA integrity_check").fetchone()
+            finally:
+                probe.close()
+            if r and str(r[0]).lower() == "ok":
+                print("[HEAL SUCCESS] idx_events_run rebuilt in place. Latest data preserved. Continuing normally.")
+                _INITIALIZED_PATHS.add(str(resolved))
+                return
+        except Exception as heal_e:
+            print(f"[HEAL] Self-heal attempt failed (falling back): {heal_e}")
+
+    # If integrity check failed, attempt automatic database restoration
+    try:
+        # Check for db_restore script
+        restore_script_path = Path.home() / ".hermes" / "workspace" / "Code" / "Scripts" / "db_restore.py"
+
+        if restore_script_path.exists():
+            # Get current database path
+            db_path = kanban_db_path()
+
+            # Log corruption detection and backup creation
+            print(f"[CRITICAL] Database corruption detected at: {resolved}")
+            print(f"[BACKUP] Creating timestamped backup: .corrupt.*.bak")
+
+            # Create backup before calling restore script
+            backup = _backup_corrupt_db(resolved)
+            print(f"[SUCCESS] Backup created: {backup}")
+
+            # Attempt database restoration from latest backup
+            print(f"[RESTORATION] Attempting to restore from backup files...")
+
+            try:
+                import subprocess
+                import sys
+
+                # Run restoration script (non-interactive mode)
+                result = subprocess.run([
+                    sys.executable,
+                    str(restore_script_path),
+                    "--non-interactive"
+                ], capture_output=True, text=True, timeout=180)  # 3 minute timeout for restoration
+
+                # Restore script uses colored output, suppress ANSI codes
+                if result.stdout:
+                    import re
+                    clean_stdout = re.sub(r'\x1b\[[0-9;]+m', '', result.stdout)
+                    print(clean_stdout)
+
+                # Check restoration result
+                if result.returncode == 0 and db_path.exists():
+                    print(f"[SUCCESS] Database restored successfully")
+
+                    # Verify restored database can be opened
+                    try:
+                        probe = _sqlite_connect(db_path)
+                        row = probe.execute("PRAGMA integrity_check").fetchone()
+                        probe.close()
+
+                        if row and row[0] == "ok":
+                            print(f"[SUCCESS] Verified restored database integrity: OK")
+                            return  # Exit successfully without raising error
+                        else:
+                            print(f"[WARNING] Restored database still has integrity issues")
+                    except Exception as e:
+                        print(f"[WARNING] Verification failed: {e}")
+
+                print(f"[WARNING] Automatic restoration did not fully succeed")
+                print(f"[INFO] Please restore manually from backup files")
+
+            except subprocess.TimeoutExpired:
+                print(f"[ERROR] Database restoration timed out (180 seconds)")
+            except Exception as e:
+                print(f"[ERROR] Failed to execute restoration script: {e}")
+
+        # If restoration failed or no script exists, create backup and raise error
+        backup = _backup_corrupt_db(resolved)
+        raise KanbanDbCorruptError(resolved, backup, reason)
+
+    except KanbanDbCorruptError:
+        # Re-raise KanbanDbCorruptError if restoration wasn't successful
+        raise
+
+
+
+def repair(db_path: Optional[Path] = None, *, force: bool = False) -> dict:
+    """Attempt to repair common Kanban DB issues (primarily index desync).
+
+    This is the public entry point for ``hermes kanban repair``.
+    Returns a dict with 'healed', 'message', 'backup' etc.
+    The guard already auto-heals on connect for the main case.
+    """
+    from pathlib import Path as _Path
+    p = db_path or kanban_db_path()
+    if not p or not p.exists():
+        return {"healed": False, "message": "no db file"}
+
+    # Force a connect which will trigger _guard and self-heal if needed
+    try:
+        conn = connect(p)
+        conn.close()
+        # Also prune old corrupt backups (keep last 5 + good snapshots)
+        _prune_old_corrupts(p.parent)
+        return {"healed": True, "message": "DB opened (self-heal ran if needed)", "path": str(p)}
+    except KanbanDbCorruptError as e:
+        return {"healed": False, "message": f"unrecoverable: {e}", "backup": str(e.backup_path) if hasattr(e, 'backup_path') else None}
+    except Exception as e:
+        return {"healed": False, "message": str(e)}
+
+def _prune_old_corrupts(kanban_dir: Path, keep: int = 5) -> int:
+    """Keep only the most recent N .corrupt*.bak files. Return number removed."""
+    corrupts = sorted(kanban_dir.glob("kanban.db.corrupt*.bak"), key=lambda x: x.stat().st_mtime, reverse=True)
+    removed = 0
+    for old in corrupts[keep:]:
+        try:
+            old.unlink()
+            removed += 1
+        except Exception:
+            pass
+    # Also keep good snapshots but they are explicit
+    return removed
 
 
 def connect(
@@ -2008,6 +2148,13 @@ def write_txn(conn: sqlite3.Connection):
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
 
+        # Best-effort checkpoint after every write txn.
+        # Reduces the window for WAL-related index desync on kill/crash.
+        # PASSIVE is cheap and non-blocking for writers.
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # ID generation
@@ -6270,14 +6417,14 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
-            # Increment per-profile counter even in dry_run so the cap
-            # check sees the would-be spawn on subsequent iterations.
-            # Without this, dry_run reports every task as spawnable and
-            # under-reports the capped subset (#21582).
+            # Increment per-profile counter in dry_run only if there's actual capacity
+            # for the task to be spawned, to avoid false capacity accounting.
+            # Without this check, dry_run incorrectly increments counters for tasks
+            # that would be skipped due to profile cap limits (#21582).
             if _per_profile_cap is not None and row_assignee:
-                _per_profile_running[row_assignee] = (
-                    _per_profile_running.get(row_assignee, 0) + 1
-                )
+                current = _per_profile_running.get(row_assignee, 0)
+                if current < _per_profile_cap:
+                    _per_profile_running[row_assignee] = current + 1
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:

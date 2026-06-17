@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# e-Gov Law API — Japanese primary legal sources (no API key required).
+manifest_version: 1
+
+name: egov-law
+description: Search and retrieve Japanese laws from the e-Gov Law API (primary sources).
+source: https://github.com/takurot/egov-law-mcp
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - egov-law-mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_laws
+    - get_law_article
+    - get_law_full_text
+    - get_law_revisions
+    - keyword_search
+    - list_law_types
+
+post_install: |
+  e-Gov法令API MCPは認証不要です。一次資料（法令条文）の取得に使います。
+
+  Windows で uvx が無い場合:
+    py -3 -m pip install "egov-law-mcp>=0.1.0,<1"
+    hermes mcp add egov-law --command py --args -3 -m egov_law_mcp.server
+
+  OSINT fusion では `worldmonitor_fusion_report` と併用し、
+  Shinka の Evidence Block に条文番号を明示してください。
+
+  新しい Hermes セッションを開始して MCP ツールを読み込んでください。

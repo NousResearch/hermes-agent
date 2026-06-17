@@ -1,0 +1,17 @@
+name: worldmonitor-osint
+version: 0.1.0
+description: "Real-time OSINT via World Monitor API + ShinkaEvolve fusion for Japan security briefings."
+author: "zapabob, Hermes plugin port"
+kind: standalone
+requires_env:
+  - name: WORLDMONITOR_API_KEY
+    description: "World Monitor cloud API key (X-WorldMonitor-Key). Optional when using local sidecar on port 46123."
+    secret: true
+  - name: WORLDMONITOR_API_BASE
+    description: "API base URL (default https://api.worldmonitor.app or http://127.0.0.1:46123 for local sidecar)."
+    secret: false
+provides_tools:
+  - worldmonitor_status
+  - worldmonitor_snapshot
+  - worldmonitor_country_brief
+  - worldmonitor_fusion_report

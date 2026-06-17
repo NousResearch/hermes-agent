@@ -1,0 +1,16 @@
+name: shinka-osint
+version: 0.1.0
+description: "MILSPEC-grade OSINT intelligence via ShinkaEvolve-OSINT — daily briefings and security analysis."
+author: "zapabob (ShinkaEvolve-OSINT), Hermes plugin port"
+kind: standalone
+requires_env:
+  - name: SHINKA_OSINT_ROOT
+    description: "Absolute path to the ShinkaEvolve-OSINT checkout (contains shinka_mcp_server.py)."
+    secret: false
+provides_tools:
+  - shinka_osint_status
+  - shinka_osint_list_scenarios
+  - shinka_osint_analyze
+  - shinka_osint_briefing
+  - shinka_osint_verify
+  - shinka_osint_audit

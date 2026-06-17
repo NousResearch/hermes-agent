@@ -3058,6 +3058,32 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Tool API keys ──
+    "WORLDMONITOR_API_KEY": {
+        "description": (
+            "World Monitor wm_ API key (X-WorldMonitor-Key). "
+            "Separate from OpenRouter/OpenAI/xAI/Codex — use WM Pro OAuth via MCP when possible."
+        ),
+        "prompt": "World Monitor API key (wm_…)",
+        "url": "https://www.worldmonitor.app/docs/usage-auth",
+        "password": True,
+        "category": "tool",
+    },
+    "WORLDMONITOR_API_BASE": {
+        "description": "World Monitor API base (default cloud or http://127.0.0.1:46123 for desktop sidecar)",
+        "prompt": "World Monitor API base URL",
+        "url": "https://www.worldmonitor.app/docs/desktop-app",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "WORLDMONITOR_LOCAL_PORT": {
+        "description": "Local World Monitor desktop sidecar port (default 46123)",
+        "prompt": "World Monitor sidecar port",
+        "url": None,
+        "password": False,
+        "category": "setting",
+        "advanced": True,
+    },
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
         "prompt": "Exa API key",

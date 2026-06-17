@@ -1,0 +1,1 @@
+https://api.worldmonitor.app/oauth/authorize?response_type=code&client_id=99f3ed4b-6ddf-4da2-8cbe-2ff19ca2333a&redirect_uri=http%3A%2F%2F127.0.0.1%3A59061%2Fcallback&state=eup6jAkeAji99xdgVBo3Nb-HoQ5WdaJ-RyBAMhGuky8&code_challenge=vWlPow0I44h_g-JwKnvTfabsvwlINnc6z-FaBy31pJg&code_challenge_method=S256&resource=https%3A%2F%2Fworldmonitor.app%2F&scope=mcp

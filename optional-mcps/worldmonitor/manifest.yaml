@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry — World Monitor live intelligence (OAuth 2.1).
+manifest_version: 1
+
+name: worldmonitor
+description: Real-time global intelligence via World Monitor MCP (39 tools, OAuth Pro sign-in).
+source: https://github.com/koala73/worldmonitor
+
+transport:
+  type: http
+  url: https://worldmonitor.app/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth 2.1 (PKCE + dynamic client registration). Not Hermes LLM / Codex / xAI.
+
+post_install: |
+  World Monitor MCP uses its own OAuth — not OpenRouter, OpenAI, xAI, Anthropic, or Codex keys.
+
+  1. Start a new Hermes session.
+  2. Run: hermes mcp test worldmonitor
+  3. Complete "Sign in with World Monitor Pro" in the browser (Pro or API tier required).
+
+  For server-side REST (worldmonitor-osint plugin) without OAuth, use a wm_ API key:
+    hermes worldmonitor-osint setup-auth --mode key --api-key wm_...
+
+  Non-interactive / agent OAuth (opens browser, waits up to 10 min):
+    py -3 scripts/worldmonitor/run_mcp_oauth_login.py
+    # or: scripts/worldmonitor/Start-WorldMonitorMcpOAuth.ps1
+
+  Local desktop sidecar (port 46123, no cloud key for local reads):
+    hermes worldmonitor-osint setup-auth --mode sidecar
+
+  Docs: https://www.worldmonitor.app/docs/mcp-quickstart

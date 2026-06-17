@@ -1291,6 +1291,12 @@ class SlashCommandCompleter(Completer):
         word = text[i + 1:]
         if not word:
             return None
+        # URLs contain "/" but are not local paths. Treating them as paths fires
+        # os.listdir on every keystroke while typing/pasting a link (e.g. an
+        # https:// URL becomes a listdir of "https:") — pure latency, never a
+        # useful completion. Skip any token with a scheme separator.
+        if "://" in word:
+            return None
         # Only trigger path completion for path-like tokens
         if word.startswith(("./", "../", "~/", "/")) or "/" in word:
             return word

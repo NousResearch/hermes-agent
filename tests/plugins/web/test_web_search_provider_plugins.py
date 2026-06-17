@@ -442,17 +442,34 @@ class TestErrorResponseShapes:
         assert result.get("success") is False
         assert "error" in result
 
-    def test_parallel_extract_returns_per_url_errors_when_unconfigured(self) -> None:
+    def test_parallel_extract_uses_keyless_mcp_when_unconfigured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fork: without PARALLEL_API_KEY, extract uses the free Search MCP."""
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
+        import plugins.web.parallel.provider as pp
 
         p = get_provider("parallel")
         assert p is not None
+
+        def _fake_fetch(urls: list[str], api_key: str | None) -> list[dict]:
+            return [
+                {
+                    "url": urls[0],
+                    "title": "Example Domain",
+                    "content": "example body",
+                    "metadata": {"sourceURL": urls[0]},
+                }
+            ]
+
+        monkeypatch.setattr(pp, "_mcp_web_fetch", _fake_fetch)
         result = asyncio.run(p.extract(["https://example.com"]))
         assert isinstance(result, list)
         assert len(result) == 1
-        assert "error" in result[0]
         assert result[0]["url"] == "https://example.com"
+        assert "content" in result[0]
+        assert "error" not in result[0]
 
     def test_firecrawl_extract_returns_per_url_errors_when_unconfigured(self) -> None:
         _ensure_plugins_loaded()

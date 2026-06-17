@@ -37,6 +37,7 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # every slash command — not just the overflow ones. We keep the desired set
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
+_DISCORD_ALLOWLIST_WILDCARD = "*"
 
 try:
     import discord
@@ -1461,11 +1462,11 @@ class DiscordAdapter(BasePlatformAdapter):
             raise RuntimeError("Discord application ID is unavailable for slash command sync")
 
         desired_payloads = [command.to_dict(tree) for command in tree.get_commands()]
-        if len(desired_payloads) > _DISCORD_GLOBAL_COMMAND_LIMIT:
+        if len(desired_payloads) > _DISCORD_MAX_APP_COMMANDS:
             raise RuntimeError(
                 "Discord slash command sync requested "
                 f"{len(desired_payloads)} global command(s), exceeding "
-                f"Discord's {_DISCORD_GLOBAL_COMMAND_LIMIT} command limit"
+                f"Discord's {_DISCORD_MAX_APP_COMMANDS} command limit"
             )
         desired_by_key = {
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload

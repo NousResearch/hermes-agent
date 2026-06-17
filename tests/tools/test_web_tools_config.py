@@ -384,12 +384,12 @@ class TestBackendSelection:
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
-    def test_fallback_no_keys_defaults_to_firecrawl(self):
-        """No keys, no config → 'firecrawl' (will fail at client init)."""
+    def test_fallback_no_keys_defaults_to_parallel(self):
+        """No keys, no config → 'parallel' (fork keyless free-MCP default)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch("tools.web_tools._ddgs_package_importable", return_value=False):
-            assert _get_backend() == "firecrawl"
+            assert _get_backend() == "parallel"
 
     def test_invalid_config_falls_through_to_fallback(self):
         """web.backend=invalid → ignored, uses key-based fallback."""

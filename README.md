@@ -42,6 +42,8 @@
 
 ## Quick Start (Windows)
 
+初回セットアップは `scripts/install.ps1` でも実行できます（Python / venv / editable install まで一括）。
+
 ```powershell
 git clone https://github.com/zapabob/hermes-agent.git
 cd hermes-agent

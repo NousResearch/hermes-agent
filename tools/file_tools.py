@@ -248,6 +248,11 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
+def _msys_path_to_windows(filepath: str) -> str:
+    """Convert MSYS/WSL drive paths to native Windows paths when on Windows."""
+    return _windows_bash_path_to_drive(filepath)
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's absolute base directory.
 

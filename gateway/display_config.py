@@ -47,6 +47,17 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Optional retention policy for cleanup_progress. 0 preserves legacy
+    # post-delivery cleanup; >0 waits for this much session inactivity before
+    # deleting the collected meta bubbles.
+    "cleanup_progress_idle_seconds": 0,
+    # Optional exchange-count trigger. 0 disables; N deletes collected meta
+    # bubbles after N successful cleanup-tracked turns even if the idle timer
+    # has not elapsed.
+    "cleanup_progress_max_exchanges": 0,
+    # Reset/new-session trigger. When cleanup_progress is enabled, a reset
+    # flushes any pending collected meta bubbles immediately by default.
+    "cleanup_progress_on_reset": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -235,16 +246,21 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
-    if setting == "cleanup_progress":
+    if setting in {"cleanup_progress", "cleanup_progress_on_reset"}:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "tool_progress_grouping":
         val = str(value).lower()
         return val if val in ("accumulate", "separate") else "accumulate"
-    if setting == "tool_preview_length":
+    if setting in {"tool_preview_length", "cleanup_progress_max_exchanges"}:
         try:
-            return int(value)
+            return max(0, int(value))
         except (TypeError, ValueError):
             return 0
+    if setting == "cleanup_progress_idle_seconds":
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return 0.0
     return value

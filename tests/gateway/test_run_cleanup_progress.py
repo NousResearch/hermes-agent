@@ -365,3 +365,272 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_idle_seconds_delays_deletion_until_quiet():
+    """An idle cleanup window keeps progress bubbles visible briefly, then
+    deletes them after the configured quiet period."""
+    from gateway.run import GatewayRunner
+
+    adapter = CleanupCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+
+    runner._schedule_meta_message_cleanup(
+        session_key="agent:main:telegram:dm:42",
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m1", "m2"],
+        loop=loop,
+        idle_seconds=0.05,
+        max_exchanges=0,
+    )
+
+    await asyncio.sleep(0)
+    assert adapter.deleted == []
+
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(adapter.deleted) == 2:
+            break
+
+    assert adapter.deleted == [
+        {"chat_id": "42", "message_id": "m1"},
+        {"chat_id": "42", "message_id": "m2"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_accumulates_until_exchange_threshold():
+    """A max-exchanges threshold deletes accumulated meta bubbles before the
+    idle timer elapses."""
+    from gateway.run import GatewayRunner
+
+    adapter = CleanupCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+    session_key = "agent:main:telegram:dm:42"
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m1"],
+        loop=loop,
+        idle_seconds=60,
+        max_exchanges=2,
+    )
+    await asyncio.sleep(0)
+    assert adapter.deleted == []
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m2", "m1"],
+        loop=loop,
+        idle_seconds=60,
+        max_exchanges=2,
+    )
+
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(adapter.deleted) == 2:
+            break
+
+    # m1 is not duplicated when the second turn reports it again.
+    assert adapter.deleted == [
+        {"chat_id": "42", "message_id": "m1"},
+        {"chat_id": "42", "message_id": "m2"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_pause_cancels_pending_idle_delete():
+    """Starting a new turn pauses the idle cleanup timer so it cannot delete
+    historical meta bubbles while the user is actively interacting."""
+    from gateway.run import GatewayRunner
+
+    adapter = CleanupCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+    session_key = "agent:main:telegram:dm:42"
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m1"],
+        loop=loop,
+        idle_seconds=0.05,
+        max_exchanges=0,
+    )
+    runner._pause_meta_cleanup_for_session(session_key)
+
+    await asyncio.sleep(0.08)
+    assert adapter.deleted == []
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m2"],
+        loop=loop,
+        idle_seconds=0,
+        max_exchanges=0,
+    )
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(adapter.deleted) == 2:
+            break
+
+    assert adapter.deleted == [
+        {"chat_id": "42", "message_id": "m1"},
+        {"chat_id": "42", "message_id": "m2"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_resume_rearms_paused_idle_delete_without_new_ids():
+    """A progress-free follow-up turn should not strand previously tracked ids."""
+    from gateway.run import GatewayRunner
+
+    adapter = CleanupCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+    session_key = "agent:main:telegram:dm:42"
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m1"],
+        loop=loop,
+        idle_seconds=60,
+        max_exchanges=0,
+    )
+    runner._pause_meta_cleanup_for_session(session_key)
+    runner._resume_paused_meta_cleanup_for_session(
+        session_key,
+        loop=loop,
+        idle_seconds=0.01,
+        max_exchanges=0,
+    )
+
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+
+    assert adapter.deleted == [{"chat_id": "42", "message_id": "m1"}]
+    assert getattr(runner, "_meta_cleanup_pending", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_flushes_on_session_reset():
+    """A session reset/new command deletes pending idle-cleanup meta bubbles
+    immediately instead of leaving them to linger."""
+    from gateway.run import GatewayRunner
+
+    adapter = CleanupCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+    session_key = "agent:main:telegram:dm:42"
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m1", "m2"],
+        loop=loop,
+        idle_seconds=60,
+        max_exchanges=0,
+    )
+
+    await runner._flush_meta_cleanup_for_session(session_key)
+
+    assert adapter.deleted == [
+        {"chat_id": "42", "message_id": "m1"},
+        {"chat_id": "42", "message_id": "m2"},
+    ]
+    assert getattr(runner, "_meta_cleanup_pending", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_reset_flush_respects_config(monkeypatch):
+    """cleanup_progress_on_reset=false leaves pending idle cleanup intact."""
+    from gateway import run as gateway_run
+    from gateway.run import GatewayRunner
+
+    adapter = CleanupCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+    session_key = "agent:main:telegram:dm:42"
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m1"],
+        loop=loop,
+        idle_seconds=60,
+        max_exchanges=0,
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "display": {
+                "platforms": {"telegram": {"cleanup_progress_on_reset": False}}
+            }
+        },
+    )
+
+    await runner._flush_meta_cleanup_for_session(session_key, platform_key="telegram")
+
+    assert adapter.deleted == []
+    assert session_key in getattr(runner, "_meta_cleanup_pending", {})
+
+
+@pytest.mark.asyncio
+async def test_cleanup_exchange_threshold_without_idle_waits_until_limit():
+    """Exchange-count-only mode should not fall back to legacy immediate cleanup."""
+    from gateway.run import GatewayRunner
+
+    adapter = CleanupCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+    session_key = "agent:main:telegram:dm:42"
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m1"],
+        loop=loop,
+        idle_seconds=0,
+        max_exchanges=2,
+    )
+    await asyncio.sleep(0.03)
+    assert adapter.deleted == []
+    assert session_key in getattr(runner, "_meta_cleanup_pending", {})
+
+    runner._schedule_meta_message_cleanup(
+        session_key=session_key,
+        chat_id="42",
+        adapter=adapter,
+        message_ids=["m2"],
+        loop=loop,
+        idle_seconds=0,
+        max_exchanges=2,
+    )
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(adapter.deleted) == 2:
+            break
+
+    assert adapter.deleted == [
+        {"chat_id": "42", "message_id": "m1"},
+        {"chat_id": "42", "message_id": "m2"},
+    ]

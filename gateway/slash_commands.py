@@ -67,6 +67,12 @@ class GatewaySlashCommandsMixin:
         
         # Get existing session key
         session_key = self._session_key_for_source(source)
+        if hasattr(self, "_flush_meta_cleanup_for_session"):
+            flush_meta_cleanup = getattr(self, "_flush_meta_cleanup_for_session")
+            await flush_meta_cleanup(
+                session_key,
+                platform_key=source.platform.value if source.platform else "",
+            )
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped. The
         # in-flight run's own guarded release (run_generation=old) will return

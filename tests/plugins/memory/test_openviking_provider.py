@@ -755,13 +755,11 @@ def test_sync_turn_tracks_writer_under_session_id():
 
 
 # ---------------------------------------------------------------------------
-# on_memory_write: same late-capture hazard as sync_turn — worker must use
-# the session id snapshotted at call time, not re-read self._session_id.
-# Block inside the stub ctor (BEFORE the f-string for the post path is
-# evaluated) so the rotation deterministically beats the f-string.
+# on_memory_write: explicit memory writes use content/write and stay outside
+# the session transcript/commit boundary.
 # ---------------------------------------------------------------------------
 
-def test_on_memory_write_captures_session_id_at_call_time():
+def test_on_memory_write_uses_content_write_independent_of_session_rotation():
     import threading
 
     provider = OpenVikingMemoryProvider()
@@ -777,6 +775,7 @@ def test_on_memory_write_captures_session_id_at_call_time():
     release = threading.Event()
     done = threading.Event()
     captured_paths = []
+    captured_payloads = []
 
     class StubClient:
         def __init__(self, *a, **kw):
@@ -785,6 +784,7 @@ def test_on_memory_write_captures_session_id_at_call_time():
 
         def post(self, path, payload=None, **kwargs):
             captured_paths.append(path)
+            captured_payloads.append(payload)
             done.set()
             return {}
 
@@ -792,19 +792,22 @@ def test_on_memory_write_captures_session_id_at_call_time():
     real_client_cls = _mod._VikingClient
     _mod._VikingClient = StubClient
     try:
-        provider.on_memory_write("add", "viking://memories/x", "remember this")
+        provider.on_memory_write("add", "user", "remember this")
         assert in_ctor.wait(timeout=2.0), "worker never entered ctor"
-        # Rotate provider's session id while the worker is parked in the ctor,
-        # BEFORE it evaluates the f-string for the post path. If the worker
-        # reads self._session_id inside the closure, it will now see "new-sid".
+        # Rotate provider's session id while the worker is parked. Memory writes
+        # must not become session messages in either the old or new session.
         provider._session_id = "new-sid"
         release.set()
         assert done.wait(timeout=2.0), "worker never reached post()"
     finally:
         _mod._VikingClient = real_client_cls
 
-    # The write must target the OLD session id captured at call time.
-    assert captured_paths == ["/api/v1/sessions/old-sid/messages"]
+    assert captured_paths == ["/api/v1/content/write"]
+    assert captured_payloads[0]["content"] == "remember this"
+    assert captured_payloads[0]["mode"] == "create"
+    assert captured_payloads[0]["uri"].startswith(
+        "viking://user/usr/agent/hermes/memories/preferences/mem_"
+    )
 
 
 # ---------------------------------------------------------------------------

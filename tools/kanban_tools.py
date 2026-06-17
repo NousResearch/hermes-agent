@@ -751,6 +751,12 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.CompletionGateError as gate_err:
+                details = getattr(gate_err, "details", {}) or {}
+                extra = ""
+                if details:
+                    extra = f" Details: {json.dumps(details, sort_keys=True)}"
+                return tool_error(f"kanban_complete blocked: {gate_err}.{extra}")
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"

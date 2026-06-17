@@ -44,7 +44,7 @@ def _init_git_repo(repo: Path) -> None:
 
 def _make_git_worktree(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
-    worktree = tmp_path / "worktree"
+    worktree = repo / ".worktrees" / "live"
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
@@ -381,18 +381,118 @@ def test_live_worker_workspace_snapshot_uses_live_worktree_checkout(
     }
 
 
-def test_live_worker_workspace_snapshot_ignores_scratch_tasks(
-    kanban_home, tmp_path, monkeypatch
+def test_complete_task_requires_merged_branch_even_with_green_ci(
+    kanban_home, tmp_path
 ):
     worktree = _make_git_worktree(tmp_path)
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(worktree))
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="scratch", workspace_kind="scratch")
-        task = kb.get_task(conn, tid)
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        with pytest.raises(kb.CompletionGateError, match="not merged"):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="ok",
+                metadata={"ci": {"typecheck": True, "lint": True, "tests": True}},
+            )
+        assert kb.get_task(conn, tid).status != "done"
 
-    assert task is not None
-    assert kb.live_worker_workspace_snapshot(task) == {}
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--ff-only", "wt/live"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="ok",
+            metadata={"ci": {"typecheck": True, "lint": True, "tests": True}},
+        )
+        assert kb.get_task(conn, tid).status == "done"
+
+
+def test_complete_task_rejects_red_ci_even_on_merged_branch(
+    kanban_home, tmp_path
+):
+    worktree = _make_git_worktree(tmp_path)
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "merge", "--ff-only", "wt/live"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        with pytest.raises(kb.CompletionGateError, match="CI failed"):
+            kb.complete_task(
+                conn,
+                tid,
+                summary="looks fine",
+                metadata={"ci": {"typecheck": True, "lint": True, "tests": False}},
+            )
+        assert kb.get_task(conn, tid).status != "done"
+
+
 
 
 # ---------------------------------------------------------------------------

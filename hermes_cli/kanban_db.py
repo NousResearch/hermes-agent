@@ -4038,6 +4038,86 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionGateError(ValueError):
+    """Raised when a task completion fails the reality-based gate.
+
+    The message is designed for direct tool-error surfacing. Callers
+    may inspect ``.details`` for structured diagnostics.
+    """
+
+    def __init__(self, message: str, *, details: Optional[dict] = None):
+        self.details = dict(details or {})
+        super().__init__(message)
+
+
+def _ci_step_passed(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get("passed"), bool):
+            return bool(value["passed"])
+        if isinstance(value.get("ok"), bool):
+            return bool(value["ok"])
+        if isinstance(value.get("success"), bool):
+            return bool(value["success"])
+        if isinstance(value.get("returncode"), int):
+            return value["returncode"] == 0
+        if isinstance(value.get("exit_code"), int):
+            return value["exit_code"] == 0
+        status = str(value.get("status") or value.get("verdict") or "").strip().casefold()
+        if status:
+            return status in {"pass", "passed", "ok", "success", "green"}
+    return False
+
+
+def _completion_ci_green(metadata: Optional[dict]) -> tuple[bool, str]:
+    if not isinstance(metadata, dict):
+        return False, "completion blocked: worktree tasks must include metadata['ci'] with real CI results"
+
+    ci = metadata.get("ci")
+    if ci is None:
+        return False, "completion blocked: worktree tasks must include metadata['ci'] with real CI results"
+
+    if isinstance(ci, bool):
+        return (
+            ci,
+            "completion blocked: CI verdict was red" if not ci else "",
+        )
+
+    if not isinstance(ci, dict):
+        return False, "completion blocked: metadata['ci'] must be a boolean or object with typecheck/lint/tests verdicts"
+
+    if isinstance(ci.get("passed"), bool):
+        passed = bool(ci["passed"])
+        return (
+            passed,
+            "completion blocked: CI verdict was red" if not passed else "",
+        )
+
+    required = {"typecheck": ci.get("typecheck"), "lint": ci.get("lint"), "tests": ci.get("tests")}
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        return False, (
+            "completion blocked: metadata['ci'] must include verdicts for "
+            + ", ".join(missing)
+        )
+
+    failed = [name for name, value in required.items() if not _ci_step_passed(value)]
+    if failed:
+        return False, (
+            "completion blocked: CI failed for " + ", ".join(failed)
+        )
+
+    return True, ""
+
+
+def _block_completion(conn: sqlite3.Connection, task_id: str, kind: str, message: str, details: dict) -> None:
+    payload = {"message": message, **details}
+    with write_txn(conn):
+        _append_event(conn, task_id, f"completion_blocked_{kind}", payload)
+    raise CompletionGateError(message, details=payload)
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4060,6 +4140,12 @@ def complete_task(
     callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+
+    Worktree tasks are gated on the live git checkout: the branch must be
+    merged into the base ref (``workspace_base_ref`` or ``main``) and the
+    completion metadata must include a green ``metadata['ci']`` verdict
+    for typecheck, lint, and tests. This keeps the gate anchored to the
+    branch reality instead of prose quality.
 
     ``created_cards`` is an optional list of task ids the completing
     worker claims to have created. Each id is verified against
@@ -4104,6 +4190,78 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    task = get_task(conn, task_id)
+    if task is None:
+        return False
+
+    workspace_snapshot = live_worker_workspace_snapshot(task)
+    workspace_kind = workspace_snapshot.get("workspace_kind") or getattr(task, "workspace_kind", None)
+    if workspace_kind == "worktree":
+        workspace_path = workspace_snapshot.get("workspace_path") or getattr(task, "workspace_path", None)
+        branch_name = workspace_snapshot.get("branch_name") or getattr(task, "branch_name", None) or f"wt/{task.id}"
+        if not workspace_path:
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: could not locate the live worktree path for this task",
+                {
+                    "workspace_kind": workspace_kind,
+                    "branch_name": branch_name,
+                },
+            )
+        worktree_path = Path(str(workspace_path)).expanduser()
+        if not _is_linked_worktree_checkout(worktree_path):
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: task workspace is not an inspectable git worktree checkout",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                },
+            )
+        repo_root = _repo_root_for_worktree_target(worktree_path.parent)
+        if repo_root is None:
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: could not determine the git repo for this worktree",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                },
+            )
+        assert repo_root is not None
+        base_ref = (getattr(task, "workspace_base_ref", None) or "main").strip() or "main"
+        if not _git_is_ancestor(repo_root, branch_name, base_ref):
+            _block_completion(
+                conn,
+                task_id,
+                "unmerged_branch",
+                f"completion blocked: branch {branch_name!r} is not merged into {base_ref!r} yet",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                    "base_ref": base_ref,
+                },
+            )
+        ci_ok, ci_message = _completion_ci_green(metadata)
+        if not ci_ok:
+            _block_completion(
+                conn,
+                task_id,
+                "ci_failure",
+                ci_message,
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                    "base_ref": base_ref,
+                },
+            )
 
     with write_txn(conn):
         if expected_run_id is None:

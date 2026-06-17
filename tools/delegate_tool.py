@@ -695,6 +695,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    session_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -707,6 +708,13 @@ def _build_child_progress_callback(
     reconstruct the live spawn tree and route per-branch controls (kill,
     pause) back by ``subagent_id``.  All are optional for backward compat —
     older callers that ignore them still produce a flat list on the TUI.
+
+    ``session_ref`` is an optional dict containing ``session_id`` (and optionally
+    ``title``/``source``).  When provided the child's session id is threaded
+    through every relayed event so the gateway can attribute events to the
+    correct child session.  Pass ``None`` when the child agent does not exist
+    yet at callback-build time — the session id can be injected later via
+    ``_inject_session_ref()`` on the returned callback object.
 
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
@@ -726,6 +734,18 @@ def _build_child_progress_callback(
     _batch: List[str] = []
     _tool_count = [0]  # per-subagent running counter (list for closure mutation)
 
+    # Shared mutable slot for child session_id — allows injection after
+    # the child AIAgent is constructed (when session_ref is absent at build time).
+    _child_session_id_state: List[Optional[str]] = [
+        session_ref.get("session_id") if session_ref else None
+    ]
+
+    def _inject_session_ref(child_agent) -> None:
+        """Inject child session id into an already-returned callback (for the
+        _build_child_agent call-site where the child doesn't exist at build time)."""
+        if child_agent is not None:
+            _child_session_id_state[0] = getattr(child_agent, "session_id", None)
+
     def _identity_kwargs() -> Dict[str, Any]:
         kw: Dict[str, Any] = {
             "task_index": task_index,
@@ -743,6 +763,9 @@ def _build_child_progress_callback(
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
         kw["tool_count"] = _tool_count[0]
+        child_sid = _child_session_id_state[0]
+        if child_sid is not None:
+            kw["child_session_id"] = child_sid
         return kw
 
     def _relay(
@@ -879,6 +902,7 @@ def _build_child_progress_callback(
             _batch.clear()
 
     _callback._flush = _flush
+    _callback._inject_session_ref = _inject_session_ref
     return _callback
 
 
@@ -1162,6 +1186,12 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+
+    # Inject child's session_id into the progress callback now that the child
+    # agent exists.  This is safe to call even when child_progress_cb is None
+    # (progress callback not needed) — the attribute lookup is conditional.
+    if child_progress_cb is not None:
+        child_progress_cb._inject_session_ref(child)
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.

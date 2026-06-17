@@ -6,6 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,
   Check,
@@ -34,11 +36,11 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import {
   Select,
   SelectOption,
 } from "@nous-research/ui/ui/components/select";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
@@ -95,6 +97,7 @@ function ProfileActionsMenu({
   onEditDescription,
   onEditModel,
   onEditSoul,
+  onManageSkills,
   onRename,
   onSetActive,
 }: ProfileActionsMenuProps) {
@@ -204,6 +207,16 @@ function ProfileActionsMenu({
             type="button"
             role="menuitem"
             className={itemClass}
+            onClick={run(onManageSkills)}
+          >
+            <Package className="h-4 w-4" />
+            {labels.manageSkills}
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
             onClick={run(onCopyCommand)}
           >
             <Terminal className="h-4 w-4" />
@@ -240,12 +253,14 @@ function ProfileActionsMenu({
 }
 
 export default function ProfilesPage() {
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+  const { setProfile } = useProfileScope();
 
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render
@@ -289,13 +304,17 @@ export default function ProfilesPage() {
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
       actions: p.actions ?? "Actions",
+      manageSkills: p.manageSkills ?? "Manage skills & tools",
+      activeSetHint:
+        p.activeSetHint ??
+        "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
     };
   }, [t.profiles]);
 
   // Create modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
-  const [cloneFromDefault, setCloneFromDefault] = useState(true);
+  const [cloneFrom, setCloneFrom] = useState<string | null>("default");
   const [cloneAll, setCloneAll] = useState(false);
   const [noSkills, setNoSkills] = useState(false);
   const [newDescription, setNewDescription] = useState("");
@@ -333,6 +352,10 @@ export default function ProfilesPage() {
   // Tracks the latest description request (save / auto-describe) so a late
   // response can't overwrite state for a different, newly-opened editor.
   const activeDescRequest = useRef<string | null>(null);
+  // Counts in-flight save / auto-describe requests so the saving indicator
+  // is only cleared when the last concurrent request settles.
+  const descSavingCount = useRef(0);
+  const describingCount = useRef(0);
 
   // Inline model editor state
   const [editingModelFor, setEditingModelFor] = useState<string | null>(null);
@@ -408,27 +431,33 @@ export default function ProfilesPage() {
     }
     setCreating(true);
     try {
-      const cloning = cloneAll || cloneFromDefault;
+      const cloning = cloneFrom !== null;
       const picked = modelChoice
         ? modelChoices?.find(
             (c) => `${c.provider}\u0000${c.model}` === modelChoice,
           )
         : undefined;
-      await api.createProfile({
+      const res = await api.createProfile({
         name,
-        clone_from_default: cloneAll ? false : cloneFromDefault,
-        clone_all: cloneAll,
+        clone_from: cloneFrom,
+        clone_all: cloning && cloneAll,
         no_skills: cloning ? false : noSkills,
         description: newDescription.trim() || undefined,
         provider: picked?.provider,
         model: picked?.model,
       });
       showToast(`${t.profiles.created}: ${name}`, "success");
+      if (picked && res.model_set === false) {
+        showToast(
+          `Profile created, but the model could not be saved — set it from the profile editor.`,
+          "error",
+        );
+      }
       setNewName("");
       setNewDescription("");
       setNoSkills(false);
       setCloneAll(false);
-      setCloneFromDefault(true);
+      setCloneFrom("default");
       setModelChoice("");
       setCreateModalOpen(false);
       load();
@@ -468,7 +497,11 @@ export default function ProfilesPage() {
       // The backend normalizes/validates the name; trust the canonical
       // value it returns rather than the raw input.
       const { active } = await api.setActiveProfile(name);
-      showToast(`${L.activeSet}: ${active}`, "success");
+      setProfile(active);
+      showToast(
+        `${L.activeSet}: ${active} — ${L.activeSetHint.replace("{name}", active)}`,
+        "success",
+      );
       setActiveInfo((prev) =>
         prev ? { ...prev, active } : { active, current: active },
       );
@@ -545,6 +578,7 @@ export default function ProfilesPage() {
   );
 
   const handleSaveDesc = async (name: string) => {
+    descSavingCount.current += 1;
     setDescSaving(true);
     activeDescRequest.current = name;
     try {
@@ -571,11 +605,13 @@ export default function ProfilesPage() {
         showToast(`${t.status.error}: ${e}`, "error");
       }
     } finally {
-      setDescSaving(false);
+      descSavingCount.current -= 1;
+      if (descSavingCount.current === 0) setDescSaving(false);
     }
   };
 
   const handleAutoDescribe = async (name: string) => {
+    describingCount.current += 1;
     setDescribing(true);
     activeDescRequest.current = name;
     try {
@@ -603,7 +639,8 @@ export default function ProfilesPage() {
         showToast(`${t.status.error}: ${e}`, "error");
       }
     } finally {
-      setDescribing(false);
+      describingCount.current -= 1;
+      if (describingCount.current === 0) setDescribing(false);
     }
   };
 
@@ -708,23 +745,33 @@ export default function ProfilesPage() {
       : base;
   })();
 
-  // Put "Create" button in page header
+  // Put "Build" (full builder) + "Create" (quick modal) buttons in header
   useLayoutEffect(() => {
     setEnd(
-      <Button
-        className="uppercase"
-        size="sm"
-        onClick={() => setCreateModalOpen(true)}
-      >
-        {t.common.create}
-      </Button>,
+      <div className="flex items-center gap-2">
+        <Button
+          className="uppercase"
+          size="sm"
+          outlined
+          onClick={() => navigate("/profiles/new")}
+        >
+          Build
+        </Button>
+        <Button
+          className="uppercase"
+          size="sm"
+          onClick={() => setCreateModalOpen(true)}
+        >
+          {t.common.create}
+        </Button>
+      </div>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading]);
+  }, [setEnd, t.common.create, loading, navigate]);
 
-  const cloning = cloneAll || cloneFromDefault;
+  const cloning = cloneFrom !== null;
 
   if (loading) {
     return (
@@ -768,7 +815,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto",
+              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -790,7 +837,7 @@ export default function ProfilesPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="profile-name">{t.profiles.name}</Label>
 
@@ -812,6 +859,26 @@ export default function ProfilesPage() {
                 <p className="text-xs text-muted-foreground">
                   {t.profiles.nameRule}
                 </p>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="clone-from">{t.profiles.cloneFrom}</Label>
+                <Select
+                  id="clone-from"
+                  value={cloneFrom ?? ""}
+                  onValueChange={(v) => {
+                    const next = v || null;
+                    setCloneFrom(next);
+                    if (next === null) setCloneAll(false);
+                  }}
+                >
+                  <SelectOption value="">{t.profiles.cloneFromNone}</SelectOption>
+                  {profiles.map((profile) => (
+                    <SelectOption key={profile.name} value={profile.name}>
+                      {profile.name}
+                    </SelectOption>
+                  ))}
+                </Select>
               </div>
 
               <div className="grid gap-2">
@@ -863,31 +930,17 @@ export default function ProfilesPage() {
 
                 <div className="flex items-center gap-2.5">
                   <Checkbox
-                    checked={cloneFromDefault}
-                    id="clone-from-default"
-                    disabled={cloneAll}
-                    onCheckedChange={(checked) =>
-                      setCloneFromDefault(checked === true)
-                    }
-                  />
-
-                  <Label
-                    className="font-mondwest normal-case tracking-normal text-sm cursor-pointer"
-                    htmlFor="clone-from-default"
-                  >
-                    {t.profiles.cloneFromDefault}
-                  </Label>
-                </div>
-
-                <div className="flex items-center gap-2.5">
-                  <Checkbox
                     checked={cloneAll}
+                    disabled={!cloning}
                     id="clone-all"
                     onCheckedChange={(checked) => setCloneAll(checked === true)}
                   />
 
                   <Label
-                    className="font-mondwest normal-case tracking-normal text-sm cursor-pointer"
+                    className={cn(
+                      "font-mondwest normal-case tracking-normal text-sm cursor-pointer",
+                      !cloning && "opacity-50",
+                    )}
                     htmlFor="clone-all"
                   >
                     {L.cloneAll}
@@ -1084,6 +1137,7 @@ export default function ProfilesPage() {
                             editModel: L.editModel,
                             editDescription: L.editDescription,
                             editSoul: t.profiles.editSoul,
+                            manageSkills: L.manageSkills,
                             openInTerminal: t.profiles.openInTerminal,
                             rename: t.profiles.rename,
                             delete: t.common.delete,
@@ -1095,6 +1149,11 @@ export default function ProfilesPage() {
                           onEditDescription={() => openDescEditor(p)}
                           onEditModel={() => openModelEditor(p)}
                           onEditSoul={() => openSoulEditor(p.name)}
+                          onManageSkills={() =>
+                            navigate(
+                              `/skills?profile=${encodeURIComponent(p.name)}`,
+                            )
+                          }
                           onRename={() => {
                             setRenamingFrom(p.name);
                             setRenameTo(p.name);
@@ -1181,7 +1240,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto",
+              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -1208,7 +1267,12 @@ export default function ProfilesPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div
+              className={cn(
+                "p-5 grid gap-4",
+                editorKind === "soul" && "min-h-0 overflow-y-auto",
+              )}
+            >
               {editorKind === "model" &&
                 (modelChoices !== null && modelChoices.length === 0 ? (
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>
@@ -1344,6 +1408,7 @@ interface ProfileActionsMenuProps {
     editDescription: string;
     editModel: string;
     editSoul: string;
+    manageSkills: string;
     openInTerminal: string;
     rename: string;
     setActive: string;
@@ -1354,6 +1419,7 @@ interface ProfileActionsMenuProps {
   onEditDescription: () => void;
   onEditModel: () => void;
   onEditSoul: () => void;
+  onManageSkills: () => void;
   onRename: () => void;
   onSetActive: () => void;
 }

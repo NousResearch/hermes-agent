@@ -4,7 +4,7 @@ import sqlite3
 import time
 import pytest
 
-from hermes_state import SCHEMA_SQL, SessionDB
+from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -347,6 +347,15 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_append_message_accepts_explicit_timestamp(self, db):
+        db.create_session(session_id="s1", source="telegram")
+        event_ts = 1777383653.0
+
+        db.append_message("s1", role="user", content="Hello", timestamp=event_ts)
+
+        messages = db.get_messages_as_conversation("s1")
+        assert messages[0]["timestamp"] == event_ts
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
@@ -370,11 +379,10 @@ class TestMessageStorage:
         assert messages[1]["observed"] == 0
 
         conversation = db.get_messages_as_conversation("s1")
-        assert conversation[0] == {
-            "role": "user",
-            "content": "[Alice|111]\nside chatter",
-            "observed": True,
-        }
+        assert conversation[0]["role"] == "user"
+        assert conversation[0]["content"] == "[Alice|111]\nside chatter"
+        assert conversation[0]["observed"] is True
+        assert isinstance(conversation[0].get("timestamp"), float)
         assert "observed" not in conversation[1]
 
     def test_tool_response_does_not_increment_tool_count(self, db):
@@ -458,7 +466,9 @@ class TestMessageStorage:
         # get_messages_as_conversation decodes back to the original list
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 1
-        assert conv[0] == {"role": "user", "content": content}
+        assert conv[0]["role"] == "user"
+        assert conv[0]["content"] == content
+        assert isinstance(conv[0].get("timestamp"), float)
 
     def test_dict_content_round_trip(self, db):
         """Dict-shaped content (e.g. provider wrappers) also round-trips."""
@@ -529,8 +539,12 @@ class TestMessageStorage:
 
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 2
-        assert conv[0] == {"role": "user", "content": "Hello"}
-        assert conv[1] == {"role": "assistant", "content": "Hi!"}
+        assert conv[0]["role"] == "user"
+        assert conv[0]["content"] == "Hello"
+        assert isinstance(conv[0]["timestamp"], float)
+        assert conv[1]["role"] == "assistant"
+        assert conv[1]["content"] == "Hi!"
+        assert isinstance(conv[1]["timestamp"], float)
 
     def test_platform_message_id_round_trips(self, db):
         """Platform-side message ids (yuanbao msg_id, telegram update_id, …)
@@ -620,7 +634,10 @@ class TestMessageStorage:
         )
 
         conv = db.get_messages_as_conversation("s1")
-        assert conv == [{"role": "assistant", "content": "Visible answer"}]
+        assert len(conv) == 1
+        assert conv[0]["role"] == "assistant"
+        assert conv[0]["content"] == "Visible answer"
+        assert isinstance(conv[0].get("timestamp"), float)
 
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by
@@ -934,6 +951,27 @@ class TestFTS5Search:
         assert isinstance(results2, list)
         assert len(results2) >= 1
 
+    def test_search_colon_query_still_finds_content(self, db):
+        """Queries containing ':' must not silently return empty.
+
+        ':' is FTS5's column-filter operator. With a single-column FTS table an
+        unquoted query like 'TODO: fix' parses as 'column:term', raises
+        "no such column: TODO", and the swallowed error turns into zero results
+        even though the content is present. Regression for that silent-empty bug.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="TODO fix the deployment script")
+
+        # Control: the same content is found without the colon.
+        assert len(db.search_messages("deployment")) >= 1
+
+        # The colon query must find the message, not silently return [].
+        results = db.search_messages("TODO: fix")
+        assert isinstance(results, list)
+        assert len(results) >= 1
+        assert any("deployment" in (r.get("snippet") or r.get("content", "")).lower()
+                   for r in results)
+
     def test_search_quoted_phrase_preserved(self, db):
         """User-provided quoted phrases should be preserved for exact matching."""
         db.create_session(session_id="s1", source="cli")
@@ -963,6 +1001,10 @@ class TestFTS5Search:
         assert s('***') == ''
         # Valid prefix kept
         assert s('deploy*') == 'deploy*'
+        # Colon (FTS5 column-filter operator) stripped, both terms preserved
+        assert ':' not in s('TODO: fix')
+        assert s('TODO: fix').split() == ['TODO', 'fix']
+        assert ':' not in s('error:timeout')
 
     def test_sanitize_fts5_preserves_quoted_phrases(self):
         """Properly paired double-quoted phrases should be preserved."""
@@ -2272,6 +2314,65 @@ class TestSchemaInit:
 
         migrated_db.close()
 
+    def test_v9_migration_skips_v10_trigram_backfill_before_v11_rebuild(self, tmp_path, monkeypatch):
+        """Direct v9→current migration should do only the v11 FTS rebuild.
+
+        v10 backfilled ``messages_fts_trigram`` with content-only rows. Current
+        v11+ migration immediately drops and rebuilds both FTS tables with
+        content + tool metadata, so running the v10 insert first is wasted work.
+        """
+        db_path = tmp_path / "v9_fts.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (9)")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", "tool", "plain content", "browser_snapshot", '{"name":"browser_snapshot"}', 1001.0),
+        )
+        conn.commit()
+        conn.close()
+
+        trigram_content_only_inserts = []
+        real_connect = sqlite3.connect
+
+        def connect_with_trace(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+
+            def trace(sql):
+                text = " ".join(str(sql).split())
+                if (
+                    "INSERT INTO messages_fts_trigram" in text
+                    and "SELECT id, content FROM messages" in text
+                ):
+                    trigram_content_only_inserts.append(text)
+
+            conn.set_trace_callback(trace)
+            return conn
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_with_trace)
+        migrated_db = SessionDB(db_path=db_path)
+        try:
+            assert trigram_content_only_inserts == []
+            version = migrated_db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            assert version == SCHEMA_VERSION
+            normal_count = migrated_db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            trigram_count = migrated_db._conn.execute("SELECT COUNT(*) FROM messages_fts_trigram").fetchone()[0]
+            assert normal_count == 1
+            assert trigram_count == 1
+            tool_hit = migrated_db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'browser_snapshot'"
+            ).fetchone()[0]
+            assert tool_hit == 1
+        finally:
+            migrated_db.close()
+
     def test_reconciliation_adds_missing_columns(self, tmp_path):
         """Columns present in SCHEMA_SQL but missing from the live table
         are added by _reconcile_columns regardless of schema_version.
@@ -2715,6 +2816,120 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         ids = [s["id"] for s in sessions]
         assert "branch" in ids, "Branch session should be visible in default list"
+
+    def test_delegate_subagent_marker_hides_orphaned_row(self, db):
+        """``_delegate_from`` keeps delegate rows out of pickers after orphaning."""
+        db.create_session("parent", "cli")
+        db.create_session(
+            "delegate",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_delegate_from": "parent"},
+        )
+        db.append_message("delegate", "user", "scan the repo")
+
+        assert "delegate" not in [s["id"] for s in db.list_sessions_rich()]
+
+        db._conn.execute(
+            "UPDATE sessions SET parent_session_id = NULL WHERE id = ?", ("delegate",)
+        )
+        db._conn.commit()
+
+        assert "delegate" not in [s["id"] for s in db.list_sessions_rich()]
+
+    def test_delete_parent_cascades_delegate_children(self, db):
+        db.create_session("parent", "cli")
+        db.create_session(
+            "delegate",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_delegate_from": "parent"},
+        )
+        db.create_session(
+            "branch",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+
+        assert db.delete_session("parent") is True
+        assert db.get_session("delegate") is None
+        assert db.get_session("branch") is not None
+
+    def test_v16_migration_tags_linked_delegate_rows(self, tmp_path):
+        """Pre-marker linked subagent rows get tagged, then cascade with parent."""
+        import json
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session("parent", "cli")
+        db.create_session("delegate", "cli", parent_session_id="parent")
+        db._conn.execute("UPDATE schema_version SET version = 15")
+        db._conn.commit()
+        db.close()
+
+        db = SessionDB(db_path=db_path)
+        row = db.get_session("delegate")
+        assert json.loads(row["model_config"])["_delegate_from"] == "parent"
+        assert db.delete_session("parent") is True
+        assert db.get_session("delegate") is None
+        db.close()
+
+    def test_v16_migration_tags_orphaned_delegate_rows(self, tmp_path):
+        import json
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session("orphan", "cli")
+        db.append_message("orphan", "user", "Echo progress")
+        db.append_message("orphan", "tool", "step 1", tool_name="terminal")
+        db._conn.execute("UPDATE schema_version SET version = 15")
+        db._conn.commit()
+        db.close()
+
+        db = SessionDB(db_path=db_path)
+        assert "orphan" not in [s["id"] for s in db.list_sessions_rich()]
+        row = db.get_session("orphan")
+        assert json.loads(row["model_config"])["_delegate_from"] == "__orphaned__"
+        db.close()
+
+    def test_branch_session_visible_after_parent_reopen_and_reend(self, db):
+        """Branch sessions stay visible after the parent is reopened and re-ended.
+
+        Regression for issue #20856: /branch (aka /fork) sessions vanished from
+        /resume and /sessions once the parent was reopened (e.g. resumed) and
+        re-ended with a different end_reason — tui_shutdown overwriting
+        'branched' — which broke the legacy end_reason heuristic. The stable
+        _branched_from marker in model_config keeps them visible.
+        """
+        import json as _json
+
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session(
+            "branch",
+            "cli",
+            model_config={"_branched_from": "parent"},
+            parent_session_id="parent",
+        )
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        # Marker is persisted at creation time.
+        branch_row = db.get_session("branch")
+        cfg = _json.loads(branch_row["model_config"]) if branch_row["model_config"] else {}
+        assert cfg.get("_branched_from") == "parent"
+
+        # Visible immediately after branching.
+        assert "branch" in [s["id"] for s in db.list_sessions_rich()]
+
+        # Parent reopened + re-ended with a different reason (the bug trigger).
+        db.reopen_session("parent")
+        db.end_session("parent", "tui_shutdown")
+
+        # Branch must STILL be visible — the marker survives the parent's
+        # end_reason churn, unlike the legacy 'branched' heuristic.
+        ids = [s["id"] for s in db.list_sessions_rich()]
+        assert "branch" in ids, "Branch should stay visible after parent re-end"
 
     def test_subagent_session_still_hidden(self, db):
         """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
@@ -3786,3 +4001,160 @@ class TestSessionArchive:
         both = {s["id"] for s in db.list_sessions_rich(include_archived=True)}
         assert both == {"live", "hidden"}
         assert db.session_count(include_archived=True) == 2
+
+
+
+class TestSessionIdSearch:
+    """Session id search backs Desktop's Search Sessions UX."""
+
+    def _seed(self, db, sid, *, content="ordinary message", archived=False):
+        db.create_session(session_id=sid, source="cli", model="test-model")
+        db.append_message(session_id=sid, role="user", content=content)
+        if archived:
+            db.set_session_archived(sid, True)
+
+    def test_search_sessions_by_id_matches_exact_prefix_and_substring(self, db):
+        self._seed(db, "20260603_090200_abcd12", content="content without id")
+        self._seed(db, "20260602_111111_other99", content="other content")
+
+        assert [s["id"] for s in db.search_sessions_by_id("20260603_090200_abcd12")] == [
+            "20260603_090200_abcd12"
+        ]
+        assert [s["id"] for s in db.search_sessions_by_id("20260603")] == ["20260603_090200_abcd12"]
+        assert [s["id"] for s in db.search_sessions_by_id("ABCD12")] == ["20260603_090200_abcd12"]
+
+    def test_search_sessions_by_id_respects_limit_and_prioritizes_exact_matches(self, db):
+        self._seed(db, "20260603_090200_abcd12")
+        self._seed(db, "20260603_090200_abcd12_child")
+        self._seed(db, "x_20260603_090200_abcd12")
+
+        ids = [s["id"] for s in db.search_sessions_by_id("20260603_090200_abcd12", limit=2)]
+
+        assert ids == ["20260603_090200_abcd12", "20260603_090200_abcd12_child"]
+
+    def test_search_sessions_by_id_can_include_or_exclude_archived(self, db):
+        self._seed(db, "20260603_090200_live")
+        self._seed(db, "20260603_090200_archived", archived=True)
+
+        included = {s["id"] for s in db.search_sessions_by_id("20260603_090200", include_archived=True)}
+        excluded = {s["id"] for s in db.search_sessions_by_id("20260603_090200", include_archived=False)}
+
+        assert included == {"20260603_090200_live", "20260603_090200_archived"}
+        assert excluded == {"20260603_090200_live"}
+
+    def test_search_sessions_by_id_matches_projected_lineage_root_id(self, db):
+        root = "20260602_235959_root99"
+        tip = "20260603_010000_tip01"
+        db.create_session(session_id=root, source="cli")
+        db.append_message(root, role="user", content="root conversation")
+        db.end_session(root, "compression")
+        db.create_session(session_id=tip, source="cli", parent_session_id=root)
+        db.append_message(tip, role="user", content="continued conversation")
+
+        matches = db.search_sessions_by_id("root99")
+
+        assert [s["id"] for s in matches] == [tip]
+        assert matches[0]["_lineage_root_id"] == root
+
+
+class TestListCronJobRuns:
+    """``list_cron_job_runs`` powers the desktop cron run-history endpoint.
+
+    It must scope to exactly one job's runs via an id prefix range (not a
+    substring), order newest-first, enrich with preview/last_active, and stay
+    bounded by the requested window rather than the whole cron history.
+    """
+
+    def _seed_run(self, db, job_id: str, idx: int, started_at: float):
+        sid = f"cron_{job_id}_{idx:08d}"
+        db.create_session(session_id=sid, source="cron")
+        db.append_message(sid, role="user", content=f"run {idx} for {job_id}")
+        db.append_message(sid, role="assistant", content="done")
+        db.end_session(sid, "completed")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (started_at, sid)
+        )
+        db._conn.commit()
+        return sid
+
+    def test_scopes_to_job_newest_first_and_enriched(self, db):
+        base = 1_700_000_000.0
+        # Target job: 5 runs, ascending started_at.
+        for i in range(5):
+            self._seed_run(db, "alpha", i, base + i * 60)
+        # A different job that must not leak in.
+        for i in range(3):
+            self._seed_run(db, "beta", i, base + i * 60)
+
+        runs = db.list_cron_job_runs("alpha", limit=20)
+
+        assert len(runs) == 5
+        assert all(r["id"].startswith("cron_alpha_") for r in runs)
+        # Newest started_at first.
+        sts = [r["started_at"] for r in runs]
+        assert sts == sorted(sts, reverse=True)
+        # Enriched like list_sessions_rich.
+        assert runs[0]["preview"].startswith("run 4 for alpha")
+        assert runs[0]["last_active"] >= runs[0]["started_at"]
+
+    def test_prefix_match_excludes_substring_collision(self, db):
+        """A job whose id contains the target id as a substring must not leak.
+
+        The old code used a leading-wildcard ``LIKE %cron_<id>_%`` which would
+        also match ``cron_xalpha_...``; the range scan binds to the true prefix.
+        """
+        base = 1_700_000_000.0
+        self._seed_run(db, "alpha", 0, base)
+        # Collision: id is "xalpha", which contains "alpha".
+        self._seed_run(db, "xalpha", 0, base + 10)
+        # Collision the other way: id "alpha2" extends past the underscore.
+        self._seed_run(db, "alpha2", 0, base + 20)
+
+        runs = db.list_cron_job_runs("alpha", limit=20)
+
+        assert [r["id"] for r in runs] == ["cron_alpha_00000000"]
+
+    def test_ignores_non_cron_sessions(self, db):
+        base = 1_700_000_000.0
+        self._seed_run(db, "alpha", 0, base)
+        # A non-cron session whose id happens to share the prefix shape.
+        db.create_session(session_id="cron_alpha_99999999", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (base + 100, "cron_alpha_99999999"),
+        )
+        db._conn.commit()
+
+        runs = db.list_cron_job_runs("alpha", limit=20)
+
+        assert [r["id"] for r in runs] == ["cron_alpha_00000000"]
+
+    def test_limit_and_offset_paging(self, db):
+        base = 1_700_000_000.0
+        for i in range(10):
+            self._seed_run(db, "alpha", i, base + i * 60)
+
+        page1 = db.list_cron_job_runs("alpha", limit=4, offset=0)
+        page2 = db.list_cron_job_runs("alpha", limit=4, offset=4)
+
+        assert len(page1) == 4
+        assert len(page2) == 4
+        assert {r["id"] for r in page1}.isdisjoint({r["id"] for r in page2})
+        # Combined window is still newest-first and contiguous.
+        combined = [r["started_at"] for r in page1 + page2]
+        assert combined == sorted(combined, reverse=True)
+
+    def test_uses_index_range_scan(self, db):
+        """The query must use the (source, id) index, not a full table scan."""
+        prefix = "cron_alpha_"
+        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT s.* FROM sessions s "
+            "WHERE s.source = 'cron' AND s.id >= ? AND s.id < ? "
+            "ORDER BY s.started_at DESC LIMIT 20",
+            (prefix, prefix_hi),
+        ).fetchall()
+        detail = " ".join(row[-1] for row in plan)
+        assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
+        assert "idx_sessions_source" in detail, detail

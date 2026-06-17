@@ -218,8 +218,14 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.pop("timeout", None)
 
         if is_codex_backend:
-            prompt_cache_key = kwargs.get("prompt_cache_key")
-            cache_scope_id = str(prompt_cache_key or session_id or "").strip()
+            # The Codex backend rejects body-level ``extra_headers`` with
+            # HTTP 400, but the OpenAI SDK's ``extra_headers`` kwarg maps
+            # to actual HTTP request headers (not body fields).  We need
+            # these headers for cache-scope routing so prompt cache hits
+            # remain high.  Send session_id / x-client-request-id as HTTP
+            # headers while keeping ``prompt_cache_key`` in the body for
+            # standard OpenAI routing as a belt-and-braces fallback.
+            cache_scope_id = str(session_id or "").strip()
             if cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}

@@ -641,3 +641,36 @@ class TestAdapterInit:
         assert asyncio.run(ad.get_chat_info("U123"))["type"] == "dm"
         assert asyncio.run(ad.get_chat_info("C123"))["type"] == "group"
         assert asyncio.run(ad.get_chat_info("R123"))["type"] == "channel"
+
+
+# ---------------------------------------------------------------------------
+# 9. Inbound message-type classification
+# ---------------------------------------------------------------------------
+
+class TestMessageTypeMapping:
+    """LINE webhook message types must map to the right normalized
+    MessageType so the gateway routes media correctly (e.g. voice → STT,
+    files → document handling). Regression guard for the old code that
+    referenced the non-existent ``MessageType.IMAGE`` and collapsed every
+    non-text message onto a single type."""
+
+    def test_image_event_not_attributeerror_regression(self):
+        # The bug: MessageType.IMAGE doesn't exist on the enum.
+        MessageType = _line.MessageType
+        assert not hasattr(MessageType, "IMAGE")
+
+    def test_every_line_type_maps_to_correct_enum(self):
+        MessageType = _line.MessageType
+        mapping = _line._LINE_MESSAGE_TYPES
+        assert mapping["text"] == MessageType.TEXT
+        assert mapping["image"] == MessageType.PHOTO
+        assert mapping["video"] == MessageType.VIDEO
+        # LINE has no separate voice type — audio clips are voice notes.
+        assert mapping["audio"] == MessageType.VOICE
+        assert mapping["file"] == MessageType.DOCUMENT
+        assert mapping["location"] == MessageType.LOCATION
+        assert mapping["sticker"] == MessageType.STICKER
+
+    def test_unknown_type_falls_back_to_text(self):
+        MessageType = _line.MessageType
+        assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT

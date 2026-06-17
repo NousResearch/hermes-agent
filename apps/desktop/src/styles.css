@@ -5,12 +5,40 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
+/* Sidebar sections: tall viewports give each its own scroller; compact ones
+   (this variant) flatten everything into one shared scroll. See ChatSidebar. */
+@custom-variant compact (@media (max-height: 768px));
+
 @font-face {
   font-family: 'Collapse';
   font-style: normal;
   font-weight: 700;
   font-display: swap;
   src: url('../../../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2') format('woff2');
+}
+
+/* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the
+   regular face's metrics instead of squeezing against a system fallback. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
 @theme inline {
@@ -60,7 +88,6 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
 
-  --shadow-ink: var(--dt-foreground);
   --shadow-xs: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
   --shadow-sm:
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 6%, transparent),
@@ -69,19 +96,24 @@
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
     0 0.25rem 1rem color-mix(in srgb, #000 8%, transparent),
     0 1rem 2rem -1.5rem color-mix(in srgb, #000 18%, transparent);
+  /* Soft floating shadow for borderless modals/overlays. Single top light
+     source: every layer is centered (x=0) and cast downward, with negative
+     spread that grows with the blur so each layer is pulled horizontally inward
+     — the shadow pools below the panel instead of bleeding out every side.
+     Layered (contact → ambient) for a smooth, natural falloff. */
+  --shadow-nous:
+    0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #000 7%, transparent),
+    0 0.5rem 0.75rem -0.375rem color-mix(in srgb, #000 6%, transparent),
+    0 1.25rem 1.75rem -0.875rem color-mix(in srgb, #000 6%, transparent),
+    0 2.25rem 3rem -1.75rem color-mix(in srgb, #000 0%, transparent);
+  /* Hairline border paired with --shadow-nous on borderless overlays.
+     currentColor resolves per-element, so it adapts to text color/theme. */
+  --stroke-nous: color-mix(in srgb, currentColor 3%, transparent);
   --shadow-lg:
     inset 0 0.0625rem 0 color-mix(in srgb, #fff 28%, transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
     0 0.75rem 2rem color-mix(in srgb, #000 12%, transparent);
-  --shadow-header:
-    0 0.0625rem 0 color-mix(in srgb, var(--dt-foreground) 7%, transparent),
-    0 0.625rem 1.5rem -1.25rem color-mix(in srgb, #000 16%, transparent);
   --shadow-composer: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
-  --shadow-composer-focus:
-    0 0 0 0.125rem color-mix(in srgb, var(--dt-composer-ring) calc(10% * var(--composer-ring-strength)), transparent),
-    0 0 0 0.0625rem color-mix(in srgb, var(--dt-composer-ring) calc(22% * var(--composer-ring-strength)), transparent),
-    0 0.25rem 0.875rem color-mix(in srgb, #000 8%, transparent),
-    0 0.75rem 2rem -1.25rem color-mix(in srgb, #000 14%, transparent);
 }
 
 @layer base {
@@ -262,8 +294,14 @@
     --dt-user-bubble: var(--ui-chat-bubble-background);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
-    --dt-font-sans: 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-    --dt-font-mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --dt-font-sans:
+      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+    /* Key caps always use the native UI face — never theme typography overrides. */
+    --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    --dt-font-mono:
+      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
+      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -272,17 +310,29 @@
     --radius: 0.75rem;
     --radius-scalar: 0.6;
 
-    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx). */
-    --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
+    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
+       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing. */
+    --status-stack-measured-height: 0px;
+    --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
     --conversation-text-font-size: 0.8125rem;
-    --conversation-tool-font-size: var(--conversation-text-font-size);
+    --conversation-tool-font-size: 0.6875rem;
     --conversation-caption-font-size: 0.75rem;
     --conversation-line-height: 1.125rem;
     --conversation-caption-line-height: 1rem;
     --conversation-turn-gap: 0.375rem;
+    /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air
+       that scaffolding reads as separate from the reply, not crammed into it. */
+    --turn-block-gap: 0.75rem;
+    /* Tight gap between tool rows inside a single action group, so a back-to-back
+       run still reads as one cohesive sequence. */
+    --tool-row-gap: 0.375rem;
+    /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
+       markdown block and between consecutive prose parts. Single knob; tweak
+       freely. */
+    --paragraph-gap: 0.45rem;
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
@@ -369,6 +419,10 @@
   body,
   #root {
     height: 100%;
+    /* App shell, not a document: the window itself never scrolls on either axis
+       (panes own their own scroll). Belt to the auto-scroll axis-lock in the
+       sidebar reorder DnD — nothing can drag the whole shell sideways. */
+    overflow: hidden;
   }
 
   html {
@@ -383,7 +437,6 @@
     font-size: 0.8125rem;
     line-height: var(--dt-line-height, 1.55);
     letter-spacing: var(--dt-letter-spacing, 0);
-    overflow: hidden;
     -webkit-user-select: none;
     user-select: none;
     -webkit-font-smoothing: antialiased;
@@ -423,6 +476,25 @@
 
 :root[style*='--theme-asset-bg:'] .theme-default-filler {
   display: none;
+}
+
+/* Primitive-level pointer cursor for every interactive control (buttons,
+   selects, menu items, switches, tabs, summaries). Keeps individual
+   components from having to hardcode `cursor-pointer`; explicit cursor
+   utilities (cursor-grab, cursor-default, disabled:cursor-*) still win since
+   they live in the utilities layer. */
+@layer base {
+  button:not(:disabled):not([aria-disabled='true']),
+  summary,
+  [role='button']:not([aria-disabled='true']),
+  [role='menuitem']:not([aria-disabled='true']),
+  [role='menuitemradio']:not([aria-disabled='true']),
+  [role='menuitemcheckbox']:not([aria-disabled='true']),
+  [role='option']:not([aria-disabled='true']),
+  [role='switch']:not([aria-disabled='true']),
+  [role='tab']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
 }
 
 @layer utilities {
@@ -467,6 +539,57 @@
   --arc-c1: var(--dt-foreground);
 }
 
+/* Quest-style "needs you" pulse for a clarify-blocked session's dot —
+   a soft amber glow that breathes so the row draws the eye without a toast. */
+@keyframes quest-glow {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0.1875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 70%, transparent),
+      0 0 0.5rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 45%, transparent);
+  }
+  50% {
+    transform: scale(1.18);
+    box-shadow:
+      0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
+      0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
+  }
+}
+
+.quest-glow {
+  animation: quest-glow 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quest-glow {
+    animation: none;
+    box-shadow:
+      0 0 0.25rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 80%, transparent),
+      0 0 0.625rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 55%, transparent);
+  }
+}
+
+/* Command-palette deep-link: briefly flash the targeted settings row. */
+@keyframes setting-field-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--dt-primary, #f59e0b) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.setting-field-highlight {
+  animation: setting-field-flash 1.6s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setting-field-highlight {
+    animation: none;
+  }
+}
+
 .arc-border::before {
   content: '';
   position: absolute;
@@ -492,38 +615,48 @@
   animation: arc-border var(--arc-duration) linear infinite;
 }
 
+/* Flip the arc's travel direction (e.g. the Nous Portal hero row). */
+.arc-border.arc-reverse::before {
+  animation-direction: reverse;
+}
+
+/* Nous Portal hero: slower, blue → orange arc. */
+.arc-border.arc-nous,
+:root.dark .arc-border.arc-nous {
+  --arc-c1: #4f8cff;
+  --arc-c2: #ff8c42;
+  --arc-duration: 3.27s;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
   }
 }
 
+/* No focus rings, anywhere. Kills the native outline plus Tailwind's
+   `focus-visible:ring-*` (a box-shadow driven by --tw-ring-*). Unlayered so it
+   beats the utilities layer without !important on the outline. The composer /
+   .desktop-input-chrome focus glow is untouched — those set `box-shadow`
+   directly rather than through the ring vars. */
+*:focus,
+*:focus-visible {
+  outline: none;
+}
+
+*:focus-visible {
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+}
+
 button {
   -webkit-app-region: no-drag;
 }
 
-[data-slot='button'] {
-  box-shadow: none;
-  transition-duration: 100ms;
-}
-
-[data-slot='button'][data-variant='outline'],
-[data-slot='button'][data-variant='secondary'] {
-  border-color: var(--ui-stroke-secondary);
-  background: var(--ui-bg-tertiary);
-  color: var(--ui-text-primary);
-}
-
-[data-slot='button'][data-variant='ghost'] {
-  color: var(--ui-text-secondary);
-}
-
-[data-slot='button'][data-variant='outline']:hover,
-[data-slot='button'][data-variant='secondary']:hover,
-[data-slot='button'][data-variant='ghost']:hover {
-  background: var(--chrome-action-hover);
-  color: var(--ui-text-primary);
-}
+/* Button variant styling lives entirely in the cva in components/ui/button.tsx
+   (the single source of truth). Don't re-add [data-slot='button'] rules here —
+   attribute selectors out-specify the Tailwind utilities and silently override
+   the variants. */
 
 [data-slot='dropdown-menu-content'],
 [data-slot='select-content'],
@@ -584,11 +717,10 @@ canvas {
     var(--dt-composer-ring) calc(var(--ring-pct) * var(--composer-ring-strength)),
     var(--ring-fall)
   );
-  box-shadow: var(--shadow-composer);
+  box-shadow: none;
   transition:
     background-color 200ms ease-out,
-    border-color 200ms ease-out,
-    box-shadow 200ms ease-out;
+    border-color 200ms ease-out;
 }
 
 .desktop-input-chrome:hover {
@@ -600,19 +732,12 @@ canvas {
   --ring-pct: 45%;
   --ring-fall: transparent;
   background: var(--dt-card);
-  box-shadow: var(--shadow-composer-focus);
+  box-shadow: none;
   outline: none;
 }
 
 .desktop-input-chrome[aria-invalid='true'] {
   border-color: var(--dt-destructive);
-}
-
-.desktop-input-chrome[aria-invalid='true']:focus {
-  box-shadow:
-    0 0 0 0.125rem color-mix(in srgb, var(--dt-destructive) 18%, transparent),
-    0 0 0 0.0625rem color-mix(in srgb, var(--dt-destructive) 34%, transparent),
-    0 0.1875rem 0.625rem color-mix(in srgb, var(--dt-destructive) 12%, transparent);
 }
 
 @layer components {
@@ -708,12 +833,56 @@ canvas {
   font-size: inherit;
 }
 
-/* Streamed prose hangs slightly indented from the tool/todo column so the
-   reading column reads as a "reply" within the conversation gutter. Tools,
-   todos, and thinking blocks keep the existing --message-text-indent so they
-   remain flush with the user message text above them. */
-[data-slot='aui_assistant-message-content'] > .aui-md {
-  padding-inline-start: var(--md-text-indent, 0.5rem);
+/* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That
+   selector ties our `my-*` utility on specificity and wins on source order, so
+   paragraph spacing must be reclaimed here at higher specificity. One tight
+   top-margin (bottom zeroed to avoid doubling), first child reset to flush. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(p) {
+  margin-block: var(--paragraph-gap) 0;
+}
+
+/* First rendered element of a prose block is flush — the block-level gap above
+   (tool / paragraph) already provides the separation. Reach one level deep too:
+   Streamdown wraps blocks in a `div.space-y-*`, so the real first line is the
+   first child's first child. */
+[data-slot='aui_assistant-message-content'] .aui-md > :first-child,
+[data-slot='aui_assistant-message-content'] .aui-md > :first-child > :first-child {
+  margin-top: 0;
+}
+
+/* Prose, tools, todos, and thinking all share one left edge (the message
+   content's --message-text-indent). No extra prose indent — a single gutter
+   reads cleaner than a ragged tool-vs-reply column. */
+
+/* RTL/bidi chat text (#44150): each block resolves its own base direction from
+   its first strong char (UAX#9 plaintext). text-align:start makes that resolved
+   direction drive alignment too — load-bearing, since the user bubble pins
+   text-left. direction is never set, so chrome/layout/list-indent stay LTR (the
+   issue asks not to flip the whole UI). Covers assistant prose, user lines, and
+   both composers (main + edit share composer-rich-input). */
+[data-slot='aui_assistant-message-content'] .aui-md :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_user-inline-text'],
+[data-slot='composer-rich-input'] {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
+/* Inline code/KaTeX don't vote on direction and keep their own order: isolate
+   makes bidi treat each as one neutral, so a block that *starts* with `./run.sh`
+   then Arabic still resolves RTL, and the command's neutrals (dots/slashes)
+   aren't reordered by the surrounding RTL run. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(:not(pre) > code),
+[data-slot='aui_user-inline-code'],
+[data-slot='aui_assistant-message-content'] .aui-md .katex {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Fenced code stays LTR even inside an RTL list item/blockquote — never mirrors. */
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'],
+[data-slot='aui_user-fence'] {
+  direction: ltr;
+  text-align: left;
 }
 
 [data-slot='aui_user-message-root'] {
@@ -722,19 +891,26 @@ canvas {
 
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
+  --human-msg-line-height: 1.3;
   font-size: var(--conversation-text-font-size);
 }
 
+[data-slot='aui_user-inline-text'] {
+  line-height: var(--human-msg-line-height);
+}
+
+[data-slot='aui_edit-composer-root'] [data-slot='composer-rich-input'] {
+  line-height: var(--human-msg-line-height);
+}
+
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
-   prompt doesn't dominate the viewport while you read the response stuck
-   beneath it. The clamp lifts on hover / focus (clicking the bubble opens the
-   edit composer, which already shows the full text). --human-msg-full is the
-   measured content height (set in UserMessage) so expand/collapse animates to
-   the real height instead of overshooting the cap. */
+   prompt doesn't dominate the viewport. The clamp lifts only in the edit
+   composer; expanding on read-only :focus-within ran on mousedown (before the
+   swap) and fought stick-to-bottom when parked at the bottom. */
 .sticky-human-clamp {
-  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  cursor: pointer;
+  max-height: calc(4 * var(--human-msg-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
-  transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .sticky-human-clamp[data-clamped='true'] {
@@ -742,24 +918,16 @@ canvas {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
-.composer-human-message:hover .sticky-human-clamp,
-.composer-human-message:focus-within .sticky-human-clamp {
-  max-height: min(var(--human-msg-full, 24rem), 24rem);
-  overflow-y: auto;
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-/* The thread renders items in natural document flow (padding spacers, not
-   transforms) and @tanstack/react-virtual already adjusts scrollTop itself
-   when an off-screen turn is measured and its real height differs from the
-   220px estimate. The browser's native scroll anchoring (overflow-anchor:
-   auto) would adjust scrollTop for that SAME size delta, so the two
-   double-correct and the view lurches — most visibly on Windows mouse wheels,
-   whose coarse notches mount/measure several under-estimated turns per tick.
-   Opt out of native anchoring so only the virtualizer compensates. */
+/* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
+   is safe and keeps sticky human edits from shoving the viewport; data-editing
+   enables that path before React swaps in the inline editor. */
 [data-slot='aui_thread-viewport'] {
   overflow-anchor: none;
+}
+
+[data-slot='aui_thread-viewport'][data-following='false'],
+[data-slot='aui_thread-viewport'][data-editing='true'] {
+  overflow-anchor: auto;
 }
 
 [data-slot='aui_thread-content'] {
@@ -787,52 +955,46 @@ canvas {
 }
 
 .fit-text {
+  --fit-captured-length: initial;
+  --fit-support-sentinel: var(--fit-captured-length, 9999px);
+
   display: flex;
-  font-size: var(--fit-text-min, 1rem);
   container-type: inline-size;
-  --captured-length: initial;
-  --support-sentinel: var(--captured-length, 9999px);
 }
 
-.fit-text > [aria-hidden='true'] {
+.fit-text > [aria-hidden] {
   visibility: hidden;
 }
 
-.fit-text > :not([aria-hidden='true']) {
+.fit-text > :not([aria-hidden]) {
   flex-grow: 1;
   container-type: inline-size;
-  --captured-length: 100cqi;
-  --available-space: var(--captured-length);
+
+  --fit-captured-length: 100cqi;
+  --fit-available-space: var(--fit-captured-length);
 }
 
-.fit-text > :not([aria-hidden='true']) > * {
+.fit-text > :not([aria-hidden]) > * {
+  --fit-support-sentinel: inherit;
+  --fit-captured-length: 100cqi;
+  --fit-ratio: tan(atan2(var(--fit-available-space), var(--fit-available-space) - var(--fit-captured-length)));
+
   display: block;
-  inline-size: var(--available-space);
-  line-height: var(--fit-text-line-height, 1);
-  --support-sentinel: inherit;
-  --captured-length: 100cqi;
-  --ratio: tan(atan2(var(--available-space), var(--available-space) - var(--captured-length)));
-  --font-size: clamp(
-    var(--fit-text-min, 1em),
-    1em * var(--ratio),
-    var(--fit-text-max, infinity * 1px) - var(--support-sentinel)
+  inline-size: var(--fit-available-space);
+  font-size: clamp(
+    var(--fit-min, 1em),
+    1em * var(--fit-ratio),
+    var(--fit-max, infinity * 1px) - var(--fit-support-sentinel)
   );
-  font-size: var(--font-size);
 }
 
 @container (inline-size > 0) {
-  .fit-text > :not([aria-hidden='true']) > * {
+  .fit-text > :not([aria-hidden]) > * {
     white-space: nowrap;
   }
 }
 
-@property --captured-length {
-  syntax: '<length>';
-  initial-value: 0px;
-  inherits: true;
-}
-
-@property --captured-length2 {
+@property --fit-captured-length {
   syntax: '<length>';
   initial-value: 0px;
   inherits: true;
@@ -853,7 +1015,6 @@ canvas {
 
 [data-slot='composer-surface'] {
   border-color: var(--ui-stroke-secondary) !important;
-  box-shadow: var(--shadow-composer) !important;
 }
 
 [data-slot='composer-fade'] {
@@ -869,8 +1030,32 @@ canvas {
   color: var(--ui-text-tertiary) !important;
 }
 
-[data-slot='composer-root']:focus-within [data-slot='composer-surface'] > [aria-hidden='true'] {
-  background: var(--ui-chat-bubble-background) !important;
+/* ── Composer fill — ONE var painted by the surface AND anything docked to it
+   (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
+   `background: var(--composer-fill)`, so every state matches by construction.
+   The :has() rule is last on purpose: while a completion drawer is open it
+   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
+   translucent glass can never match across the two layers because they sample
+   different backdrops. */
+:root {
+  /* Fallback for drawers outside the main composer (e.g. edit-message). */
+  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
+}
+
+[data-slot='composer-root'] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+}
+
+[data-slot='composer-root'][data-thread-scrolled-up] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+}
+
+[data-slot='composer-root']:has([data-slot='composer-surface']:focus-within) {
+  --composer-fill: var(--ui-chat-bubble-background);
+}
+
+[data-slot='composer-root']:has([data-slot='composer-completion-drawer']) {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -903,7 +1088,7 @@ canvas {
 [data-slot='aui_assistant-message-content'] .aui-md [data-streamdown='code-block'] {
   contain: none;
   overflow: visible;
-  margin-block: 0.375rem !important;
+  margin-block: var(--paragraph-gap) 0 !important;
   padding: 0 !important;
   gap: 0 !important;
   border: 0 !important;
@@ -917,6 +1102,11 @@ canvas {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'] {
+  /* Streamdown nests blocks, so the container's child-combinator rhythm can't
+     reach the card. Carry the paragraph gap on the card itself (top-owned);
+     collapses cleanly with the wrapper's margin when one is present, and the
+     first-child reset still flushes a leading code block. */
+  margin-block: var(--paragraph-gap) 0;
   position: relative;
   transition:
     border-color 180ms ease-out,
@@ -967,6 +1157,10 @@ canvas {
   margin-block-end: 0 !important;
 }
 
+[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
+  border-bottom-color: var(--dt-border) !important;
+}
+
 /* Tool / thinking blocks are scaffolding around the model's reply, so we
    keep them transparent and fade them slightly. The reading column (prose)
    stays at full strength; scaffolding lifts back to full opacity on
@@ -986,34 +1180,31 @@ canvas {
   opacity: 1;
 }
 
-/* Conversation block rhythm. Consecutive tool calls stay tight so a step
-   sequence reads as one action group; the gap between any scaffolding
-   block and adjacent prose bumps up so the model's reply visually
-   separates from its scaffolding. */
-[data-slot='tool-block'] + [data-slot='tool-block'] {
-  margin-top: 0.375rem;
+/* A generated image is the deliverable, not scaffolding — keep it at full
+   strength instead of dimming it until hover. */
+[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:has([data-slot='aui_generated-image']) {
+  opacity: 1;
 }
 
-[data-slot='tool-block']:has(> :nth-child(2)) + [data-slot='tool-block'] {
-  margin-top: 0.625rem;
-}
-
+/* Conversation block rhythm. assistant-ui renders each range as a direct child
+   of the message content with no per-part wrapper, so adjacency rules cover
+   every pairing — first block needs no reset, nested tool rows are untouched.
+   Two tiers: scaffolding (tool / thinking) gets a roomy block gap so it reads
+   as separate from the reply; consecutive prose collapses to a tight paragraph
+   rhythm so split-out text parts don't look like a big gap. */
+/* Scaffolding adjacent to anything → roomy block gap. */
 [data-slot='aui_assistant-message-content']
-  :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
-  + .aui-md,
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], .aui-md),
 [data-slot='aui_assistant-message-content']
-  .aui-md
+  > .aui-md
   + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
-  margin-top: 1rem;
+  margin-top: var(--turn-block-gap);
 }
 
-[data-slot='aui_assistant-message-content'] [data-slot='aui_thinking-disclosure'] + [data-slot='tool-block'],
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'] + [data-slot='aui_thinking-disclosure'] {
-  margin-top: 0.75rem;
-}
-
-[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:first-child {
-  margin-top: 0;
+/* Prose ↔ prose → tight paragraph rhythm, matching in-block paragraph spacing. */
+[data-slot='aui_assistant-message-content'] > .aui-md + .aui-md {
+  margin-top: var(--paragraph-gap);
 }
 
 /* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */
@@ -1074,6 +1265,62 @@ canvas {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Floating "jump to bottom" control (see scroll-to-bottom-button.tsx).
+   Directional scale: it contracts toward 1 as it arrives (from 1.1) and keeps
+   contracting to 0.9 as it leaves — always shrinking in the direction of
+   travel, so the motion reads as a soft settle / recede rather than a pop. The
+   X half-offset stays baked into every transform so `left-1/2` centering holds
+   through the animation. */
+.thread-jump-button {
+  opacity: 0;
+  transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+}
+
+.thread-jump-button[data-state='in'] {
+  animation: thread-jump-in 200ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.thread-jump-button[data-state='out'] {
+  animation: thread-jump-out 180ms ease-in forwards;
+}
+
+@keyframes thread-jump-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(1.1);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes thread-jump-out {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-jump-button[data-state='in'],
+  .thread-jump-button[data-state='out'] {
+    animation: none;
+    transition: opacity 120ms linear;
+  }
+
+  .thread-jump-button[data-state='in'] {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
   }
 }
 

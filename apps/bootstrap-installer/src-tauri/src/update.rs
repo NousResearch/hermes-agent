@@ -3,8 +3,9 @@
 //! Driven when the installer is launched as `Hermes-Setup.exe --update` (see
 //! `AppMode` in lib.rs). The desktop app hands off to us — it exits, then we:
 //!
-//!   1. wait for the old Hermes desktop process to fully exit (so the venv
-//!      shim is free; otherwise `hermes update` aborts with exit code 2),
+//!   1. wait for the old Hermes desktop process to fully exit (so both the
+//!      venv shim and packaged app.asar are free; otherwise `hermes update`
+//!      or repair bootstrap can race locked files),
 //!   2. run `hermes update --yes --gateway` (Python/repo update; this does NOT
 //!      rebuild apps/desktop by design — see cmd_update in hermes_cli/main.py),
 //!   3. run `hermes desktop --build-only` (the rebuild step update skips),
@@ -38,8 +39,8 @@ use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 /// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
-/// How long to wait for the old desktop process to release the venv shim
-/// before giving up and letting `hermes update`'s own guard decide.
+/// How long to wait for the old desktop process to release files under the
+/// install tree before giving up and letting `hermes update`'s own guard decide.
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
 
@@ -150,8 +151,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // ---- pre-step: wait for the old desktop to die -----------------------
     // The desktop exec'd us then called app.exit(), but process teardown is
     // async on Windows. If it still holds the venv shim, `hermes update`
-    // aborts with exit 2. Give it a bounded window to clear.
-    wait_for_venv_free(&install_root, &app).await;
+    // aborts with exit 2. If it still holds the packaged app.asar,
+    // install.ps1's repair/re-clone path cannot move/remove the install tree.
+    // Give both handles a bounded window to clear.
+    wait_for_install_locks_free(&install_root, &app, "update").await;
 
     // ---- stage 1: hermes update -----------------------------------------
     // Pass --branch so `hermes update` targets the branch this installer was
@@ -171,12 +174,19 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
         vec!["update".into(), "--yes".into(), "--gateway".into()];
+    // --force skips `hermes update`'s Windows running-exe guard (which would
+    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
+    // already exited and waited for the install locks to clear before launching
+    // us, and wait_for_install_locks_free below force-kills any straggler — so by the
+    // time `hermes update` runs there is no legitimate hermes.exe to protect,
+    // and the guard would only produce a false "Hermes is still running" stop.
+    update_args.push("--force".into());
     update_args.push("--branch".into());
     update_args.push(update_branch);
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
-    let update = run_streamed(
+    let mut update = run_streamed(
         &app,
         &hermes,
         &update_args,
@@ -185,6 +195,38 @@ async fn run_update(app: AppHandle) -> Result<()> {
         Some("update"),
     )
     .await?;
+
+    // Retry-once for the update-boundary crash. `hermes update` lazily imports
+    // the FRESHLY PULLED modules, but the dependency-install step still runs the
+    // already-in-memory pre-pull code for one invocation. A release that changed
+    // an updater-path contract across that boundary (e.g. #39780's `_UvResult`,
+    // whose `__iter__` injected a bool into the argv and crashed Windows
+    // `list2cmdline` with `TypeError: sequence item 1: expected str instance,
+    // bool found`, fixed in #39820) therefore kills the FIRST update on the
+    // parked population — even though the fix is already on disk by then. A
+    // second `hermes update` runs clean because the now-current module is loaded
+    // from the start. Rather than make the parked user click Update twice (and
+    // stare at a scary crash first), retry once automatically. Skip the retry
+    // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
+    // a retry can't fix.
+    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] first update attempt failed; retrying once (the fix it just \
+             pulled loads on the second run)…",
+        );
+        update = run_streamed(
+            &app,
+            &hermes,
+            &update_args,
+            &install_root,
+            &child_env,
+            Some("update"),
+        )
+        .await?;
+    }
     let update_ms = started.elapsed().as_millis() as u64;
 
     match update.exit_code {
@@ -352,29 +394,128 @@ async fn run_update(app: AppHandle) -> Result<()> {
     Ok(())
 }
 
-/// Poll until the venv shim is no longer locked (Windows) or a bounded timeout
-/// elapses. On non-Windows this is a short fixed grace since file locking
-/// isn't the failure mode there.
-async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
-    let shim = venv_hermes(install_root);
+/// Poll until the venv shim AND packaged desktop app bundle are no longer locked
+/// (Windows) or a bounded timeout elapses. On non-Windows this is a short fixed
+/// grace since file locking isn't the failure mode there.
+pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHandle, stage: &str) {
+    let lock_targets = install_lock_probe_paths(install_root);
     let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
 
-    emit_log(app, Some("update"), LogStream::Stdout, "[update] waiting for Hermes to exit…");
+    emit_log(app, Some(stage), LogStream::Stdout, "[handoff] waiting for Hermes to exit…");
 
     loop {
-        if !is_locked(&shim) {
+        let locked = locked_paths(&lock_targets);
+        if locked.is_empty() {
             return;
         }
         if Instant::now() >= deadline {
+            // Last resort: a backend hermes.exe (or the desktop Hermes.exe
+            // itself) is still holding one of the update-sensitive files. The
+            // desktop should have reaped its tree before handing off, but
+            // SIGTERM races / detached grandchildren / AV handles can leave a
+            // straggler. Rather than "proceed anyway" straight into uv's
+            // "Access is denied" or install.ps1's locked app.asar failure,
+            // force-kill every Hermes.exe except ourselves, then give the OS a
+            // beat to unload the image.
             emit_log(
                 app,
-                Some("update"),
+                Some(stage),
                 LogStream::Stdout,
-                "[update] timed out waiting for Hermes to exit; proceeding anyway",
+                &format!(
+                    "[handoff] Hermes still holding install files ({}); force-killing stragglers…",
+                    format_locked_paths(&locked)
+                ),
             );
+            force_kill_other_hermes();
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let locked_after_kill = locked_paths(&lock_targets);
+            if locked_after_kill.is_empty() {
+                emit_log(
+                    app,
+                    Some(stage),
+                    LogStream::Stdout,
+                    "[handoff] install files freed after force-kill",
+                );
+            } else {
+                emit_log(
+                    app,
+                    Some(stage),
+                    LogStream::Stdout,
+                    &format!(
+                        "[handoff] install files still locked ({}); proceeding (--force + quarantine will handle it)",
+                        format_locked_paths(&locked_after_kill)
+                    ),
+                );
+            }
             return;
         }
         tokio::time::sleep(DESKTOP_EXIT_POLL).await;
+    }
+}
+
+fn install_lock_probe_paths(install_root: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![venv_hermes(install_root)];
+    paths.extend(desktop_app_payload_paths(install_root));
+    paths
+}
+
+fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
+    let release = install_root.join("apps").join("desktop").join("release");
+    if cfg!(target_os = "windows") {
+        vec![
+            release.join("win-unpacked").join("resources").join("app.asar"),
+            release.join("win-arm64-unpacked").join("resources").join("app.asar"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            release.join("mac").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
+            release.join("mac-arm64").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
+        ]
+    } else {
+        vec![release.join("linux-unpacked").join("resources").join("app.asar")]
+    }
+}
+
+fn locked_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths.iter().filter(|p| is_locked(p)).cloned().collect()
+}
+
+fn format_locked_paths(paths: &[PathBuf]) -> String {
+    paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+}
+
+/// Force-kill any `hermes.exe` other than this process. Windows-only; a no-op
+/// elsewhere (POSIX has no mandatory-lock contention). We can't selectively
+/// target "the backend" by PID here — the desktop already exited and we never
+/// knew its children — so we kill the whole `hermes.exe` image tree via
+/// taskkill, excluding our own PID.
+///
+/// Safe w.r.t. our own update child: this runs inside the install-lock wait,
+/// which completes BEFORE we spawn `venv\Scripts\hermes.exe update`. At this
+/// point no update-driven hermes.exe exists yet, so the only hermes.exe images
+/// are stragglers from the old desktop — exactly what we want gone. (`/FI PID
+/// ne <self>` also spares this Tauri process, though it isn't named
+/// hermes.exe.)
+fn force_kill_other_hermes() {
+    if !cfg!(target_os = "windows") {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let my_pid = std::process::id();
+        // /FI excludes our own PID; /T kills the tree; /F forces.
+        let _ = std::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/T",
+                "/IM",
+                "hermes.exe",
+                "/FI",
+                &format!("PID ne {my_pid}"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 
@@ -791,6 +932,29 @@ mod tests {
     #[test]
     fn missing_file_is_not_locked() {
         assert!(!is_locked(Path::new("/nonexistent/does/not/exist/xyz")));
+    }
+
+    #[test]
+    fn lock_probe_paths_include_desktop_app_payload() {
+        let root = Path::new("/x/hermes-agent");
+        let probes = install_lock_probe_paths(root);
+
+        assert!(
+            probes.iter().any(|p| p == &venv_hermes(root)),
+            "venv shim remains part of the update lock probe"
+        );
+        assert!(
+            probes.iter().any(|p| p.ends_with(Path::new("resources/app.asar"))),
+            "packaged app.asar must be probed so repair/re-clone waits for the old desktop to exit"
+        );
+    }
+
+    #[test]
+    fn locked_paths_ignores_missing_payloads() {
+        let root = Path::new("/nonexistent/hermes-agent");
+        let probes = install_lock_probe_paths(root);
+
+        assert!(locked_paths(&probes).is_empty());
     }
 
     #[test]

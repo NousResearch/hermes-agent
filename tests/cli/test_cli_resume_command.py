@@ -221,3 +221,69 @@ class TestPendingResumeNumberedSelection:
 
         # A non-resume command disarms the one-shot prompt (#34584).
         assert cli_obj._pending_resume_sessions is None
+
+
+class TestRestoreSessionCwdMarkup:
+    """Regression: _restore_session_cwd must not crash with Rich MarkupError.
+
+    Lines that used ``[{_DIM}]`` inside Rich markup triggered
+    ``rich.errors.MarkupError: closing tag [/] at position N has nothing to
+    close`` because ``_DIM`` is an ANSI escape (``\\x1b[2;3m``), not a valid
+    Rich tag.  The fix replaces ``[{_DIM}]`` with Rich's native ``[dim]`` tag.
+    See: https://github.com/NousResearch/hermes-agent/issues/39469
+    """
+
+    def test_missing_dir_does_not_raise_markup_error(self):
+        """Session cwd gone → dim warning, no MarkupError."""
+        cli_obj = _make_cli()
+        console = MagicMock()
+        cli_obj._output_console = MagicMock(return_value=console)
+
+        # Use a path that definitely does not exist.
+        cli_obj._restore_session_cwd({"cwd": "/nonexistent/path/to/nowhere"})
+
+        # Should have printed a warning via console.print, not crashed.
+        assert console.print.called
+        printed = str(console.print.call_args)
+        assert "Working directory is gone" in printed or "gone" in printed.lower()
+
+    def test_chdir_failure_does_not_raise_markup_error(self, tmp_path):
+        """os.chdir fails → dim warning, no MarkupError."""
+        import os
+        cli_obj = _make_cli()
+        console = MagicMock()
+        cli_obj._output_console = MagicMock(return_value=console)
+
+        # Create a directory, then make it unreadable (simulate chdir failure).
+        target = tmp_path / "locked"
+        target.mkdir()
+
+        # Patch os.chdir to raise OSError for our target path.
+        original_chdir = os.chdir
+        def fake_chdir(path):
+            if str(path) == str(target):
+                raise OSError("Permission denied")
+            return original_chdir(path)
+
+        with patch("os.chdir", side_effect=fake_chdir):
+            cli_obj._restore_session_cwd({"cwd": str(target)})
+
+        assert console.print.called
+        printed = str(console.print.call_args)
+        assert "Could not enter" in printed or "permission" in printed.lower()
+
+    def test_success_path_does_not_raise_markup_error(self, tmp_path):
+        """Successful cwd switch → dim info, no MarkupError."""
+        import os
+        cli_obj = _make_cli()
+        console = MagicMock()
+        cli_obj._output_console = MagicMock(return_value=console)
+
+        original_cwd = os.getcwd()
+        try:
+            cli_obj._restore_session_cwd({"cwd": str(tmp_path)})
+            assert console.print.called
+            printed = str(console.print.call_args)
+            assert "Working directory" in printed or "working" in printed.lower()
+        finally:
+            os.chdir(original_cwd)

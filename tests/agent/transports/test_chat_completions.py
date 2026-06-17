@@ -843,6 +843,130 @@ class TestChatCompletionsNormalize:
         nr = transport.normalize_response(r)
         assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
 
+    def test_refusal_field_promoted_to_content_filter(self, transport):
+        """OpenAI-compatible proxies (e.g. Nous Portal fronting Anthropic) can
+        surface a Claude refusal via ``message.refusal`` with empty content and
+        ``finish_reason="stop"``. Promote it to content + a ``content_filter``
+        finish reason so the agent loop's refusal handler surfaces it instead
+        of retrying an empty response three times and giving up."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None, reasoning_content=None,
+                    refusal="I can't help with that.",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "content_filter"
+        assert nr.content == "I can't help with that."
+        assert nr.provider_data == {"refusal": "I can't help with that."}
+
+    def test_refusal_none_is_noop(self, transport):
+        """The common case: ``refusal`` is None → behavior unchanged."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="hello", tool_calls=None, reasoning_content=None,
+                    refusal=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "stop"
+        assert nr.content == "hello"
+        assert nr.provider_data is None
+
+    def test_refusal_preserves_explicit_content_filter_finish_reason(self, transport):
+        """When the proxy already sets ``finish_reason="content_filter"`` and
+        also provides refusal text, surface the text without disturbing the
+        finish reason."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None, reasoning_content=None,
+                    refusal="declined",
+                ),
+                finish_reason="content_filter",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "content_filter"
+        assert nr.content == "declined"
+        assert nr.provider_data == {"refusal": "declined"}
+
+    def test_explicit_content_filter_finish_reason_passes_through(self, transport):
+        """OpenRouter (and other OpenAI-compatible providers) surface an
+        upstream Claude / moderation refusal as ``finish_reason="content_filter"``
+        — often with empty content and no ``message.refusal`` field. The
+        transport must pass that finish reason straight through so the loop's
+        content_filter refusal handler fires; no ``message.refusal`` required.
+        This is the OpenRouter coverage path (OpenRouter uses the default
+        chat_completions transport)."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None, reasoning_content=None,
+                    refusal=None,
+                ),
+                finish_reason="content_filter",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "content_filter"
+        assert nr.content is None
+
+    def test_refusal_does_not_clobber_existing_content(self, transport):
+        """If the model emitted real text *and* a refusal note, the turn is a
+        normal usable response: keep the visible text, record the refusal in
+        provider_data, and do NOT promote to a terminal content_filter (which
+        would discard the model's actual work by reframing it as a failure)."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="partial answer", tool_calls=None,
+                    reasoning_content=None, refusal="cannot continue",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == "partial answer"
+        assert nr.finish_reason == "stop"
+        assert nr.provider_data == {"refusal": "cannot continue"}
+
+    def test_refusal_with_tool_calls_is_not_promoted(self, transport):
+        """A response that carries tool calls alongside a refusal note is a
+        usable tool turn — record the refusal but keep the tool calls and do
+        NOT terminate it as a content_filter refusal."""
+        tc = SimpleNamespace(
+            id="call_1", type="function",
+            function=SimpleNamespace(name="do_thing", arguments="{}"),
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=[tc],
+                    reasoning_content=None, refusal="cannot continue",
+                ),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        # Tool calls survive; finish reason is untouched; content not clobbered.
+        assert nr.tool_calls and nr.tool_calls[0].name == "do_thing"
+        assert nr.finish_reason == "tool_calls"
+        assert nr.content in (None, "")
+        assert nr.provider_data == {"refusal": "cannot continue"}
+
 
 class TestChatCompletionsCacheStats:
 
@@ -859,3 +983,53 @@ class TestChatCompletionsCacheStats:
         r = SimpleNamespace(usage=SimpleNamespace(prompt_tokens_details=details))
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 500, "creation_tokens": 100}
+
+
+class TestChatCompletionsGeminiNativeExtraBodyStrip:
+    """Profile extra_body (e.g. Nous portal tags) must not reach a native
+    Gemini endpoint — Google's REST API rejects unknown fields with HTTP 400.
+    """
+
+    def _nous_profile(self):
+        from providers import get_provider_profile
+        return get_provider_profile("nous")
+
+    def test_tags_stripped_when_endpoint_is_native_gemini(self, transport):
+        kw = transport.build_kwargs(
+            "anthropic/claude-sonnet-4.6",
+            [{"role": "user", "content": "hi"}],
+            None,
+            provider_profile=self._nous_profile(),
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            session_id="s1",
+            max_tokens=None,
+        )
+        eb = kw.get("extra_body")
+        assert not eb or "tags" not in eb
+
+    def test_tags_preserved_on_nous_endpoint(self, transport):
+        kw = transport.build_kwargs(
+            "hermes-3-405b",
+            [{"role": "user", "content": "hi"}],
+            None,
+            provider_profile=self._nous_profile(),
+            base_url="https://inference.nousresearch.com/v1",
+            session_id="s1",
+            max_tokens=None,
+        )
+        eb = kw.get("extra_body")
+        assert eb and "tags" in eb
+
+    def test_tags_pass_through_on_gemini_openai_compat(self, transport):
+        # /openai compat endpoint is not "native" — unchanged behavior.
+        kw = transport.build_kwargs(
+            "anthropic/claude-sonnet-4.6",
+            [{"role": "user", "content": "hi"}],
+            None,
+            provider_profile=self._nous_profile(),
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            session_id="s1",
+            max_tokens=None,
+        )
+        eb = kw.get("extra_body")
+        assert eb and "tags" in eb

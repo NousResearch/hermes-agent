@@ -545,6 +545,34 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 ---
 
+## Streaming TTS
+
+Voice mode and the `text_to_speech` streaming path share a single provider-
+agnostic dispatch layer in `tools/tts_streaming.py`. Adding a new streaming
+TTS provider is **not** a feature — it's wiring up to an existing ABC.
+
+**The pattern:**
+- `StreamingTTSProvider` is the ABC. Set `sample_rate`, `channels`,
+  `sample_width` class attrs and implement `stream(text) -> Iterator[bytes]`
+  to yield raw PCM chunks.
+- `@register("yourname")` makes the provider discoverable.
+- `resolve_streaming_provider(tts_config, preferred=...)` picks one at
+  runtime with priority fallback (`elevenlabs → gemini → openai → xai → edge`).
+- `dispatch_stream_tts(sentence, provider_name, ...)` opens a sounddevice
+  output stream and writes each chunk as it arrives.
+
+**Why this exists:** the previous `stream_tts_to_speaker` had ElevenLabs
+code inlined; any other provider (Gemini, OpenAI, xAI, edge) had to
+duplicate the sentence-buffer + sounddevice + queue-protocol scaffolding.
+The ABC inverts that — the scaffolding is shared, providers just yield
+bytes.
+
+**Adding a new provider:** subclass `StreamingTTSProvider`, decorate with
+`@register("name")`, add a test. The dispatcher, config knob
+(`tts.streaming.provider`), and E2E test scaffolding come for free.
+
+See `docs/streaming-tts.md` for the capability matrix and provider list.
+
 ## Dependency Pinning Policy
 
 All dependencies must have upper bounds to limit supply-chain attack surface.

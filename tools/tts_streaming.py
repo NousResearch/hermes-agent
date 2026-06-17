@@ -178,6 +178,29 @@ def _import_httpx():
     return httpx
 
 
+def _import_openai_client():
+    """Lazy import the ``openai`` SDK module.
+
+    Returns the ``openai`` *module* (not the ``OpenAI`` client class) so
+    the caller can write ``openai.OpenAI(...)`` exactly like the real
+    production code does. The module-level lookup also means tests can
+    monkeypatch the helper to return a stub module exposing a fake
+    ``OpenAI`` class without installing the real package.
+
+    This mirrors the lazy-import shape used by
+    ``tools.tts_tool.py:_import_openai_client`` (around line 118) so the
+    two import sites stay consistent — the dispatcher and the legacy
+    sync path both treat a missing package the same way.
+    """
+    try:
+        import openai  # type: ignore
+    except ImportError as e:
+        raise ImportError(
+            "openai package not installed. Run: pip install openai"
+        ) from e
+    return openai
+
+
 @register("elevenlabs")
 class ElevenLabsStreamingProvider(StreamingTTSProvider):
     """Streaming TTS provider for ElevenLabs' ``text_to_speech.convert`` API.
@@ -422,6 +445,160 @@ class GeminiStreamingProvider(StreamingTTSProvider):
             return
 
 
+@register("openai")
+class OpenAIStreamingProvider(StreamingTTSProvider):
+    """Streaming TTS provider for OpenAI's ``gpt-4o-mini-tts`` model.
+
+    OpenAI's ``gpt-4o-mini-tts`` supports streaming via
+    ``with_streaming_response.create()`` which yields raw PCM bytes.
+    Unlike the legacy ``client.audio.speech.create(...)`` + ``read()``
+    path used by ``tools.tts_tool.py:_generate_openai_tts`` (which
+    downloads the whole audio before returning), the streaming variant
+    exposes the response as a context manager whose ``iter_bytes()``
+    generator yields each chunk as it arrives from the server. That
+    shape is exactly what the dispatcher's audio callback wants.
+
+    The audio format is fixed at **24 kHz, mono, 16-bit signed
+    little-endian PCM** (the format OpenAI returns when
+    ``response_format="pcm"`` is passed). The dispatcher reads
+    ``sample_rate``/``channels``/``sample_width`` off the instance to
+    open the ``sounddevice.OutputStream`` with the matching format.
+
+    Auth follows the same fallback as the non-streaming
+    ``_generate_openai_tts`` in ``tools.tts_tool.py``: ``OPENAI_API_KEY``
+    is read directly from the environment, and a missing key fails
+    loud in ``__init__`` so the dispatcher never pulls zero chunks.
+    """
+
+    # OpenAI's ``pcm`` response format is 24 kHz, mono, int16
+    # (2 bytes/sample) per the OpenAI TTS streaming docs. Declared as
+    # class attrs so the dispatcher can build the
+    # ``sounddevice.OutputStream`` with the matching format.
+    sample_rate = 24000
+    channels = 1
+    sample_width = 2
+
+    def __init__(self, config: dict, *, stop_event: Optional[threading.Event] = None):
+        # Config keys mirror the ``tts.openai`` block from config.yaml.
+        # Defaults match the constants in tools.tts_tool.py
+        # (``DEFAULT_OPENAI_MODEL``/``DEFAULT_OPENAI_VOICE``) so
+        # behaviour stays consistent with the existing non-streaming
+        # path.
+        self._model = config.get("model", "gpt-4o-mini-tts")
+        self._voice = config.get("voice", "alloy")
+        # ``base_url`` is optional; passing ``None`` lets the SDK fall
+        # back to the official OpenAI endpoint. Storing the raw value
+        # (without stripping) matches the behaviour of
+        # ``tools.tts_tool.py:_generate_openai_tts`` which forwards
+        # whatever the config supplies.
+        self._base_url = config.get("base_url", None)
+        # OpenAI's TTS API accepts an optional ``instructions`` field
+        # for tone/style guidance (e.g. "Speak in a cheerful tone").
+        # Pull it from config if present and forward it on every call;
+        # ``None`` means "use the model's default voice personality".
+        self._instructions = config.get("instructions")
+        # The stop event is optional so this class is usable outside
+        # the dispatcher (e.g. one-off scripts). When None, the
+        # ``stream()`` loop simply skips the stop check.
+        self._stop_event = stop_event
+
+        # Auth: read OPENAI_API_KEY directly from the environment
+        # (matches the legacy ``_generate_openai_tts`` path which also
+        # uses ``os.environ.get``). Strip defensively so a stray
+        # whitespace-only value still fails loud.
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY not set; cannot use OpenAI streaming TTS"
+            )
+        self._api_key = api_key
+
+        # Lazy SDK import — wrapped in a helper so the test suite can
+        # monkeypatch it without installing the real package. The
+        # helper returns the *module* (not a client instance) so
+        # ``self._client = openai_module.OpenAI(...)`` below mirrors
+        # the real production code in ``tools.tts_tool.py``.
+        try:
+            openai_module = _import_openai_client()
+        except ImportError as e:
+            logger.warning("openai package not installed: %s", e)
+            raise
+
+        # Build the client. ``base_url`` is forwarded only when
+        # explicitly set; passing ``None`` would override the SDK
+        # default with the same default, which is a no-op but noisy
+        # in some proxied environments, so we just omit the kwarg.
+        client_kwargs = {"api_key": api_key}
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        self._client = openai_module.OpenAI(**client_kwargs)
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        """Yield PCM chunks for *text* as they arrive from OpenAI.
+
+        Calls ``client.audio.speech.with_streaming_response.create(...)``
+        which is the modern OpenAI streaming entry point — the legacy
+        ``client.audio.speech.create(...)`` + ``response.read()`` path
+        buffers the whole audio before returning, defeating the whole
+        point of this class. The ``with_streaming_response`` variant
+        returns a context manager whose ``iter_bytes(chunk_size=...)``
+        generator yields raw PCM bytes as they arrive.
+
+        The output format is ``pcm`` (raw little-endian 16-bit signed
+        PCM, 24 kHz, mono) which matches the class-level format
+        attributes above. ``extra_body`` is used (rather than
+        ``extra_query``) to set the sample rate so any OpenAI-compatible
+        proxy that supports a per-request sample-rate override picks
+        it up; the real OpenAI endpoint ignores unknown extra_body
+        keys, so it's safe to pass unconditionally.
+
+        The ``try/except`` is deliberately broad (same shape as the
+        ElevenLabs and Gemini providers above): a streaming response
+        that fails halfway through should log a warning and stop
+        yielding rather than crash the dispatcher's audio callback.
+        """
+        try:
+            # The ``with_streaming_response.create(...)`` call returns
+            # a context manager; the response object it yields exposes
+            # ``iter_bytes()`` which streams the PCM payload. We open
+            # it as a context manager so the underlying HTTP connection
+            # is closed cleanly when iteration finishes (or aborts
+            # early via the stop event).
+            create_kwargs = {
+                "model": self._model,
+                "voice": self._voice,
+                "input": text,
+                "response_format": "pcm",
+                # 24 kHz matches the class-level ``sample_rate`` and
+                # the format OpenAI returns for ``pcm``. Some
+                # OpenAI-compatible gateways (e.g. local self-hosted
+                # TTS servers) honour ``sample_rate``; the official
+                # OpenAI endpoint ignores it because ``pcm`` is
+                # already locked to 24 kHz, so this is safe to pass
+                # unconditionally.
+                "extra_body": {"sample_rate": self.sample_rate},
+            }
+            if self._instructions is not None:
+                create_kwargs["instructions"] = self._instructions
+
+            with self._client.audio.speech.with_streaming_response.create(
+                **create_kwargs
+            ) as response:
+                # ``iter_bytes`` is a generator — yielding its values
+                # one-by-one is what gives the dispatcher low-latency
+                # chunked playback. The chunk_size argument is a hint
+                # to the underlying HTTP layer; the SDK is free to
+                # yield smaller or larger chunks based on socket
+                # availability.
+                for chunk in response.iter_bytes(chunk_size=4096):
+                    if self._stop_event is not None and self._stop_event.is_set():
+                        break
+                    yield chunk
+        except Exception as exc:
+            logger.warning("OpenAI streaming TTS failed: %s", exc)
+            return
+
+
 __all__ = [
     "StreamingTTSProvider",
     "register",
@@ -429,4 +606,5 @@ __all__ = [
     "available",
     "ElevenLabsStreamingProvider",
     "GeminiStreamingProvider",
+    "OpenAIStreamingProvider",
 ]

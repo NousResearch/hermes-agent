@@ -458,3 +458,107 @@ def test_gemini_audio_format():
     assert p.sample_rate == 24000
     assert p.channels == 1
     assert p.sample_width == 2
+
+
+# --- OpenAI streaming provider ---
+
+
+def _make_fake_openai_response(chunks: list[bytes]):
+    """Build a stub context manager matching openai's with_streaming_response shape.
+
+    The real OpenAI SDK's
+    ``client.audio.speech.with_streaming_response.create(**kwargs)``
+    returns a context manager whose ``__enter__`` yields an object
+    exposing ``iter_bytes(chunk_size=...)``. This stub mimics that
+    shape so the provider's ``with ... as response: for chunk in
+    response.iter_bytes(...)`` loop is exercised end-to-end.
+    """
+    class _FakeResp:
+        def __init__(self, chunks):
+            self._chunks = chunks
+        def iter_bytes(self, chunk_size=None):
+            for c in self._chunks:
+                yield c
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    return _FakeResp(chunks)
+
+
+def test_openai_yields_pcm_chunks(monkeypatch):
+    """Provider yields each chunk from the streaming response."""
+    from tools.tts_streaming import OpenAIStreamingProvider
+
+    fake_chunks = [b"\x01\x02", b"\x03\x04"]
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    # Mirror the real OpenAI SDK shape: ``client.audio.speech`` exposes
+    # ``with_streaming_response`` (a property/method that returns a
+    # wrapper); the wrapper's ``.create(**kwargs)`` returns a context
+    # manager whose ``__enter__`` yields an object with
+    # ``iter_bytes(chunk_size=...)``. Folding the context-manager
+    # creation into ``create`` (rather than putting it on
+    # ``with_streaming_response``) is what makes the provider's
+    # ``with self._client.audio.speech.with_streaming_response.create(
+    # **kwargs) as response:`` block resolve correctly.
+    class _FakeSpeech:
+        @property
+        def with_streaming_response(self):
+            class _Wrapper:
+                def create(self, **kwargs):
+                    return _make_fake_openai_response(fake_chunks)
+            return _Wrapper()
+    class _FakeAudio:
+        speech = _FakeSpeech()
+    class _FakeClient:
+        audio = _FakeAudio()
+    class _FakeOpenAIModule:
+        OpenAI = lambda **kwargs: _FakeClient()
+
+    monkeypatch.setattr("tools.tts_streaming._import_openai_client",
+                        lambda: _FakeOpenAIModule)
+
+    provider = OpenAIStreamingProvider({})
+    out = list(provider.stream("hello"))
+    assert out == fake_chunks
+
+
+def test_openai_respects_stop_event(monkeypatch):
+    """Stop event aborts iteration."""
+    from tools.tts_streaming import OpenAIStreamingProvider
+    import threading
+
+    fake_chunks = [b"\x01", b"\x02", b"\x03", b"\x04"]
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    class _FakeSpeech:
+        @property
+        def with_streaming_response(self):
+            class _Wrapper:
+                def create(self, **kwargs):
+                    return _make_fake_openai_response(fake_chunks)
+            return _Wrapper()
+    class _FakeAudio:
+        speech = _FakeSpeech()
+    class _FakeClient:
+        audio = _FakeAudio()
+    class _FakeOpenAIModule:
+        OpenAI = lambda **kwargs: _FakeClient()
+
+    monkeypatch.setattr("tools.tts_streaming._import_openai_client",
+                        lambda: _FakeOpenAIModule)
+
+    stop = threading.Event()
+    stop.set()
+    provider = OpenAIStreamingProvider({}, stop_event=stop)
+    out = list(provider.stream("hello"))
+    assert out == []
+
+
+def test_openai_audio_format():
+    from tools.tts_streaming import OpenAIStreamingProvider
+    p = OpenAIStreamingProvider.__new__(OpenAIStreamingProvider)
+    assert p.sample_rate == 24000
+    assert p.channels == 1
+    assert p.sample_width == 2

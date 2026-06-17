@@ -263,12 +263,43 @@ class TestCodexBuildKwargs:
         # full history.
         assert "reasoning.encrypted_content" in kw.get("include", [])
 
-    def test_xai_injects_native_web_search_tool(self, transport):
-        """xAI path declares xAI's native server-side web_search built-in so
-        grok server-side search runs to completion (otherwise the turn stalls
-        as reasoning-with-no-answer -> false 'incomplete' -> 3 retries -> fail).
+    def test_xai_injects_native_web_search_when_client_web_search_present(self, transport):
+        """xAI path swaps a client-side ``web_search`` function for xAI's
+        native server-side ``web_search`` built-in so grok server-side search
+        runs to completion (otherwise the turn stalls as
+        reasoning-with-no-answer -> false 'incomplete' -> 3 retries -> fail).
+        Non-conflicting client tools are preserved.
         """
         messages = [{"role": "user", "content": "Find current prices."}]
+        kw = transport.build_kwargs(
+            model="grok-composer-2.5-fast", messages=messages,
+            tools=[
+                {"type": "function", "function": {
+                    "name": "read_file", "description": "Read a file.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_search", "description": "Search the web.",
+                    "parameters": {"type": "object",
+                                   "properties": {"query": {"type": "string"}}}}},
+            ],
+            is_xai_responses=True,
+        )
+        tool_types = [t.get("type") for t in kw.get("tools", [])]
+        assert "web_search" in tool_types, kw.get("tools")
+        # Non-conflicting client-side tools are preserved.
+        names = [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+        assert "read_file" in names
+
+    def test_xai_does_not_inject_native_web_search_without_client_web_search(self, transport):
+        """The native ``web_search`` built-in is a 1:1 swap for an
+        already-requested client ``web_search`` — NOT an additive grant.  A
+        turn whose toolset has no ``web_search`` (user never enabled the web
+        toolset) must not get Grok server-side search force-injected, which
+        would silently bypass Hermes's web-provider config and tool-trace
+        plumbing for every xai-oauth turn.
+        """
+        messages = [{"role": "user", "content": "Read this file."}]
         kw = transport.build_kwargs(
             model="grok-composer-2.5-fast", messages=messages,
             tools=[{"type": "function", "function": {
@@ -277,10 +308,9 @@ class TestCodexBuildKwargs:
                                "properties": {"path": {"type": "string"}}}}}],
             is_xai_responses=True,
         )
-        tool_types = [t.get("type") for t in kw.get("tools", [])]
-        assert "web_search" in tool_types, kw.get("tools")
-        # Non-conflicting client-side tools are preserved.
-        names = [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
         assert "read_file" in names
 
     def test_xai_drops_clientside_web_search_to_avoid_duplicate(self, transport):

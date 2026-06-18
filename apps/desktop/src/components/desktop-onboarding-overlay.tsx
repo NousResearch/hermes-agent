@@ -447,7 +447,9 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           canGoBack={hasOauth && !localEndpoint}
           initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : undefined}
           onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
+          onSave={(envKey, value, name, apiKey, modelName) =>
+            saveOnboardingApiKey(envKey, value, name, ctx, apiKey, modelName)
+          }
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -654,8 +656,9 @@ export function ApiKeyForm({
     envKey: string,
     value: string,
     name: string,
-    apiKey?: string
-  ) => Promise<{ message?: string; ok: boolean }>
+    apiKey?: string,
+    modelName?: string
+  ) => Promise<{ message?: string; needsModelInput?: boolean; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
@@ -669,6 +672,12 @@ export function ApiKeyForm({
   // Optional endpoint API key, only used by the local / custom endpoint option
   // (whose `value` is the base URL). Cleared whenever the option changes.
   const [localKey, setLocalKey] = useState('')
+  // Optional manual model name, only used by the local / custom endpoint
+  // option when the previous probe came back with zero /v1/models entries.
+  // The input is hidden until the save call asks for it (needsModelInput),
+  // so the happy path (discovery finds a model) stays uncluttered.
+  const [modelName, setModelName] = useState('')
+  const [showModelInput, setShowModelInput] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -679,6 +688,8 @@ export function ApiKeyForm({
       setOption(options[0])
       setValue('')
       setLocalKey('')
+      setModelName('')
+      setShowModelInput(false)
       setError(null)
     }
   }, [option.envKey, options])
@@ -691,6 +702,8 @@ export function ApiKeyForm({
     setOption(o)
     setValue('')
     setLocalKey('')
+    setModelName('')
+    setShowModelInput(false)
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -704,8 +717,10 @@ export function ApiKeyForm({
   // placeholder so users can eyeball that the right key is in place.
   const currentRedacted = alreadySet ? (redactedValue?.(option.envKey) ?? null) : null
   // Only require a non-empty value — no length/format validation, so a short
-  // or unusual key can't block the user from continuing.
-  const canSave = value.trim().length >= 1
+  // or unusual key can't block the user from continuing. When the manual
+  // model input is showing, also require it to be filled (a saved endpoint
+  // without a model is still broken from the runtime's POV).
+  const canSave = value.trim().length >= 1 && (!isLocal || !showModelInput || modelName.trim().length >= 1)
   const optionCopy = t.onboarding.apiKeyOptions[option.id]
   const optionDescription = optionCopy?.description ?? option.description
 
@@ -716,13 +731,30 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name, isLocal ? localKey : undefined)
+
+    const result = await onSave(
+      option.envKey,
+      value,
+      option.name,
+      isLocal ? localKey : undefined,
+      isLocal && showModelInput ? modelName : undefined
+    )
 
     if (result.ok) {
       setValue('')
       setLocalKey('')
+      setModelName('')
+      setShowModelInput(false)
     } else {
       setError(result.message ?? t.onboarding.couldNotSave)
+
+      // The save handler asks the wizard to reveal a manual model-name input
+      // when the endpoint didn't enumerate any models at /v1/models. This is
+      // the path for OpenAI-compatible SaaS (Cohere, auth-gated gateways, …)
+      // that doesn't expose a discovery catalog in the OpenAI shape.
+      if (result.needsModelInput) {
+        setShowModelInput(true)
+      }
     }
 
     setSaving(false)
@@ -792,6 +824,17 @@ export function ApiKeyForm({
             placeholder={t.onboarding.localApiKeyPlaceholder}
             type="password"
             value={localKey}
+          />
+        ) : null}
+        {isLocal && showModelInput ? (
+          <Input
+            autoComplete="off"
+            autoFocus
+            className="font-mono"
+            onChange={e => setModelName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && void submit()}
+            placeholder={t.onboarding.localModelNamePlaceholder}
+            value={modelName}
           />
         ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}

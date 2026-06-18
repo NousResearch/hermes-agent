@@ -1642,6 +1642,7 @@ export const zh: Translations = {
     replaceCurrent: '替换当前值',
     pasteApiKey: '粘贴 API 密钥',
     localApiKeyPlaceholder: 'API 密钥（可选 — 仅当端点需要时填写）',
+    localModelNamePlaceholder: '模型名称（例如 command-r-plus-08-2024）',
     couldNotSave: '无法保存凭据。',
     connecting: '连接中',
     update: '更新',

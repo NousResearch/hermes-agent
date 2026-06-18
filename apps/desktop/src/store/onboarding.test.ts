@@ -274,7 +274,7 @@ describe('saveOnboardingLocalEndpoint', () => {
     }
   }
 
-  it('errors when the endpoint advertises no models (nothing to route to)', async () => {
+  it('returns needsModelInput when the endpoint advertises no models (nothing to route to)', async () => {
     const calls: string[] = []
     installApiMock(async ({ path }: { path: string }) => {
       calls.push(path)
@@ -291,9 +291,90 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('no models')
+    // The wizard reads this discriminator to reveal a manual model-name input.
+    expect(result.needsModelInput).toBe(true)
+    expect(result.message).toMatch(/didn't enumerate any models|advertised no models/)
     // Must not attempt to persist an assignment without a model.
     expect(calls).not.toContain('/api/model/set')
+  })
+
+  it('uses a manually provided model name and skips discovery when /v1/models is empty', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // Endpoint reachable but the discovery list is empty — the bug-class
+        // case the wizard used to hard-fail on.
+        return { ok: true, reachable: true, message: '', models: [] }
+      }
+
+      if (path === '/api/model/set') {
+        return {
+          ok: true,
+          provider: 'custom',
+          model: 'command-r-plus-08-2024',
+          base_url: 'https://api.cohere.ai/compatibility/v1'
+        }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'https://api.cohere.ai/compatibility/v1',
+      'sk-secret',
+      { requestGateway: readyGateway() },
+      'command-r-plus-08-2024'
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    // The manually provided model name is persisted verbatim — the runtime
+    // honors it via the discover_models: false + explicit models: path.
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'command-r-plus-08-2024',
+      base_url: 'https://api.cohere.ai/compatibility/v1',
+      api_key: 'sk-secret'
+    })
+  })
+
+  it('uses a manually provided model name even when /v1/models enumerates models', async () => {
+    // The user is allowed to override the auto-discovered default by typing
+    // a model name before submitting. The wizard never pre-fills the model
+    // input in the happy path, but the store function should still honor
+    // modelName over probe.models[0] when both are available.
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        return { ok: true, reachable: true, message: '', models: ['llama-3.1-8b'] }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama-3.1-8b', base_url: 'http://127.0.0.1:8000/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'http://127.0.0.1:8000/v1',
+      '',
+      { requestGateway: readyGateway() },
+      '  llama-3.3-70b  '
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({ model: 'llama-3.3-70b' })
   })
 
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {
@@ -362,7 +443,11 @@ describe('saveOnboardingLocalEndpoint', () => {
 
     // The probe must receive the key so an auth-gated /v1/models enumerates.
     const probe = calls.find(c => c.path === '/api/providers/validate')
-    expect(probe?.body).toMatchObject({ key: 'OPENAI_BASE_URL', value: 'https://text.example.com/v1', api_key: 'sk-secret' })
+    expect(probe?.body).toMatchObject({
+      key: 'OPENAI_BASE_URL',
+      value: 'https://text.example.com/v1',
+      api_key: 'sk-secret'
+    })
 
     // And the key must be persisted alongside the endpoint for runtime auth.
     const assign = calls.find(c => c.path === '/api/model/set')

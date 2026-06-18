@@ -320,9 +320,11 @@ TASK_COMPLETION_GUIDANCE = (
 # concurrently when they are independent (read-only tools always; path-scoped
 # file ops when their targets don't overlap — see
 # run_agent._execute_tool_calls / tool_dispatch_helpers). The missing piece
-# was telling the *model* to emit those calls together in the first place;
-# nothing in the open-source system prompt encouraged batching. This block
-# closes that gap.
+# was telling the *model* to emit those calls together in the first place.
+# Until now the only batching steer in the prompt lived in
+# GOOGLE_MODEL_OPERATIONAL_GUIDANCE — Gemini/Gemma got it, every other model
+# got nothing. This block makes the steer universal; the now-redundant
+# Google-only bullet has been dropped so no model receives it twice.
 #
 # Short on purpose — shipped in the cached system prompt to every user, every
 # session. Token cost is paid once at install and amortised across all
@@ -425,9 +427,10 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
     "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
     "paragraphs. Focus on actions and results over narration.\n"
-    "- **Parallel tool calls:** When you need to perform multiple independent "
-    "operations (e.g. reading several files), make all the tool calls in a "
-    "single response rather than sequentially.\n"
+    # Parallel-tool-call steering now lives in the universal
+    # PARALLEL_TOOL_CALL_GUIDANCE block (injected for all models), so it is no
+    # longer duplicated here — keeping it would send Gemini/Gemma the same
+    # instruction twice.
     "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
     "to prevent CLI tools from hanging on prompts.\n"
     "- **Keep going:** Work autonomously until the task is fully resolved. "

@@ -887,7 +887,7 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
 
 
 @pytest.mark.asyncio
-async def test_startup_auto_resume_schedules_fresh_pending_sessions():
+async def test_startup_auto_resume_schedules_fresh_pending_sessions(monkeypatch):
     """Fresh resume_pending sessions should continue automatically after startup.
 
     This closes the UX gap where restart recovery only happened if the user sent
@@ -908,7 +908,11 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    runner.session_store.has_meaningful_transcript = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        runner.session_store,
+        "has_meaningful_transcript",
+        lambda _session_id: True,
+    )
     adapter.handle_message = AsyncMock()
 
     scheduled = runner._schedule_resume_pending_sessions()

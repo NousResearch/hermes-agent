@@ -6099,6 +6099,35 @@ def _define_discord_view_classes() -> None:
                     pass
 
 
+    def _sift_clarify_button_style(choice_text):
+        """Map a clarify choice label to a Discord button color.
+
+        Heuristic (case-insensitive):
+          - ✅ ✔ 👍, "send", "approve", "confirm", "yes", "go", "ok" → success (green)
+          - ❌ ✗ 🚫 🛑 🗑 ⛔, "discard", "cancel", "delete", "no", "reject", "deny", "drop" → danger (red)
+          - ✏ 📝 🔗 🌐 🔍 👀, "edit", "open", "view", "link", "details" → secondary (grey)
+          - everything else → primary (blue)
+
+        Sift contrib — pending upstream. Lets a webhook agent control button
+        color via the choice label without changing the clarify_tool API.
+        """
+        text = (choice_text or "").lower().strip()
+        # Emoji-prefix and keyword checks.
+        if any(p in text for p in ("\u2705", "\u2714", "\U0001f44d")):
+            return discord.ButtonStyle.success
+        if any(p in text for p in ("\u274c", "\u2717", "\U0001f6ab", "\U0001f6d1", "\U0001f5d1", "\u26d4")):
+            return discord.ButtonStyle.danger
+        if any(p in text for p in ("\u270f", "\U0001f4dd", "\U0001f517", "\U0001f310", "\U0001f50d", "\U0001f440")):
+            return discord.ButtonStyle.secondary
+        words = set(text.split())
+        if words & {"send", "approve", "confirm", "yes", "go", "ok", "accept"}:
+            return discord.ButtonStyle.success
+        if words & {"discard", "cancel", "delete", "no", "reject", "deny", "drop", "abort"}:
+            return discord.ButtonStyle.danger
+        if words & {"edit", "open", "view", "link", "details", "later", "snooze", "defer"}:
+            return discord.ButtonStyle.secondary
+        return discord.ButtonStyle.primary
+
     class ClarifyChoiceView(discord.ui.View):
         """Interactive button view for the clarify tool's multiple-choice prompts.
 
@@ -6133,7 +6162,7 @@ def _define_discord_view_classes() -> None:
                 label_body = choice if len(choice) <= 75 else choice[:72] + "..."
                 button = discord.ui.Button(
                     label=f"{index + 1}. {label_body}",
-                    style=discord.ButtonStyle.primary,
+                    style=_sift_clarify_button_style(choice),
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )
                 button.callback = self._make_choice_callback(index, choice)

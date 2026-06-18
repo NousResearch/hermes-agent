@@ -327,6 +327,88 @@ class WebhookAdapter(BasePlatformAdapter):
             self._prune_seen_deliveries(now)
         return True
 
+    # ------------------------------------------------------------------
+    # Clarify delegation (Sift contrib — pending upstream)
+    # ------------------------------------------------------------------
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices,
+        clarify_id: str,
+        session_key: str,
+        metadata=None,
+    ):
+        """Delegate clarify to the route's target platform adapter so
+        webhook agent runs can use native rich UIs (Discord buttons,
+        Telegram inline keyboard, etc.).
+
+        When a webhook route has ``deliver: discord`` (or any messaging
+        platform) plus ``deliver_extra.chat_id``, the agent that runs
+        in response can call ``clarify`` and get a real button render
+        in the target channel. Without this delegation the base
+        text-fallback writes a numbered list to the webhook session
+        (via the cross-platform deliver path), but the gateway's
+        text-intercept is keyed on the SOURCE platform's session_key
+        — Discord text replies to a webhook-spawned clarify never
+        resolve the wait. Button clicks resolve via the module-level
+        ``clarify_gateway._entries`` registry, so any adapter can
+        unblock any agent's clarify wait.
+
+        Falls back to the base text behaviour when:
+          - the route's deliver is ``log`` / ``github_comment`` / etc.
+          - the target adapter isn't connected
+          - no chat_id can be resolved
+        """
+        delivery = self._delivery_info.get(chat_id, {})
+        platform_name = (delivery.get("deliver") or "").strip().lower()
+
+        if not platform_name or platform_name in {"log", "github_comment"}:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata,
+            )
+        if not self.gateway_runner:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata,
+            )
+        try:
+            target_platform = Platform(platform_name)
+        except ValueError:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata,
+            )
+        adapter = self.gateway_runner.adapters.get(target_platform)
+        if not adapter:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata,
+            )
+
+        extra = delivery.get("deliver_extra", {}) or {}
+        target_chat = extra.get("chat_id", "")
+        if not target_chat:
+            home = self.gateway_runner.config.get_home_channel(target_platform)
+            if home:
+                target_chat = home.chat_id
+        if not target_chat:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata,
+            )
+
+        forwarded_metadata = dict(metadata) if metadata else {}
+        thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+        if thread_id and "thread_id" not in forwarded_metadata:
+            forwarded_metadata["thread_id"] = thread_id
+
+        return await adapter.send_clarify(
+            chat_id=target_chat,
+            question=question,
+            choices=choices,
+            clarify_id=clarify_id,
+            session_key=session_key,
+            metadata=forwarded_metadata or None,
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 

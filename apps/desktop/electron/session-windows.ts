@@ -39,11 +39,29 @@ function chatWindowWebPreferences(preloadPath: string) {
 // treated as the route by HashRouter and would break routeSessionId(). The
 // renderer reads the flag from window.location.search to suppress the install /
 // onboarding overlays and the global session sidebar. `new=1` marks the compact
-// scratch window; `watch=1` marks a spectator window (e.g. a running subagent's
-// session): the renderer resumes it lazily so the gateway never builds an agent
-// just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch, newSession }: any = {}) {
-  const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}`
+// scratch window; `profile` pins a stored-session window to the owning profile;
+// `watch=1` marks a spectator window (e.g. a running subagent's session): the
+// renderer resumes it lazily so the gateway never builds an agent just to
+// stream into it.
+function buildSessionWindowUrl(
+  sessionId: null | string,
+  { devServer, rendererIndexPath, watch, newSession, profile }: any = {}
+) {
+  const queryParts = ['win=secondary']
+
+  if (newSession) {
+    queryParts.push('new=1')
+  }
+
+  if (typeof profile === 'string' && profile.trim()) {
+    queryParts.push(`profile=${encodeURIComponent(profile.trim())}`)
+  }
+
+  if (watch) {
+    queryParts.push('watch=1')
+  }
+
+  const query = `?${queryParts.join('&')}`
   const route = newSession ? '#/' : `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {

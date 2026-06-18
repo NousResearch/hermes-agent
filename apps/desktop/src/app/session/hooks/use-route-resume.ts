@@ -11,7 +11,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, profileHint?: string | null) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -23,6 +23,7 @@ interface RouteResumeOptions {
   // armed->cleared edge is an unambiguous "give me a fresh backoff cycle"
   // signal the effect below uses to reset the attempt counter.
   resumeExhaustedSessionId: string | null
+  routeProfile?: string | null
   routedSessionId: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
@@ -76,6 +77,7 @@ export function useRouteResume({
   resumeSession,
   resumeFailedSessionId,
   resumeExhaustedSessionId,
+  routeProfile,
   routedSessionId,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
@@ -147,7 +149,7 @@ export function useRouteResume({
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). Otherwise keep skipping when already active.
       if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        void resumeSession(routedSessionId, true)
+        void resumeSession(routedSessionId, true, routeProfile)
       }
 
       return
@@ -170,6 +172,7 @@ export function useRouteResume({
     gatewayState,
     locationPathname,
     resumeSession,
+    routeProfile,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
@@ -267,7 +270,7 @@ export function useRouteResume({
       // having fired. A flapping backend could then hit MAX in a couple of
       // re-renders with far fewer than MAX real attempts. (Point 3)
       retryAttemptRef.current += 1
-      void resumeSession(sessionId, true)
+      void resumeSession(sessionId, true, routeProfile)
     }, resumeRetryDelayMs(attempt))
 
     return () => clearTimeout(timer)
@@ -279,6 +282,7 @@ export function useRouteResume({
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
+    routeProfile,
     routedSessionId,
     selectedStoredSessionIdRef
   ])

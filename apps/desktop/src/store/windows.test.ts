@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { canOpenSessionWindow, openNewSessionInNewWindow, openSessionInNewWindow } from './windows'
+import { canOpenSessionWindow, openNewSessionInNewWindow, openSessionInNewWindow, secondaryWindowProfile } from './windows'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -89,6 +89,16 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
+  it('forwards the owning profile for secondary session windows', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', { profile: 'research' })
+
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'research' })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
   it('notifies on an ok:false result', async () => {
     installBridge(vi.fn().mockResolvedValue({ ok: false, error: 'invalid-session-id' }))
 
@@ -103,6 +113,14 @@ describe('openSessionInNewWindow', () => {
     await openSessionInNewWindow('s1')
 
     expect(notifyError).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('secondaryWindowProfile', () => {
+  it('reads the profile hint from the window query string', () => {
+    window.history.replaceState(null, '', '/?win=secondary&profile=research#/s1')
+
+    expect(secondaryWindowProfile()).toBe('research')
   })
 })
 

@@ -126,7 +126,7 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              void openSessionInNewWindow(sessionId)
+              void openSessionInNewWindow(sessionId, { profile })
             }
           }
         ]

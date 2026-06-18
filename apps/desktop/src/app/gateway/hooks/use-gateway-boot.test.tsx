@@ -105,9 +105,10 @@ function fakeDesktop() {
   }
 }
 
-function Harness() {
+function Harness({ initialProfile = null }: { initialProfile?: null | string } = {}) {
   useGatewayBoot({
     handleGatewayEvent: () => undefined,
+    initialProfile,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig: async () => undefined,
@@ -162,6 +163,16 @@ async function advanceBackoff() {
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('uses a secondary-window profile hint for the first backend connection', async () => {
+    const desktop = fakeDesktop()
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness initialProfile="research" />)
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledWith('research')
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it

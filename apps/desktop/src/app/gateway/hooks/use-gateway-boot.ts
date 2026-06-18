@@ -50,6 +50,7 @@ const RECONNECT_ESCALATE_AFTER = 6
 
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
+  initialProfile?: null | string
   onConnectionReady: (
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
@@ -60,6 +61,7 @@ interface GatewayBootOptions {
 
 export function useGatewayBoot({
   handleGatewayEvent,
+  initialProfile = null,
   onConnectionReady,
   onGatewayReady,
   refreshHermesConfig,
@@ -96,6 +98,10 @@ export function useGatewayBoot({
 
       return () => void (cancelled = true)
     }
+
+    const initialProfileKey = normalizeProfileKey(initialProfile || $activeGatewayProfile.get())
+    const initialProfileHint = initialProfile?.trim() ? initialProfileKey : undefined
+    $activeGatewayProfile.set(initialProfileKey)
 
     // --- Reconnect-after-sleep machinery -------------------------------------
     // macOS sleep silently drops the renderer's WebSocket. The backend Python
@@ -226,10 +232,11 @@ export function useGatewayBoot({
     // resumes are no-op swaps and reconnects target the right backend.
     // Best-effort: a missing preference means "default". Shared by boot + soft
     // switch.
-    async function adoptPrimaryProfile() {
+    async function adoptPrimaryProfile(profileHint?: null | string) {
       try {
-        const pref = await desktop.profile?.get?.()
-        const profileKey = (pref?.profile ?? '').trim() || 'default'
+        const hintedProfile = profileHint?.trim() ? normalizeProfileKey(profileHint) : ''
+        const pref = hintedProfile ? null : await desktop.profile?.get?.()
+        const profileKey = hintedProfile || (pref?.profile ?? '').trim() || 'default'
         $activeGatewayProfile.set(profileKey)
         setPrimaryGateway(gateway, profileKey)
         void ensureGatewayForProfile(profileKey)
@@ -327,7 +334,7 @@ export function useGatewayBoot({
 
     const gateway = new HermesGateway()
     callbacksRef.current.onGatewayReady(gateway)
-    setPrimaryGateway(gateway, normalizeProfileKey($activeGatewayProfile.get()))
+    setPrimaryGateway(gateway, initialProfileKey)
     // Secondary (background-profile) sockets funnel into the same handler.
     configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
 
@@ -357,7 +364,7 @@ export function useGatewayBoot({
       }
     })
 
-    const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
+    const sourceProfile = initialProfileKey
     const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile }))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
@@ -431,7 +438,7 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
-        const conn = await desktop.getConnection()
+        const conn = await desktop.getConnection(initialProfileHint)
 
         if (cancelled) {
           return
@@ -455,7 +462,7 @@ export function useGatewayBoot({
           return
         }
 
-        await adoptPrimaryProfile()
+        await adoptPrimaryProfile(initialProfileHint)
 
         setDesktopBootStep({
           phase: 'renderer.config',

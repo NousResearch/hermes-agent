@@ -238,3 +238,70 @@ class TestMinimaxTtsLegacyTextToSpeech:
         _, output = self._run({}, tmp_path, monkeypatch)
         with open(output, "rb") as f:
             assert f.read() == b"\x00\x01\x02\x03"
+
+
+# ---------------------------------------------------------------------------
+# Tool-level speed parameter (text_to_speech_tool speed injection)
+# ---------------------------------------------------------------------------
+
+class TestToolLevelSpeed:
+    """Verify that the speed parameter on text_to_speech_tool injects into config."""
+
+    def test_speed_injected_into_config(self, tmp_path, monkeypatch):
+        """When speed is passed to the tool, it overrides config speed."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("tools.tts_tool._resolve_openai_audio_client_config",
+                   return_value=("test-key", None)), \
+             patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
+             patch("tools.tts_tool._get_provider", return_value="openai"), \
+             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+             patch("gateway.session_context.get_session_env", return_value=""):
+            from tools.tts_tool import text_to_speech_tool
+            text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=0.7)
+
+        # Verify the tts_config passed to the generator has speed=0.7
+        call_args = mock_gen.call_args
+        config_passed = call_args[0][2]  # (text, output_path, tts_config)
+        assert config_passed["speed"] == 0.7
+
+    def test_speed_clamped_range(self, tmp_path, monkeypatch):
+        """Speed values outside 0.25-4.0 are clamped."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai", "openai": {}}), \
+             patch("tools.tts_tool._get_provider", return_value="openai"), \
+             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+             patch("gateway.session_context.get_session_env", return_value=""):
+            from tools.tts_tool import text_to_speech_tool
+            text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=10.0)
+
+        config_passed = mock_gen.call_args[0][2]
+        assert config_passed["speed"] == 4.0
+
+    def test_no_speed_preserves_config(self, tmp_path, monkeypatch):
+        """When speed is None, config is not mutated."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        original_config = {"provider": "openai", "openai": {}, "speed": 1.5}
+
+        with patch("tools.tts_tool._load_tts_config", return_value=original_config), \
+             patch("tools.tts_tool._get_provider", return_value="openai"), \
+             patch("tools.tts_tool._resolve_command_provider_config", return_value=None), \
+             patch("tools.tts_tool._resolve_max_text_length", return_value=4096), \
+             patch("tools.tts_tool._generate_openai_tts") as mock_gen, \
+             patch("gateway.session_context.get_session_env", return_value=""):
+            from tools.tts_tool import text_to_speech_tool
+            text_to_speech_tool("Hello", str(tmp_path / "out.mp3"), speed=None)
+
+        config_passed = mock_gen.call_args[0][2]
+        assert config_passed.get("speed") == 1.5  # original config preserved
+        assert original_config.get("speed") == 1.5  # original not mutated

@@ -5944,7 +5944,11 @@ def _inject_profile_env_vars() -> None:
                     "advanced": True,
                 }
     except Exception:
-        pass
+        logger.warning(
+            "profile env-var injection failed; some provider env vars may be "
+            "missing from the setup UI",
+            exc_info=True,
+        )
 
 
 # Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
@@ -6041,7 +6045,11 @@ def _inject_platform_plugin_env_vars() -> None:
                     "category": meta.get("category") or "messaging",
                 }
     except Exception:
-        pass
+        logger.warning(
+            "platform-plugin env-var injection failed; some platform env vars "
+            "may be missing from the setup UI",
+            exc_info=True,
+        )
 
 
 # Eagerly inject so that platform plugin env vars show up in the setup wizard.

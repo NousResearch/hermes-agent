@@ -34,7 +34,8 @@ from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
-# Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
+# Must stay in sync with the bare string literal "custom" used throughout
+# hermes_cli.runtime_provider (there is no RUNTIME_PROVIDER_TYPE_CUSTOM constant).
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb

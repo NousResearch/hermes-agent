@@ -164,6 +164,14 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     enabled = policy.get("enabled", True)
     if not isinstance(enabled, bool):
         raise WebsitePolicyError("security.website_blocklist.enabled must be a boolean")
+    if not enabled and (raw_domains or raw_shared_files):
+        logger.warning(
+            "website_blocklist has %d domain(s) and %d shared file(s) configured but "
+            "'enabled' is not true - the blocklist is INACTIVE. "
+            "Set security.website_blocklist.enabled: true to apply it.",
+            len(raw_domains),
+            len(raw_shared_files),
+        )
 
     rules: List[Dict[str, str]] = []
     seen: set[Tuple[str, str]] = set()

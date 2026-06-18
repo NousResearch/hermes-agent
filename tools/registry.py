@@ -5,7 +5,7 @@ schema, handler, toolset membership, and availability check.  ``model_tools.py``
 queries the registry instead of maintaining its own parallel data structures.
 
 Import chain (circular-import safe):
-    tools/registry.py  (no imports from model_tools or tool files)
+    tools/registry.py  (no module-level imports from model_tools or tool files; dispatch() uses deferred function-local imports of model_tools._run_async / _sanitize_tool_error)
            ^
     tools/*.py  (import from tools.registry at module level)
            ^

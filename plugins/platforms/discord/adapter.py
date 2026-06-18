@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -37,6 +38,8 @@ _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # every slash command — not just the overflow ones. We keep the desired set
 # at or below this limit at registration time.
 _DISCORD_MAX_APP_COMMANDS = 100
+_LEAGUE_MMR_GUILD_NAME = "League Customs"
+_LEAGUE_MMR_REGISTER_BUTTON_ID = "league_mmr_register_riot_id"
 
 try:
     import discord
@@ -130,6 +133,223 @@ def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[s
     if bundled.is_file():
         return str(bundled)
     return None
+
+
+def _league_mmr_parse_riot_id(value: str) -> tuple[str, str]:
+    """Parse and lightly validate a Riot ID in GameName#TagLine format."""
+    cleaned = (value or "").strip()
+    if cleaned.count("#") != 1:
+        raise ValueError("Bruk formatet GameName#TagLine, f.eks. Pope Francis#bless")
+
+    game_name, tag_line = [part.strip() for part in cleaned.split("#", 1)]
+    if not game_name or not tag_line:
+        raise ValueError("Bruk formatet GameName#TagLine, f.eks. Pope Francis#bless")
+    if len(game_name) < 3 or len(game_name) > 16:
+        raise ValueError("GameName er for lang/kort. Eksempel: Pope Francis#bless")
+    if len(tag_line) < 3 or len(tag_line) > 5:
+        raise ValueError("TagLine er for lang/kort. Eksempel: Pope Francis#bless")
+    return game_name, tag_line
+
+
+def _league_mmr_db_path() -> _Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "league_mmr.sqlite3"
+
+
+def _league_mmr_init_db(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS league_mmr_players (
+            guild_id TEXT NOT NULL DEFAULT '',
+            discord_user_id TEXT NOT NULL,
+            discord_display_name TEXT NOT NULL,
+            riot_game_name TEXT NOT NULL,
+            riot_tag_line TEXT NOT NULL,
+            mmr INTEGER NOT NULL DEFAULT 1000,
+            games_played INTEGER NOT NULL DEFAULT 0,
+            wins INTEGER NOT NULL DEFAULT 0,
+            losses INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, discord_user_id)
+        )
+        """
+    )
+    conn.commit()
+
+
+def _league_mmr_upsert_player(
+    conn: sqlite3.Connection,
+    *,
+    discord_user_id: str,
+    discord_display_name: str,
+    riot_game_name: str,
+    riot_tag_line: str,
+    guild_id: str = "",
+) -> None:
+    manual_row = conn.execute(
+        """
+        SELECT guild_id, discord_user_id
+        FROM league_mmr_players
+        WHERE guild_id IN (?, '')
+          AND lower(riot_game_name) = lower(?)
+          AND lower(riot_tag_line) = lower(?)
+          AND discord_user_id LIKE 'manual:%'
+        ORDER BY CASE WHEN guild_id = ? THEN 0 ELSE 1 END
+        LIMIT 1
+        """,
+        (guild_id, riot_game_name, riot_tag_line, guild_id),
+    ).fetchone()
+    if manual_row and not discord_user_id.startswith("manual:"):
+        # Merge historical/manual rows into the real Discord user when that
+        # player later uses /mmr-registrering. This preserves MMR/games/wins/losses.
+        conn.execute(
+            """
+            UPDATE league_mmr_players
+            SET guild_id = ?,
+                discord_user_id = ?,
+                discord_display_name = ?,
+                riot_game_name = ?,
+                riot_tag_line = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE guild_id = ? AND discord_user_id = ?
+            """,
+            (
+                guild_id,
+                discord_user_id,
+                discord_display_name,
+                riot_game_name,
+                riot_tag_line,
+                manual_row["guild_id"],
+                manual_row["discord_user_id"],
+            ),
+        )
+        conn.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO league_mmr_players (
+            guild_id,
+            discord_user_id,
+            discord_display_name,
+            riot_game_name,
+            riot_tag_line,
+            mmr,
+            games_played,
+            wins,
+            losses
+        ) VALUES (?, ?, ?, ?, ?, 1000, 0, 0, 0)
+        ON CONFLICT(guild_id, discord_user_id) DO UPDATE SET
+            discord_display_name = excluded.discord_display_name,
+            riot_game_name = excluded.riot_game_name,
+            riot_tag_line = excluded.riot_tag_line,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (guild_id, discord_user_id, discord_display_name, riot_game_name, riot_tag_line),
+    )
+    conn.commit()
+
+
+def _league_mmr_register_player(
+    *,
+    guild_id: str,
+    discord_user_id: str,
+    discord_display_name: str,
+    riot_id: str,
+) -> tuple[str, str]:
+    game_name, tag_line = _league_mmr_parse_riot_id(riot_id)
+    db_path = _league_mmr_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        _league_mmr_init_db(conn)
+        _league_mmr_upsert_player(
+            conn,
+            guild_id=guild_id,
+            discord_user_id=discord_user_id,
+            discord_display_name=discord_display_name,
+            riot_game_name=game_name,
+            riot_tag_line=tag_line,
+        )
+    finally:
+        conn.close()
+    return game_name, tag_line
+
+
+def _league_mmr_fetch_leaderboard(conn: sqlite3.Connection, *, guild_id: str, limit: Optional[int] = None) -> list[sqlite3.Row]:
+    _league_mmr_init_db(conn)
+    limit_clause = " LIMIT ?" if limit is not None else ""
+    params: tuple[Any, ...] = (guild_id, limit) if limit is not None else (guild_id,)
+    return conn.execute(
+        f"""
+        SELECT
+            discord_display_name,
+            riot_game_name,
+            riot_tag_line,
+            mmr,
+            games_played,
+            wins,
+            losses
+        FROM league_mmr_players
+        WHERE guild_id IN (?, '')
+        ORDER BY mmr DESC, wins DESC, games_played ASC, lower(riot_game_name) ASC
+        {limit_clause}
+        """,
+        params,
+    ).fetchall()
+
+
+def _league_mmr_format_leaderboard(rows: list[sqlite3.Row], *, title: str = "🏆 League Customs MMR Leaderboard") -> str:
+    if not rows:
+        return (
+            f"{title}\n\n"
+            "Ingen spillere er registrert ennå. Bruk `/mmr-registrering` først."
+        )
+
+    lines = [title, ""]
+    for index, row in enumerate(rows, start=1):
+        riot_id = f"{row['riot_game_name']}#{row['riot_tag_line']}"
+        games = int(row["games_played"] or 0)
+        wins = int(row["wins"] or 0)
+        losses = int(row["losses"] or 0)
+        winrate = round((wins / games) * 100) if games else 0
+        lines.append(
+            f"**{index}.** `{riot_id}` — **{row['mmr']} MMR** "
+            f"({wins}W/{losses}L, {games} games, {winrate}% WR)"
+        )
+    return "\n".join(lines)
+
+
+def _league_mmr_leaderboard_message(*, guild_id: str, limit: Optional[int] = None) -> str:
+    db_path = _league_mmr_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = _league_mmr_fetch_leaderboard(conn, guild_id=guild_id, limit=limit)
+    finally:
+        conn.close()
+    return _league_mmr_format_leaderboard(rows)
+
+
+def _league_mmr_registration_embed():
+    embed = discord.Embed(
+        title="Registrer deg i MMR-systemet",
+        description=(
+            "Hei! 👋\n\n"
+            "Registrer din Riot ID for å kunne bli med i MMR-systemet "
+            "til custom games i fremtiden.\n\n"
+            "MMR-systemet brukes senere til å tracke games, wins/losses "
+            "og lage balanserte lag basert på MMR.\n\n"
+            "Trykk på knappen under og skriv inn Riot ID-en din.\n\n"
+            "Eksempel: `Pope Francis#bless`"
+        ),
+        color=discord.Color.blurple(),
+    )
+    return embed
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -853,6 +1073,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_mentions=_build_allowed_mentions(),
                 **proxy_kwargs_for_bot(proxy_url),
             )
+            try:
+                self._client.add_view(LeagueMmrRegisterView())
+            except Exception as e:
+                logger.debug("[Discord] Could not register League MMR persistent view: %s", e)
+
             adapter_self = self  # capture for closure
 
             # Register event handlers
@@ -909,9 +1134,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
+                    # SILVRPLAN loop-breaker: cap consecutive bot-to-bot messages
+                    # (any human message resets the count) so agents that @mention
+                    # each other can't ping-pong forever. After the cap we drop
+                    # bot messages until a human speaks again in that channel.
+                    if not hasattr(self, "_silvrplan_botchain"):
+                        self._silvrplan_botchain = {}
+                    _lbk = str(getattr(message.channel, "id", ""))
+                    _lbn = self._silvrplan_botchain.get(_lbk, 0) + 1
+                    self._silvrplan_botchain[_lbk] = _lbn
+                    if _lbn > 1:
+                        return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
+                    if not hasattr(self, "_silvrplan_botchain"):
+                        self._silvrplan_botchain = {}
+                    self._silvrplan_botchain[str(getattr(message.channel, "id", ""))] = 0
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
                     # originating guild (prevents cross-guild DM bypass, see
@@ -3487,6 +3726,79 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        @tree.command(
+            name="mmr-registrering",
+            description="Post Riot ID-registrering for League Customs MMR",
+        )
+        async def slash_mmr_registrering(interaction: discord.Interaction):
+            guild = getattr(interaction, "guild", None)
+            if not guild or getattr(guild, "name", None) != _LEAGUE_MMR_GUILD_NAME:
+                await interaction.response.send_message(
+                    "❌ Denne commanden kan bare brukes i League Customs-serveren.",
+                    ephemeral=True,
+                )
+                return
+
+            permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
+            if not getattr(permissions, "manage_guild", False):
+                await interaction.response.send_message(
+                    "❌ Du må ha Manage Server for å poste MMR-registreringen.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.send_message(
+                embed=_league_mmr_registration_embed(),
+                view=LeagueMmrRegisterView(),
+            )
+
+        @tree.command(
+            name="mmr-leaderboard",
+            description="Vis nåværende League Customs MMR leaderboard",
+        )
+        async def slash_mmr_leaderboard(interaction):
+            guild = getattr(interaction, "guild", None)
+            if not guild or getattr(guild, "name", None) != _LEAGUE_MMR_GUILD_NAME:
+                await interaction.response.send_message(
+                    "❌ Denne commanden kan bare brukes i League Customs-serveren.",
+                    ephemeral=True,
+                )
+                return
+
+            guild_id = str(getattr(guild, "id", ""))
+            message = _league_mmr_leaderboard_message(guild_id=guild_id)
+            chunks = self.truncate_message(message, self.MAX_MESSAGE_LENGTH)
+            await interaction.response.send_message(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
+
+        @tree.command(
+            name="mmr-update-leaderboard",
+            description="Oppdater MMR leaderboard fra Riot API når sync er aktiv",
+        )
+        async def slash_mmr_update_leaderboard(interaction):
+            guild = getattr(interaction, "guild", None)
+            if not guild or getattr(guild, "name", None) != _LEAGUE_MMR_GUILD_NAME:
+                await interaction.response.send_message(
+                    "❌ Denne commanden kan bare brukes i League Customs-serveren.",
+                    ephemeral=True,
+                )
+                return
+
+            permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
+            if not getattr(permissions, "manage_guild", False):
+                await interaction.response.send_message(
+                    "❌ Du må ha Manage Server for å oppdatere MMR leaderboard.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.send_message(
+                "⏳ Riot API-sync er ikke aktivert ennå. "
+                "Når API-problemet er fikset, kobler vi denne commanden til match-sync og auto-oppdatering.",
+                ephemeral=True,
+            )
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
@@ -4018,6 +4330,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+
+    def _discord_keyword_patterns(self):
+        """Compiled regexes that wake the bot like an @mention does (name/topic
+        triggers).  Set via discord.mention_patterns (already bridged into
+        config.extra by gateway/config.py).  Empty/unset -> behaviour unchanged
+        (mention-only gating), so profiles without it are unaffected."""
+        raw = self.config.extra.get("mention_patterns")
+        if raw is None:
+            raw = os.getenv("DISCORD_MENTION_PATTERNS", "")
+        if isinstance(raw, str):
+            raw = [p.strip() for p in raw.split(",") if p.strip()] if raw.strip() else []
+        pats = []
+        for p in (raw or []):
+            try:
+                pats.append(re.compile(str(p), re.IGNORECASE))
+            except re.error:
+                logger.warning("[Discord] invalid keyword_pattern %r (skipped)", p)
+        return pats
 
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
@@ -4983,7 +5313,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
-                    return
+                    # SILVRPLAN: also wake on a relevance/name keyword match
+                    # (like spike). No patterns configured -> original behaviour.
+                    _kw = self._discord_keyword_patterns()
+                    if not _kw or not any(p.search(normalized_content or "") for p in _kw):
+                        return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -5455,6 +5789,79 @@ def _define_discord_view_classes() -> None:
     undefined, causing NameError on the first button interaction.
     """
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global LeagueMmrRiotIdModal, LeagueMmrRegisterView
+
+    if hasattr(discord.ui, "Modal") and hasattr(discord.ui, "TextInput"):
+        class LeagueMmrRiotIdModal(discord.ui.Modal, title="Registrer Riot ID"):
+            riot_id = discord.ui.TextInput(
+                label="Input din Riot ID",
+                placeholder="F.eks. Pope Francis#bless",
+                required=True,
+                min_length=7,
+                max_length=32,
+            )
+
+            async def on_submit(self, interaction: discord.Interaction) -> None:
+                guild = getattr(interaction, "guild", None)
+                if not guild or getattr(guild, "name", None) != _LEAGUE_MMR_GUILD_NAME:
+                    await interaction.response.send_message(
+                        "❌ Denne registreringen kan bare brukes i League Customs-serveren.",
+                        ephemeral=True,
+                    )
+                    return
+
+                try:
+                    game_name, tag_line = _league_mmr_register_player(
+                        guild_id=str(getattr(guild, "id", "")),
+                        discord_user_id=str(interaction.user.id),
+                        discord_display_name=getattr(interaction.user, "display_name", None)
+                        or getattr(interaction.user, "name", "Unknown"),
+                        riot_id=str(self.riot_id.value),
+                    )
+                except ValueError as exc:
+                    await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+                    return
+                except Exception as exc:
+                    logger.exception("League MMR Riot ID registration failed")
+                    await interaction.response.send_message(
+                        f"❌ Klarte ikke å registrere Riot ID akkurat nå: {exc}",
+                        ephemeral=True,
+                    )
+                    return
+
+                await interaction.response.send_message(
+                    "✅ Riot ID registrert!\n\n"
+                    f"Riot ID: **{game_name}#{tag_line}**\n"
+                    "Start MMR: **1000**\n\n"
+                    "Du er nå lagt inn i MMR-systemet.",
+                    ephemeral=True,
+                )
+    else:
+        # Some unit tests install a minimal fake discord.ui with View/Button only.
+        # The real discord.py runtime always provides Modal and TextInput.
+        class LeagueMmrRiotIdModal:  # pragma: no cover - test shim
+            pass
+
+    class LeagueMmrRegisterView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+
+        @discord.ui.button(
+            label="Registrer Riot ID",
+            style=discord.ButtonStyle.primary,
+            custom_id=_LEAGUE_MMR_REGISTER_BUTTON_ID,
+        )
+        async def register_riot_id(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            guild = getattr(interaction, "guild", None)
+            if not guild or getattr(guild, "name", None) != _LEAGUE_MMR_GUILD_NAME:
+                await interaction.response.send_message(
+                    "❌ Denne registreringen kan bare brukes i League Customs-serveren.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(LeagueMmrRiotIdModal())
 
     class ExecApprovalView(discord.ui.View):
         """

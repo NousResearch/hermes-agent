@@ -363,13 +363,19 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    platform_value = _gateway_platform_value(platform)
+    if platform_value not in {"telegram", "discord"}:
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
+        # Telegram benefits from a compact user-facing hint, but Discord agent
+        # channels should stay quiet; provider hiccups otherwise trigger other
+        # bots and create noisy loops.
+        if platform_value == "discord":
+            return None
         return _gateway_provider_error_reply(text)
     return text
 

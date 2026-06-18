@@ -348,7 +348,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         "hermes-index": 1000000,
         "official": 200, "skills-sh": 200, "well-known": 50,
         "github": 200, "clawhub": 500, "claude-marketplace": 100,
-        "lobehub": 500, "browse-sh": 500,
+        "lobehub": 500, "browse-sh": 500, "ard": 100,
     }
 
     with c.status("[bold]Fetching skills from registries...") as status:
@@ -536,6 +536,42 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # identifier. Resolve by (1) --name override, (2) interactive prompt on
     # a TTY, (3) refuse with an actionable error on non-interactive surfaces.
     bundle_meta = getattr(bundle, "metadata", {}) or {}
+
+    # ARD MCP auto-registration: if this is an MCP server discovered via ARD,
+    # skip quarantine/scan/install entirely and register it via mcp_tool.
+    from tools.skills_hub import is_mcp_bundle, get_mcp_config_from_bundle
+    if is_mcp_bundle(bundle):
+        mcp_config = get_mcp_config_from_bundle(bundle)
+        if mcp_config:
+            c.print(
+                f"\n[bold bright_magenta]ARD Discovery:[/] "
+                f"Registering MCP server '[cyan]{mcp_config['name']}[/]' "
+                f"from {mcp_config['url']}"
+            )
+            try:
+                from tools.mcp_tool import add_mcp_server_from_config
+                success, msg = add_mcp_server_from_config(mcp_config)
+                if success:
+                    c.print(
+                        f"[bold green]✓[/] MCP server '{mcp_config['name']}' "
+                        f"registered successfully. Tools will appear shortly.\n"
+                    )
+                    from tools.skills_hub import append_audit_log
+                    append_audit_log(
+                        "INSTALLED", mcp_config["name"], "ard", "community",
+                        "mcp_server", mcp_config["url"],
+                    )
+                else:
+                    c.print(
+                        f"[bold red]✗[/] MCP registration failed: {msg}\n"
+                    )
+            except Exception as exc:
+                c.print(f"[bold red]✗[/] MCP registration error: {exc}\n")
+            return
+        else:
+            c.print("[bold red]Error:[/] ARD MCP bundle has no valid URL.\n")
+            return
+
     if bundle.source == "url" and (not bundle.name or bundle_meta.get("awaiting_name")):
         if name_override and _is_valid_installed_skill_name(name_override):
             bundle.name = name_override.strip()
@@ -810,7 +846,8 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     # low cap here silently truncates the whole hub (see do_browse note).
     _PER_SOURCE_LIMIT = {"hermes-index": 5000, "official": 100, "skills-sh": 100,
                          "well-known": 25, "github": 100, "clawhub": 50,
-                         "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500}
+                         "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500,
+                         "ard": 50}
     auth = GitHubAuth()
     sources = create_source_router(auth)
     # Delegate to the shared parallel walker so this inherits the index-aware
@@ -1797,7 +1834,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N] [--json]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source ard|skills-sh|well-known|github|official] [--limit N] [--json]\n")
             return
         source = "all"
         limit = 10
@@ -1941,6 +1978,72 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         repo = args[1] if len(args) > 1 else ""
         do_tap(tap_action, repo=repo, console=c)
 
+    elif action in {"ard-search", "ard_search"}:
+        if not args:
+            c.print("[bold red]Usage:[/] /skills ard-search <query> [--semantic] [--limit N] [--type TYPE]\n")
+            c.print("[dim]Types: application/ai-skill, application/mcp-server+json\n[/]")
+            return
+        query_parts = []
+        semantic = "--semantic" in args
+        limit = 10
+        filter_type = None
+        for i, a in enumerate(args):
+            if a == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+            elif a == "--type" and i + 1 < len(args):
+                filter_type = args[i + 1]
+            elif not a.startswith("--"):
+                query_parts.append(a)
+        query = " ".join(query_parts)
+        if not query:
+            c.print("[bold red]Error:[/] No search query provided.\n")
+            return
+
+        from tools.skills_hub import ard_local_search
+        types = [filter_type] if filter_type else None
+        results = ard_local_search(query, limit=limit, filter_types=types, semantic=semantic)
+
+        if not results:
+            c.print(f"[dim]No ARD results for '{query}'.[/]\n")
+            return
+
+        c.print(f"\n[bold]ARD Search[/] — {len(results)} result(s) for '[cyan]{query}[/]'"
+                f"{' (semantic)' if semantic else ''}\n")
+        for r in results:
+            score = r.get("score", 0)
+            bar_color = "green" if score >= 75 else ("yellow" if score >= 50 else "dim")
+            bar = "█" * (score // 10)
+            c.print(f"  [{bar_color}]{bar:<10}[/] {score:3d}  [bold]{r.get('displayName', '?')}[/]")
+            desc = r.get("description", "")
+            if desc:
+                c.print(f"         [dim]{desc[:80]}{'...' if len(desc) > 80 else ''}[/]")
+            entry_type = r.get("type", "").split("/")[-1]
+            c.print(f"         [dim]type: {entry_type}[/]")
+        c.print()
+
+    elif action in {"ard-publish", "ard_publish"}:
+        from tools.skills_hub import publish_ard_catalog
+        domain = "hermes.local"
+        for i, a in enumerate(args):
+            if a == "--domain" and i + 1 < len(args):
+                domain = args[i + 1]
+        path = publish_ard_catalog(domain=domain)
+        import json
+        data = json.loads(path.read_text())
+        entry_count = len(data["entries"])
+        from collections import Counter
+        types = Counter(e["type"].split("/")[-1] for e in data["entries"])
+        c.print(f"\n[bold green]✓[/] ARD catalog published")
+        c.print(f"  [dim]Path:[/] {path}")
+        c.print(f"  [dim]Entries:[/] {entry_count}")
+        c.print(f"  [dim]Types:[/] {dict(types)}")
+        c.print(f"  [dim]Domain:[/] {domain}")
+        c.print(f"\n[dim]Other ARD-compliant agents can now discover your capabilities[/]")
+        c.print(f"[dim]via /.well-known/ai-catalog.json[/]\n")
+
     elif action in {"help", "--help", "-h"}:
         _print_skills_help(c)
 
@@ -1968,6 +2071,9 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
-        "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
+        "  [cyan]tap[/] list|add|remove         Manage skill sources\n"
+        "  [cyan]ard-search[/] <query>           Search local capabilities (ARD semantics)\n"
+        "       [--semantic] [--type TYPE] [--limit N]\n"
+        "  [cyan]ard-publish[/] [--domain D]     Export capabilities as ai-catalog.json\n",
         title="/skills",
     ))

@@ -3193,7 +3193,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _should_batch_media_event(self, event: MessageEvent) -> bool:
         return bool(
             event.media_urls
-            and event.message_type in {MessageType.PHOTO, MessageType.VIDEO, MessageType.DOCUMENT, MessageType.AUDIO}
+            and event.message_type in {MessageType.PHOTO, MessageType.VIDEO, MessageType.DOCUMENT, MessageType.VOICE}
         )
 
     def _media_batch_key(self, event: MessageEvent) -> str:
@@ -3621,7 +3621,7 @@ class FeishuAdapter(BasePlatformAdapter):
         text = normalized.text_content
 
         if (
-            inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
+            inbound_type in {MessageType.DOCUMENT, MessageType.VOICE, MessageType.VIDEO, MessageType.PHOTO}
             and len(media_urls) == 1
             and normalized.preferred_message_type in {"document", "audio"}
         ):
@@ -3668,7 +3668,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if normalized.startswith("image/"):
             return MessageType.PHOTO
         if normalized.startswith("audio/"):
-            return MessageType.AUDIO
+            return MessageType.VOICE
         if normalized.startswith("video/"):
             return MessageType.VIDEO
         return default
@@ -3682,7 +3682,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "photo":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
+            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.VOICE)
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT

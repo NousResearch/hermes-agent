@@ -1337,8 +1337,36 @@ class TestAdapterBehavior(unittest.TestCase):
         text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
-        self.assertEqual(msg_type.value, "audio")
+        self.assertEqual(msg_type.value, "voice")
         self.assertEqual(media_urls, ["/tmp/feishu-audio.ogg"])
+        self.assertEqual(media_types, ["audio/ogg"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_audio_message_maps_to_voice_for_stt(self):
+        """Feishu audio messages should map to MessageType.VOICE so they go
+        through the STT pipeline, not MessageType.AUDIO which is treated as
+        a file attachment.  Regression test for #30822."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._download_feishu_message_resource = AsyncMock(
+            return_value=("/tmp/voice.ogg", "audio/ogg")
+        )
+        message = SimpleNamespace(
+            message_type="audio",
+            content='{"file_key":"voice_key","file_name":"voice.ogg"}',
+            message_id="om_voice",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
+
+        # Must be VOICE (STT pipeline), not AUDIO (file attachment)
+        self.assertEqual(msg_type, MessageType.VOICE)
+        self.assertEqual(media_urls, ["/tmp/voice.ogg"])
         self.assertEqual(media_types, ["audio/ogg"])
 
     @patch.dict(os.environ, {}, clear=True)

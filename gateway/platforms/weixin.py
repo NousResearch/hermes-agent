@@ -106,12 +106,16 @@ def _is_stale_session_ret(
     * ``"rate limited"``  — third variant (#35713): iLink returns ret=-2
       with ``errmsg="rate limited"`` when the context_token is stale,
       which is *not* a genuine frequency limit.
+    * ``None`` / ``""``  — iLink returns ret=-2 with no errmsg at all
+      (#18100 / #35713): also a stale-session signal.
 
     Genuine rate limits use ``"freq limit"`` (iLink's wording) and must
     NOT match here."""
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
     msg = (errmsg or "").strip().lower()
+    if not msg:
+        return True
     return msg in ("unknown error", "rate limited")
 
 

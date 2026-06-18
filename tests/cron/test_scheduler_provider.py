@@ -262,3 +262,73 @@ def test_resolve_available_provider_is_used(monkeypatch):
     monkeypatch.setattr(pc, "load_cron_scheduler", lambda n: Fake())
     prov = sp.resolve_cron_scheduler()
     assert prov.name == "fake"
+
+
+# ── Phase 4B: additive hooks (on_jobs_changed / fire_due / reconcile) ────────
+
+
+def test_hooks_did_not_change_required_surface():
+    """The additive hooks must NOT become abstractmethods — the Phase-1 guard
+    still holds (required surface is exactly name + start)."""
+    from cron.scheduler_provider import CronScheduler
+
+    assert set(CronScheduler.__abstractmethods__) == {"name", "start"}
+
+
+def test_builtin_inherits_hook_defaults():
+    """The built-in inherits no-op defaults for the new hooks (it never needs
+    to override them)."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    p = InProcessCronScheduler()
+    assert p.on_jobs_changed() is None
+    assert p.reconcile() is None
+    # built-in does not override fire_due; it simply isn't called for built-in.
+    assert hasattr(p, "fire_due")
+
+
+def test_fire_due_default_claims_then_runs(monkeypatch):
+    """The default fire_due claims via the store CAS, fetches the job, and runs
+    it through the shared run_one_job body."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    ran = []
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
+    monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+
+    assert InProcessCronScheduler().fire_due("j1") is True
+    assert ran == ["j1"]
+
+
+def test_fire_due_lost_claim_does_not_run(monkeypatch):
+    """If the CAS claim is lost (another machine/retry won), fire_due returns
+    False and never runs the job."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    ran = []
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: False, raising=False)
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+
+    assert InProcessCronScheduler().fire_due("j1") is False
+    assert ran == []
+
+
+def test_fire_due_missing_job_does_not_run(monkeypatch):
+    """If the job vanished between arm and fire (e.g. repeat-N exhausted),
+    fire_due returns False without running."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    ran = []
+    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
+    monkeypatch.setattr(jobs, "get_job", lambda jid: None)
+    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+
+    assert InProcessCronScheduler().fire_due("gone") is False
+    assert ran == []

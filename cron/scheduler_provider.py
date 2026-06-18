@@ -71,6 +71,45 @@ class CronScheduler(ABC):
         resources (queue consumers, HTTP servers)."""
         return None
 
+    # --- Optional hooks for external providers (added Phase 4). --------------
+    # All default-safe so the built-in inherits working behavior without
+    # overriding. Keep these NON-abstract — see test_abc_growth_stays_additive.
+
+    def on_jobs_changed(self) -> None:
+        """Called after a successful store mutation (create/update/remove/
+        pause/resume). External providers reconcile their registry here (e.g.
+        Chronos re-provisions/cancels the affected one-shot via NAS).
+        Built-in: no-op (it re-reads jobs.json on every tick)."""
+        return None
+
+    def fire_due(self, job_id: str, *, adapters: Any = None, loop: Any = None) -> bool:
+        """Run a single job NOW via the shared orchestrator. Called by the
+        inbound fire webhook when an external scheduler signals a job is due.
+
+        The default claims the job with a store-level compare-and-set
+        (multi-machine at-most-once), then runs it via the shared
+        ``run_one_job`` body. Built-in never calls this (it has its own tick
+        loop); an external provider routes its inbound fire here.
+
+        Returns True if THIS caller claimed and ran the job, False if the claim
+        was lost (another machine/retry won it) or the job no longer exists.
+        """
+        from cron.jobs import claim_job_for_fire, get_job
+        from cron.scheduler import run_one_job
+
+        if not claim_job_for_fire(job_id):
+            return False  # another machine already claimed this fire
+        job = get_job(job_id)
+        if job is None:
+            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
+        return run_one_job(job, adapters=adapters, loop=loop)
+
+    def reconcile(self) -> None:
+        """Converge the external registry toward jobs.json (the desired state):
+        arm missing one-shots, cancel orphaned ones, re-arm changed times.
+        Built-in: no-op."""
+        return None
+
 
 def resolve_cron_scheduler() -> "CronScheduler":
     """Return the active cron scheduler provider.

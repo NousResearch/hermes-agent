@@ -117,7 +117,7 @@ def build_models_payload(
     pricing: bool = False,
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
-    max_models: int = 50,
+    max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.

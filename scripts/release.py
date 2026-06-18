@@ -1582,6 +1582,13 @@ AUTHOR_MAP = {
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #45494 salvage (claim session slot before auto-resume task; #45456)
     "andrewdmwalker@gmail.com": "capt-marbles",  # PR #38440 salvage (resolve xAI OAuth credentials across profiles; #43589)
     "infinitycrew39@gmail.com": "infinitycrew39",  # PR #47945 salvage (scope langfuse trace state by turn/request ids; #48292)
+    "2081789787@qq.com": "pengyuyanITYU",  # sync-2026-06-18
+    "andyfieb@gmail.com": "mollusk",  # sync-2026-06-18
+    "drmani215@gmail.com": "bionicbutterfly13",  # sync-2026-06-18
+    "evisolpxe@gmail.com": "Evisolpxe",  # sync-2026-06-18
+    "kyssta69@gmail.com": "kyssta-exe",  # sync-2026-06-18
+    "loongfay@foxmail.com": "loongfay",  # sync-2026-06-18
+    "omarbaradei21@gmail.com": "OmarB97",  # sync-2026-06-18
 }
 
 

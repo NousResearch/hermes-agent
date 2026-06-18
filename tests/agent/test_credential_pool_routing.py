@@ -232,3 +232,67 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+    def test_usage_limit_429_rotates_without_retry_same_credential(self):
+        """usage_limit_reached is quota exhaustion, not a transient 429."""
+        agent, pool, entries = self._make_agent_with_pool(3)
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+            error_context={
+                "reason": "usage_limit_reached",
+                "message": "You hit your usage limit.",
+                "resets_in_seconds": 63980,
+            },
+        )
+
+        assert recovered is True
+        assert has_retried is False
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=429,
+            error_context={
+                "reason": "usage_limit_reached",
+                "message": "You hit your usage limit.",
+                "resets_in_seconds": 63980,
+            },
+        )
+        agent._swap_credential.assert_called_once_with(entries[1])
+
+
+class TestUsageLimitErrorContext:
+    def test_extract_context_parses_resets_in_seconds(self, monkeypatch):
+        from agent.agent_runtime_helpers import extract_api_error_context
+
+        class APIError(Exception):
+            body = {
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "You hit your usage limit.",
+                    "resets_in_seconds": 120,
+                }
+            }
+
+        monkeypatch.setattr("agent.agent_runtime_helpers.time.time", lambda: 1000.0)
+
+        context = extract_api_error_context(APIError("429"))
+
+        assert context["reason"] == "usage_limit_reached"
+        assert context["message"] == "You hit your usage limit."
+        assert context["resets_in_seconds"] == 120.0
+        assert context["reset_at"] == 1120.0
+
+    def test_usage_limit_detection_and_reset_formatting(self):
+        from agent.agent_runtime_helpers import (
+            format_usage_limit_reset,
+            is_usage_limit_reached_context,
+        )
+
+        context = {
+            "reason": "usage_limit_reached",
+            "message": "quota exhausted",
+            "resets_in_seconds": 63980.0,
+        }
+
+        assert is_usage_limit_reached_context(context) is True
+        assert format_usage_limit_reset(context) == "Reset in 17 Stunden und 46 Minuten."

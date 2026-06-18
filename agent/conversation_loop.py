@@ -2638,6 +2638,50 @@ def run_conversation(
                         agent._buffer_vprint(f"   📋 Details: {_err_body_str}")
                 agent._buffer_vprint(f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
 
+                try:
+                    from agent.agent_runtime_helpers import (
+                        format_usage_limit_reset,
+                        is_usage_limit_reached_context,
+                    )
+                    _usage_limit_reached = (
+                        classified.reason == FailoverReason.rate_limit
+                        and is_usage_limit_reached_context(error_context)
+                    )
+                except Exception:
+                    _usage_limit_reached = False
+                if _usage_limit_reached:
+                    _reset_message = format_usage_limit_reset(error_context)
+                    if agent._has_pending_fallback():
+                        agent._buffer_status(
+                            f"⚠️ Nutzungslimit erreicht ({_reset_message}) — switching to fallback provider..."
+                        )
+                        if agent._try_activate_fallback(reason=classified.reason):
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            continue
+                    agent._flush_status_buffer()
+                    agent._emit_status(
+                        f"❌ Nutzungslimit erreicht. {_reset_message} Retries werden übersprungen."
+                    )
+                    logger.warning(
+                        "%sUsage limit reached for provider=%s model=%s; skipping API retries. reset=%s",
+                        agent.log_prefix,
+                        _provider,
+                        _model,
+                        _reset_message,
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "messages": messages,
+                        "completed": False,
+                        "api_calls": api_call_count,
+                        "error": f"Usage limit reached. {_reset_message}",
+                        "partial": True,
+                        "failed": True,
+                        "usage_limit_reached": True,
+                    }
+
                 # Actionable hint for OpenRouter "no tool endpoints" error.
                 # Buffered like the rest of the retry trace — surfaced only
                 # if every retry+fallback exhausts.  Avoids spamming users

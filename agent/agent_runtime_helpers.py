@@ -594,6 +594,8 @@ def recover_with_credential_pool(
     Returns (recovered, has_retried_429).
     On rate limits: first occurrence retries same credential (sets flag True).
                     second consecutive failure rotates to next credential.
+                    Non-transient usage-limit exhaustion rotates immediately;
+                    it never retries the same credential first.
     On billing exhaustion: immediately rotates.
     On auth failures: attempts token refresh before rotating.
 
@@ -692,16 +694,7 @@ def recover_with_credential_pool(
                 return True, False
             return False, True
 
-        usage_limit_reached = False
-        if error_context:
-            context_reason = str(error_context.get("reason") or "").lower()
-            context_message = str(error_context.get("message") or "").lower()
-            usage_limit_reached = (
-                "usage_limit_reached" in context_reason
-                or "gousagelimit" in context_reason
-                or "usage limit reached" in context_message
-                or "usage limit has been reached" in context_message
-            )
+        usage_limit_reached = is_usage_limit_reached_context(error_context)
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
@@ -2423,6 +2416,15 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
             if value not in {None, ""}:
                 context["reset_at"] = value
                 break
+        resets_in_seconds = payload.get("resets_in_seconds")
+        if resets_in_seconds is not None and resets_in_seconds != "":
+            try:
+                reset_delay = float(resets_in_seconds)
+                context["resets_in_seconds"] = reset_delay
+                if "reset_at" not in context:
+                    context["reset_at"] = time.time() + reset_delay
+            except (TypeError, ValueError):
+                pass
         retry_after = payload.get("retry_after")
         if retry_after not in {None, ""} and "reset_at" not in context:
             try:
@@ -2480,6 +2482,52 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
                         context["reset_at"] = time.time() + float(sec_match.group(1))
 
     return context
+
+
+def is_usage_limit_reached_context(error_context: Optional[Dict[str, Any]]) -> bool:
+    """Return True for quota-exhaustion 429s that should not be retried.
+
+    Providers use HTTP 429 for both transient rate limiting and exhausted
+    account/plan quota. ``usage_limit_reached`` is the latter: immediate
+    retrying cannot succeed and just burns more requests, so callers should
+    rotate credentials, activate fallback, queue, or stop with guidance.
+    """
+    if not error_context:
+        return False
+    context_reason = str(error_context.get("reason") or "").lower()
+    context_message = str(error_context.get("message") or "").lower()
+    return (
+        "usage_limit_reached" in context_reason
+        or "gousagelimit" in context_reason
+        or "usage limit reached" in context_message
+        or "usage limit has been reached" in context_message
+    )
+
+
+def format_usage_limit_reset(error_context: Optional[Dict[str, Any]]) -> str:
+    """Format reset timing from extracted provider context for user output."""
+    if not error_context:
+        return "Reset-Zeitpunkt unbekannt."
+    seconds = error_context.get("resets_in_seconds")
+    if isinstance(seconds, (int, float)) and seconds >= 0:
+        total = int(seconds)
+        hours = total // 3600
+        minutes = (total % 3600) // 60
+        if hours and minutes:
+            return f"Reset in {hours} Stunden und {minutes} Minuten."
+        if hours:
+            return f"Reset in {hours} Stunden."
+        if minutes:
+            return f"Reset in {minutes} Minuten."
+        return f"Reset in {total} Sekunden."
+    reset_at = error_context.get("reset_at")
+    if reset_at is not None and reset_at != "":
+        try:
+            reset_ts = float(reset_at)
+            return time.strftime("Reset am %Y-%m-%d um %H:%M:%S UTC.", time.gmtime(reset_ts))
+        except (TypeError, ValueError):
+            return f"Reset: {reset_at}."
+    return "Reset-Zeitpunkt unbekannt."
 
 
 

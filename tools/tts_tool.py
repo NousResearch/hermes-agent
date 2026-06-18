@@ -1092,22 +1092,71 @@ def _xai_bool_config(value: Any, default: bool = False) -> bool:
 
 
 def _apply_xai_auto_speech_tags(text: str) -> str:
-    """Add light xAI speech tags for more natural voice-mode replies.
+    """Add xAI speech tags for more natural voice-mode replies.
 
-    The transform is intentionally conservative: it only inserts pauses. It
-    never fabricates laughter or whispering, and it leaves explicit user/model
-    speech tags untouched.
+    First applies a conservative local transform (inserts [pause] between
+    paragraphs and after the first sentence). Then, if the result contains
+    no explicit user/model speech tags, asks the configured auxiliary model
+    to rewrite the transcript with a richer set of xAI-supported tags
+    (laughs, sighs, whispers, soft/loud, slow/fast, etc.) so the voice
+    output sounds more expressive. Falls back to the local result on any
+    auxiliary-model failure.
     """
     clean = text.strip()
-    if not clean or _XAI_SPEECH_TAG_RE.search(clean):
+    if not clean:
         return text
 
-    clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
-    clean = re.sub(r"\s*\n\s*", " ", clean)
-    if not _XAI_SPEECH_TAG_RE.search(clean):
-        clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
-    clean = re.sub(r"\s{2,}", " ", clean).strip()
-    return clean
+    # Local conservative pass: pauses only.
+    local = clean
+    local = re.sub(r"\n\s*\n+", " [pause] ", local)
+    local = re.sub(r"\s*\n\s*", " ", local)
+    if not _XAI_SPEECH_TAG_RE.search(local):
+        local = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", local, count=1)
+    local = re.sub(r"\s{2,}", " ", local).strip()
+
+    # If the user/model already supplied explicit speech tags, trust them
+    # and don't re-rewrite.
+    if _XAI_SPEECH_TAG_RE.search(clean):
+        return local
+
+    # Auxiliary rewrite for richer emotion tags (mirrors the Gemini path).
+    inline = ", ".join(_XAI_INLINE_SPEECH_TAGS)
+    wrapping = ", ".join(_XAI_WRAPPING_SPEECH_TAGS)
+    system_prompt = (
+        "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
+        "expressive speech tags.\n\n"
+        "Valid inline tags (use as `[tag]`): " + inline + ".\n"
+        "Valid wrapping tags (use as `[tag]...[/tag]`): " + wrapping + ".\n\n"
+        "Rules:\n"
+        "- Preserve the spoken words, order, and meaning.\n"
+        "- Do not add new spoken sentences or remove existing spoken words.\n"
+        "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
+        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Do not use SSML.\n"
+        "- Do not explain or comment.\n"
+        "- Return only the tagged TTS script."
+    )
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="tts_audio_tags",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"TRANSCRIPT TO TAG:\n{local}"},
+            ],
+            temperature=0.7,
+        )
+        tagged = _extract_auxiliary_message_content(response).strip()
+        # Strip markdown fences if the LLM wrapped the response.
+        fence = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```", tagged, flags=re.DOTALL)
+        if fence:
+            tagged = fence.group(1).strip()
+        return tagged or local
+    except Exception as exc:
+        logger.debug("xAI TTS audio tag rewrite failed; using locally-tagged text: %s", exc)
+        return local
 
 
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:

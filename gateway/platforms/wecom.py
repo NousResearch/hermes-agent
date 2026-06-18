@@ -787,8 +787,18 @@ class WeComAdapter(BasePlatformAdapter):
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         if kind == "image":
             ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
+            # Same octet-stream guard: don't propagate ``application/octet-stream``
+            # as media_type. ``_derive_message_type`` classifies any
+            # ``application/*`` mime as DOCUMENT, which strips the image from
+            # the native vision routing path in gateway/run.py. Trust the
+            # sniffed extension instead.
+            image_mime = (
+                content_type
+                if content_type and content_type != "application/octet-stream"
+                else self._mime_for_ext(ext, fallback="image/jpeg")
+            )
             try:
-                return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                return cache_image_from_bytes(raw, ext), image_mime
             except ValueError as exc:
                 logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
                 return None
@@ -819,11 +829,17 @@ class WeComAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _guess_extension(url: str, content_type: str, fallback: str) -> str:
-        ext = mimetypes.guess_extension(content_type) if content_type else None
-        if ext:
-            return ext
+        # ``application/octet-stream`` is IANA's "unknown type" — WeCom AI Bot
+        # and many CDNs serve images with this header. Trusting it would
+        # produce ``.bin`` (Python stdlib default for octet-stream) and mask
+        # the real type from downstream image routing. Skip it and fall
+        # through to magic-byte detection via the fallback.
+        if content_type and content_type != "application/octet-stream":
+            ext = mimetypes.guess_extension(content_type)
+            if ext:
+                return ext
         path_ext = Path(urlparse(url).path).suffix
-        if path_ext:
+        if path_ext and path_ext.lower() != ".bin":
             return path_ext
         return fallback
 

@@ -503,6 +503,41 @@ class TestMediaUpload:
         assert Path(cached_path).read_bytes() == plaintext
         assert content_type == "application/octet-stream"
 
+    @pytest.mark.asyncio
+    async def test_cache_media_image_sniffs_when_content_type_is_octet_stream(self):
+        """Regression: WeCom CDN often serves images with
+        ``Content-Type: application/octet-stream``. Trusting that header
+        produces a ``.bin`` extension (Python stdlib default) and an
+        ``application/octet-stream`` mime, which downstream
+        ``_derive_message_type`` then classifies as ``DOCUMENT``,
+        stripping the file from the native vision routing path in
+        ``gateway/run.py``. The adapter must sniff magic bytes and
+        return an image/* mime so the message stays on the PHOTO route.
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # PNG magic header is enough for ``_looks_like_image`` to accept
+        # and for ``_detect_image_ext`` to classify as ``.png``.
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+        adapter._download_remote_bytes = AsyncMock(
+            return_value=(png_bytes, {"content-type": "application/octet-stream"}),
+        )
+
+        cached = await adapter._cache_media(
+            "image",
+            {"url": "https://wecom.example/cdn/asset"},
+        )
+
+        assert cached is not None
+        cached_path, content_type = cached
+        # Must NOT be saved with the bogus ``.bin`` extension produced by
+        # ``mimetypes.guess_extension("application/octet-stream")``.
+        assert cached_path.endswith(".png"), cached_path
+        # Mime must be image/* so ``_derive_message_type`` returns PHOTO
+        # and ``gateway/run.py:7601`` routes the path into ``image_paths``.
+        assert content_type.startswith("image/"), content_type
+
 
 class TestSend:
     @pytest.mark.asyncio

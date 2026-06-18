@@ -166,10 +166,17 @@ class TextBatchAggregator:
 # ─── Markdown Stripping ──────────────────────────────────────────────────────
 
 # Pre-compiled regexes for performance
-_RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
-_RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
-_RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL)
+# Star-emphasis regexes use lookahead/lookbehind guards to avoid
+# matching across bullet-list markers and literal asterisks.
+# A real Markdown emphasis span has a non-whitespace character on the
+# inside edge of each delimiter — ``* bullet`` and ``a * b`` are not
+# emphasis.  Without these guards, ``_RE_ITALIC_STAR`` pairs the ``*``
+# at the start of one bullet with the ``*`` at the start of the next
+# and deletes both.  Symmetric to the underscore variants below.
+_RE_BOLD = re.compile(r"\*\*(?![*\s])(.+?)(?<![*\s])\*\*", re.DOTALL)
+_RE_ITALIC_STAR = re.compile(r"\*(?![*\s])(.+?)(?<![*\s])\*", re.DOTALL)
+_RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![s_])__\b", re.DOTALL)
+_RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![s_])_\b", re.DOTALL)
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
 _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)

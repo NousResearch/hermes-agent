@@ -5,6 +5,7 @@
 *.pyc*
 __pycache__/
 .venv/
+.venv
 .vscode/
 .env
 .env.local

@@ -4050,18 +4050,24 @@ class TelegramAdapter(BasePlatformAdapter):
                             str(getattr(ChatType.PRIVATE, "value", ChatType.PRIVATE)).lower(),
                         }
                         if thread_id is not None and is_private_chat and prompt_message_id is not None:
-                            reply_to_id = int(prompt_message_id)
+                            dm_topic_metadata = {
+                                "thread_id": str(thread_id),
+                                "telegram_dm_topic_reply_fallback": True,
+                                "telegram_reply_to_message_id": str(prompt_message_id),
+                            }
+                            reply_to_id = self._reply_to_message_id_for_send(
+                                None,
+                                dm_topic_metadata,
+                                reply_to_mode=self._reply_to_mode,
+                            )
                             send_kwargs["reply_to_message_id"] = reply_to_id
                             send_kwargs.update(
                                 self._thread_kwargs_for_send(
                                     str(query.message.chat_id),
                                     str(thread_id),
-                                    {
-                                        "thread_id": str(thread_id),
-                                        "telegram_dm_topic_reply_fallback": True,
-                                    },
+                                    dm_topic_metadata,
                                     reply_to_message_id=reply_to_id,
-                                    reply_to_mode=self._reply_to_mode
+                                    reply_to_mode=self._reply_to_mode,
                                 )
                             )
                         elif thread_id is not None:

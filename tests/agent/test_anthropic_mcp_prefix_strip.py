@@ -253,3 +253,50 @@ class TestAnthropicOAuthOutgoingPrefix:
         ], is_oauth=False)
         names = sorted(t["name"] for t in kwargs["tools"])
         assert names == ["mcp_linear_get_issue", "read_file"]
+
+    # -- Forced tool_choice must get the same wire-name normalization --------
+    #
+    # The OAuth transform renames tools[] (and tool_use history) to ``mcp__``,
+    # but a forced ``tool_choice`` is a sibling site that was left on the raw
+    # caller name. That breaks the request two ways: tool_choice.name no longer
+    # matches any tools[] entry (Anthropic rejects with HTTP 400), and an MCP
+    # server tool leaks the single-underscore ``mcp_`` classifier fingerprint
+    # onto the OAuth wire.
+
+    def _build_forced(self, name, is_oauth=True):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        return build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[{
+                "type": "function",
+                "function": {"name": name, "description": "x", "parameters": {}},
+            }],
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice=name,
+            is_oauth=is_oauth,
+        )
+
+    def test_oauth_tool_choice_matches_renamed_bare_tool(self):
+        """Forced tool_choice is normalized to ``mcp__`` so it matches tools[]."""
+        kwargs = self._build_forced("read_file")
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+        # The forced name MUST equal the (renamed) tools[] entry, or Anthropic
+        # rejects the request with HTTP 400.
+        assert kwargs["tool_choice"]["name"] == kwargs["tools"][0]["name"]
+
+    def test_oauth_tool_choice_promotes_single_underscore_mcp(self):
+        """Forced MCP-server tool name must not leak single-underscore ``mcp_``."""
+        kwargs = self._build_forced("mcp_linear_get_issue")
+        name = kwargs["tool_choice"]["name"]
+        assert name == "mcp__linear_get_issue"
+        assert name == kwargs["tools"][0]["name"]
+        # The core invariant: nothing single-underscore reaches the wire.
+        assert not (name.startswith("mcp_") and not name.startswith("mcp__"))
+
+    def test_non_oauth_tool_choice_untouched(self):
+        """Non-OAuth: tool_choice and tools[] both stay the bare name."""
+        kwargs = self._build_forced("read_file", is_oauth=False)
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "read_file"}
+        assert kwargs["tools"][0]["name"] == "read_file"

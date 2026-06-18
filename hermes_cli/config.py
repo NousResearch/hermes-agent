@@ -5318,6 +5318,29 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
+    """Remove the given dotted leaf keys from a nested config dict.
+
+    Returns ``(pruned_cfg, set_of_stripped_keys_that_were_present)``. Used by
+    ``save_config`` to drop managed-scope leaves before persisting, so a bulk
+    write never writes a user value that would lose to the managed layer on the
+    next load. Only keys actually present in ``cfg`` are reported as stripped.
+    """
+    stripped: set = set()
+    for dotted in dotted_keys:
+        parts = dotted.split(".")
+        node = cfg
+        for p in parts[:-1]:
+            if not isinstance(node, dict) or p not in node:
+                node = None
+                break
+            node = node[p]
+        if isinstance(node, dict) and parts[-1] in node:
+            del node[parts[-1]]
+            stripped.add(dotted)
+    return cfg, stripped
+
+
 def _expand_env_vars(obj):
     """Recursively expand ``${VAR}`` references in config values.
 
@@ -5853,6 +5876,22 @@ def save_config(config: Dict[str, Any]):
         if is_managed():
             managed_error("save configuration")
             return
+        # Managed scope: strip any leaf the managed layer pins, so a bulk write
+        # (wizard / programmatic save) never persists a user value that would
+        # silently lose to managed on the next load. Single-key `config set`
+        # hard-rejects (see set_config_value); this is the mechanical safety net
+        # for bulk writes so the unmanaged remainder still lands.
+        from hermes_cli import managed_scope
+
+        managed_keys = managed_scope.managed_config_keys()
+        if managed_keys:
+            config, _stripped = _strip_dotted_keys(copy.deepcopy(config), managed_keys)
+            if _stripped:
+                print(
+                    f"Note: {len(_stripped)} managed setting(s) were not saved "
+                    f"(managed by your administrator): {', '.join(sorted(_stripped))}",
+                    file=sys.stderr,
+                )
         from utils import atomic_yaml_write
 
         ensure_hermes_home()
@@ -6119,6 +6158,19 @@ def save_env_value(key: str, value: str):
     if is_managed():
         managed_error(f"set {key}")
         return
+    # Managed scope guard: a managed env key can't be set by the user — the
+    # managed .env wins at load anyway. Distinct from is_managed() above.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_env_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / ".env") if managed_dir else "the managed scope"
+        print(
+            f"Cannot set {key}: it is managed by your administrator ({src}) "
+            f"and cannot be changed.",
+            file=sys.stderr,
+        )
+        return
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
@@ -6195,6 +6247,18 @@ def remove_env_value(key: str) -> bool:
     """
     if is_managed():
         managed_error(f"remove {key}")
+        return False
+    # Managed scope guard: a managed env key can't be removed by the user.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_env_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / ".env") if managed_dir else "the managed scope"
+        print(
+            f"Cannot remove {key}: it is managed by your administrator ({src}) "
+            f"and cannot be changed.",
+            file=sys.stderr,
+        )
         return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
@@ -6553,6 +6617,22 @@ def set_config_value(key: str, value: str):
     if is_managed():
         managed_error("set configuration values")
         return
+    # Managed scope guard (D2): a key pinned by the managed layer cannot be set by
+    # the user — the next load would override it anyway. Hard-reject and name the
+    # source. Distinct from is_managed() above (the package-manager write-lock).
+    # Env-shaped keys (API keys / tokens) route to save_env_value below, which has
+    # its own managed-env-key guard; this catches the config.yaml keys.
+    from hermes_cli import managed_scope
+
+    if managed_scope.is_key_managed(key):
+        managed_dir = managed_scope.get_managed_dir()
+        src = (managed_dir / "config.yaml") if managed_dir else "the managed scope"
+        print(
+            f"Cannot set '{key}': it is managed by your administrator ({src}) "
+            f"and cannot be changed. Contact your administrator to modify it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',

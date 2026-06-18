@@ -1197,9 +1197,19 @@ def _maybe_wrap_anthropic(
     except ImportError:
         pass
 
-    # Explicit non-anthropic api_mode wins over URL heuristics.
+    # Explicit non-anthropic api_mode usually wins over URL heuristics, but an
+    # Anthropic-only endpoint path is stronger evidence than a stale persisted
+    # mode. MiniMax/Kimi-style /anthropic surfaces 404 or double-append /v1
+    # when aux routing carries an old chat_completions api_mode forward.
     if api_mode and api_mode != "anthropic_messages":
-        return client_obj
+        if not _endpoint_speaks_anthropic_messages(base_url):
+            return client_obj
+        logger.debug(
+            "Auxiliary transport: ignoring stale api_mode=%s for Anthropic "
+            "endpoint %s",
+            api_mode,
+            base_url[:60] if base_url else "",
+        )
 
     should_wrap = (
         api_mode == "anthropic_messages"

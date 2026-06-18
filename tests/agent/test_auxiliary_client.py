@@ -990,6 +990,50 @@ class TestVisionClientFallback:
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
 
+    def test_resolve_provider_client_ignores_stale_chat_completions_mode_for_anthropic_url(self):
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=MagicMock(name="anthropic_real"),
+        ):
+            client, model = resolve_provider_client(
+                "minimax",
+                model="MiniMax-M3",
+                explicit_base_url="https://api.minimax.io/anthropic",
+                explicit_api_key="mm-key",
+                api_mode="chat_completions",
+            )
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+        assert model == "MiniMax-M3"
+        assert client.base_url == "https://api.minimax.io/anthropic"
+
+    def test_resolve_auto_ignores_stale_main_runtime_mode_for_anthropic_url(self):
+        with (
+            patch(
+                "agent.auxiliary_client._normalize_main_runtime",
+                return_value={
+                    "provider": "minimax",
+                    "model": "MiniMax-M3",
+                    "base_url": "https://api.minimax.io/anthropic",
+                    "api_key": "mm-key",
+                    "api_mode": "chat_completions",
+                },
+            ),
+            patch("agent.auxiliary_client._read_main_provider", return_value="minimax"),
+            patch("agent.auxiliary_client._read_main_model", return_value="MiniMax-M3"),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(name="anthropic_real"),
+            ),
+        ):
+            client, model = get_text_auxiliary_client("title_generation")
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+        assert model == "MiniMax-M3"
+        assert client.base_url == "https://api.minimax.io/anthropic"
+
 
 class TestAuxiliaryPoolAwareness:
     def test_try_nous_uses_pool_entry(self):

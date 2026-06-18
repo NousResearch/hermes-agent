@@ -10851,7 +10851,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
+        # Skip the "preparing" status line for execute_code — the code preview
+        # from tool.started follows immediately, making it redundant noise.
+        if tool_name != "execute_code":
+            _cprint(f"  ┊ {emoji} preparing {tool_name}…")
 
     # ====================================================================
     # Tool progress callback (audio cues for voice mode)

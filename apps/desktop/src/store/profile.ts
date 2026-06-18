@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles, setApiRequestProfile } from '@/hermes'
+import { getProfiles, setApiRequestProfile, STARTUP_PROFILE_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -110,7 +110,10 @@ interface ActiveProfileResponse {
 // Best-effort: failures (backend not up yet) leave the prior values intact.
 export async function refreshActiveProfile(): Promise<void> {
   try {
-    const res = await window.hermesDesktop.api<ActiveProfileResponse>({ path: '/api/profiles/active' })
+    const res = await window.hermesDesktop.api<ActiveProfileResponse>({
+      path: '/api/profiles/active',
+      timeoutMs: STARTUP_PROFILE_REQUEST_TIMEOUT_MS
+    })
 
     setActiveProfile(res.current || 'default')
   } catch {

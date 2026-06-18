@@ -472,6 +472,10 @@ try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
+            # Allow user plugins to override inference_base_url for
+            # hardcoded providers (e.g. region-specific endpoints).
+            if _pp.base_url and PROVIDER_REGISTRY[_pp.name].inference_base_url != _pp.base_url:
+                PROVIDER_REGISTRY[_pp.name].inference_base_url = _pp.base_url
             continue
         if _pp.auth_type != "api_key" or not _pp.env_vars:
             continue

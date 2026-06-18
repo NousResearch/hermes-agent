@@ -2525,7 +2525,9 @@ class FeishuAdapter(BasePlatformAdapter):
         inline (the only reliable way to sync all clients), and schedules a
         lightweight async method to actually unblock the agent.
 
-        For other card actions: delegates to ``_handle_card_action_event``.
+        Other card actions are acknowledged and ignored. Routing unknown card
+        callbacks as commands makes Feishu callback IDs look like message IDs
+        and causes noisy failed replies.
         """
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
@@ -2550,7 +2552,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 loop=loop,
             )
 
-        self._submit_on_loop(loop, self._handle_card_action_event(data))
+        self._handle_unsupported_card_action(data)
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
@@ -2574,15 +2576,30 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
         return True
 
-    def _is_interactive_operator_authorized(self, open_id: str) -> bool:
+    def _is_interactive_operator_authorized(self, open_id: str, user_id: str = "") -> bool:
         """Return whether this card-action operator may answer gated prompts."""
-        normalized = str(open_id or "").strip()
-        if not normalized:
+        operator_ids = {
+            str(value or "").strip()
+            for value in (open_id, user_id)
+            if str(value or "").strip()
+        }
+        if not operator_ids:
             return False
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
             return True
-        return "*" in allowed_ids or normalized in allowed_ids
+        return "*" in allowed_ids or bool(operator_ids & allowed_ids)
+
+    def _is_card_action_operator_authorized(self, *, event: Any, state: Dict[str, str]) -> bool:
+        """Return whether an interactive card click may answer this prompt."""
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_id = str(getattr(operator, "user_id", "") or "")
+        session_key = str(state.get("session_key", "") or "")
+        if ":feishu:dm:" in session_key:
+            return self._is_interactive_operator_authorized(open_id, user_id)
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        return self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False)
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2598,8 +2615,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        if not self._is_card_action_operator_authorized(event=event, state=state):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2658,8 +2674,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        if not self._is_card_action_operator_authorized(event=event, state=state):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2750,8 +2765,8 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return
         if open_id:
-            sender_id = SimpleNamespace(open_id=open_id, user_id="")
-            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            event = SimpleNamespace(operator=SimpleNamespace(open_id=open_id, user_id=""))
+            if not self._is_card_action_operator_authorized(event=event, state=state):
                 logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
                 return
         expected_chat_id = str(state.get("chat_id", "") or "")
@@ -2848,8 +2863,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._card_action_tokens[token] = now
         return False
 
-    async def _handle_card_action_event(self, data: Any) -> None:
-        """Route Feishu interactive card button clicks as synthetic COMMAND events."""
+    def _handle_unsupported_card_action(self, data: Any) -> None:
+        """Acknowledge unsupported Feishu card clicks without routing commands."""
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
@@ -2860,43 +2875,18 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = str(getattr(context, "open_chat_id", "") or "")
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not chat_id or not open_id:
-            logger.debug("[Feishu] Card action missing chat_id or operator open_id, dropping")
-            return
 
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
-
-        synthetic_text = f"/card {action_tag}"
-        if action_value:
-            try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
-            except Exception:
-                pass
-
-        sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
-        sender_profile = await self._resolve_sender_profile(sender_id)
-        chat_info = await self.get_chat_info(chat_id)
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
-            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
-            thread_id=None,
-            user_id_alt=sender_profile["user_id_alt"],
+        value_keys = sorted(action_value.keys()) if isinstance(action_value, dict) else type(action_value).__name__
+        logger.debug(
+            "[Feishu] Ignoring unsupported card action %r from %s in %s (value=%s)",
+            action_tag,
+            open_id or "<unknown>",
+            chat_id or "<unknown>",
+            value_keys,
         )
-        synthetic_event = MessageEvent(
-            text=synthetic_text,
-            message_type=MessageType.COMMAND,
-            source=source,
-            raw_message=data,
-            message_id=token or str(uuid.uuid4()),
-            timestamp=datetime.now(),
-        )
-        logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
-        await self._handle_message_with_guards(synthetic_event)
 
     # =========================================================================
     # Per-chat serialization and typing indicator

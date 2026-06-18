@@ -408,14 +408,14 @@ class TestResolveApproval:
         assert 6 in adapter._approval_state
 
 # ===========================================================================
-# _handle_card_action_event — non-approval card actions
+# _handle_unsupported_card_action — non-approval card actions
 # ===========================================================================
 
 class TestNonApprovalCardAction:
-    """Non-approval card actions should still route as synthetic commands."""
+    """Non-approval card actions should be acknowledged without command routing."""
 
     @pytest.mark.asyncio
-    async def test_routes_as_synthetic_command(self):
+    async def test_does_not_route_as_synthetic_command(self):
         adapter = _make_adapter()
 
         data = _make_card_action_data(
@@ -427,15 +427,14 @@ class TestNonApprovalCardAction:
             patch.object(
                 adapter, "_resolve_sender_profile", new_callable=AsyncMock,
                 return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
-            ),
+            ) as mock_resolve_sender,
             patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
             patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
         ):
-            await adapter._handle_card_action_event(data)
+            adapter._handle_unsupported_card_action(data)
 
-        mock_handle.assert_called_once()
-        event = mock_handle.call_args[0][0]
-        assert "/card button" in event.text
+        mock_resolve_sender.assert_not_called()
+        mock_handle.assert_not_called()
 
 
 # ===========================================================================
@@ -537,17 +536,31 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
-    def test_no_card_for_non_approval_action(self, _patch_callback_card_types):
+    def test_no_card_or_background_work_for_non_approval_action(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
         data = _make_card_action_data({"some_other": "value"})
 
-        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
             response = adapter._on_card_action_trigger(data)
 
         assert response is not None
         assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_no_background_work_for_string_value_action(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data("plain-value")
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
 
     def test_falls_back_to_open_id_when_name_not_cached(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -614,6 +627,29 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is None
         mock_submit.assert_not_called()
+
+    def test_allows_dm_approval_click_when_group_allowlist_empty(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[7] = {
+            "session_key": "agent:main:feishu:dm:oc_12345",
+            "message_id": "msg-7",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 7},
+            open_id="ou_dm_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Approved" in card["header"]["title"]["content"]
 
     def test_rejects_approval_click_when_callback_chat_mismatches(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -778,6 +814,29 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         assert 7 in adapter._update_prompt_state
         mock_submit.assert_not_called()
+
+    def test_update_prompt_allows_dm_click_when_group_allowlist_empty(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._update_prompt_state[9] = {
+            "session_key": "agent:main:feishu:dm:oc_12345",
+            "message_id": "msg_up_009",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 9},
+            open_id="ou_dm_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "answered: Yes" in card["header"]["title"]["content"]
 
     def test_update_prompt_chat_mismatch_returns_no_card(self, _patch_callback_card_types):
         adapter = _make_adapter()

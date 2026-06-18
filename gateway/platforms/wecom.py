@@ -144,6 +144,9 @@ class WeComAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
+    REQUIRES_EDIT_FINALIZE = True
+    CAN_FINALIZE_DRAFT = True
+    STREAM_MESSAGE_MAX_BYTES = 20 * 1024
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -190,6 +193,8 @@ class WeComAdapter(BasePlatformAdapter):
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._active_stream_replies: Dict[str, str] = {}
+        self._stream_sessions: Dict[str, str] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
 
@@ -922,6 +927,59 @@ class WeComAdapter(BasePlatformAdapter):
         if not normalized or normalized.startswith("quote:"):
             return None
         return self._reply_req_ids.get(normalized)
+
+    def supports_draft_streaming(self, chat_type=None, metadata=None) -> bool:
+        return True
+
+    def _resolve_reply_req_id(self, chat_id: str, reply_to=None) -> Optional[str]:
+        reply_req_id = self._reply_req_id_for_message(reply_to)
+        if not reply_req_id and chat_id in self._last_chat_req_ids:
+            reply_req_id = self._last_chat_req_ids[chat_id]
+        return reply_req_id
+
+    async def send_draft(self, chat_id, draft_id, content, metadata=None, finish=False):
+        reply_req_id = self._resolve_reply_req_id(chat_id)
+        if not reply_req_id:
+            return SendResult(success=False, error="no reply context available")
+
+        stream_id = self._stream_sessions.get(chat_id, f"stream-{draft_id}")
+        if chat_id not in self._stream_sessions:
+            self._stream_sessions[chat_id] = stream_id
+
+        try:
+            response = await self._send_reply_stream(reply_req_id, content, stream_id, finish)
+        except RuntimeError as e:
+            if "846609" in str(e):
+                self._last_chat_req_ids.pop(chat_id, None)
+                response = await self._send_request(
+                    APP_CMD_SEND,
+                    {"chatid": chat_id, "msgtype": "markdown",
+                     "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]}},
+                )
+            else:
+                raise
+
+        if finish:
+            self._stream_sessions.pop(chat_id, None)
+
+        return SendResult(success=True, message_id=None)
+
+    async def _send_reply_stream(self, reply_req_id, content, stream_id=None, finish=True):
+        stream_id = stream_id or f"stream-{uuid.uuid4().hex}"
+        payload = {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "finish": finish,
+                "content": content[:self.MAX_MESSAGE_LENGTH],
+            },
+        }
+        await self._send_json({
+            "cmd": APP_CMD_RESPONSE,
+            "headers": {"req_id": reply_req_id},
+            "body": payload,
+        })
+        return {"errcode": 0}
 
     # ------------------------------------------------------------------
     # Outbound messaging

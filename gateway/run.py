@@ -14661,8 +14661,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        if not _adapter_supports_edit:
-                            raise RuntimeError("skip streaming for non-editable platform")
+                        _adapter_supports_draft = (
+                            getattr(_adapter, "supports_draft_streaming", lambda **kw: False)()
+                            if not _adapter_supports_edit else False
+                        )
+                        if not _adapter_supports_edit and not _adapter_supports_draft:
+                            raise RuntimeError("skip streaming for non-editable and non-draft platform")
                         _effective_cursor = _scfg.cursor
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep

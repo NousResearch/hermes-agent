@@ -29,6 +29,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _pool_runtime_base_url,
 )
 
 
@@ -36,6 +37,27 @@ def _jwt_with_claims(claims: dict) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
     return f"{header}.{payload}.sig"
+
+
+def test_zai_pool_base_url_honors_config_override(tmp_path, monkeypatch):
+    import yaml
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(yaml.dump({
+        "model": {
+            "provider": "zai",
+            "default": "glm-5.1",
+            "base_url": "https://open.bigmodel.cn/api/anthropic",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    stale_entry = SimpleNamespace(base_url="https://open.bigmodel.cn/api/paas/v4")
+
+    assert (
+        _pool_runtime_base_url(stale_entry, "https://api.z.ai/api/paas/v4", "zai")
+        == "https://open.bigmodel.cn/api/anthropic"
+    )
 
 
 @pytest.fixture(autouse=True)

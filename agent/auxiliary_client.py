@@ -617,7 +617,21 @@ def _pool_runtime_api_key(entry: Any) -> str:
     return str(key or "").strip()
 
 
-def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
+def _configured_provider_base_url(provider: Optional[str]) -> str:
+    provider_id = _normalize_aux_provider(provider)
+    if provider_id != "zai":
+        return ""
+    try:
+        from hermes_cli.auth import _config_model_base_url
+        return _config_model_base_url(provider_id)
+    except Exception:
+        return ""
+
+
+def _pool_runtime_base_url(entry: Any, fallback: str = "", provider: Optional[str] = None) -> str:
+    configured_url = _configured_provider_base_url(provider)
+    if configured_url:
+        return configured_url
     if entry is None:
         return str(fallback or "").strip().rstrip("/")
     # runtime_base_url handles provider-specific logic (e.g. nous prefers inference_base_url).
@@ -1460,7 +1474,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if not api_key:
                 continue
 
-            raw_base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            raw_base_url = (
+                _pool_runtime_base_url(entry, pconfig.inference_base_url, provider_id)
+                or pconfig.inference_base_url
+            )
             base_url = _to_openai_base_url(raw_base_url)
             model = _get_aux_model_for_provider(provider_id) or None
             if model is None:

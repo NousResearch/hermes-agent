@@ -990,6 +990,36 @@ class TestZaiEndpointAutoDetect:
         assert creds["base_url"] == "https://custom.example/v4"
         assert not probe_called
 
+    def test_config_base_url_skips_probe(self, monkeypatch, tmp_path):
+        """Explicit ZAI config.yaml base_url should win over probe/defaults."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml.dump({
+            "model": {
+                "provider": "zai",
+                "default": "glm-5.1",
+                "base_url": "https://open.bigmodel.cn/api/anthropic",
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.delenv("GLM_BASE_URL", raising=False)
+        probe_called = False
+
+        def _never_called(*a, **kw):
+            nonlocal probe_called
+            probe_called = True
+            return None
+
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
+        creds = resolve_api_key_provider_credentials("zai")
+        status = get_api_key_provider_status("zai")
+        assert creds["base_url"] == "https://open.bigmodel.cn/api/anthropic"
+        assert status["base_url"] == "https://open.bigmodel.cn/api/anthropic"
+        assert not probe_called
+
     def test_no_key_skips_probe(self, monkeypatch):
         """Without an API key, no probe should occur."""
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)

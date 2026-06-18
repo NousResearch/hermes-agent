@@ -536,6 +536,21 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     return default_url
 
 
+def _config_model_base_url(provider_id: str) -> str:
+    """Return an explicit ``model.base_url`` for ``provider_id`` from config.yaml."""
+    try:
+        raw_config = read_raw_config()
+    except Exception:
+        return ""
+    model_cfg = raw_config.get("model") if isinstance(raw_config, dict) else None
+    if not isinstance(model_cfg, dict):
+        return ""
+    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    if configured_provider != provider_id:
+        return ""
+    return str(model_cfg.get("base_url") or "").strip().rstrip("/")
+
+
 
 _PLACEHOLDER_SECRET_VALUES = {
     "*",
@@ -668,12 +683,18 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     """Return the correct Z.AI base URL by probing endpoints.
 
     If the user has explicitly set GLM_BASE_URL, that always wins.
-    Otherwise, probe the candidate endpoints to find one that accepts the
-    key.  The detected endpoint is cached in provider state (auth.json) keyed
-    on a hash of the API key so subsequent starts skip the probe.
+    Otherwise, config.yaml's explicit model.base_url wins before probing.
+    If neither is present, probe the candidate endpoints to find one that
+    accepts the key.  The detected endpoint is cached in provider state
+    (auth.json) keyed on a hash of the API key so subsequent starts skip
+    the probe.
     """
     if env_override:
-        return env_override
+        return env_override.rstrip("/")
+
+    config_url = _config_model_base_url("zai")
+    if config_url:
+        return config_url
 
     # No API key set → don't probe (would fire N×M HTTPS requests with an
     # empty Bearer token, all returning 401).  This path is hit during
@@ -6096,6 +6117,8 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "zai":
+        base_url = env_url.rstrip("/") or _config_model_base_url("zai") or pconfig.inference_base_url
     elif env_url:
         base_url = env_url
     else:

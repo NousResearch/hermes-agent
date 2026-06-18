@@ -14322,6 +14322,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 session_key=_approval_session_key,
                                 description=desc,
                                 metadata=_status_thread_metadata,
+                                requester_user_id=source.user_id or "",
                             ),
                             _loop_for_step,
                             logger=logger,

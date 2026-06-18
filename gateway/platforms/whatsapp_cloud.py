@@ -750,6 +750,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
 

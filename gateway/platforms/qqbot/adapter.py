@@ -2660,6 +2660,7 @@ class QQAdapter(BasePlatformAdapter):
             session_key: str,
             description: str = "dangerous command",
             metadata: Optional[Dict[str, Any]] = None,
+            **kwargs,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
 

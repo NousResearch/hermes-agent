@@ -118,6 +118,18 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   font-family: var(--theme-font-mono);
 }
 
+.hermes-button {
+  letter-spacing: 0.08em;
+  max-width: 100%;
+}
+
+.hermes-button__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Density: scale the shadcn spacing utilities via a multiplier. The DS
    components use `p-N` / `gap-N` / `space-*` classes which resolve against
    Tailwind's spacing scale; multiplying `--spacing` at :root scales them
@@ -266,4 +278,3 @@ code { font-size: 0.875rem; }
 :root[style*="--theme-asset-bg:"] .theme-default-filler {
   display: none;
 }
-

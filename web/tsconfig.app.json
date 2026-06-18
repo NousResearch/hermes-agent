@@ -18,7 +18,8 @@
 
     /* Path aliases */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@nous-research/ui/ui/components/button": ["./src/components/ui/button.d.ts"]
     },
 
     /* Linting */

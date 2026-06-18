@@ -62,6 +62,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@nous-research/ui/ui/components/button": path.resolve(
+        __dirname,
+        "./src/components/ui/button.jsx",
+      ),
     },
     // When @nous-research/ui is symlinked via `file:../../design-language`,
     // Node's module resolution would pick up shared deps from

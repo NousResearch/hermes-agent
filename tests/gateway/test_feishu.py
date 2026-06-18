@@ -159,6 +159,129 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+    def test_normalize_interactive_card_extracts_table_row_data(self):
+        """Regression test: table rows must appear in text_content so that
+        ``[Replying to: \"...\"]`` includes data from cronjob cards."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(
+                {
+                    "header": {"title": {"tag": "plain_text", "content": "📋 Weekly Report"}},
+                    "elements": [
+                        {"tag": "markdown", "content": "**Summary**"},
+                        {
+                            "tag": "table",
+                            "columns": [
+                                {"name": "member", "display_name": "Member"},
+                                {"name": "bugs", "display_name": "Bugs"},
+                                {"name": "status", "display_name": "Status"},
+                            ],
+                            "rows": [
+                                {"member": "Alice", "bugs": "12", "status": "🟢"},
+                                {"member": "Bob", "bugs": "45", "status": "🔴"},
+                            ],
+                        },
+                        {"tag": "markdown", "content": "**Actions**"},
+                    ],
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.relation_kind, "interactive")
+        self.assertIn("📋 Weekly Report", normalized.text_content)
+        self.assertIn("Summary", normalized.text_content)
+        self.assertIn("Actions", normalized.text_content)
+        # Table row data must be present
+        self.assertIn("Alice  12  🟢", normalized.text_content)
+        self.assertIn("Bob  45  🔴", normalized.text_content)
+
+    def test_normalize_interactive_card_handles_lark_cli_xml_format(self):
+        """lark-cli sends interactive cards as `<card title=\"...\">markdown</card>`
+        XML instead of JSON.  The Feishu API returns this format verbatim,
+        and ``_load_feishu_payload`` falls back to ``{\"text\": \"<card ...>\"}``.
+        ``normalize_feishu_message`` must extract title and body sections
+        from this format so that ``reply_to_text`` includes actual card
+        content — not just the ``[Interactive message]`` fallback."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        xml_card = (
+            '<card title=\"☀️ KB Morning Brief\">\n'
+            '**📌 Top Items**\n\n'
+            '1️⃣ Item one\n'
+            '2️⃣ Item two\n'
+            '---\n'
+            '**🚨 Risks**\n\n'
+            'Risk one\n'
+            '---\n'
+            '**🔔 Actions**\n\n'
+            '1️⃣ Action one\n'
+            '2️⃣ Action two\n'
+            '</card>'
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=xml_card,
+        )
+
+        self.assertEqual(normalized.relation_kind, "interactive")
+        self.assertEqual(normalized.metadata.get("format"), "lark_xml")
+        self.assertIn("☀️ KB Morning Brief", normalized.text_content)
+        self.assertIn("📌 Top Items", normalized.text_content)
+        self.assertIn("🚨 Risks", normalized.text_content)
+        self.assertIn("🔔 Actions", normalized.text_content)
+        self.assertIn("Action one", normalized.text_content)
+        # Must NOT be the fallback placeholder
+        self.assertNotEqual(normalized.text_content, "[Interactive message]")
+
+    def test_normalize_interactive_card_handles_xml_without_title(self):
+        """lark-cli cards without a title attribute should still parse body."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        xml_card = (
+            '<card>\n'
+            '**Just body content**\n'
+            '</card>'
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=xml_card,
+        )
+
+        self.assertIn("Just body content", normalized.text_content)
+        self.assertNotEqual(normalized.text_content, "[Interactive message]")
+
+    def test_normalize_interactive_card_handles_tag_text_elements(self):
+        """Cards using ``tag: text`` (e.g. lark-cli post-style content
+        embedded in interactive cards) must have their body text extracted.
+        The ``text`` tag was previously missing from the rich-block set,
+        causing all body content to be silently dropped."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        card = (
+            '{"title":"📋 Daily Digest","elements":'
+            '[[{"tag":"text","text":"📊 Stats: 12 commits"},'
+            '{"tag":"text","text":"  5 articles published"}],'
+            '[{"tag":"hr"}],'
+            '[{"tag":"text","text":"🚀 Deployed"},'
+            '{"tag":"text","text":"1. spaceship-app v2.1"}]]}'
+        )
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=card,
+        )
+
+        self.assertIn("📋 Daily Digest", normalized.text_content)
+        self.assertIn("📊 Stats: 12 commits", normalized.text_content)
+        self.assertIn("5 articles published", normalized.text_content)
+        self.assertIn("🚀 Deployed", normalized.text_content)
+        self.assertIn("spaceship-app", normalized.text_content)
+        self.assertNotEqual(normalized.text_content, "[Interactive message]")
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {

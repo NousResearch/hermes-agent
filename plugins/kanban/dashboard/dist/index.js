@@ -2596,8 +2596,41 @@
   }
 
   // -------------------------------------------------------------------------
-  // Inline create (with parent selector)
+  // Inline create form
   // -------------------------------------------------------------------------
+
+  function ProfileSelector(props) {
+    const { t } = useI18n();
+    const profiles = props.profiles || [];
+    const disabled = !!props.loading || !!props.error || profiles.length === 0;
+    const placeholder = props.loading
+      ? tx(t, "loadingProfiles", "Loading profiles…")
+      : props.error
+        ? tx(t, "profilesUnavailable", "Profiles unavailable")
+        : profiles.length === 0
+          ? tx(t, "noProfilesAvailable", "No profiles available")
+          : tx(t, "selectProfile", "Select a profile");
+    return h("div", { className: "flex-1 min-w-0" },
+      h(Select, Object.assign({
+        value: props.value || "",
+        disabled: disabled,
+        className: "h-7 text-xs w-full",
+        title: props.title,
+      }, selectChangeHandler(props.onChange)),
+        h(SelectOption, { value: "" }, placeholder),
+        profiles.map(function (p) {
+          const label = p.description
+            ? `${p.name} — ${p.description}`
+            : p.name;
+          return h(SelectOption, { key: p.name, value: p.name }, label);
+        }),
+      ),
+      props.error
+        ? h("div", { className: "text-[10px] text-destructive mt-1", title: props.error },
+            tx(t, "profileLoadError", "Failed to load profiles: ") + props.error)
+        : null,
+    );
+  }
 
   function InlineCreate(props) {
     const { t } = useI18n();
@@ -2606,6 +2639,9 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
+    const [profiles, setProfiles] = useState([]);
+    const [profilesLoading, setProfilesLoading] = useState(true);
+    const [profileLoadError, setProfileLoadError] = useState(null);
     // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
     // takes a path (dispatcher derives one from the assignee profile otherwise);
     // `dir` requires a path. Backend enforces the rule — we only hide/show the
@@ -2620,12 +2656,32 @@
     const [goalMode, setGoalMode] = useState(false);
     const [goalMaxTurns, setGoalMaxTurns] = useState("");
 
+    useEffect(function () {
+      let alive = true;
+      setProfilesLoading(true);
+      setProfileLoadError(null);
+      SDK.fetchJSON(`${API}/profiles`)
+        .then(function (data) {
+          if (!alive) return;
+          setProfiles((data && data.profiles) || []);
+        })
+        .catch(function (err) {
+          if (!alive) return;
+          setProfiles([]);
+          setProfileLoadError(parseApiErrorMessage(err));
+        })
+        .finally(function () {
+          if (alive) setProfilesLoading(false);
+        });
+      return function () { alive = false; };
+    }, []);
+
     const submit = function () {
       const trimmed = title.trim();
       if (!trimmed) return;
       const body = {
         title: trimmed,
-        assignee: assignee.trim() || null,
+        assignee: assignee || null,
         priority: Number(priority) || 0,
         triage: props.columnName === "triage",
       };
@@ -2680,20 +2736,15 @@
         rows: 2,
       }),
       h("div", { className: "flex gap-2" },
-        h(Input, {
+        h(ProfileSelector, {
           value: assignee,
-          onChange: function (e) { setAssignee(e.target.value); },
-          placeholder: props.columnName === "triage"
-            ? tx(t, "specifier", "specifier")
-            : tx(t, "assigneePlaceholder", "assignee"),
-          className: "h-7 text-xs flex-1",
+          onChange: setAssignee,
+          profiles: profiles,
+          loading: profilesLoading,
+          error: profileLoadError,
           title: props.columnName === "triage"
-            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
-          style: { textTransform: "none" },
-          autoCapitalize: "none",
-          autoCorrect: "off",
-          spellCheck: false,
+            ? "Hermes profile that will spec this task. Pick an installed profile, or leave blank to let the dispatcher pick."
+            : "Hermes profile to assign. Pick an installed profile, or leave blank and the dispatcher will pick from available profiles when the task is Ready.",
         }),
         h(Input, {
           type: "number",

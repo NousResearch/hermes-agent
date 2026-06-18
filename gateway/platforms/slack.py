@@ -733,6 +733,68 @@ class SlackAdapter(BasePlatformAdapter):
         # Non-fatal — the user saw the initial ack already.
         return SendResult(success=True, message_id=None)
 
+    async def _reply_to_slack_kanban_intake(
+        self,
+        command: dict,
+        content: str,
+    ) -> SendResult:
+        """Reply to the Slack Kanban intake slash command.
+
+        Prefer the slash command response_url so the result stays ephemeral.
+        Fall back to a normal channel send when tests or non-Slack callers omit
+        response_url.
+        """
+        response_url = command.get("response_url", "")
+        if response_url:
+            return await self._send_slash_ephemeral({"response_url": response_url}, content)
+        channel_id = command.get("channel_id", "")
+        if channel_id:
+            return await self.send(channel_id, content)
+        logger.warning("[Slack] Cannot reply to kanban intake: missing channel_id/response_url")
+        return SendResult(success=False, error="missing channel_id/response_url")
+
+    async def _handle_slack_kanban_intake(self, command: dict) -> None:
+        """Create a Kanban card directly from Slack without starting an agent turn."""
+        text = command.get("text", "") or ""
+        user_id = command.get("user_id", "") or "unknown"
+        try:
+            from hermes_cli.kanban_slack_intake import (
+                create_slack_kanban_task,
+                parse_slack_kanban_intake,
+            )
+
+            request = parse_slack_kanban_intake(text)
+            result = create_slack_kanban_task(
+                request,
+                created_by=f"slack:{user_id}",
+            )
+            await self._reply_to_slack_kanban_intake(
+                command,
+                (
+                    "Kanban task created.\n"
+                    f"column: {result.column}\n"
+                    f"status: {result.status}\n"
+                    f"task_id: {result.task_id}\n"
+                    f"board: {result.board}\n"
+                    f"title: {result.title}"
+                ),
+            )
+        except ValueError as exc:
+            await self._reply_to_slack_kanban_intake(
+                command,
+                (
+                    f"Kanban task was not created: {exc}\n"
+                    "Usage: /kanban-add [column=triage|todo] title=\"Task title\" "
+                    "[body=\"details\"] [assignee=profile] [board=slug]"
+                ),
+            )
+        except Exception as exc:  # pragma: no cover - defensive gateway boundary
+            logger.error("[Slack] Kanban intake failed: %s", exc, exc_info=True)
+            await self._reply_to_slack_kanban_intake(
+                command,
+                f"Kanban task was not created: {exc}",
+            )
+
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
@@ -3511,6 +3573,10 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
+        if slash_name in {"kanban-add", "kanban_add", "add-kanban"}:
+            await self._handle_slack_kanban_intake(command)
+            return
+
         if slash_name in {"hermes", ""}:
             # Legacy /hermes <subcommand> [args] routing + free-form questions.
             # Empty slash_name falls into this branch for backward compat
@@ -3523,6 +3589,12 @@ class SlackAdapter(BasePlatformAdapter):
             # ``text.split()`` returns ``[]`` (e.g. user sends ``/hermes   ``).
             parts = text.split() if text else []
             first_word = parts[0] if parts else ""
+            if first_word in {"kanban-add", "kanban_add", "add-kanban"}:
+                rest = text[len(first_word):].strip()
+                intake_command = dict(command)
+                intake_command["text"] = rest
+                await self._handle_slack_kanban_intake(intake_command)
+                return
             if first_word in subcommand_map:
                 rest = text[len(first_word) :].strip()
                 text = (

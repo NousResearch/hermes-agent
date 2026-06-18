@@ -484,11 +484,22 @@ class EmailAdapter(BasePlatformAdapter):
                     if len(self._seen_uids) > self._seen_uids_max:
                         self._trim_seen_uids()
 
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    # Use BODY.PEEK[] instead of RFC822 for better server compatibility.
+                    # iCloud IMAP (imap.mail.me.com) can return only metadata for
+                    # UID FETCH (RFC822), while BODY.PEEK[] returns the full RFC 822
+                    # message without marking it as read.
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
                     if status != "OK":
                         continue
 
-                    raw_email = msg_data[0][1]
+                    raw_email = None
+                    for item in msg_data or []:
+                        if isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], (bytes, bytearray)):
+                            raw_email = item[1]
+                            break
+                    if not raw_email:
+                        logger.warning("[Email] IMAP fetch returned no message bytes for uid %r: %r", uid, msg_data)
+                        continue
                     msg = email_lib.message_from_bytes(raw_email)
 
                     sender_raw = msg.get("From", "")

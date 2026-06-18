@@ -909,6 +909,58 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
 
+    def test_fetch_uses_body_peek_for_icloud_compatibility(self):
+        """Fetch should use BODY.PEEK[] because iCloud returns no body for RFC822."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                # iCloud-style behavior: RFC822 returns only metadata, BODY.PEEK[] works.
+                if args == (b"1", "(RFC822)"):
+                    return ("OK", [b"1 (UID 1)"])
+                if args == (b"1", "(BODY.PEEK[])"):
+                    return ("OK", [(b"1 (UID 1 BODY[] {123})", raw_email.as_bytes()), b")"])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["sender_addr"], "user@test.com")
+        mock_imap.uid.assert_any_call("fetch", b"1", "(BODY.PEEK[])")
+
+    def test_fetch_skips_metadata_only_fetch_response(self):
+        """Metadata-only fetch responses should be skipped instead of crashing."""
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                return ("OK", [b"1 (UID 1)"])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertIn(b"1", adapter._seen_uids)
+
     def test_fetch_no_unseen_messages(self):
         """No unseen messages returns empty list."""
         adapter = self._make_adapter()

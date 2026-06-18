@@ -40,6 +40,7 @@ import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
+from tools.safe_fetch import safe_async_client
 from tools.website_policy import check_website_access
 import sys
 
@@ -194,10 +195,12 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             if blocked:
                 raise PermissionError(blocked["message"])
 
-            # Download the image with appropriate headers using async httpx
-            # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
-            # SSRF: event_hooks validates each redirect target against private IP ranges
-            async with httpx.AsyncClient(
+            # Download the image with appropriate headers using async httpx.
+            # follow_redirects handles image CDNs that redirect (Imgur, Picsum).
+            # SSRF defense in depth: safe_async_client validates+pins the IP at
+            # connection time (no DNS-rebind TOCTOU, covers redirects too); the
+            # event_hook re-checks each redirect target as a belt-and-suspenders.
+            async with safe_async_client(
                 timeout=_VISION_DOWNLOAD_TIMEOUT,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1177,7 +1180,7 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
             if blocked:
                 raise PermissionError(blocked["message"])
 
-            async with httpx.AsyncClient(
+            async with safe_async_client(
                 timeout=60.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},

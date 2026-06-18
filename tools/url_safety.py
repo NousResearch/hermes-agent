@@ -12,15 +12,20 @@ that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
 metadata hostnames (metadata.google.internal, 169.254.169.254) are
 **always** blocked — those are never legitimate agent targets.
 
-Limitations (documented, not fixable at pre-flight level):
-  - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
-    can return a public IP for the check, then a private IP for the actual
-    connection. Fixing this requires connection-level validation (e.g.
-    Python's Champion library or an egress proxy like Stripe's Smokescreen).
+Limitations (documented):
+  - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0 can
+    return a public IP for this pre-flight check, then a private IP for the
+    actual connection. ``is_safe_url`` cannot close this on its own. Callers
+    that need rebind-safety should fetch through ``tools.safe_fetch`` (the
+    ``safe_client`` / ``safe_async_client`` factories), whose connection-level
+    guard resolves, validates and connects in one step — see
+    ``is_connectable_ip`` below for the shared IP policy.
   - Redirect-based bypass is mitigated by httpx event hooks that re-validate
     each redirect target in vision_tools, gateway platform adapters, and
-    media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
-    where redirect handling is on their servers.
+    media cache helpers (and is closed entirely for safe_fetch callers, whose
+    guard validates every connection including redirect targets). Web tools use
+    third-party SDKs (Firecrawl/Tavily) where redirect handling is on their
+    servers.
 """
 
 import ipaddress
@@ -310,6 +315,40 @@ def is_always_blocked_url(url: str) -> bool:
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
     return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+
+
+def is_blocked_hostname(hostname: str) -> bool:
+    """Return True for hostnames that are blocked regardless of DNS resolution
+    (cloud metadata names). Mirrors the ``_BLOCKED_HOSTNAMES`` floor used by
+    ``is_safe_url``; exposed for the connection-level SSRF guard."""
+    return (hostname or "").strip().lower().rstrip(".") in _BLOCKED_HOSTNAMES
+
+
+def is_connectable_ip(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address",
+    hostname: str = "",
+    scheme: str = "https",
+) -> bool:
+    """Return True when it is safe to CONNECT to an already-resolved ``ip``.
+
+    Applies the same policy as :func:`is_safe_url` but at the IP level, so the
+    connection-level SSRF guard can validate the exact address it is about to
+    dial (closing the DNS-rebinding TOCTOU window where the check and the
+    connect resolve separately):
+
+      1. The always-blocked cloud-metadata floor (incl. 6to4/NAT64 tunnels)
+         blocks unconditionally.
+      2. With ``security.allow_private_urls`` (or a trusted-host HTTPS
+         exception) the private/internal ranges are allowed.
+      3. Otherwise private/loopback/link-local/CGNAT/etc. are blocked.
+    """
+    if _is_always_blocked_ip(ip):
+        return False
+    if _global_allow_private_urls():
+        return True
+    if _allows_private_ip_resolution((hostname or "").strip().lower().rstrip("."), scheme):
+        return True
+    return not _is_blocked_ip(ip)
 
 
 def is_safe_url(url: str) -> bool:

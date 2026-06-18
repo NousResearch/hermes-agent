@@ -221,6 +221,26 @@ def _merge_browser_path(existing_path: str = "") -> str:
 
     return os.pathsep.join(prefix_parts + path_parts)
 
+
+def _browser_subprocess_env(
+    task_socket_dir: str,
+    *,
+    include_browser_executable: bool = True,
+) -> Dict[str, str]:
+    """Build the credential-scrubbed env shared by agent-browser subprocess paths."""
+    browser_env = _build_browser_env()
+    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+    if include_browser_executable and "AGENT_BROWSER_EXECUTABLE_PATH" not in browser_env:
+        chromium_executable = _detect_system_chromium_executable()
+        if chromium_executable:
+            browser_env["AGENT_BROWSER_EXECUTABLE_PATH"] = chromium_executable
+    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
+        browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(
+            BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000
+        )
+    return browser_env
+
 # Throttle screenshot cleanup to avoid repeated full directory scans.
 _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 
@@ -1059,12 +1079,7 @@ def _run_chrome_fallback_command(
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
-    browser_env = _build_browser_env()
-    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-    browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
-
-    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
-        browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+    browser_env = _browser_subprocess_env(task_socket_dir)
 
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
         full = base_args + [cmd] + cmd_args
@@ -2385,28 +2400,13 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = _build_browser_env()
-
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
-        # used during CLI discovery.
-        browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
-        browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
-        if (
-            not session_info.get("cdp_url")
-            and "AGENT_BROWSER_EXECUTABLE_PATH" not in browser_env
-        ):
-            chromium_executable = _detect_system_chromium_executable()
-            if chromium_executable:
-                browser_env["AGENT_BROWSER_EXECUTABLE_PATH"] = chromium_executable
-
-        # Tell the agent-browser daemon to self-terminate after being idle
-        # for our configured inactivity timeout.  This is the daemon-side
-        # counterpart to our Python-side _cleanup_inactive_browser_sessions
-        # — the daemon kills itself and its Chrome children when no CLI
-        # commands arrive within the window.  Added in agent-browser 0.24.
-        if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
-            idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
-            browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
+        # used during CLI discovery. Local sessions also receive a resolved
+        # system browser executable when one is available.
+        browser_env = _browser_subprocess_env(
+            task_socket_dir,
+            include_browser_executable=not session_info.get("cdp_url"),
+        )
 
         # Inject --no-sandbox when needed (issue #15765):
         # - Running as root: Chromium always refuses to start without it

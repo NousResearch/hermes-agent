@@ -83,6 +83,48 @@ class TestChromiumInstalled:
         assert bt._detect_system_chromium_executable() == user_chrome
         assert bt._chromium_installed() is True
 
+    def test_browser_subprocess_env_sets_macos_app_bundle_executable(self, monkeypatch):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.sys, "platform", "darwin")
+        monkeypatch.setattr(bt.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("HOME", "/Users/alice")
+
+        user_chrome = os.path.join(
+            "/Users/alice",
+            "Applications",
+            "Google Chrome.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome",
+        )
+        monkeypatch.setattr(bt.os.path, "isfile", lambda path: path == user_chrome)
+        monkeypatch.setattr(bt.os.path, "isdir", lambda _path: False)
+
+        env = bt._browser_subprocess_env("/tmp/hermes-browser-socket")
+
+        assert env["AGENT_BROWSER_SOCKET_DIR"] == "/tmp/hermes-browser-socket"
+        assert env["AGENT_BROWSER_EXECUTABLE_PATH"] == user_chrome
+
+    def test_browser_subprocess_env_excludes_unrelated_credentials(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-agent-browser")
+        monkeypatch.setenv("BROWSERBASE_API_KEY", "allowed-browser-key")
+
+        env = bt._browser_subprocess_env("/tmp/hermes-browser-socket")
+
+        assert "ANTHROPIC_API_KEY" not in env
+        assert env["BROWSERBASE_API_KEY"] == "allowed-browser-key"
+
+    def test_browser_subprocess_env_skips_browser_executable_for_cloud(self, monkeypatch):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt, "_detect_system_chromium_executable", lambda: "/Applications/Chrome")
+
+        env = bt._browser_subprocess_env(
+            "/tmp/hermes-browser-socket",
+            include_browser_executable=False,
+        )
+
+        assert "AGENT_BROWSER_EXECUTABLE_PATH" not in env
+
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium-1208").mkdir()
@@ -152,5 +194,4 @@ class TestRunBrowserCommandChromiumGuard:
     """Verify _run_browser_command fails fast (no timeout hang) when
     Chromium is missing in local mode.
     """
-
 

@@ -9,10 +9,10 @@ import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
-import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { buildCommitChangelog, parseCommitHeader, type CommitGroup } from '@/lib/commit-changelog'
+import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -33,6 +33,26 @@ import {
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
+}
+
+function formatFullChangelogText(commits: readonly DesktopUpdateCommit[], behind: number, branch: string | undefined): string {
+  const lines: string[] = ['=== Hermes Update Changelog ===']
+  if (behind > 0) {
+    lines.push(`Behind by ${behind} commit${behind === 1 ? '' : 's'}${branch ? ` on branch ${branch}` : ''}`)
+  }
+  lines.push('')
+
+  for (const c of commits) {
+    const parsed = parseCommitHeader(c.summary ?? '')
+    const prefix = parsed.type ? (parsed.breaking ? `${parsed.type}!` : parsed.type) : ''
+    const scope = parsed.scope ? `(${parsed.scope})` : ''
+    const tag = prefix + scope
+    const subject = parsed.subject || c.summary || ''
+    const line = tag ? `${tag}: ${subject} — ${c.author}` : `${subject} — ${c.author}`
+    lines.push(line)
+  }
+
+  return lines.join('\n')
 }
 
 export function UpdatesOverlay() {
@@ -217,6 +237,15 @@ function IdleView({
   // instead of generic filler.
   const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
 
+  const [logCopied, setLogCopied] = useState(false)
+
+  const handleCopyFullLog = () => {
+    void writeClipboardText(formatFullChangelogText(commits, behind, status.branch)).then(() => {
+      setLogCopied(true)
+      window.setTimeout(() => setLogCopied(false), 1800)
+    })
+  }
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -241,6 +270,26 @@ function IdleView({
           </div>
         ))}
       </div>
+
+      {commits.length > 0 && (
+        <button
+          className="group flex w-full items-center justify-center gap-2 rounded-lg border border-border/50 bg-transparent px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/30 hover:text-foreground"
+          onClick={handleCopyFullLog}
+          type="button"
+        >
+          {logCopied ? (
+            <>
+              <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+              {u.copied}
+            </>
+          ) : (
+            <>
+              <Copy className="size-3.5" />
+              {u.copyFullLog}
+            </>
+          )}
+        </button>
+      )}
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">

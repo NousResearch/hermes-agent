@@ -451,6 +451,25 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if not missing:
         return
 
+    # Managed installs (NixOS, Homebrew) have read-only package stores;
+    # attempting pip install would bootstrap ensurepip (~15s CPU) only to
+    # fail against the read-only filesystem.  Bail out early with a
+    # clear message directing the user to the system package manager.
+    try:
+        from hermes_cli.config import get_managed_system, is_managed
+
+        if is_managed():
+            mgr = get_managed_system() or "managed"
+            raise FeatureUnavailable(
+                feature, missing,
+                f"cannot install on {mgr} system; "
+                "install deps via system package manager",
+            )
+    except FeatureUnavailable:
+        raise
+    except Exception:
+        pass  # config unreadable — proceed normally
+
     # Validate every spec against the allowlist + safety regex. Belt and
     # braces — the keys-in-LAZY_DEPS check above already constrains this.
     for spec in missing:

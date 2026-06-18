@@ -394,6 +394,12 @@ export function useSessionActions({
 
   const startFreshSessionDraft = useCallback(
     (replaceRoute = false) => {
+      const previousActiveSessionId = activeSessionIdRef.current
+
+      if (previousActiveSessionId) {
+        void requestGateway('session.close', { session_id: previousActiveSessionId }).catch(() => undefined)
+      }
+
       busyRef.current = false
       setBusy(false)
       setAwaitingResponse(false)
@@ -426,7 +432,7 @@ export function useSessionActions({
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
     },
-    [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
+    [activeSessionIdRef, busyRef, navigate, requestGateway, selectedStoredSessionIdRef]
   )
 
   const createBackendSessionForSend = useCallback(

@@ -22,6 +22,8 @@ vi.mock('@/hermes', async importOriginal => ({
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
 
+type SessionActions = ReturnType<typeof useSessionActions>
+
 function Harness({
   onReady,
   requestGateway
@@ -55,6 +57,41 @@ function Harness({
   return null
 }
 
+function ActionsHarness({
+  activeSessionId = null,
+  onReady,
+  requestGateway
+}: {
+  activeSessionId?: string | null
+  onReady: (actions: SessionActions) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId,
+    activeSessionIdRef: ref<string | null>(activeSessionId),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    navigate: vi.fn() as never,
+    requestGateway,
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef: ref<string | null>(null),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  useEffect(() => {
+    onReady(actions)
+  }, [actions, onReady])
+
+  return null
+}
+
 async function createWith(profileSetup: () => void): Promise<Record<string, unknown> | undefined> {
   let createParams: Record<string, unknown> | undefined
 
@@ -78,6 +115,33 @@ async function createWith(profileSetup: () => void): Promise<Record<string, unkn
 
   return createParams
 }
+
+describe('startFreshSessionDraft worker cleanup', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('closes the previous runtime session when starting a fresh draft', async () => {
+    const requestGateway = vi.fn(async () => ({} as never))
+    let actions: SessionActions | null = null
+
+    render(
+      <ActionsHarness
+        activeSessionId="runtime-old"
+        onReady={value => (actions = value)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    actions!.startFreshSessionDraft()
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-old' })
+    )
+  })
+})
 
 describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {

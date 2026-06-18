@@ -58,9 +58,20 @@ from typing import Optional, Sequence
 # module (class declaration, ``isinstance`` checks, docstring) working
 # unchanged. See #44873.
 if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
+    try:
+        from concurrent_log_handler import (  # noqa: E402
+            ConcurrentRotatingFileHandler as RotatingFileHandler,
+        )
+    except ImportError:
+        import warnings
+
+        warnings.warn(
+            "concurrent-log-handler not installed; falling back to stdlib "
+            "RotatingFileHandler.  Install it for correct multi-process log "
+            "rotation on Windows:  pip install concurrent-log-handler",
+            stacklevel=2,
+        )
+        from logging.handlers import RotatingFileHandler  # noqa: E402
 else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
 

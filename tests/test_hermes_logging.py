@@ -1075,3 +1075,53 @@ class TestSafeStderr:
             logger.info("Session hygiene: 400 messages — auto-compressing")
         finally:
             logger.removeHandler(handler)
+
+
+class TestConcurrentLogHandlerFallback:
+    """On Windows, concurrent_log_handler ImportError falls back to stdlib."""
+
+    def test_import_error_falls_back_to_stdlib(self, monkeypatch):
+        """When concurrent_log_handler is missing, import falls back with warning."""
+        import importlib
+        import warnings
+
+        # Simulate the import failing on Windows
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        # Make concurrent_log_handler unavailable
+        orig_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "concurrent_log_handler":
+                raise ImportError("No module named 'concurrent_log_handler'")
+            return orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", mock_import)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            # Force re-execution of the module-level import block
+            # by reloading the module with the mock in place
+            import hermes_logging as hl
+            importlib.reload(hl)
+
+            # Should have issued a warning about the missing package
+            clh_warnings = [x for x in w if "concurrent-log-handler" in str(x.message)]
+            assert len(clh_warnings) >= 1, (
+                "Expected a warning about concurrent-log-handler not installed"
+            )
+
+            # The module should still have a working RotatingFileHandler
+            assert hasattr(hl, "RotatingFileHandler")
+            # On fallback, it should be stdlib's handler
+            from logging.handlers import RotatingFileHandler as StdlibRFH
+            assert hl.RotatingFileHandler is StdlibRFH
+
+    def test_module_loads_without_crash_on_missing_clh(self):
+        """Regression: hermes_logging must not crash when CLH is absent."""
+        # This test verifies the module can be imported at all.
+        # On non-Windows (macOS/Linux), the import block takes the else branch
+        # and uses stdlib directly — no CLH needed.
+        import hermes_logging
+        assert hasattr(hermes_logging, "RotatingFileHandler")
+        assert hasattr(hermes_logging, "setup_logging")

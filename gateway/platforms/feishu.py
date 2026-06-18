@@ -1316,6 +1316,49 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _apply_runtime_ws_overrides()
         return result
 
+    # Monkey-patch _handle_data_frame so that CARD-type messages are
+    # routed through the event handler instead of being silently dropped.
+    # The upstream lark_oapi WS client returns immediately on CARD frames,
+    # which causes Feishu to display error 200343 because it never receives
+    # a response to the card-action callback.
+    original_handle_data_frame = getattr(ws_client, "_handle_data_frame", None)
+
+    async def _patched_handle_data_frame(frame: Any) -> None:
+        import http
+        from lark_oapi.ws.client import MessageType as _MT
+
+        frame_payload = frame.payload
+        if frame_payload is not None:
+            hs = frame.headers
+            msg_id = getattr(hs, "get", lambda k, d="": d)(1, "") if hasattr(hs, "get") else ""
+            try:
+                type_ = ""
+                for h in hs:
+                    if getattr(h, "key", "") == "type":
+                        type_ = getattr(h, "value", "")
+                        break
+            except Exception:
+                type_ = ""
+
+            if type_ == _MT.CARD.value:
+                # Route CARD through the same event handler as EVENT
+                result = ws_client._event_handler.do_without_validation(frame_payload)
+                from lark_oapi.ws.client import Response as _WSResp, JSON as _WSJSON, HEADER_BIZ_RT
+                import base64 as _b64
+                resp = _WSResp(code=http.HTTPStatus.OK)
+                if result is not None:
+                    resp.data = _b64.b64encode(_WSJSON.marshal(result).encode("utf-8"))
+                frame.payload = _WSJSON.marshal(resp).encode("utf-8")
+                await ws_client._write_message(frame.SerializeToString())
+                return
+
+        # Delegate everything else to the original handler
+        if original_handle_data_frame is not None:
+            await original_handle_data_frame(frame)
+
+    if original_handle_data_frame is not None:
+        setattr(ws_client, "_handle_data_frame", _patched_handle_data_frame)
+
     ws_client_module.websockets.connect = _connect_with_overrides
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)

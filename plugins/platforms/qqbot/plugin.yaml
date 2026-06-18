@@ -1,0 +1,33 @@
+name: qqbot-platform
+label: QQ Bot
+kind: platform
+version: 1.0.0
+description: >
+  QQ Bot (腾讯 QQ 机器人) gateway adapter for Hermes Agent. Connects to the
+  QQ Bot Open Platform over WebSocket + REST and relays messages between QQ
+  guild channels, C2C (private) chats, and group chats and the Hermes agent.
+  Supports chunked file uploads, inline keyboards / approval buttons, QR
+  scan-to-configure onboarding, and home-channel cron delivery.
+author: NousResearch
+requires_env:
+  - name: QQ_APP_ID
+    description: "QQ Bot App ID from q.qq.com."
+    prompt: "QQ Bot App ID"
+    password: false
+  - name: QQ_CLIENT_SECRET
+    description: "QQ Bot App Secret from q.qq.com (used for token exchange)."
+    prompt: "QQ Bot App Secret"
+    password: true
+optional_env:
+  - name: QQ_ALLOWED_USERS
+    description: "Comma-separated user OpenIDs allowed to DM the bot."
+    prompt: "Allowed user OpenIDs (comma-separated)"
+    password: false
+  - name: QQ_ALLOW_ALL_USERS
+    description: "Allow any QQ user to trigger the bot (dev only)."
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: QQBOT_HOME_CHANNEL
+    description: "OpenID to deliver cron results and notifications to."
+    prompt: "Home channel OpenID"
+    password: false

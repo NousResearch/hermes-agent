@@ -111,7 +111,7 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
         ("gateway.platforms.wecom", "WeComAdapter"),
         ("gateway.platforms.weixin", "WeixinAdapter"),
         ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
-        ("gateway.platforms.qqbot.adapter", "QQAdapter"),
+        ("plugins.platforms.qqbot.adapter", "QQAdapter"),
         ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
     ],
 )

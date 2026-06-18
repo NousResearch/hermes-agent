@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from gateway.platforms.qqbot.constants import FILE_UPLOAD_TIMEOUT
+from .constants import FILE_UPLOAD_TIMEOUT
 
 logger = logging.getLogger(__name__)
 

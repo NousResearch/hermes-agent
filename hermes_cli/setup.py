@@ -2092,10 +2092,10 @@ def _setup_bluebubbles():
     print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
-def _setup_qqbot():
-    """Configure QQ Bot (Official API v2) via gateway setup."""
-    from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
-    _gateway_setup_qqbot()
+# qqbot migrated to a bundled plugin (plugins/platforms/qqbot/); its
+# interactive_setup is registered via setup_fn on the PlatformEntry and
+# dispatched through _configure_platform(), so the old delegating wrapper
+# here is no longer needed.
 
 
 def _setup_webhooks():

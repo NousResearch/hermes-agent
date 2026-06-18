@@ -1801,6 +1801,11 @@ class DiscordAdapter(BasePlatformAdapter):
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
+                # Ensure code fences remain balanced after truncation,
+                # otherwise an orphaned ``` breaks Discord's markdown
+                # rendering for the entire remaining message.
+                if formatted.count("```") % 2 == 1:
+                    formatted += "\n```"
             await msg.edit(content=formatted)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging

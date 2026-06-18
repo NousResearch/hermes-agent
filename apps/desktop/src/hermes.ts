@@ -33,6 +33,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  RouteAdvisoryResponse,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
@@ -88,6 +89,7 @@ export type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  RouteAdvisoryResponse,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -678,6 +680,15 @@ export function setGlobalModel(
       provider,
       model
     }
+  })
+}
+
+export function getRouteAdvisory(prompt: string, surface = 'desktop'): Promise<RouteAdvisoryResponse> {
+  return window.hermesDesktop.api<RouteAdvisoryResponse>({
+    ...profileScoped(),
+    path: '/api/route',
+    method: 'POST',
+    body: { prompt, surface }
   })
 }
 

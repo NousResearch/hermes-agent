@@ -16,6 +16,7 @@ import {
 import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
+import { getRouteAdvisory, type RouteAdvisoryResponse } from '@/hermes'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
@@ -94,6 +95,7 @@ import {
   RICH_INPUT_SLOT,
   slashChipElement
 } from './rich-editor'
+import { RouteAdvisoryBanner } from './route-advisory-banner'
 import { ComposerStatusStack } from './status-stack'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
@@ -155,6 +157,8 @@ const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(
 // Quiet period after the last keystroke before persisting the draft;
 // unmount/pagehide flushes bypass it.
 const DRAFT_PERSIST_DEBOUNCE_MS = 400
+const ROUTE_ADVISORY_DEBOUNCE_MS = 650
+const ROUTE_ADVISORY_MIN_CHARS = 12
 
 export function ChatBar({
   busy,
@@ -224,9 +228,11 @@ export function ChatBar({
   const [tight, setTight] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
+  const [routeAdvisory, setRouteAdvisory] = useState<RouteAdvisoryResponse | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
   const queueEditRef = useRef(queueEdit)
   queueEditRef.current = queueEdit
+  const routeAdvisoryRequestRef = useRef(0)
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
@@ -380,6 +386,34 @@ export function ChatBar({
       renderComposerContents(editor, draft)
     }
   }, [draft])
+
+  useEffect(() => {
+    const text = draft.trim()
+    const requestId = routeAdvisoryRequestRef.current + 1
+    routeAdvisoryRequestRef.current = requestId
+
+    if (inputDisabled || text.length < ROUTE_ADVISORY_MIN_CHARS || SLASH_COMMAND_RE.test(text)) {
+      setRouteAdvisory(null)
+
+      return undefined
+    }
+
+    const handle = window.setTimeout(() => {
+      void getRouteAdvisory(text, 'desktop')
+        .then(advisory => {
+          if (routeAdvisoryRequestRef.current === requestId) {
+            setRouteAdvisory(advisory)
+          }
+        })
+        .catch(() => {
+          if (routeAdvisoryRequestRef.current === requestId) {
+            setRouteAdvisory(null)
+          }
+        })
+    }, ROUTE_ADVISORY_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(handle)
+  }, [draft, inputDisabled])
 
   useEffect(() => {
     if (urlOpen) {
@@ -1933,6 +1967,7 @@ export function ChatBar({
                   </div>
                 )}
                 {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                <RouteAdvisoryBanner advisory={routeAdvisory} />
                 <div
                   className={cn(
                     'grid w-full',

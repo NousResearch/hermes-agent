@@ -337,6 +337,86 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_lean_mode_skips_rules_and_memory(self, monkeypatch):
+        """extra.lean=true must forward skip_context_files=True and skip_memory=True to AIAgent.
+
+        Programmatic consumers (classification, structured extraction, JSON-mode
+        automation) use this to opt out of SOUL.md / AGENTS.md / .cursorrules
+        and persistent-memory injection per-request.
+        """
+        captured = _LeanCaptured()
+        _install_create_agent_fakes(monkeypatch, captured)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"lean": True}))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        assert adapter._lean is True
+        adapter._create_agent(session_id="api-session-lean")
+
+        assert captured.kwargs["skip_context_files"] is True
+        assert captured.kwargs["skip_memory"] is True
+
+    def test_create_agent_default_keeps_rules_and_memory(self, monkeypatch):
+        """Default (extra.lean absent or false) must keep the existing behavior:
+        AIAgent receives skip_context_files=False and skip_memory=False so
+        SOUL.md / AGENTS.md / .cursorrules and persistent memory load as before.
+        """
+        captured = _LeanCaptured()
+        _install_create_agent_fakes(monkeypatch, captured)
+
+        # No extra at all — confirms backwards-compat for configs that predate the flag.
+        adapter_default = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter_default, "_ensure_session_db", lambda: None)
+        assert adapter_default._lean is False
+        adapter_default._create_agent(session_id="api-session-default")
+        assert captured.kwargs["skip_context_files"] is False
+        assert captured.kwargs["skip_memory"] is False
+
+        # Explicit lean=false behaves the same as the default.
+        captured.kwargs.clear()
+        adapter_false = APIServerAdapter(PlatformConfig(enabled=True, extra={"lean": False}))
+        monkeypatch.setattr(adapter_false, "_ensure_session_db", lambda: None)
+        assert adapter_false._lean is False
+        adapter_false._create_agent(session_id="api-session-false")
+        assert captured.kwargs["skip_context_files"] is False
+        assert captured.kwargs["skip_memory"] is False
+
+
+class _LeanCaptured:
+    """Holds AIAgent __init__ kwargs captured by the FakeAgent in lean-mode tests."""
+
+    def __init__(self):
+        self.kwargs: dict = {}
+
+
+def _install_create_agent_fakes(monkeypatch, captured: "_LeanCaptured") -> None:
+    """Install the same monkeypatch stack used by test_create_agent_forwards_config_reasoning_effort.
+
+    Spies on AIAgent's __init__ so callers can assert on the kwargs that
+    APIServerAdapter._create_agent forwards.
+    """
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.kwargs.update(kwargs)
+
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openai-codex",
+            "base_url": "https://example.test/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_reasoning_config",
+        staticmethod(lambda: {}),
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

@@ -407,6 +407,22 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
 | `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |
 
+### Lean mode (programmatic consumers)
+
+Set `platforms.api_server.extra.lean: true` in your gateway config to skip auto-injection of `SOUL.md`, `AGENTS.md`, `.cursorrules`, and persistent memory on every request — the same opt-out the CLI and tui_gateway expose through `HERMES_IGNORE_RULES`. Default is `false`, so existing behavior is unchanged.
+
+Use it when calling the API server programmatically for content classification, structured extraction, or JSON-mode automation, where the agent rule/memory preamble would otherwise be ~12K wasted tokens per request:
+
+```yaml
+platforms:
+  api_server:
+    enabled: true
+    extra:
+      lean: true   # skip SOUL.md / AGENTS.md / .cursorrules / persistent memory
+```
+
+Trade-off: the agent loses its persona and project context, so it should not be set on a deployment that doubles as a conversational assistant. Run two profiles if you need both behaviors.
+
 ### config.yaml
 
 ```yaml

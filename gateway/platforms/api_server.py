@@ -754,6 +754,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        # When set, skip auto-injection of SOUL.md / AGENTS.md / .cursorrules and
+        # persistent memory for every request — matching what the CLI and tui_gateway
+        # do via HERMES_IGNORE_RULES. Intended for programmatic consumers
+        # (classification, structured extraction, JSON-mode automation) that would
+        # otherwise pay the agent rule/memory preamble on every call.
+        self._lean: bool = bool(extra.get("lean", False))
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1067,6 +1073,11 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            # Honor platforms.api_server.extra.lean so programmatic consumers can
+            # opt out of agent rule/memory injection, mirroring the CLI's
+            # HERMES_IGNORE_RULES path.
+            skip_context_files=self._lean,
+            skip_memory=self._lean,
         )
         return agent
 

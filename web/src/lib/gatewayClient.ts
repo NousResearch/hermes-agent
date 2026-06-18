@@ -11,6 +11,12 @@
  *   const { session_id } = await gw.request<{ session_id: string }>("session.create")
  *   gw.on("message.delta", (ev) => console.log(ev.payload?.text))
  *   await gw.request("prompt.submit", { session_id, text: "hi" })
+ *
+ * Auto-reconnect: when the WebSocket closes unexpectedly (gateway restart,
+ * network drop), the client automatically reconnects with exponential backoff
+ * (1s → 2s → 4s → 8s → 16s → 30s cap). Reconnection stops after
+ * MAX_RECONNECT_ATTEMPTS failures or when `close()` is called explicitly.
+ * On successful reconnect the backoff resets and pending state is preserved.
  */
 
 import { HERMES_BASE_PATH, getWsTicket } from "@/lib/api";
@@ -49,7 +55,8 @@ export type ConnectionState =
   | "connecting"
   | "open"
   | "closed"
-  | "error";
+  | "error"
+  | "reconnecting";
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -62,6 +69,11 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 /** Wildcard listener key: subscribe to every event regardless of type. */
 const ANY = "*";
 
+// ── Reconnect constants ──────────────────────────────────────────────
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_MAX_MS = 30_000;
+const MAX_RECONNECT_ATTEMPTS = 15;
+
 export class GatewayClient {
   private ws: WebSocket | null = null;
   private reqId = 0;
@@ -69,6 +81,11 @@ export class GatewayClient {
   private listeners = new Map<string, Set<(ev: GatewayEvent) => void>>();
   private _state: ConnectionState = "idle";
   private stateListeners = new Set<(s: ConnectionState) => void>();
+
+  // ── Reconnect state ──────────────────────────────────────────────
+  private _reconnectAttempts = 0;
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _explicitlyClosed = false;
 
   get state(): ConnectionState {
     return this._state;
@@ -150,20 +167,45 @@ export class GatewayClient {
       }
     });
 
-    ws.addEventListener("close", () => {
-      this.setState("closed");
+    ws.addEventListener("close", (ev) => {
+      // Ignore close events from a superseded socket (reconnect created a
+      // new WS before the old one finished closing).
+      if (ws !== this.ws) return;
+
       this.rejectAllPending(new Error("WebSocket closed"));
+
+      // Explicit close() — don't reconnect
+      if (this._explicitlyClosed) {
+        this.setState("closed");
+        return;
+      }
+
+      // Auth rejection / protocol error — don't retry (user must reload)
+      if (ev.code === 4401 || ev.code === 4403 || ev.code === 4408) {
+        this.setState("error");
+        return;
+      }
+
+      // Unexpected close — attempt reconnect
+      this.scheduleReconnect();
     });
 
     await new Promise<void>((resolve, reject) => {
       const onOpen = () => {
         ws.removeEventListener("error", onError);
+        // Successful connect — reset backoff
+        this._reconnectAttempts = 0;
         this.setState("open");
         resolve();
       };
       const onError = () => {
         ws.removeEventListener("open", onOpen);
-        this.setState("error");
+        // Connection failed — attempt reconnect (unless explicitly closed)
+        if (!this._explicitlyClosed) {
+          this.scheduleReconnect();
+        } else {
+          this.setState("error");
+        }
         reject(new Error("WebSocket connection failed"));
       };
       ws.addEventListener("open", onOpen, { once: true });
@@ -172,8 +214,79 @@ export class GatewayClient {
   }
 
   close() {
+    this._explicitlyClosed = true;
+    this.cancelReconnect();
     this.ws?.close();
     this.ws = null;
+    this.setState("closed");
+  }
+
+  /** Reset explicit-close flag so future connect() calls work. */
+  reset() {
+    this._explicitlyClosed = false;
+    this._reconnectAttempts = 0;
+    this.cancelReconnect();
+  }
+
+  // ── Reconnect logic ──────────────────────────────────────────────
+
+  private scheduleReconnect() {
+    if (this._explicitlyClosed) return;
+    if (this._reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.warn(
+        `[gateway] reconnect gave up after ${MAX_RECONNECT_ATTEMPTS} attempts`,
+      );
+      this.setState("error");
+      return;
+    }
+
+    this.setState("reconnecting");
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s cap
+    const delay = Math.min(
+      RECONNECT_BASE_MS * 2 ** this._reconnectAttempts,
+      RECONNECT_MAX_MS,
+    );
+    this._reconnectAttempts++;
+
+    console.log(
+      `[gateway] reconnecting in ${delay}ms (attempt ${this._reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`,
+    );
+
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      this.reconnect();
+    }, delay);
+  }
+
+  private cancelReconnect() {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+  }
+
+  private async reconnect() {
+    if (this._explicitlyClosed) return;
+
+    // Tear down stale socket
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      try {
+        old.close();
+      } catch {
+        /* ignore */
+      }
+    }
+
+    try {
+      // Re-mint auth (single-use tickets expire; session tokens are stable)
+      await this.connect();
+      console.log("[gateway] reconnected successfully");
+    } catch {
+      // connect() already called scheduleReconnect() on failure
+    }
   }
 
   private dispatch(msg: Record<string, unknown>) {
@@ -194,7 +307,6 @@ export class GatewayClient {
 
     const params = (msg.params ?? {}) as GatewayEvent;
     if (typeof params.type !== "string") return;
-
     for (const cb of this.listeners.get(params.type) ?? []) cb(params);
     for (const cb of this.listeners.get(ANY) ?? []) cb(params);
   }

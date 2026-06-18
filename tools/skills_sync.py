@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -783,6 +783,160 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         )
 
     return {"ok": True, "action": action, "message": message, "synced": synced}
+
+
+def list_user_modified_bundled_skills() -> List[dict]:
+    """Return the bundled skills that ``hermes update`` keeps because the user
+    edited them locally.
+
+    A skill counts as user-modified when its on-disk copy no longer matches the
+    origin hash recorded in the manifest the last time it was synced — the exact
+    same test the sync loop uses to decide what to skip. This is the discovery
+    half of that behavior, so a user can find the names the ``~ N user-modified
+    (kept)`` notice only counts.
+
+    Returns a list (sorted by name) of dicts:
+        ``{"name": str, "dest": Path, "bundled_src": Path}``
+    where ``dest`` is the user's copy and ``bundled_src`` is the current stock
+    copy (so callers can diff or restore).
+    """
+    manifest = _read_manifest()
+    if not manifest:
+        return []
+    bundled_dir = _get_bundled_dir()
+    modified: List[dict] = []
+    for skill_name, skill_dir in _discover_bundled_skills(bundled_dir):
+        origin_hash = manifest.get(skill_name)
+        # No entry, or a v1 entry not yet baselined (empty hash): not a tracked
+        # modification — the next sync handles it.
+        if not origin_hash:
+            continue
+        dest = _compute_relative_dest(skill_dir, bundled_dir)
+        if not dest.exists():
+            continue
+        if _dir_hash(dest) != origin_hash:
+            modified.append(
+                {"name": skill_name, "dest": dest, "bundled_src": skill_dir}
+            )
+    modified.sort(key=lambda e: e["name"])
+    return modified
+
+
+def _read_text_for_diff(path: Path) -> Optional[str]:
+    """Return file text for diffing, or ``None`` if the file is binary/unreadable."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\x00" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def diff_bundled_skill(name: str) -> dict:
+    """Diff a user's copy of a bundled skill against the current stock version.
+
+    Lets a user see exactly what diverged before deciding whether to keep their
+    edits or ``hermes skills reset`` back to upstream.
+
+    Returns a dict:
+        ``ok`` (bool), ``name`` (str), ``found`` (bool — bundled source exists),
+        ``user_present`` (bool), ``modified`` (bool), ``message`` (str),
+        ``diffs``: list of ``{"path": str, "status": str, "diff": str}`` where
+        status is one of ``modified`` / ``added`` (only in user copy) /
+        ``removed`` (only in bundled) / ``binary``.
+    """
+    import difflib
+
+    bundled_dir = _get_bundled_dir()
+    bundled_by_name = dict(_discover_bundled_skills(bundled_dir))
+    bundled_src = bundled_by_name.get(name)
+    if bundled_src is None:
+        return {
+            "ok": False,
+            "name": name,
+            "found": False,
+            "user_present": False,
+            "modified": False,
+            "diffs": [],
+            "message": (
+                f"'{name}' is not a tracked bundled skill (no stock version to "
+                f"diff against). Hub-installed skills use `hermes skills inspect`."
+            ),
+        }
+    dest = _compute_relative_dest(bundled_src, bundled_dir)
+    if not dest.exists():
+        return {
+            "ok": False,
+            "name": name,
+            "found": True,
+            "user_present": False,
+            "modified": False,
+            "diffs": [],
+            "message": f"No local copy of '{name}' found at {dest}.",
+        }
+
+    user_files = {
+        p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()
+    }
+    stock_files = {
+        p.relative_to(bundled_src).as_posix()
+        for p in bundled_src.rglob("*")
+        if p.is_file()
+    }
+
+    diffs: List[dict] = []
+    for rel in sorted(user_files | stock_files):
+        in_user = rel in user_files
+        in_stock = rel in stock_files
+        user_text = _read_text_for_diff(dest / rel) if in_user else None
+        stock_text = _read_text_for_diff(bundled_src / rel) if in_stock else None
+
+        if in_user and in_stock:
+            if user_text is None or stock_text is None:
+                # At least one side is binary — report only if bytes differ.
+                if (dest / rel).read_bytes() != (bundled_src / rel).read_bytes():
+                    diffs.append(
+                        {"path": rel, "status": "binary", "diff": "<binary file differs>"}
+                    )
+                continue
+            if user_text == stock_text:
+                continue
+            text = "".join(
+                difflib.unified_diff(
+                    stock_text.splitlines(keepends=True),
+                    user_text.splitlines(keepends=True),
+                    fromfile=f"stock/{rel}",
+                    tofile=f"yours/{rel}",
+                )
+            )
+            diffs.append({"path": rel, "status": "modified", "diff": text})
+        elif in_user:
+            diffs.append(
+                {"path": rel, "status": "added", "diff": f"+ only in your copy: {rel}"}
+            )
+        else:
+            diffs.append(
+                {"path": rel, "status": "removed", "diff": f"- only in stock: {rel}"}
+            )
+
+    modified = bool(diffs)
+    return {
+        "ok": True,
+        "name": name,
+        "found": True,
+        "user_present": True,
+        "modified": modified,
+        "diffs": diffs,
+        "message": (
+            f"'{name}' matches the stock version."
+            if not modified
+            else f"'{name}' differs from the stock version in {len(diffs)} file(s)."
+        ),
+    }
 
 
 def set_bundled_skills_opt_out(enabled: bool) -> dict:

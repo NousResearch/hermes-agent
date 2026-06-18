@@ -600,9 +600,10 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         [search_files] content search for 'compress' in agent/ -> 12 matches
     """
     try:
-        args = json.loads(tool_args) if tool_args else {}
+        parsed_args = json.loads(tool_args) if tool_args else {}
     except (json.JSONDecodeError, TypeError):
-        args = {}
+        parsed_args = {}
+    args = parsed_args if isinstance(parsed_args, dict) else {}
 
     content = tool_content or ""
     content_len = len(content)

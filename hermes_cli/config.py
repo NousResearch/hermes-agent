@@ -1581,6 +1581,12 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Seconds between prompt_toolkit redraws in the classic CLI when idle.
+        # 0 = disabled (no background refresh — the pre-0.15.2 behaviour).
+        # Positive values e.g. 1.0 keep wall-clock status-bar read-outs
+        # (idle-since-last-turn) ticking but may fight terminal auto-scroll in
+        # non-fullscreen mode on some emulators (Xshell, iTerm2, etc.).
+        "cli_refresh_interval": 0,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

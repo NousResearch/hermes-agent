@@ -6638,6 +6638,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             return DingTalkAdapter(config)
 
+        elif platform == Platform.DISCORD:
+            from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
+            if not check_discord_requirements():
+                logger.warning("Discord: discord.py not installed")
+                return None
+            adapter = DiscordAdapter(config)
+            adapter.gateway_runner = self
+            # Read notifications mode from config (same pattern as Telegram)
+            _notify_mode = os.getenv("HERMES_DISCORD_NOTIFICATIONS", "")
+            if not _notify_mode:
+                try:
+                    _gw_cfg = _load_gateway_config()
+                    _raw = cfg_get(_gw_cfg, "display", "platforms", "discord", "notifications")
+                    if _raw not in {None, ""}:
+                        _notify_mode = str(_raw).strip().lower()
+                except Exception:
+                    pass
+            _notify_mode = _notify_mode or "important"
+            if _notify_mode not in {"all", "important"}:
+                logger.warning(
+                    "Unknown discord notifications mode '%s', "
+                    "defaulting to 'important' (valid: all, important)",
+                    _notify_mode,
+                )
+                _notify_mode = "important"
+            adapter._notifications_mode = _notify_mode
+            return adapter
+
         elif platform == Platform.FEISHU:
             from gateway.platforms.feishu import FeishuAdapter, check_feishu_requirements
             if not check_feishu_requirements():

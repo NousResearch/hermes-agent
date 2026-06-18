@@ -289,13 +289,14 @@ def parse_duration(s: str) -> int:
 def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     Parse schedule string into structured format.
-    
+
     Returns dict with:
-        - kind: "once" | "interval" | "cron"
+        - kind: "once" | "interval" | "cron" | "until_done"
         - For "once": "run_at" (ISO timestamp)
         - For "interval": "minutes" (int)
         - For "cron": "expr" (cron expression)
-    
+        - For "until_done": "criteria" (string, parsed lazily by until_done.parse_criteria)
+
     Examples:
         "30m"              → once in 30 minutes
         "2h"               → once in 2 hours
@@ -303,10 +304,25 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         "every 2h"         → recurring every 2 hours
         "0 9 * * *"        → cron expression
         "2026-02-03T14:00" → once at timestamp
+        "until_done:kanban_idle"              → work-based loop, no work open
+        "until_done:kanban_idle:workspace=clinic-protocols"   → scoped
+        "until_done:kanban_done:workspace=X"  → every task in X is terminal
     """
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
+
+    # "until_done:CRITERIA" — work-based loop primitive (band 2)
+    if schedule_lower.startswith("until_done:"):
+        from cron.until_done import parse_criteria as _parse_ud
+        criteria_text = schedule[len("until_done:"):].strip()
+        # Validate eagerly so bad criteria fail at create time, not first tick.
+        _parse_ud(criteria_text)
+        return {
+            "kind": "until_done",
+            "criteria": criteria_text,
+            "display": f"until_done ({criteria_text})",
+        }
     
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
@@ -495,6 +511,27 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
+
+    elif schedule["kind"] == "until_done":
+        # Work-based loop primitive (band 2). Each call re-evaluates the
+        # criteria: if the work is done, return None (job completes); if
+        # not, schedule a re-check in DEFAULT_POLL_SECONDS. The agent
+        # already ran (we're computing the next run AFTER mark_job_run),
+        # so this is asking "should we re-queue or terminate?"
+        from cron.until_done import DEFAULT_POLL_SECONDS, check_by_text
+        is_done, state_desc = check_by_text(schedule.get("criteria", ""))
+        if is_done:
+            logger.info(
+                "until_done job criteria satisfied: %s",
+                state_desc,
+            )
+            return None
+        # Not done — re-queue. Use a far-future sentinel so the tick
+        # doesn't immediately re-fire; the agent just ran. We rely on
+        # mark_job_run's until_done path to set the actual poll interval.
+        # Returning now+DEFAULT_POLL_SECONDS is the "no special handling"
+        # path; mark_job_run overrides it for until_done specifically.
+        return (now + timedelta(seconds=DEFAULT_POLL_SECONDS)).isoformat()
 
     return None
 
@@ -992,6 +1029,50 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
+
+                # ── until_done special handling (band 2) ──
+                # If this is a work-based loop, decide NOW whether to keep
+                # the job alive based on the criteria check, and cap
+                # attempts so an unachievable criteria doesn't loop forever.
+                schedule_kind = (job.get("schedule") or {}).get("kind")
+                if schedule_kind == "until_done":
+                    from cron.until_done import (
+                        MAX_ATTEMPTS, check_by_text, parse_criteria,
+                    )
+                    try:
+                        parsed = parse_criteria(job["schedule"].get("criteria", ""))
+                    except ValueError:
+                        parsed = None
+                    is_done, state_desc = (False, "criteria unparseable") if parsed is None else check_by_text(job["schedule"].get("criteria", ""))
+                    attempts = int(job.get("_until_done_attempts", 0)) + 1
+                    job["_until_done_attempts"] = attempts
+                    logger.info(
+                        "until_done job '%s' attempt %d: criteria=%s done=%s state=%s",
+                        job_id, attempts, job["schedule"].get("criteria"), is_done, state_desc,
+                    )
+                    if is_done:
+                        # Work is done — terminate the job, same path as one-shot.
+                        job["enabled"] = False
+                        job["state"] = "completed"
+                        job["last_error"] = None
+                        # Drop next_run_at so the dispatcher skips it.
+                        job["next_run_at"] = None
+                    elif attempts >= MAX_ATTEMPTS:
+                        # Safety cap hit. Don't keep the user waiting forever
+                        # if the criteria is structurally unachievable.
+                        job["enabled"] = False
+                        job["state"] = "stuck"
+                        job["last_error"] = (
+                            f"until_done exceeded {MAX_ATTEMPTS} attempts; "
+                            f"criteria not satisfied. Last state: {state_desc}"
+                        )
+                        job["next_run_at"] = None
+                    else:
+                        # Re-queue. compute_next_run already gave us a future
+                        # timestamp; honor it as-is so the dispatcher sees it
+                        # on the next tick. The agent just ran, so this gives
+                        # a brief back-off before re-polling.
+                        pass
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't

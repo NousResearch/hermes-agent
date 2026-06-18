@@ -33,7 +33,7 @@ from typing import List, Optional
 
 from agent.skill_utils import is_excluded_skill_path
 
-_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [

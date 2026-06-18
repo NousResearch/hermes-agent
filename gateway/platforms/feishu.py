@@ -67,7 +67,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 # aiohttp/websockets are independent optional deps — import outside lark_oapi
@@ -163,6 +163,63 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_LARK_CLI_AUTH_URL_RE = re.compile(
+    r"https?://accounts\.(?:feishu\.cn|larksuite\.com)/oauth/v\d+/device/verify[^\s)]*",
+    re.IGNORECASE,
+)
+_LARK_CLI_NEARBY_CODE_RE = re.compile(
+    r"(?:授权码|user[ _-]?code)[：:\s]*([A-Za-z0-9]{2,}-[A-Za-z0-9]{2,})",
+    re.IGNORECASE,
+)
+
+
+def _detect_lark_cli_auth(content: str) -> Optional[Dict[str, str]]:
+    url_match = _LARK_CLI_AUTH_URL_RE.search(content or "")
+    if not url_match:
+        return None
+
+    url = url_match.group(0).rstrip(".,;)\"'>]")
+    parsed_query = parse_qs(urlsplit(url).query)
+    user_code = (parsed_query.get("user_code") or [""])[0]
+    if not user_code:
+        nearby = _LARK_CLI_NEARBY_CODE_RE.search(content)
+        if nearby:
+            user_code = nearby.group(1)
+    return {"url": url, "user_code": user_code}
+
+
+def _build_lark_cli_auth_card(auth: Dict[str, str]) -> str:
+    url = auth["url"]
+    user_code = auth.get("user_code") or ""
+    body_lines = ["Hermes 需要你在浏览器完成 lark-cli 设备授权。"]
+    if user_code:
+        body_lines.append(f"**授权码：** `{user_code}`")
+    body_lines.append(f"验证链接：{url}")
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "lark-cli 授权请求"},
+            "template": "blue",
+        },
+        "elements": [
+            {"tag": "markdown", "content": "\n".join(body_lines)},
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": f"前往授权（{user_code}）" if user_code else "前往授权",
+                        },
+                        "type": "primary",
+                        "url": url,
+                    }
+                ],
+            },
+        ],
+    }
+    return json.dumps(card, ensure_ascii=False)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1781,6 +1838,22 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a Feishu message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        auth_info = _detect_lark_cli_auth(content)
+        if auth_info:
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=_build_lark_cli_auth_card(auth_info),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if self._response_succeeded(response):
+                    return self._finalize_send_result(response, "send failed")
+                logger.warning("[Feishu] lark-cli auth card send failed; falling back to text")
+            except Exception as exc:
+                logger.warning("[Feishu] lark-cli auth card send raised %s; falling back to text", exc)
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)

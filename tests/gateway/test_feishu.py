@@ -2121,6 +2121,157 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(sleeps, [])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_lark_cli_auth_url_emits_interactive_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "Please authorize lark-cli:\n"
+            "https://accounts.feishu.cn/oauth/v1/device/verify"
+            "?client_id=abc&user_code=QH9C-8N7F\n"
+            "授权码： QH9C-8N7F"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        request = captured["request"]
+        self.assertEqual(request.request_body.msg_type, "interactive")
+        card = json.loads(request.request_body.content)
+        flat = json.dumps(card, ensure_ascii=False)
+        self.assertIn("QH9C-8N7F", flat)
+        self.assertIn(
+            "https://accounts.feishu.cn/oauth/v1/device/verify",
+            flat,
+        )
+
+        button = self._find_card_button(card)
+        self.assertIsNotNone(button)
+        self.assertIn("user_code=QH9C-8N7F", button["url"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_lark_cli_auth_card_uses_nearby_code_when_url_lacks_user_code(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "请在浏览器完成授权：<https://accounts.feishu.cn/oauth/v1/device/verify"
+            "?client_id=abc>\n"
+            "授权码： NH4U-VS8G"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        request = captured["request"]
+        self.assertEqual(request.request_body.msg_type, "interactive")
+        card = json.loads(request.request_body.content)
+        flat = json.dumps(card, ensure_ascii=False)
+        self.assertIn("NH4U-VS8G", flat)
+
+        button = self._find_card_button(card)
+        self.assertIsNotNone(button)
+        self.assertIn("NH4U-VS8G", button["text"]["content"])
+        self.assertFalse(button["url"].endswith(">"))
+        self.assertTrue(
+            button["url"].startswith(
+                "https://accounts.feishu.cn/oauth/v1/device/verify"
+            )
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_lark_cli_auth_url_falls_back_to_text_when_card_fails(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        calls = []
+
+        class _MessageAPI:
+            def create(self, request):
+                calls.append(request)
+                if request.request_body.msg_type == "interactive":
+                    raise RuntimeError("interactive rejected")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_text"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "Authorize: https://accounts.larksuite.com/oauth/v1/device/verify"
+            "?user_code=ABCD-1234"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[0].request_body.msg_type, "interactive")
+        self.assertIn(calls[-1].request_body.msg_type, ("text", "post"))
+
+    @staticmethod
+    def _find_card_button(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "button" and "url" in node:
+                return node
+            for value in node.values():
+                found = TestAdapterBehavior._find_card_button(value)
+                if found:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = TestAdapterBehavior._find_card_button(item)
+                if found:
+                    return found
+        return None
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_document_reply_uses_thread_flag(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

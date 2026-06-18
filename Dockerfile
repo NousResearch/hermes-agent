@@ -171,10 +171,16 @@ RUN npm install --prefer-offline --no-audit && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# The PostgreSQL state backend's driver (psycopg, via the [postgres] extra)
+# is baked in so Docker users who set sessions.state_backend=postgres get a
+# working backend without runtime lazy-install access to PyPI. We use the
+# psycopg[binary] wheel (declared in pyproject.toml), which bundles libpq —
+# so no libpq-dev / build step is needed in the apt layer above.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra postgres
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

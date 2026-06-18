@@ -2624,18 +2624,22 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Reply-to detection.
         reply_to = None
+        reply_to_text = None
         in_reply_to = relates_to.get("m.in_reply_to", {})
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Strip reply fallback from body.
+        # Strip reply fallback from body and extract parent text.
         if reply_to and body.startswith("> "):
             lines = body.split("\n")
             stripped = []
+            quoted_lines = []
             past_fallback = False
             for line in lines:
                 if not past_fallback:
                     if line.startswith("> ") or line == ">":
+                        # Collect quoted lines (strip "> " prefix) for context
+                        quoted_lines.append(line[2:] if line.startswith("> ") else "")
                         continue
                     if line == "":
                         past_fallback = True
@@ -2643,6 +2647,38 @@ class MatrixAdapter(BasePlatformAdapter):
                     past_fallback = True
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
+            # Use the quoted fallback as reply context (what the user is replying to)
+            if quoted_lines:
+                reply_to_text = "\n".join(quoted_lines).strip()
+
+        # For threaded replies without in_reply_to but with m.thread relation,
+        # try to extract parent text from formatted_body's <mx-reply> block.
+        thread_id = relates_to.get("event_id") if relates_to.get("rel_type") == "m.thread" else None
+        if not reply_to_text and (reply_to or thread_id):
+            formatted_body = source_content.get("formatted_body") or ""
+            if "<mx-reply>" in formatted_body:
+                mx_reply_match = re.search(
+                    r"<mx-reply[^>]*>(.*?)</mx-reply>", formatted_body, re.DOTALL
+                )
+                if mx_reply_match:
+                    reply_html = mx_reply_match.group(1)
+                    # Strip HTML tags to get plain text
+                    text = re.sub(r"<[^>]+>", "", reply_html).strip()
+                    # Collapse whitespace / blank lines
+                    text = re.sub(r"\n{3,}", "\n\n", text)
+                    if text:
+                        reply_to_text = text[:500]
+
+            # Fallback: if still no context, fetch the parent event via Matrix API.
+            # This covers threaded messages where Element doesn't include <mx-reply>
+            # (thread continuations) and plain in_reply_to where fallback text is missing.
+            parent_event_id = reply_to or thread_id
+            if not reply_to_text and parent_event_id:
+                fetched_text = await self._fetch_parent_event_text(
+                    room_id, parent_event_id
+                )
+                if fetched_text:
+                    reply_to_text = fetched_text
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
@@ -2660,6 +2696,7 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -3912,6 +3949,85 @@ class MatrixAdapter(BasePlatformAdapter):
         if user_id.startswith("@") and ":" in user_id:
             return user_id[1:].split(":")[0]
         return user_id
+
+
+    async def _fetch_parent_event_text(
+        self, room_id: str, event_id: str
+    ) -> str:
+        """Fetch the plain-text body of a parent event via Matrix API.
+
+        Used when a threaded or reply message lacks inline fallback text
+        (``> `` quoting or ``<mx-reply>`` block).  Falls back gracefully
+        on any error so the message is still processed — just without
+        parent context.
+
+        For encrypted rooms, ``get_event`` returns the raw
+        ``m.room.encrypted`` payload.  When E2EE is active, we decrypt
+        the event via the OlmMachine before extracting the body.
+        """
+        if not self._client or not event_id:
+            return ""
+        try:
+            from mautrix.types import RoomID, EventID, EventType
+
+            evt = await self._client.get_event(
+                RoomID(room_id), EventID(event_id)
+            )
+
+            # If the event is encrypted and E2EE is active, decrypt it.
+            if (
+                hasattr(evt, "type")
+                and evt.type == EventType.ROOM_ENCRYPTED
+                and hasattr(self._client, "crypto")
+                and self._client.crypto is not None
+            ):
+                try:
+                    evt = await self._client.crypto.decrypt_megolm_event(evt)
+                except Exception as dec_exc:
+                    logger.debug(
+                        "Matrix: failed to decrypt parent event %s in %s: %s",
+                        event_id,
+                        room_id,
+                        dec_exc,
+                    )
+                    return ""
+
+            if evt and hasattr(evt, "content") and evt.content:
+                content = evt.content
+                # After decryption, content is a MessageEventContent object
+                # rather than a plain dict — use .body attribute if present.
+                body = ""
+                if isinstance(content, dict):
+                    body = content.get("body", "") or ""
+                elif hasattr(content, "body"):
+                    body = content.body or ""
+                if isinstance(body, str):
+                    body = body.strip()
+                    # Strip reply-fallback quoting if present (> lines + blank)
+                    if body.startswith("> "):
+                        lines = body.split("\n")
+                        past_fallback = False
+                        stripped = []
+                        for line in lines:
+                            if not past_fallback:
+                                if line.startswith("> ") or line == ">":
+                                    continue
+                                if line == "":
+                                    past_fallback = True
+                                    continue
+                                past_fallback = True
+                            stripped.append(line)
+                        body = "\n".join(stripped).strip() if stripped else body
+                    # Truncate to avoid context bloat
+                    return body[:500] if body else ""
+        except Exception as exc:
+            logger.debug(
+                "Matrix: failed to fetch parent event %s in %s: %s",
+                event_id,
+                room_id,
+                exc,
+            )
+        return ""
 
     def _mxc_to_http(self, mxc_url: str) -> str:
         """Convert mxc://server/media_id to an HTTP download URL."""

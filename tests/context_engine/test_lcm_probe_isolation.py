@@ -197,3 +197,41 @@ def test_json_sidecar_written_with_void_and_run_params(tmp_path):
     assert "point_recall" in data and "wilson_lower" in data
     assert "void_rate" in data and "total_draws" in data
     assert data["run_params"]["probe_kind"] == "exact"
+
+
+# ---- Regression: gateway WRITES must follow --lcm-db, not just reads ---------
+# Bug (2026-06-17 campaign v3): --lcm-db only redirected the evidence *reader*
+# (_grep_called_since) while the gateway kept WRITING the LCM store to the
+# profile's lcm.db. The throwaway db stayed empty, every trial saw zero lcm_*
+# calls, and the run scored 100% VOID. Fix: _hermes() exports LCM_DATABASE_PATH
+# so the gateway writes to the same db the script reads.
+
+def test_lcm_db_redirects_gateway_writes_via_env(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(armA.subprocess, "run", fake_run)
+    driver = armA.LiveAegisSessionDriver(
+        profile="aegis", lcm_db="/tmp/throwaway-xyz.db", threshold=0.02
+    )
+    driver._hermes([], "ping")
+    assert captured["env"].get("LCM_DATABASE_PATH") == "/tmp/throwaway-xyz.db"
+
+
+def test_default_lcm_db_still_points_env_at_profile_store(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(armA.subprocess, "run", fake_run)
+    driver = armA.LiveAegisSessionDriver(profile="aegis", threshold=0.02)
+    driver._hermes([], "ping")
+    # No throwaway db given -> env points at the profile's real store (no split-brain)
+    assert captured["env"]["LCM_DATABASE_PATH"].endswith("profiles/aegis/lcm.db")

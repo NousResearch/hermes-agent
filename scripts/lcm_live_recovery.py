@@ -318,6 +318,12 @@ class LiveAegisSessionDriver(RecoveryDriver):
         env = os.environ.copy()
         if self.threshold is not None:
             env["LCM_CONTEXT_THRESHOLD"] = str(self.threshold)
+        # Route the gateway's LCM *writes* to the same db this script *reads*
+        # for tool-call evidence. Without this, --lcm-db only redirected the
+        # reader while the gateway kept writing to the profile's lcm.db, so the
+        # throwaway-db path saw zero lcm_* calls and scored 100% VOID.
+        if self.lcm_db:
+            env["LCM_DATABASE_PATH"] = str(self.lcm_db)
         cmd = ["hermes", "-p", self.profile, "chat", "-Q"]
         if self.model:
             cmd.extend(["-m", self.model])

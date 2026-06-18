@@ -94,6 +94,7 @@ HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
 DEDUP_MAX_SIZE = 1000
+ERRCODE_NOT_SUBSCRIBED = 846609  # "aibot websocket not subscribed"
 
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
@@ -830,7 +831,7 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _guess_filename(url: str, content_disposition: Optional[str], content_type: str) -> str:
         if content_disposition:
-            match = re.search(r'filename="?([^";]+)"?', content_disposition)
+            match = re.search(r'filename=\"?([^\";]+)\"?', content_disposition)
             if match:
                 return match.group(1)
 
@@ -1223,45 +1224,6 @@ class WeComAdapter(BasePlatformAdapter):
             "created_at": finish_body.get("created_at"),
         }
 
-    async def _send_media_message(self, chat_id: str, media_type: str, media_id: str) -> Dict[str, Any]:
-        response = await self._send_request(
-            APP_CMD_SEND,
-            {
-                "chatid": chat_id,
-                "msgtype": media_type,
-                media_type: {"media_id": media_id},
-            },
-        )
-        self._raise_for_wecom_error(response, "send media message")
-        return response
-
-    async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
-            {
-                "msgtype": "markdown",
-                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-            },
-        )
-        self._raise_for_wecom_error(response, "send reply markdown")
-        return response
-
-    async def _send_reply_media_message(
-        self,
-        reply_req_id: str,
-        media_type: str,
-        media_id: str,
-    ) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
-            {
-                "msgtype": media_type,
-                media_type: {"media_id": media_id},
-            },
-        )
-        self._raise_for_wecom_error(response, "send reply media message")
-        return response
-
     async def _send_followup_markdown(
         self,
         chat_id: str,
@@ -1358,6 +1320,97 @@ class WeComAdapter(BasePlatformAdapter):
             },
         )
 
+    async def _send_with_reconnect_retry(
+        self,
+        cmd: str,
+        body: Dict[str, Any],
+        reply_req_id: Optional[str] = None,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        """Send a request with one reconnection retry on ercode 846609.
+
+        When the WeCom WebSocket disconnects mid-session (ercode 846609,
+        "aibot websocket not subscribed"), this automatically reconnects
+        and retries the send once to avoid silent delivery failures.
+        """
+        # Ensure WebSocket is connected before attempting send
+        if self._ws is None or self._ws.closed:
+            logger.warning("[%s] WebSocket not connected, reconnecting before send...", self.name)
+            await self._open_connection()
+            self._mark_connected()
+
+        try:
+            if reply_req_id:
+                response = await self._send_reply_request(reply_req_id, body, cmd=cmd, timeout=timeout)
+            else:
+                response = await self._send_request(cmd, body, timeout)
+        except RuntimeError as exc:
+            if "not connected" in str(exc).lower():
+                logger.warning("[%s] WebSocket disconnected during send, reconnecting and retrying...", self.name)
+                await self._open_connection()
+                self._mark_connected()
+                if reply_req_id:
+                    return await self._send_reply_request(reply_req_id, body, cmd=cmd, timeout=timeout)
+                return await self._send_request(cmd, body, timeout)
+            raise
+
+        errcode = response.get("errcode", 0)
+        if errcode == ERRCODE_NOT_SUBSCRIBED:
+            logger.warning(
+                "[%s] ercode 846609 (not subscribed), reconnecting and retrying...",
+                self.name,
+            )
+            await self._open_connection()
+            self._mark_connected()
+            if reply_req_id:
+                return await self._send_reply_request(reply_req_id, body, cmd=cmd, timeout=timeout)
+            return await self._send_request(cmd, body, timeout)
+        return response
+
+    async def _send_media_message(self, chat_id: str, media_type: str, media_id: str) -> Dict[str, Any]:
+        """Send a media message with reconnection retry on ercode 846609."""
+        response = await self._send_with_reconnect_retry(
+            APP_CMD_SEND,
+            {
+                "chatid": chat_id,
+                "msgtype": media_type,
+                media_type: {"media_id": media_id},
+            },
+        )
+        self._raise_for_wecom_error(response, "send media message")
+        return response
+
+    async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
+        """Send a reply markdown with reconnection retry on ercode 846609."""
+        response = await self._send_with_reconnect_retry(
+            APP_CMD_RESPONSE,
+            {
+                "msgtype": "markdown",
+                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+            },
+            reply_req_id=reply_req_id,
+        )
+        self._raise_for_wecom_error(response, "send reply markdown")
+        return response
+
+    async def _send_reply_media_message(
+        self,
+        reply_req_id: str,
+        media_type: str,
+        media_id: str,
+    ) -> Dict[str, Any]:
+        """Send a reply media message with reconnection retry on ercode 846609."""
+        response = await self._send_with_reconnect_retry(
+            APP_CMD_RESPONSE,
+            {
+                "msgtype": media_type,
+                media_type: {"media_id": media_id},
+            },
+            reply_req_id=reply_req_id,
+        )
+        self._raise_for_wecom_error(response, "send reply media message")
+        return response
+
     async def send(
         self,
         chat_id: str,
@@ -1365,7 +1418,7 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
+        """Send markdown to a WeCom chat with automatic reconnection on ercode 846609."""
         del metadata
 
         if not chat_id:
@@ -1377,17 +1430,16 @@ class WeComAdapter(BasePlatformAdapter):
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
-            if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
-            else:
-                response = await self._send_request(
-                    APP_CMD_SEND,
-                    {
-                        "chatid": chat_id,
-                        "msgtype": "markdown",
-                        "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-                    },
-                )
+            cmd = APP_CMD_RESPONSE if reply_req_id else APP_CMD_SEND
+            response = await self._send_with_reconnect_retry(
+                cmd,
+                {
+                    "chatid": chat_id,
+                    "msgtype": "markdown",
+                    "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                },
+                reply_req_id=reply_req_id,
+            )
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:

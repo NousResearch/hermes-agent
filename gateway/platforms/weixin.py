@@ -1783,7 +1783,11 @@ class WeixinAdapter(BasePlatformAdapter):
                                 break
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            # Exponential backoff: each retry waits progressively longer
+                            # to cover typical 15–30s WeChat rate-limit windows.
+                            # With default _send_chunk_retry_delay_seconds=1.0 and
+                            # _send_chunk_retries=4, retries wait 1s, 2s, 4s, 8s (total ~15s).
+                            wait = self._send_chunk_retry_delay_seconds * (2 ** attempt)
                             logger.warning(
                                 "[%s] rate limited for %s; backing off %.1fs before retry",
                                 self.name, _safe_id(chat_id), wait,

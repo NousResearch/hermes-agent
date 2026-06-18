@@ -349,6 +349,7 @@ class CLIAgentSetupMixin:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
+                provider_source=runtime.get("source"),
                 max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,

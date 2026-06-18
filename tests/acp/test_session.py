@@ -645,3 +645,41 @@ class TestPersistence:
 
         assert stdout_buf.getvalue() == ""
         assert stderr_buf.getvalue() == "ACP noise\n"
+
+    def test_create_session_propagates_credential_pool_and_source(self, tmp_path, monkeypatch):
+        """AIAgent constructed by ACP session should receive resolve_runtime_provider's
+        credential_pool and source fields.
+        """
+        fake_pool = MagicMock()
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "test-key",
+                "source": "manual:nocobase",
+                "credential_pool": fake_pool,
+                "command": None,
+                "args": [],
+            }
+
+        captured = {}
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"))
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openai-codex", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert captured.get("credential_pool") is fake_pool
+        assert captured.get("provider_source") == "manual:nocobase"

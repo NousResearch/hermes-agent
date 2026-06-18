@@ -973,7 +973,7 @@ class GatewaySlashCommandsMixin:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
-    async def _handle_commands_command(self, event: MessageEvent) -> str:
+    async def _handle_commands_command(self, event: MessageEvent) -> Optional[str]:
         from gateway.run import _telegramize_command_mentions
         from hermes_cli.commands import gateway_help_lines
 
@@ -1004,30 +1004,83 @@ class GatewaySlashCommandsMixin:
             return t("gateway.commands.none")
 
         from gateway.config import Platform
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        is_telegram = event.source.platform == Platform.TELEGRAM
+        page_size = 15 if is_telegram else 20
         total_pages = max(1, (len(entries) + page_size - 1) // page_size)
         page = max(1, min(requested_page, total_pages))
+
+        text = self._build_commands_page(entries, page, total_pages, page_size, event)
+
+        # On Telegram, send with inline keyboard buttons for pagination
+        if is_telegram and total_pages > 1:
+            try:
+                adapter = self.adapters.get(event.source.platform)
+                if adapter and hasattr(adapter, '_bot') and adapter._bot:
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    from telegram.constants import ParseMode
+                    buttons = self._build_commands_page_buttons(page, total_pages)
+                    keyboard = InlineKeyboardMarkup(buttons)
+                    chat_id = int(event.source.chat_id)
+                    metadata = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+                    thread_id = adapter._metadata_thread_id(metadata) if hasattr(adapter, '_metadata_thread_id') else None
+                    kwargs = {
+                        "chat_id": chat_id,
+                        "text": adapter.format_message(text) if hasattr(adapter, 'format_message') else text,
+                        "parse_mode": ParseMode.MARKDOWN_V2 if hasattr(adapter, 'format_message') else None,
+                        "reply_markup": keyboard,
+                        **(adapter._link_preview_kwargs() if hasattr(adapter, '_link_preview_kwargs') else {}),
+                    }
+                    if thread_id:
+                        kwargs["message_thread_id"] = thread_id
+                    await adapter._send_message_with_thread_fallback(**kwargs)
+                    return None  # Already sent
+            except Exception as exc:
+                logger.debug("Commands inline keyboard failed, falling back to text: %s", exc)
+
+        return _telegramize_command_mentions(
+            text,
+            getattr(getattr(event, "source", None), "platform", None),
+        )
+
+    @staticmethod
+    def _build_commands_page(
+        entries: list, page: int, total_pages: int, page_size: int, event: MessageEvent,
+    ) -> str:
+        """Build the text content for a single page of /commands."""
         start = (page - 1) * page_size
         page_entries = entries[start:start + page_size]
-
         lines = [
             t("gateway.commands.header", total=len(entries), page=page, total_pages=total_pages),
             "",
             *page_entries,
         ]
+        # Text nav fallback for non-Telegram platforms (Discord, Slack, etc.)
         if total_pages > 1:
-            nav_parts = []
-            if page > 1:
-                nav_parts.append(t("gateway.commands.nav_prev", page=page - 1))
-            if page < total_pages:
-                nav_parts.append(t("gateway.commands.nav_next", page=page + 1))
-            lines.extend(["", " | ".join(nav_parts)])
-        if page != requested_page:
-            lines.append(t("gateway.commands.out_of_range", requested=requested_page, page=page))
-        return _telegramize_command_mentions(
-            "\n".join(lines),
-            getattr(getattr(event, "source", None), "platform", None),
-        )
+            from gateway.config import Platform
+            if event.source.platform != Platform.TELEGRAM:
+                nav_parts = []
+                if page > 1:
+                    nav_parts.append(t("gateway.commands.nav_prev", page=page - 1))
+                if page < total_pages:
+                    nav_parts.append(t("gateway.commands.nav_next", page=page + 1))
+                if nav_parts:
+                    lines.extend(["", " | ".join(nav_parts)])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_commands_page_buttons(page: int, total_pages: int) -> list:
+        """Build InlineKeyboardButton rows for /commands pagination."""
+        try:
+            from telegram import InlineKeyboardButton
+        except ImportError:
+            return []
+        row = []
+        if page > 1:
+            row.append(InlineKeyboardButton("⬅️", callback_data=f"cmd_page:{page - 1}"))
+        row.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="cmd_page:noop"))
+        if page < total_pages:
+            row.append(InlineKeyboardButton("➡️", callback_data=f"cmd_page:{page + 1}"))
+        return [row]
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.

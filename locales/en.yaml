@@ -95,8 +95,8 @@ gateway:
     default_desc:          "Skill command"
     none:                  "No commands available."
     header:                "📚 **Commands** ({total} total, page {page}/{total_pages})"
-    nav_prev:              "`/commands {page}` ← prev"
-    nav_next:              "next → `/commands {page}`"
+    nav_prev:              "/commands {page} ← prev"
+    nav_next:              "next → /commands {page}"
     out_of_range:          "_(Requested page {requested} was out of range, showing page {page}.)_"
 
   compress:

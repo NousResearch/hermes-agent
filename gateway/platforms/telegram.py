@@ -3573,6 +3573,77 @@ class TelegramAdapter(BasePlatformAdapter):
         page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
         return InlineKeyboardMarkup(rows), page_info
 
+    async def _handle_commands_page_callback(self, query, data: str) -> None:
+        """Handle inline keyboard pagination for /commands."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        page_str = data.split(":", 1)[1]
+        if page_str == "noop":
+            await query.answer()
+            return
+
+        try:
+            page = int(page_str)
+        except (ValueError, IndexError):
+            await query.answer(text="Invalid page.")
+            return
+
+        from hermes_cli.commands import gateway_help_lines
+        from agent.i18n import t
+        try:
+            from agent.skill_commands import get_skill_commands
+        except Exception:
+            get_skill_commands = None
+
+        entries = list(gateway_help_lines())
+        try:
+            if get_skill_commands:
+                skill_cmds = get_skill_commands()
+                if skill_cmds:
+                    entries.append("")
+                    entries.append(t("gateway.commands.skill_header"))
+                    for cmd in sorted(skill_cmds):
+                        desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
+                        entries.append(f"`{cmd}` — {desc}")
+        except Exception:
+            pass
+
+        if not entries:
+            await query.answer(text="No commands available.")
+            return
+
+        page_size = 15
+        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        page_entries = entries[start:start + page_size]
+
+        header = t("gateway.commands.header", total=len(entries), page=page, total_pages=total_pages)
+        text = "\n".join([header, ""] + page_entries)
+
+        # Build pagination buttons
+        from gateway.slash_commands import GatewaySlashCommandsMixin
+        buttons = GatewaySlashCommandsMixin._build_commands_page_buttons(page, total_pages)
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        try:
+            formatted = self.format_message(text)
+            edit_kwargs = {
+                "text": formatted,
+                "parse_mode": ParseMode.MARKDOWN_V2,
+                "reply_markup": keyboard,
+            }
+            if hasattr(self, '_link_preview_kwargs'):
+                edit_kwargs.update(self._link_preview_kwargs())
+            await query.edit_message_text(**edit_kwargs)
+        except Exception as exc:
+            logger.debug("Commands page edit failed: %s", exc)
+            await query.answer(text="Failed to update page.")
+            return
+
+        await query.answer()
+
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
@@ -3893,6 +3964,11 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Commands pagination callbacks (cmd_page:N) ---
+        if data.startswith("cmd_page:"):
+            await self._handle_commands_page_callback(query, data)
             return
 
         # --- Gmail-triage callbacks (gt:verb:arg) ---

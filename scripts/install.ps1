@@ -1440,7 +1440,34 @@ function Install-Venv {
             & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
             Start-Sleep -Milliseconds 800
         }
-        Remove-Item -Recurse -Force "venv"
+        # Retry-with-backoff: .pyd files are loaded as DLLs on Windows; the OS may
+        # take >800ms to unload them after taskkill. AV/Defender can also briefly
+        # lock .pyd files for scanning. A single Remove-Item -Recurse fails on
+        # the first locked file; retrying file-by-file isolates the stragglers
+        # and lets the bulk of the venv be deleted.
+        $venvDeleted = $false
+        for ($retry = 0; $retry -lt 5 -and -not $venvDeleted; $retry++) {
+            try {
+                Remove-Item -Recurse -Force "venv" -ErrorAction Stop
+                $venvDeleted = $true
+            } catch {
+                if ($retry -lt 4) {
+                    # Bulk delete failed — delete file-by-file (leaves empty dirs)
+                    Get-ChildItem -Path "venv" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                        try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch {}
+                    }
+                    # Remove empty dirs bottom-up (longest path first)
+                    Get-ChildItem -Path "venv" -Recurse -Directory -ErrorAction SilentlyContinue |
+                        Sort-Object { $_.FullName.Length } -Descending |
+                        ForEach-Object {
+                            try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch {}
+                        }
+                    Start-Sleep -Milliseconds 600
+                } else {
+                    throw
+                }
+            }
+        }
     }
     
     # uv creates the venv and pins the Python version in one step

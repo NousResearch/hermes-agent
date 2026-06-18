@@ -157,6 +157,14 @@ _MARKDOWN_HINT_RE = re.compile(
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Markdown features that only render correctly in Schema 2.0 card JSON.
+# Post-type 'md' silently drops headings, blockquotes, and tables on most
+# clients.  Content matching this pattern is auto-wrapped into a Schema 2.0
+# card so agents can write plain markdown and get correct rendering.
+_FEISHU_CARD_RE = re.compile(
+    r"(^#{1,6}\s)|(^>\s)|(^\|.*\|\n\|[-|: ]+\|)",
+    re.MULTILINE,
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -4374,12 +4382,36 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Card JSON detection — if content is valid JSON with card keys,
+        # send as interactive card.  Supports both Schema 1.0 (top-level
+        # elements/header/config) and Schema 2.0 (body.elements, schema).
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and (
+                "elements" in parsed
+                or "header" in parsed
+                or "config" in parsed
+                or "body" in parsed
+            ):
+                return "interactive", content
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Feishu post-type 'md' elements do NOT render headings, blockquotes,
+        # or tables reliably on most clients.  Auto-wrap markdown containing
+        # these features into Schema 2.0 card JSON so it renders correctly —
+        # agents write plain markdown, the adapter handles the conversion.
+        if _FEISHU_CARD_RE.search(content):
+            card = {
+                "schema": "2.0",
+                "config": {"update_multi": True},
+                "body": {
+                    "elements": [
+                        {"tag": "markdown", "content": content},
+                    ],
+                },
+            }
+            return "interactive", json.dumps(card, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

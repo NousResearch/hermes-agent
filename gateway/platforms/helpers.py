@@ -166,8 +166,13 @@ class TextBatchAggregator:
 # ─── Markdown Stripping ──────────────────────────────────────────────────────
 
 # Pre-compiled regexes for performance
-_RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
+# The inside-edge guards (?![\s*]) / (?<![\s*]) keep the star variants from
+# treating list bullets ("* item") or literal asterisks ("a * b", a "**" glob)
+# as emphasis spans — a real *italic* / **bold** span has a non-whitespace,
+# non-asterisk character against each delimiter. This mirrors the underscore
+# variants below, which already carry the equivalent guards.
+_RE_BOLD = re.compile(r"\*\*(?![\s*])(.+?)(?<![\s*])\*\*", re.DOTALL)
+_RE_ITALIC_STAR = re.compile(r"\*(?![\s*])(.+?)(?<![\s*])\*", re.DOTALL)
 _RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
 _RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL)
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")

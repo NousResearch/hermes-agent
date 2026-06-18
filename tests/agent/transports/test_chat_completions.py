@@ -128,6 +128,35 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[1]["_empty_recovery_synthetic"] is True
 
+    def test_convert_messages_strips_session_replay_metadata(self, transport):
+        """SQLite session replay metadata is internal and strict providers
+        reject it when it leaks into Chat Completions payloads.
+        """
+        msgs = [
+            {
+                "role": "user",
+                "content": "continue",
+                "timestamp": 1781799468.409,
+                "message_id": "msg-user-1",
+                "observed": True,
+            },
+            {
+                "role": "assistant",
+                "content": "done",
+                "timestamp": 1781799469.012,
+                "message_id": "msg-assistant-1",
+                "finish_reason": "stop",
+            },
+        ]
+        result = transport.convert_messages(msgs)
+        for msg in result:
+            assert not ({"timestamp", "message_id", "observed", "finish_reason"} & msg.keys())
+        assert result[0] == {"role": "user", "content": "continue"}
+        assert result[1] == {"role": "assistant", "content": "done"}
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[0]["timestamp"] == 1781799468.409
+        assert msgs[1]["finish_reason"] == "stop"
+
     def test_convert_messages_clean_list_is_identity(self, transport):
         """A list with no internal/codex keys is returned as-is (no copy)."""
         msgs = [

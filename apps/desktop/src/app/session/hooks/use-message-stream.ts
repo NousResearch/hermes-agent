@@ -35,6 +35,7 @@ import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  applySessionTitleUpdate,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -44,6 +45,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSessions,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -899,6 +901,16 @@ export function useMessageStream({
         if (payload?.usage) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
+      } else if (event.type === 'session.title.updated') {
+        const title = typeof payload?.title === 'string' ? payload.title : ''
+        const storedSessionId = typeof payload?.stored_session_id === 'string' ? payload.stored_session_id : null
+
+        if (title.trim()) {
+          setSessions(prev => applySessionTitleUpdate(prev, sessionId, storedSessionId, title))
+        }
+
+        void refreshSessions().catch(() => undefined)
+        broadcastSessionsChanged()
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
           return
@@ -1134,6 +1146,7 @@ export function useMessageStream({
       flushQueuedDeltas,
       queryClient,
       refreshHermesConfig,
+      refreshSessions,
       sessionInterrupted,
       updateSessionState,
       upsertToolCall

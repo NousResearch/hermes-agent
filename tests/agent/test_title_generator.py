@@ -137,6 +137,7 @@ class TestAutoTitleSession:
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.set_session_title.return_value = True
         seen = []
         with patch("agent.title_generator.generate_title", return_value="Readable Session"):
             auto_title_session(
@@ -148,6 +149,24 @@ class TestAutoTitleSession:
             )
         db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
         assert seen == ["Readable Session"]
+
+    def test_skips_title_callback_when_title_did_not_persist(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title.return_value = False
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Readable Session"):
+            auto_title_session(
+                db,
+                "missing-session",
+                "hello",
+                "hi there",
+                title_callback=seen.append,
+            )
+
+        db.set_session_title.assert_called_once_with("missing-session", "Readable Session")
+        assert seen == []
 
     def test_skips_if_generation_fails(self):
         db = MagicMock()

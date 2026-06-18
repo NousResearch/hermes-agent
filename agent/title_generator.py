@@ -119,7 +119,8 @@ def auto_title_session(
         return
 
     try:
-        session_db.set_session_title(session_id, title)
+        if not session_db.set_session_title(session_id, title):
+            return
         logger.debug("Auto-generated session title: %s", title)
         if title_callback is not None:
             try:

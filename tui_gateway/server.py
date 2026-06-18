@@ -6223,12 +6223,25 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 try:
                     from agent.title_generator import maybe_auto_title
 
+                    stored_session_id = session.get("session_key") or sid
+
+                    def _on_auto_title(title: str) -> None:
+                        _emit(
+                            "session.title.updated",
+                            sid,
+                            {
+                                "stored_session_id": stored_session_id,
+                                "title": title,
+                            },
+                        )
+
                     maybe_auto_title(
                         _get_db(),
-                        session.get("session_key") or sid,
+                        stored_session_id,
                         text,
                         raw,
                         session.get("history", []),
+                        title_callback=_on_auto_title,
                     )
                 except Exception:
                     pass

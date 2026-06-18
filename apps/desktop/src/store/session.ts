@@ -169,6 +169,44 @@ export function mergeSessionPage(
   return survivors.length ? [...survivors, ...incoming] : incoming
 }
 
+export function applySessionTitleUpdate(
+  sessions: SessionInfo[],
+  runtimeSessionId: null | string | undefined,
+  storedSessionId: null | string | undefined,
+  title: string
+): SessionInfo[] {
+  const normalizedTitle = title.trim()
+
+  if (!normalizedTitle) {
+    return sessions
+  }
+
+  const ids = new Set([runtimeSessionId, storedSessionId].filter((id): id is string => Boolean(id)))
+
+  if (ids.size === 0) {
+    return sessions
+  }
+
+  let changed = false
+  const next = sessions.map(session => {
+    const lineageId = session._lineage_root_id ?? ''
+
+    if (!ids.has(session.id) && (!lineageId || !ids.has(lineageId))) {
+      return session
+    }
+
+    if (session.title === normalizedTitle) {
+      return session
+    }
+
+    changed = true
+
+    return { ...session, title: normalizedTitle }
+  })
+
+  return changed ? next : sessions
+}
+
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])

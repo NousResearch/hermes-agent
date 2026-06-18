@@ -9,6 +9,7 @@ import {
   $currentCwd,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  applySessionTitleUpdate,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
@@ -180,6 +181,33 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+})
+
+describe('applySessionTitleUpdate', () => {
+  it('updates the matching stored session title', () => {
+    const sessions = [
+      session({ id: 'stored-1', title: null }),
+      session({ id: 'other', title: 'Other' })
+    ]
+
+    const next = applySessionTitleUpdate(sessions, 'runtime-1', 'stored-1', '  Rome Origins  ')
+
+    expect(next).not.toBe(sessions)
+    expect(next.find(s => s.id === 'stored-1')?.title).toBe('Rome Origins')
+    expect(next.find(s => s.id === 'other')?.title).toBe('Other')
+  })
+
+  it('matches compression lineage roots without touching unrelated sessions', () => {
+    const sessions = [
+      session({ id: 'tip-2', _lineage_root_id: 'root-1', title: null }),
+      session({ id: 'other', _lineage_root_id: 'root-2', title: 'Other' })
+    ]
+
+    const next = applySessionTitleUpdate(sessions, null, 'root-1', 'Updated')
+
+    expect(next.find(s => s.id === 'tip-2')?.title).toBe('Updated')
+    expect(next.find(s => s.id === 'other')?.title).toBe('Other')
   })
 })
 

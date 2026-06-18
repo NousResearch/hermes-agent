@@ -111,14 +111,26 @@ result = handler(payload.get("arguments") or {})
 print(json.dumps(result, ensure_ascii=False, default=str))
 """
 
-DEFAULT_SHINKA_ROOT = Path(
-    r"C:\Users\downl\Desktop\ShinkaEvolve-OSINT-main\ShinkaEvolve-OSINT-main"
-)
-
-
 def _hermes_home() -> Path:
     raw = (os.environ.get("HERMES_HOME") or "").strip()
     return Path(raw) if raw else Path.home() / ".hermes"
+
+
+def _desktop_dir() -> Path:
+    if os.name == "nt":
+        try:
+            import winreg
+
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                raw, _ = winreg.QueryValueEx(key, "Desktop")
+            return Path(os.path.expandvars(str(raw)))
+        except Exception:
+            pass
+    return Path.home() / "Desktop"
+
+
+DEFAULT_SHINKA_ROOT = _desktop_dir() / "ShinkaEvolve-OSINT-main" / "ShinkaEvolve-OSINT-main"
 
 
 def _shinka_root() -> Path:

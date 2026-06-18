@@ -21,9 +21,22 @@ except Exception:  # pragma: no cover - import safety during early plugin load
     get_env_value = None  # type: ignore[assignment]
     save_env_value = None  # type: ignore[assignment]
 
-DEFAULT_ROOT = Path(
-    r"C:\Users\downl\Desktop\ShinkaEvolve-OSINT-main\ShinkaEvolve-OSINT-main"
-)
+
+def _desktop_dir() -> Path:
+    if os.name == "nt":
+        try:
+            import winreg
+
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                raw, _ = winreg.QueryValueEx(key, "Desktop")
+            return Path(os.path.expandvars(str(raw)))
+        except Exception:
+            pass
+    return Path.home() / "Desktop"
+
+
+DEFAULT_ROOT = _desktop_dir() / "ShinkaEvolve-OSINT-main" / "ShinkaEvolve-OSINT-main"
 DEFAULT_EXAMPLE = "milspec_security_jp"
 ENV_ROOT = "SHINKA_OSINT_ROOT"
 ENV_DEFAULT_EXAMPLE = "SHINKA_OSINT_DEFAULT_EXAMPLE"

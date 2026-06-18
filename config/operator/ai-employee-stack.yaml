@@ -1,19 +1,21 @@
-# AI社員 + 求職監視 + 429フォールバック（主モデル NVIDIA）
-# 適用: py -3 scripts/apply_operator_stack.py --stack-file config/operator/ai-employee-stack.yaml
+# AI employee + async subagent routing with 429 failover.
+# Apply with:
+#   py -3 scripts/apply_operator_stack.py --stack-file config/operator/ai-employee-stack.yaml
 
 model:
-  provider: nvidia
-  default: nvidia/nemotron-3-super-120b-a12b
+  provider: openai-codex
+  default: gpt-5.5-low
   base_url: ''
   api_key: ''
-  api_mode: chat_completions
+  api_mode: codex_responses
   max_tokens: 8192
 
 agent:
-  reasoning_effort: none
+  reasoning_effort: low
   api_max_retries: 2
 
-# 非同期サブエージェントも NVIDIA 主軸（親の fallback_providers を継承）
+# Synchronous and background subagents start on NVIDIA, then inherit the
+# fallback_providers chain below for automatic 429 rotation.
 delegation:
   provider: nvidia
   model: nvidia/nemotron-3-super-120b-a12b
@@ -23,10 +25,14 @@ delegation:
   max_spawn_depth: 2
   orchestrator_enabled: true
 
-# NVIDIA 429 → Nous Free 連鎖 → 最終のみローカル llama（OpenRouter は入れない）
+# Main and subagents rotate through this chain after provider failures such as
+# 429 rate limits. The first NVIDIA entry is skipped automatically if a child
+# is already running on the same provider/model.
 fallback_providers:
+  - provider: nvidia
+    model: nvidia/nemotron-3-super-120b-a12b
   - provider: nous
-    model: nvidia/nemotron-3-ultra:free
+    model: nvidia/nemotron-3-ultra-550b-a55b:free
   - provider: nous
     model: nvidia/nemotron-3-super-120b-a12b:free
   - provider: nous

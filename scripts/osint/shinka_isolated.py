@@ -5,7 +5,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\downl\Desktop\ShinkaEvolve-OSINT-main\ShinkaEvolve-OSINT-main")
+
+def _desktop_dir() -> Path:
+    if os.name == "nt":
+        try:
+            import winreg
+
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                raw, _ = winreg.QueryValueEx(key, "Desktop")
+            return Path(os.path.expandvars(str(raw)))
+        except Exception:
+            pass
+    return Path.home() / "Desktop"
+
+
+ROOT = _desktop_dir() / "ShinkaEvolve-OSINT-main" / "ShinkaEvolve-OSINT-main"
 EXAMPLE = "milspec_security_jp"
 EXAMPLE_DIR = ROOT / "examples" / EXAMPLE
 

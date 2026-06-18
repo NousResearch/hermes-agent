@@ -61,6 +61,24 @@ _COMMENTARY = object()
 _FLUSH = object()
 
 
+def escape_code_fences_for_display(text: str) -> str:
+    """Escape triple-backtick markers so text can be safely wrapped
+    inside an outer ``` code block without breaking the fence.
+
+    When reasoning content contains ``` (e.g. the model quotes code
+    in its thinking), wrapping it in an outer ``` for display causes
+    the inner fence to break the outer block.  Solution: replace each
+    `` ``` `` with `` \\`\\`\\` `` before wrapping.
+
+    Returns:
+        The input text with each `` ``` `` replaced by `` \\`\\`\\` ``,
+        or the input unchanged if no triple-backticks are present.
+    """
+    if not isinstance(text, str) or "```" not in text:
+        return text
+    return text.replace("```", "\\`\\`\\`")
+
+
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""

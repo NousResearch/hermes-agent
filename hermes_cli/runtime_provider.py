@@ -1393,14 +1393,23 @@ def resolve_runtime_provider(
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
         env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
         env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
+        explicit_openrouter_host = bool(
+            explicit_base_url and base_url_host_matches(explicit_base_url, "openrouter.ai")
+        )
         has_custom_endpoint = bool(
-            explicit_base_url
+            (explicit_base_url and not explicit_openrouter_host)
             or env_openai_base_url
             or env_openrouter_base_url
         )
         if cfg_base_url and cfg_provider in {"auto", "custom"}:
             has_custom_endpoint = True
-        has_runtime_override = bool(explicit_api_key or explicit_base_url)
+        # A caller may pass the canonical OpenRouter URL explicitly (for
+        # example, persisted CLI model-switch state). Treat that as the same
+        # OpenRouter route, not as a custom-endpoint override that disables the
+        # auth pool.
+        has_runtime_override = bool(
+            explicit_api_key or (explicit_base_url and not explicit_openrouter_host)
+        )
         should_use_pool = (
             requested_provider in {"openrouter", "auto"}
             and not has_custom_endpoint

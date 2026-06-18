@@ -421,6 +421,39 @@ def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeyp
     assert resolved.get("credential_pool") is None
 
 
+def test_resolve_runtime_provider_openrouter_explicit_default_base_url_keeps_pool(monkeypatch):
+    class _Entry:
+        access_token = "pool-key"
+        source = "manual"
+        base_url = "https://openrouter.ai/api/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="openrouter",
+        explicit_base_url=rp.OPENROUTER_BASE_URL,
+    )
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == "pool-key"
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["source"] == "manual"
+    assert resolved.get("credential_pool") is not None
+
+
 def test_resolve_runtime_provider_openrouter_ignores_codex_config_base_url(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(

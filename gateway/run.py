@@ -9679,11 +9679,20 @@ class GatewayRunner:
             "session_key": session_key,
         })
 
-        # Resolve session config info to surface to the user
+        # Resolve session config info to surface to the user (admins only —
+        # model/provider/context internals aren't appropriate for end users).
+        _is_admin = False
         try:
-            session_info = self._format_session_info()
+            from gateway.slash_access import policy_for_source as _policy_for_source
+            _is_admin = _policy_for_source(self.config, source).is_admin(source.user_id)
         except Exception:
-            session_info = ""
+            _is_admin = False
+        session_info = ""
+        if _is_admin:
+            try:
+                session_info = self._format_session_info()
+            except Exception:
+                session_info = ""
 
         if new_entry:
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default")
@@ -9735,12 +9744,14 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Append a random tip to the reset message
-        try:
-            from hermes_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
-        except Exception:
-            _tip_line = ""
+        # Append a random tip to the reset message (admins only)
+        _tip_line = ""
+        if _is_admin:
+            try:
+                from hermes_cli.tips import get_random_tip
+                _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+            except Exception:
+                _tip_line = ""
 
         if session_info:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")

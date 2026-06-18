@@ -19,6 +19,26 @@ def test_cronjob_schema_action_description_flags_create_requirements():
     assert "REQUIRED" in action_desc
 
 
+def test_cronjob_schema_action_description_mentions_get_before_update():
+    """`action` description should advertise full-prompt inspection."""
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    action_desc = CRONJOB_SCHEMA["parameters"]["properties"]["action"]["description"]
+    job_id_desc = CRONJOB_SCHEMA["parameters"]["properties"]["job_id"]["description"]
+    assert "get" in action_desc
+    assert "full current prompt" in action_desc
+    assert "get" in job_id_desc
+
+
+def test_cronjob_schema_include_prompt_parameter_exists():
+    """List/update callers can request the full prompt when useful."""
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    include_prompt = CRONJOB_SCHEMA["parameters"]["properties"]["include_prompt"]
+    assert include_prompt["type"] == "boolean"
+    assert "full prompt" in include_prompt["description"]
+
+
 def test_cronjob_schema_schedule_description_flags_required_for_create():
     """`schedule` description must explicitly state REQUIRED for action=create."""
     from tools.cronjob_tools import CRONJOB_SCHEMA

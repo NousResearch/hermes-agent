@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from cron.jobs import (
     AmbiguousJobReference,
     create_job,
+    get_job,
     list_jobs,
     parse_schedule,
     pause_job,
@@ -425,7 +426,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
-def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+def _format_job(job: Dict[str, Any], *, include_prompt: bool = False) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
@@ -451,6 +452,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
+    if include_prompt:
+        result["prompt"] = prompt
     if job.get("script"):
         result["script"] = job["script"]
     if job.get("no_agent"):
@@ -482,6 +485,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    include_prompt: bool = False,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -567,7 +571,10 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [
+                _format_job(job, include_prompt=include_prompt)
+                for job in list_jobs(include_disabled=include_disabled)
+            ]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
@@ -599,6 +606,21 @@ def cronjob(
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
+
+        if normalized in {"get", "show"}:
+            full_job = get_job(job_id) or job
+            formatted = _format_job(full_job, include_prompt=True)
+            formatted.update(
+                {
+                    "raw_schedule": full_job.get("schedule"),
+                    "repeat_state": full_job.get("repeat"),
+                    "origin": full_job.get("origin"),
+                    "context_from": full_job.get("context_from"),
+                    "created_at": full_job.get("created_at"),
+                    "last_error": full_job.get("last_error"),
+                }
+            )
+            return json.dumps({"success": True, "job": formatted}, indent=2)
 
         if normalized == "remove":
             removed = remove_job(job_id)
@@ -711,7 +733,13 @@ def cronjob(
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            return json.dumps(
+                {
+                    "success": True,
+                    "job": _format_job(updated, include_prompt=include_prompt),
+                },
+                indent=2,
+            )
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
@@ -726,7 +754,10 @@ CRONJOB_SCHEMA = {
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
+Use action='get' with job_id to inspect a full existing job, including the complete prompt.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
+
+When changing an existing job, use action='list' if needed to find the job_id, then action='get' to inspect the full current prompt before action='update'. Do not use action='create' for an existing job.
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
@@ -744,11 +775,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, get, update, pause, resume, remove, run. Use get + job_id to read the full current prompt before updating an existing job. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for get/update/pause/resume/remove/run"
             },
             "prompt": {
                 "type": "string",
@@ -834,6 +865,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "include_prompt": {
+                "type": "boolean",
+                "default": False,
+                "description": "For list/update responses, include the full prompt instead of only prompt_preview. action=get always includes the full prompt."
+            },
         },
         "required": ["action"]
     }
@@ -889,6 +925,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        include_prompt=bool(args.get("include_prompt", False)),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

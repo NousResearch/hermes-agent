@@ -1,7 +1,7 @@
 """Hermes execution environment backends.
 
 Each backend provides the same interface (BaseEnvironment ABC) for running
-shell commands in a specific execution context: local, Docker, SSH,
+shell commands in a specific execution context: Blaxel, local, Docker, SSH,
 Singularity, Modal, or Daytona. (Modal additionally has direct and
 Nous-managed modes, selected via terminal.modal_mode.)
 

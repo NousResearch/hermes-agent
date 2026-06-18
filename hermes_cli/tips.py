@@ -147,7 +147,7 @@ TIPS = [
     "mixture_of_agents routes hard problems through 4 frontier LLMs collaboratively.",
     "Terminal commands support background mode with notify_on_complete for long-running tasks.",
     "Terminal background processes support watch_patterns to alert on specific output lines.",
-    "The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.",
+    "The terminal tool supports 8 backends: Blaxel, local, Docker, SSH, Modal, Daytona, Vercel Sandbox, and Singularity.",
 
     # --- Profiles ---
     "Each profile gets its own config, API keys, memory, sessions, skills, and cron jobs.",

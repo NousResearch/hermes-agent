@@ -2,17 +2,18 @@
 """
 Terminal Tool Module
 
-A terminal tool that executes commands in local, Docker, Modal, SSH,
+A terminal tool that executes commands in Blaxel, local, Docker, Modal, SSH,
 Singularity, and Daytona environments. Supports local execution,
 containerized backends, and cloud sandboxes, including managed Modal mode.
 
 Supported environments:
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
+- "blaxel": Execute in Blaxel cloud sandboxes
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 
 Features:
-- Multiple execution backends (local, docker, modal)
+- Multiple execution backends (blaxel, local, docker, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -45,6 +46,14 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from hermes_constants import (
+    BLAXEL_DEFAULT_CWD,
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_SDK_INSTALL_COMMAND,
+    BLAXEL_DEFAULT_TTL,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+)
 from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
@@ -135,18 +144,55 @@ def _check_disk_usage_warning():
                         total_bytes += f.stat().st_size
                     except OSError as e:
                         logger.debug("Could not stat file %s: %s", f, e)
-        
+
         total_gb = total_bytes / (1024 ** 3)
-        
+
         if total_gb > DISK_USAGE_WARNING_THRESHOLD_GB:
             logger.warning("Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
                            total_gb, DISK_USAGE_WARNING_THRESHOLD_GB)
             return True
-        
+
         return False
     except Exception as e:
         logger.debug("Disk usage warning check failed: %s", e, exc_info=True)
         return False
+
+
+def _check_blaxel_requirements(config: dict[str, Any]) -> bool:
+    """Validate Blaxel terminal backend requirements."""
+    if not os.getenv("BL_API_KEY"):
+        logger.error(
+            "Blaxel backend selected but BL_API_KEY is not set. "
+            "Set BL_API_KEY or switch TERMINAL_ENV to 'local'."
+        )
+        return False
+    if not os.getenv("BL_WORKSPACE"):
+        logger.error(
+            "Blaxel backend selected but BL_WORKSPACE is not set. "
+            "Set BL_WORKSPACE or switch TERMINAL_ENV to 'local'."
+        )
+        return False
+
+    if importlib.util.find_spec("blaxel") is not None:
+        return True
+
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("terminal.blaxel", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.error("blaxel is required for the Blaxel terminal backend: %s", e)
+        return False
+
+    importlib.invalidate_caches()
+    if importlib.util.find_spec("blaxel") is None:
+        logger.error(
+            "blaxel is required for the Blaxel terminal backend: %s",
+            BLAXEL_SDK_INSTALL_COMMAND,
+        )
+        return False
+    return True
 
 
 # Interactive sudo password cache.
@@ -1093,8 +1139,14 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
+    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "blaxel"}
     docker_backend = env_type == "docker"
+    default_container_memory = (
+        str(BLAXEL_DEFAULT_MEMORY_MB) if env_type == "blaxel" else "5120"
+    )
+    default_container_disk = (
+        str(BLAXEL_DEFAULT_VOLUME_SIZE_MB) if env_type == "blaxel" else "51200"
+    )
 
     # Docker/container-only env vars may be bridged from config.yaml even when
     # the active backend is local/ssh.  Do not parse their JSON/numeric payloads
@@ -1102,12 +1154,12 @@ def _get_env_config() -> Dict[str, Any]:
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
         container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", default_container_memory)
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", default_container_disk)
     else:
         container_cpu = 1.0
-        container_memory = 5120
-        container_disk = 51200
+        container_memory = int(default_container_memory)
+        container_disk = int(default_container_disk)
 
     if docker_backend:
         docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
@@ -1127,9 +1179,10 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "blaxel":
+        default_cwd = BLAXEL_DEFAULT_CWD
     else:
         default_cwd = "/root"
-
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
@@ -1148,7 +1201,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona", "blaxel"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1166,6 +1219,8 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "blaxel_image": os.getenv("TERMINAL_BLAXEL_IMAGE", BLAXEL_DEFAULT_IMAGE),
+        "blaxel_ttl": os.getenv("TERMINAL_BLAXEL_TTL", BLAXEL_DEFAULT_TTL),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1185,10 +1240,10 @@ def _get_env_config() -> Dict[str, Any]:
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
-        # daytona -- ignored for local/ssh)
+        # daytona, and blaxel -- ignored for local/ssh)
         "container_cpu": container_cpu,
-        "container_memory": container_memory,     # MB (default 5GB)
-        "container_disk": container_disk,        # MB (default 50GB)
+        "container_memory": container_memory,
+        "container_disk": container_disk,
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
@@ -1231,9 +1286,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment for sandboxed command execution.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "ssh"
-        image: Docker/Singularity/Modal image name (ignored for local/ssh)
+        env_type: One of "blaxel", "local", "docker", "singularity",
+            "modal", "daytona", "ssh"
+        image: Blaxel/Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")
@@ -1353,6 +1408,16 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "blaxel":
+        # Lazy import so blaxel SDK is only required when backend is selected.
+        from tools.environments.blaxel import BlaxelEnvironment as _BlaxelEnvironment
+        return _BlaxelEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            cpu=cpu, memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+            ttl=cc.get("blaxel_ttl") or BLAXEL_DEFAULT_TTL,
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1368,7 +1433,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'blaxel', or 'ssh'"
         )
 
 
@@ -1921,6 +1986,8 @@ def terminal_tool(
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "blaxel":
+            image = overrides.get("blaxel_image") or config["blaxel_image"]
         else:
             image = ""
 
@@ -2010,13 +2077,14 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "blaxel"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
+                                "blaxel_ttl": config.get("blaxel_ttl", BLAXEL_DEFAULT_TTL),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -2563,10 +2631,13 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "blaxel":
+            return _check_blaxel_requirements(config)
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "modal, daytona, blaxel, ssh.",
                 env_type,
             )
             return False
@@ -2609,7 +2680,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/ssh)"
+        "(local/docker/singularity/modal/daytona/blaxel/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")

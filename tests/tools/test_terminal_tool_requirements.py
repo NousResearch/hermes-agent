@@ -64,3 +64,22 @@ class TestTerminalRequirements:
 
         assert "terminal" in names
         assert "execute_code" in names
+
+    def test_terminal_and_execute_code_tools_resolve_for_blaxel(self, monkeypatch):
+        monkeypatch.setenv("BL_API_KEY", "key")
+        monkeypatch.setenv("BL_WORKSPACE", "workspace")
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {"env_type": "blaxel"},
+        )
+        monkeypatch.setattr(
+            terminal_tool_module.importlib.util,
+            "find_spec",
+            lambda _name: object(),
+        )
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        names = {tool["function"]["name"] for tool in tools}
+
+        assert "terminal" in names
+        assert "execute_code" in names

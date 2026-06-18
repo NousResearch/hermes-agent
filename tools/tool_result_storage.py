@@ -130,7 +130,7 @@ def maybe_persist_tool_result(
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
     Writes via env.execute() so the file is accessible from any backend
-    (local, Docker, SSH, Modal, Daytona). Falls back to inline truncation
+    (Blaxel, local, Docker, SSH, Modal, Daytona). Falls back to inline truncation
     if write fails or no env is available.
 
     Args:

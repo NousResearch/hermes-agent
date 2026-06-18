@@ -12,7 +12,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_constants import BLAXEL_SDK_INSTALL_COMMAND, display_hermes_home
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -1468,6 +1468,39 @@ def run_doctor(args):
                 "daytona SDK not installed",
                 "(pip install daytona)",
                 "Install daytona SDK: pip install daytona",
+                issues,
+            )
+
+    # Blaxel (if using blaxel backend)
+    if terminal_env == "blaxel":
+        bl_key = os.getenv("BL_API_KEY")
+        bl_workspace = os.getenv("BL_WORKSPACE")
+        if bl_key:
+            check_ok("Blaxel API key", "(configured)")
+        else:
+            _fail_and_issue(
+                "BL_API_KEY not set",
+                "(required for TERMINAL_ENV=blaxel)",
+                "Set BL_API_KEY environment variable",
+                issues,
+            )
+        if bl_workspace:
+            check_ok("Blaxel workspace", f"({bl_workspace})")
+        else:
+            _fail_and_issue(
+                "BL_WORKSPACE not set",
+                "(required for TERMINAL_ENV=blaxel)",
+                "Set BL_WORKSPACE environment variable",
+                issues,
+            )
+        try:
+            from blaxel.core import SyncSandboxInstance  # noqa: F401
+            check_ok("blaxel SDK", "(installed)")
+        except ImportError:
+            _fail_and_issue(
+                "blaxel SDK not installed",
+                f"({BLAXEL_SDK_INSTALL_COMMAND})",
+                f"Install the Blaxel SDK: {BLAXEL_SDK_INSTALL_COMMAND}",
                 issues,
             )
 

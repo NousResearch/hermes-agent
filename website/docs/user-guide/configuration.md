@@ -102,11 +102,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — a Blaxel sandbox, your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | docker | ssh | modal | daytona | blaxel | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
@@ -114,9 +114,10 @@ terminal:
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  blaxel_image: "blaxel/base-image:latest"                                  # Container image for Blaxel backend
 ```
 
-For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Blaxel, Modal, and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -127,6 +128,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
+| **blaxel** | Blaxel cloud sandbox | Full (cloud microVM) | Workspace-scoped sandboxes with volume persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -360,6 +362,44 @@ terminal:
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
 
+### Blaxel Backend
+
+Runs commands in a [Blaxel](https://blaxel.ai) cloud sandbox. Sandboxes are workspace-scoped and ephemeral by themselves; for durable storage that survives sandbox recreation Hermes provisions a Blaxel **volume** named from a sanitized, capped task id, such as `hermes-<sanitized-task-id>-data`, and mounts it at `/blaxel/persistent` whenever `container_persistent: true`. The agent's working directory is set to that mount, so files written by the agent live on the volume.
+
+```yaml
+terminal:
+  backend: blaxel
+  blaxel_image: "blaxel/base-image:latest"  # Sandbox image
+  blaxel_ttl: "24h"                         # Auto-expiration window (e.g. 30m, 24h)
+  container_memory: 4096                    # MB (Blaxel default)
+  container_disk: 10240                     # MB for persistent volume size
+  container_persistent: true                # Preserve files on a Blaxel volume
+```
+
+**Required install:** Install the Blaxel SDK:
+
+```bash
+pip install blaxel==0.2.52
+```
+
+**Required authentication:** Set both `BL_API_KEY` and `BL_WORKSPACE` (Blaxel is workspace-scoped). Get keys at [app.blaxel.ai/profile/security](https://app.blaxel.ai/profile/security).
+
+```bash
+BL_API_KEY=...
+BL_WORKSPACE=my-workspace
+BL_REGION=us-pdx-1   # optional, defaults to us-pdx-1
+```
+
+**Persistence:** When `container_persistent: true`, Hermes creates (or reuses) a Blaxel volume named from the task id, mounted at `/blaxel/persistent`, and sets the agent cwd there. The volume survives sandbox deletion, TTL expiry, and platform churn; only an explicit volume delete removes it. During cleanup Hermes syncs files back and deletes the sandbox to avoid leaving live cloud resources around. On the next session Hermes creates a fresh sandbox against the same volume.
+
+If the workspace has no available Blaxel volume quota, persistent startup fails with a clear error. Set `container_persistent: false` for ephemeral sandboxes, or increase the workspace volume quota before enabling persistence.
+
+**Resource limits:** Blaxel allocates CPU and sandbox disk per image profile. `container_memory` is forwarded to the sandbox, and `container_disk` controls the Blaxel volume size when `container_persistent: true`. Hermes defaults Blaxel memory to 4096 MB and persistent volume size to 10240 MB. `container_cpu` is accepted but ignored with a log message.
+
+**Timeouts:** Blaxel caps a single blocking exec at 60 seconds. For longer Hermes timeouts, the backend automatically falls back to async execution + polling so commands up to `terminal.timeout` work transparently.
+
+**Image notes:** The default `blaxel/base-image:latest` is the standard Blaxel sandbox image. Use a custom Blaxel image if you need additional preinstalled tooling.
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
@@ -390,13 +430,14 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **Blaxel** — Needs both `BL_API_KEY` and `BL_WORKSPACE`. Run `pip install blaxel==0.2.52` if the SDK is missing.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
 ### Remote-to-Host File Sync on Teardown
 
-For the **SSH**, **Modal**, and **Daytona** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
+For the **Blaxel**, **SSH**, **Modal**, and **Daytona** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
 
 - Triggers on: session close, `/new`, `/reset`, gateway message timeout, `delegate_task` subagent completion when the child used a remote backend.
 - Covers the whole tree the agent modified, not just files it explicitly opened. Additions, edits, and deletions are all captured.

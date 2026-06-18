@@ -82,6 +82,15 @@ class TestLoadConfigDefaults:
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
 
+    def test_blaxel_backend_gets_backend_specific_container_defaults(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text("terminal:\n  backend: blaxel\n")
+
+            config = load_config()
+            assert config["terminal"]["container_memory"] == 4096
+            assert config["terminal"]["container_disk"] == 10240
+
 
 class TestLoadConfigParseFailure:
     """A YAML parse failure must NOT silently fall back to defaults.

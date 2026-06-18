@@ -1,4 +1,5 @@
 """Tests for setup.py configuration flows."""
+import os
 import sys
 import types
 
@@ -22,6 +23,16 @@ def _clear_provider_env(monkeypatch):
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "LLM_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def _clear_blaxel_env(monkeypatch):
+    for key in (
+        "BL_API_KEY",
+        "BL_WORKSPACE",
+        "TERMINAL_BLAXEL_IMAGE",
+        "TERMINAL_ENV",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -477,6 +488,105 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+
+
+def test_blaxel_setup_prompts_only_effective_resource_knobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_blaxel_env(monkeypatch)
+    monkeypatch.setitem(sys.modules, "blaxel", types.ModuleType("blaxel"))
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 5
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter([
+        "blaxel-key",
+        "workspace",
+        "blaxel/base-image:latest",
+        "yes",
+        "",
+        "",
+    ])
+    defaults = {}
+
+    def fake_prompt(message, default="", **kwargs):
+        assert "CPU cores" not in message
+        defaults[message] = default
+        value = next(prompt_values)
+        return value or default
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "blaxel"
+    assert config["terminal"]["container_persistent"] is True
+    assert config["terminal"]["container_memory"] == 4096
+    assert config["terminal"]["container_disk"] == 10240
+    assert defaults["  Sandbox memory in MB (4096 = 4GB)"] == "4096"
+    assert defaults["  Persistent volume size in MB (10240 = 10GB)"] == "10240"
+    assert os.environ["BL_API_KEY"] == "blaxel-key"
+    assert os.environ["BL_WORKSPACE"] == "workspace"
+
+
+def test_blaxel_setup_installs_sdk_when_missing(tmp_path, monkeypatch):
+    import builtins
+    import subprocess
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_blaxel_env(monkeypatch)
+    config = load_config()
+
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "blaxel":
+            raise ImportError("missing blaxel")
+        return original_import(name, *args, **kwargs)
+
+    ran = []
+
+    def fake_run(cmd, capture_output, text):
+        ran.append(cmd)
+        return types.SimpleNamespace(returncode=0, stderr="")
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 5
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter([
+        "blaxel-key",
+        "workspace",
+        "blaxel/base-image:latest",
+        "yes",
+        "",
+        "",
+    ])
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr("hermes_cli.setup.shutil.which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert ran == [[
+        "/usr/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "blaxel==0.2.52",
+    ]]
 
 
 def test_setup_slack_saves_home_channel(monkeypatch):

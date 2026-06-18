@@ -229,7 +229,7 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 #
 # Hardline only applies to environments that can actually damage the host
 # (local, ssh, container-host cron).  Containerized backends (docker,
-# singularity, modal, daytona) already bypass the dangerous-command layer
+# singularity, modal, daytona, blaxel) already bypass the dangerous-command layer
 # because nothing they do can touch the host, so we leave that behavior
 # alone.
 #
@@ -1148,7 +1148,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    if env_type in {"docker", "singularity", "modal", "daytona", "blaxel"}:
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -1382,7 +1382,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    if env_type in {"docker", "singularity", "modal", "daytona", "blaxel"}:
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1699,7 +1699,7 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command.
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    if env_type in {"docker", "singularity", "modal", "daytona", "blaxel"}:
         return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).

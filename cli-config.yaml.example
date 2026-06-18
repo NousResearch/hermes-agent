@@ -275,10 +275,31 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: Blaxel cloud execution
+# Commands run in Blaxel cloud sandboxes (workspace-scoped, with volume-backed
+# persistence — files in /blaxel/persistent survive sandbox deletion).
+# Great for: Durable workspaces tied to a Blaxel workspace.
+# Requires: pip install blaxel==0.2.52, BL_API_KEY + BL_WORKSPACE env vars.
+# Optional: BL_REGION (default us-pdx-1).
+# Persistent mode also requires Blaxel volume quota; set container_persistent
+# false for ephemeral sandboxes when volume quota is unavailable.
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "blaxel"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   blaxel_image: "blaxel/base-image:latest"   # Sandbox image
+#   blaxel_ttl: "24h"                          # Auto-expire window
+#   container_memory: 4096                     # MB; override if your workspace quota allows more
+#   container_disk: 10240                      # MB for persistent volume size
+#   container_persistent: true                 # Mount Blaxel volume at /blaxel/persistent
+
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona, blaxel -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
+# For Blaxel, container_disk sets persistent volume size; sandbox disk is image-profile-based.
   container_cpu: 1              # CPU cores
   container_memory: 5120        # Memory in MB (5120 = 5GB)
   container_disk: 51200         # Disk in MB (51200 = 50GB)

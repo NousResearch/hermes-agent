@@ -3,7 +3,7 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, ssh, singularity, modal, daytona).
+across all terminal backends (blaxel, local, docker, ssh, singularity, modal, daytona).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -1750,8 +1750,8 @@ class ShellFileOperations(FileOperations):
         """Return True iff this FileOperations is wired to a local backend.
 
         LSP servers run on the host process — they need access to the
-        files they're linting.  Remote/sandboxed backends (Docker,
-        Modal, SSH, Daytona) keep files inside the sandbox where the
+        files they're linting.  Remote/sandboxed backends (Blaxel,
+        Docker, Modal, SSH, Daytona) keep files inside the sandbox where the
         host-side LSP server can't reach them, so we skip the LSP
         path for those entirely.
         """
@@ -1830,7 +1830,7 @@ class ShellFileOperations(FileOperations):
         Best-effort.  Silent on every failure path — LSP is an
         enrichment layer and must never break a write.
 
-        Skipped entirely on non-local backends (Docker, Modal, SSH,
+        Skipped entirely on non-local backends (Blaxel, Docker, Modal, SSH,
         etc.) — the server can't see files inside the sandbox.
         """
         if not self._lsp_local_only():
@@ -1871,7 +1871,7 @@ class ShellFileOperations(FileOperations):
         — the calling tier already returned a clean syntax result, so
         ``""`` here just means "no extra info to add".
 
-        Skipped entirely on non-local backends (Docker, Modal, SSH,
+        Skipped entirely on non-local backends (Blaxel, Docker, Modal, SSH,
         etc.) — same reasoning as ``_snapshot_lsp_baseline``.
         """
         if not self._lsp_local_only():

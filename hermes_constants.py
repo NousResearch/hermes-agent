@@ -17,6 +17,17 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
 
+# Blaxel backend defaults shared by config loading, setup, and runtime code.
+BLAXEL_DEFAULT_CWD = "/blaxel"
+BLAXEL_DEFAULT_IMAGE = "blaxel/base-image:latest"
+BLAXEL_DEFAULT_MEMORY_MB = 4096
+BLAXEL_DEFAULT_REGION = "us-pdx-1"
+BLAXEL_DEFAULT_TTL = "24h"
+BLAXEL_DEFAULT_VOLUME_SIZE_MB = 10240
+BLAXEL_SDK_DEPENDENCY = "blaxel==0.2.52"
+BLAXEL_SDK_INSTALL_COMMAND = f"pip install {BLAXEL_SDK_DEPENDENCY}"
+BLAXEL_WORKSPACE_SYNC_MAX_MB = 100
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.

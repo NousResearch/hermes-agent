@@ -1,6 +1,6 @@
 """File passthrough registry for remote terminal backends.
 
-Remote backends (Docker, Modal, SSH) create sandboxes with no host files.
+Remote backends (Blaxel, Docker, Modal, SSH) create sandboxes with no host files.
 This module ensures that credential files, skill directories, and host-side
 cache directories (documents, images, audio, screenshots) are mounted or
 synced into those sandboxes so the agent can access them.
@@ -298,7 +298,7 @@ def iter_skills_files(
 
     Includes both the local skills dir and any external dirs configured via
     skills.external_dirs.  Skips symlinks entirely.  Preferred for backends
-    that upload files individually (Daytona, Modal) rather than mounting a
+    that upload files individually (Blaxel, Daytona, Modal) rather than mounting a
     directory.
     """
     result: List[Dict[str, str]] = []
@@ -451,5 +451,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

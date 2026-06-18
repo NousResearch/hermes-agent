@@ -24,7 +24,14 @@ from typing import Optional, Dict, Any
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
-from hermes_constants import get_optional_skills_dir
+from hermes_constants import (
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    BLAXEL_SDK_DEPENDENCY,
+    BLAXEL_SDK_INSTALL_COMMAND,
+    get_optional_skills_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -681,6 +688,52 @@ def _prompt_container_resources(config: dict):
         pass
 
 
+def _prompt_blaxel_sandbox_settings(config: dict):
+    """Prompt for Blaxel settings without exposing ignored CPU sizing."""
+    terminal = config.setdefault("terminal", {})
+
+    print()
+    print_info("Blaxel sandbox settings:")
+    print_info("  CPU and sandbox disk are allocated by the selected Blaxel image.")
+    print_info("  container_disk controls the persistent volume size when persistence is enabled.")
+
+    current_persist = terminal.get("container_persistent", True)
+    persist_label = "yes" if current_persist else "no"
+    terminal["container_persistent"] = prompt(
+        "  Persist filesystem on a Blaxel volume? (yes/no)", persist_label
+    ).lower() in {"yes", "true", "y", "1"}
+
+    current_mem = terminal.get("container_memory", BLAXEL_DEFAULT_MEMORY_MB)
+    if current_mem == 5120:
+        current_mem = BLAXEL_DEFAULT_MEMORY_MB
+    mem_str = prompt(
+        f"  Sandbox memory in MB ({BLAXEL_DEFAULT_MEMORY_MB} = 4GB)",
+        str(current_mem),
+    )
+    try:
+        terminal["container_memory"] = int(mem_str)
+    except ValueError:
+        terminal["container_memory"] = current_mem
+
+    if terminal["container_persistent"]:
+        current_disk = terminal.get("container_disk", BLAXEL_DEFAULT_VOLUME_SIZE_MB)
+        if current_disk == 51200:
+            current_disk = BLAXEL_DEFAULT_VOLUME_SIZE_MB
+        disk_str = prompt(
+            f"  Persistent volume size in MB ({BLAXEL_DEFAULT_VOLUME_SIZE_MB} = 10GB)",
+            str(current_disk),
+        )
+        try:
+            terminal["container_disk"] = int(disk_str)
+        except ValueError:
+            terminal["container_disk"] = current_disk
+    else:
+        terminal["container_disk"] = terminal.get(
+            "container_disk",
+            BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+        )
+
+
 # Tool categories and provider config are now in tools_config.py (shared
 # between `hermes tools` and `hermes setup tools`).
 
@@ -1150,11 +1203,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "Blaxel - workspace-scoped cloud sandboxes with standby/resume",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "blaxel"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "blaxel": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1370,6 +1424,73 @@ def setup_terminal_backend(config: dict):
         config["terminal"].setdefault(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
+
+    elif selected_backend == "blaxel":
+        print_success("Terminal backend: Blaxel")
+        print_info("Workspace-scoped cloud sandboxes with standby/resume.")
+        print_info("Sign up at: https://blaxel.ai")
+
+        # Check if blaxel SDK is installed
+        try:
+            __import__("blaxel")
+        except ImportError:
+            print_info("Installing blaxel SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, BLAXEL_SDK_DEPENDENCY],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", BLAXEL_SDK_DEPENDENCY],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("Blaxel SDK installed")
+            else:
+                print_warning(f"Install failed - run manually: {BLAXEL_SDK_INSTALL_COMMAND}")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        # Blaxel API key
+        print()
+        existing_key = get_env_value("BL_API_KEY")
+        if existing_key:
+            print_info("  Blaxel API key: already configured")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    Blaxel API key", password=True)
+                if api_key:
+                    save_env_value("BL_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    Blaxel API key", password=True)
+            if api_key:
+                save_env_value("BL_API_KEY", api_key)
+                print_success("    Configured")
+
+        # Blaxel workspace
+        existing_workspace = get_env_value("BL_WORKSPACE")
+        workspace = prompt("  Blaxel workspace", existing_workspace or "")
+        if workspace:
+            save_env_value("BL_WORKSPACE", workspace)
+
+        # Blaxel image
+        current_image = cfg_get(
+            config,
+            "terminal",
+            "blaxel_image",
+            default=BLAXEL_DEFAULT_IMAGE,
+        )
+        image = prompt("  Sandbox image", current_image)
+        config["terminal"]["blaxel_image"] = image
+        save_env_value("TERMINAL_BLAXEL_IMAGE", image)
+
+        _prompt_blaxel_sandbox_settings(config)
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

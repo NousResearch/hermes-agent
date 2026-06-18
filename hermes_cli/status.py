@@ -7,6 +7,7 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
+import importlib.util
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -21,7 +22,12 @@ from hermes_cli.nous_account import (
 )
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import (
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_REGION,
+    BLAXEL_SDK_INSTALL_COMMAND,
+    OPENROUTER_MODELS_URL,
+)
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
@@ -413,6 +419,18 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "blaxel":
+        blaxel_image = os.getenv("TERMINAL_BLAXEL_IMAGE") or terminal_cfg.get("blaxel_image") or BLAXEL_DEFAULT_IMAGE
+        bl_key_set = bool(os.getenv("BL_API_KEY"))
+        bl_workspace = os.getenv("BL_WORKSPACE", "")
+        bl_region = os.getenv("BL_REGION", "") or BLAXEL_DEFAULT_REGION
+        sdk_ok = importlib.util.find_spec("blaxel") is not None
+        sdk_label = "installed" if sdk_ok else f"missing (install: {BLAXEL_SDK_INSTALL_COMMAND})"
+        print(f"  Blaxel Image: {blaxel_image}")
+        print(f"  Workspace:    {bl_workspace or '(not set)'}")
+        print(f"  Region:       {bl_region}")
+        print(f"  API key:      {check_mark(bl_key_set)} {'configured' if bl_key_set else '(not set)'}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

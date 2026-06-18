@@ -666,7 +666,14 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import (  # noqa: F811,E402
+    BLAXEL_DEFAULT_IMAGE,
+    BLAXEL_DEFAULT_MEMORY_MB,
+    BLAXEL_DEFAULT_REGION,
+    BLAXEL_DEFAULT_TTL,
+    BLAXEL_DEFAULT_VOLUME_SIZE_MB,
+    get_hermes_home,
+)
 from utils import atomic_replace
 
 def get_config_path() -> Path:
@@ -1057,7 +1064,11 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "blaxel_image": BLAXEL_DEFAULT_IMAGE,
+        "blaxel_ttl": BLAXEL_DEFAULT_TTL,
+        # Shared container resource limits. Blaxel applies backend-specific
+        # defaults at setup/runtime when selected unless the user overrides
+        # these keys.
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -5313,6 +5324,38 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _apply_backend_terminal_defaults(
+    config: Dict[str, Any],
+    user_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Apply backend-specific defaults when the user did not override them."""
+    config = dict(config)
+    terminal = dict(config.get("terminal") or {})
+    user_terminal = (
+        user_config.get("terminal")
+        if isinstance(user_config, dict)
+        else None
+    )
+    if not isinstance(user_terminal, dict):
+        user_terminal = {}
+
+    backend = terminal.get("backend") or terminal.get("env_type")
+    if backend == "blaxel":
+        if (
+            "container_memory" not in user_terminal
+            and terminal.get("container_memory") == DEFAULT_CONFIG["terminal"]["container_memory"]
+        ):
+            terminal["container_memory"] = BLAXEL_DEFAULT_MEMORY_MB
+        if (
+            "container_disk" not in user_terminal
+            and terminal.get("container_disk") == DEFAULT_CONFIG["terminal"]["container_disk"]
+        ):
+            terminal["container_disk"] = BLAXEL_DEFAULT_VOLUME_SIZE_MB
+
+    config["terminal"] = terminal
+    return config
+
+
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
     """Traverse nested dict keys safely, returning ``default`` on any miss.
 
@@ -5449,6 +5492,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "blaxel_image": "TERMINAL_BLAXEL_IMAGE",
+    "blaxel_ttl": "TERMINAL_BLAXEL_TTL",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
@@ -5544,10 +5589,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
+        user_config_for_backend_defaults: Dict[str, Any] = {}
         if cache_key is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
+                user_config_for_backend_defaults = dict(user_config)
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -5560,7 +5607,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 
-        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        normalized = _apply_backend_terminal_defaults(
+            _normalize_root_model_keys(_normalize_max_turns_config(config)),
+            user_config_for_backend_defaults,
+        )
         expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_key is not None:
@@ -6231,6 +6281,14 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'blaxel':
+        print(f"  Blaxel image: {terminal.get('blaxel_image', BLAXEL_DEFAULT_IMAGE)}")
+        bl_key = get_env_value('BL_API_KEY')
+        bl_workspace = get_env_value('BL_WORKSPACE')
+        bl_region = get_env_value('BL_REGION') or BLAXEL_DEFAULT_REGION
+        print(f"  API key:      {'configured' if bl_key else '(not set)'}")
+        print(f"  Workspace:    {bl_workspace or '(not set)'}")
+        print(f"  Region:       {bl_region}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')

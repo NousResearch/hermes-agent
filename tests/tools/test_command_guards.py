@@ -74,6 +74,10 @@ class TestContainerSkip:
         result = check_all_command_guards("rm -rf /", "daytona")
         assert result["approved"] is True
 
+    def test_blaxel_skips_both(self):
+        result = check_all_command_guards("rm -rf /", "blaxel")
+        assert result["approved"] is True
+
 
 # ---------------------------------------------------------------------------
 # tirith allow + safe command

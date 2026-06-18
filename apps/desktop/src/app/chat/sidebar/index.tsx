@@ -81,6 +81,7 @@ import {
   newSessionInProfile,
   normalizeProfileKey
 } from '@/store/profile'
+import { $projects } from '@/store/projects'
 import {
   $cronSessions,
   $messagingPlatformTotals,
@@ -103,6 +104,7 @@ import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { resolveManualSessionOrderIds } from './order'
 import { ProfileRail } from './profile-switcher'
+import { ProjectsSidebarSection } from './projects-section'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 import { type SidebarSessionGroup, type SidebarWorkspaceTree, workspaceTreeFor } from './workspace-groups'
@@ -309,6 +311,9 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onNewSessionInWorkspace: (path: null | string) => void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => void
+  selectedProjectId: string | null
+  onSelectProject: (id: string) => void
+  onNewProject: () => void
 }
 
 export function ChatSidebar({
@@ -322,7 +327,10 @@ export function ChatSidebar({
   onArchiveSession,
   onNewSessionInWorkspace,
   onManageCronJob,
-  onTriggerCronJob
+  onTriggerCronJob,
+  selectedProjectId,
+  onSelectProject,
+  onNewProject
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -340,6 +348,7 @@ export function ChatSidebar({
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
+  const projects = useStore($projects)
   const messagingSessions = useStore($messagingSessions)
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
@@ -533,6 +542,7 @@ export function ChatSidebar({
 
     if (!next.length && agentOrderIds.length) {
       setSidebarSessionOrderIds([])
+
       return
     }
 
@@ -908,6 +918,15 @@ export function ChatSidebar({
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
                 workingSessionIdSet={workingSessionIdSet}
+              />
+            )}
+
+            {!trimmedQuery && (
+              <ProjectsSidebarSection
+                onNewProject={onNewProject}
+                onSelectProject={onSelectProject}
+                projects={projects}
+                selectedProjectId={selectedProjectId}
               />
             )}
 

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
@@ -56,8 +56,8 @@ import {
   $gatewayState,
   $messages,
   $messagingSessions,
-  $resumeFailedSessionId,
   $resumeExhaustedSessionId,
+  $resumeFailedSessionId,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
@@ -104,10 +104,12 @@ import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
+import { CreateProjectDialog } from './projects/create-project-dialog'
+import { ProjectPageView } from './projects/project-page'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { CRON_ROUTE, NEW_CHAT_ROUTE, projectRoute, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
@@ -195,6 +197,9 @@ export function DesktopController() {
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
+
+  const [createProjectOpen, setCreateProjectOpen] = useState(false)
+  const [selectedProjectId, setSelectedProjectId] = useState<null | string>(null)
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
@@ -938,13 +943,19 @@ export function DesktopController() {
         navigate(CRON_ROUTE)
       }}
       onNavigate={selectSidebarItem}
+      onNewProject={() => setCreateProjectOpen(true)}
       onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onSelectProject={id => {
+        setSelectedProjectId(id)
+        navigate(projectRoute(id))
+      }}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)
           .then(() => refreshCronJobs())
           .catch(() => undefined)
       }}
+      selectedProjectId={selectedProjectId}
     />
   )
 
@@ -978,6 +989,14 @@ export function DesktopController() {
       <BootFailureOverlay />
       <CommandPalette />
       <SessionSwitcher />
+      <CreateProjectDialog
+        onClose={() => setCreateProjectOpen(false)}
+        onCreated={project => {
+          setSelectedProjectId(project.id)
+          navigate(projectRoute(project.id))
+        }}
+        open={createProjectOpen}
+      />
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -1194,6 +1213,16 @@ export function DesktopController() {
           <Route element={null} path="agents" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
+          <Route
+            element={
+              selectedProjectId ? (
+                <ProjectPageView chatSlot={chatView} projectId={selectedProjectId} />
+              ) : (
+                <Navigate replace to={NEW_CHAT_ROUTE} />
+              )
+            }
+            path="project/:id"
+          />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
         </Routes>
       </PaneMain>

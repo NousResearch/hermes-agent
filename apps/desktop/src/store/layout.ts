@@ -9,6 +9,8 @@ import {
   storedStringArray
 } from '@/lib/storage'
 
+export const SIDEBAR_PROJECTS_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarProjectsOpen'
+
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
 
 export const SIDEBAR_DEFAULT_WIDTH = 237
@@ -75,6 +77,7 @@ export const $sidebarRecentsOpen = atom(true)
 // default (it only renders at all when cron sessions exist) so the
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
 export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
+export const $sidebarProjectsOpen = atom(storedBoolean(SIDEBAR_PROJECTS_OPEN_STORAGE_KEY, true))
 // Messaging platform sections collapse by default (they can be numerous and
 // tall). We persist the ids the user has *explicitly expanded*, so the default
 // stays collapsed unless they've opened a platform before.
@@ -88,6 +91,7 @@ export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
+$sidebarProjectsOpen.subscribe(open => persistBoolean(SIDEBAR_PROJECTS_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderManual.subscribe(manual => persistBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, manual))
@@ -153,6 +157,10 @@ export function setSidebarRecentsOpen(open: boolean) {
 
 export function setSidebarCronOpen(open: boolean) {
   $sidebarCronOpen.set(open)
+}
+
+export function setSidebarProjectsOpen(open: boolean) {
+  $sidebarProjectsOpen.set(open)
 }
 
 export function toggleSidebarMessagingOpen(sourceId: string) {

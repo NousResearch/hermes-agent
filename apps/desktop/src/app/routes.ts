@@ -6,6 +6,7 @@ export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
+export const PROJECT_ROUTE = '/project/:id'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 
@@ -17,6 +18,7 @@ export type AppView =
   | 'cron'
   | 'messaging'
   | 'profiles'
+  | 'project'
   | 'settings'
   | 'skills'
 
@@ -28,6 +30,7 @@ export type AppRouteId =
   | 'messaging'
   | 'new'
   | 'profiles'
+  | 'project'
   | 'settings'
   | 'skills'
 
@@ -45,6 +48,7 @@ export const APP_ROUTES = [
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
+  { id: 'project', path: 'project/:id', view: 'project' as AppView },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' }
 ] as const satisfies readonly AppRoute[]
@@ -73,6 +77,10 @@ export function routeSessionId(pathname: string): string | null {
   const id = pathname.slice(SESSION_ROUTE_PREFIX.length)
 
   return id && !id.includes('/') ? decodeURIComponent(id) : null
+}
+
+export function projectRoute(id: string): string {
+  return `/project/${id}`
 }
 
 export function sessionRoute(sessionId: string): string {

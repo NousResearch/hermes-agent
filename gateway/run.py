@@ -121,6 +121,16 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CODEX_CLOUDFLARE_CHALLENGE_RE = re.compile(
+    r"("
+    r"_cf_chl_opt"
+    r"|cf-mitigated"
+    r"|/backend-api/codex/chat/completions"
+    r"|cdn-cgi/challenge-platform"
+    r")",
+    re.IGNORECASE,
+)
+
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
     re.IGNORECASE,
@@ -358,14 +368,23 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     Telegram is Bob's mobile inbox, so it should receive concise, safe provider
     failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    Other platforms keep the existing behaviour for now, except Codex
+    Cloudflare challenge HTML is always suppressed before it can leak into any
+    messaging surface.
     """
     if not text:
         return text
+    raw_text = str(text)
+    if _CODEX_CLOUDFLARE_CHALLENGE_RE.search(raw_text):
+        return (
+            "OpenAI Codex returned a Cloudflare challenge before Hermes could "
+            "read the model response. The raw HTML was suppressed; retry after "
+            "resetting the session or restarting the gateway."
+        )
     if _gateway_platform_value(platform) != "telegram":
         return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _redact_gateway_user_facing_secrets(raw_text)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

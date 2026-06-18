@@ -115,6 +115,34 @@ def _is_openai_codex_backend(agent) -> bool:
     )
 
 
+def _ensure_openai_codex_runtime(agent) -> None:
+    """Repair stale Codex runtime state before dispatching a provider call."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    api_mode = str(getattr(agent, "api_mode", "") or "").strip()
+    if provider != "openai-codex" or api_mode in {"codex_responses", "codex_app_server"}:
+        return
+    if api_mode != "chat_completions":
+        return
+
+    logger.warning(
+        "Repairing openai-codex api_mode before request: %s -> codex_responses",
+        api_mode,
+    )
+    agent.api_mode = "codex_responses"
+    if hasattr(agent, "_transport_cache"):
+        agent._transport_cache.clear()
+
+    client_kwargs = getattr(agent, "_client_kwargs", None)
+    if isinstance(client_kwargs, dict):
+        client_kwargs["api_key"] = getattr(agent, "api_key", "") or client_kwargs.get("api_key", "")
+        client_kwargs["base_url"] = getattr(agent, "base_url", "") or client_kwargs.get("base_url", "")
+        if client_kwargs.get("base_url") and hasattr(agent, "_apply_client_headers_for_base_url"):
+            try:
+                agent._apply_client_headers_for_base_url(str(client_kwargs["base_url"]))
+            except Exception as exc:
+                logger.debug("Could not refresh openai-codex request headers: %s", exc)
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -136,6 +164,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    _ensure_openai_codex_runtime(agent)
     result = {"response": None, "error": None}
     request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
@@ -1613,6 +1642,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     Falls back to _interruptible_api_call on provider errors indicating
     streaming is not supported.
     """
+    _ensure_openai_codex_runtime(agent)
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 

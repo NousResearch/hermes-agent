@@ -1,0 +1,5 @@
+name: agnes
+kind: model-provider
+version: 1.0.0
+description: Agnes AI, OpenAI-compatible API, currently free
+author: Daniel, Community Growth Manager, Agnes AI

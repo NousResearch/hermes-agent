@@ -68,6 +68,14 @@ class TestMSGraphWebhookConfig:
             "chats/getAllMessages",
         ]
 
+    def test_invalid_port_falls_back_to_default(self):
+        adapter = _make_adapter(port="not-a-port")
+        assert adapter._port == 8646
+
+    def test_none_port_falls_back_to_default(self):
+        adapter = _make_adapter(port=None)
+        assert adapter._port == 8646
+
 
 class TestMSGraphValidationHandshake:
     @pytest.mark.anyio

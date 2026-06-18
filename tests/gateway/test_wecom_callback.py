@@ -54,6 +54,24 @@ class TestWecomCrypto:
             crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))
 
 
+class TestWecomCallbackConfig:
+    def test_invalid_port_falls_back_to_default(self):
+        config = PlatformConfig(
+            enabled=True,
+            extra={"mode": "callback", "port": "not-a-port", "apps": [_app()]},
+        )
+        adapter = WecomCallbackAdapter(config)
+        assert adapter._port == 8645
+
+    def test_none_port_falls_back_to_default(self):
+        config = PlatformConfig(
+            enabled=True,
+            extra={"mode": "callback", "apps": [_app()]},
+        )
+        adapter = WecomCallbackAdapter(config)
+        assert adapter._port == 8645
+
+
 class TestWecomCallbackEventConstruction:
     def test_build_event_extracts_text_message(self):
         adapter = WecomCallbackAdapter(_config())

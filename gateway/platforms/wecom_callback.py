@@ -62,12 +62,19 @@ def check_wecom_callback_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE and DEFUSEDXML_AVAILABLE
 
 
+def _coerce_port(value: Any, *, default: int = DEFAULT_PORT) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class WecomCallbackAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}
         self._host = str(extra.get("host") or DEFAULT_HOST)
-        self._port = int(extra.get("port") or DEFAULT_PORT)
+        self._port = _coerce_port(extra.get("port") or DEFAULT_PORT)
         self._path = str(extra.get("path") or DEFAULT_PATH)
         self._apps: List[Dict[str, Any]] = self._normalize_apps(extra)
         self._runner: Optional[web.AppRunner] = None

@@ -42,6 +42,13 @@ def check_msgraph_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _coerce_port(value: Any, *, default: int = DEFAULT_PORT) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class MSGraphWebhookAdapter(BasePlatformAdapter):
     """Receive Microsoft Graph change notifications and surface them internally."""
 
@@ -49,7 +56,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.MSGRAPH_WEBHOOK)
         extra = config.extra or {}
         self._host: str = str(extra.get("host", DEFAULT_HOST))
-        self._port: int = int(extra.get("port", DEFAULT_PORT))
+        self._port: int = _coerce_port(extra.get("port", DEFAULT_PORT))
         self._webhook_path: str = self._normalize_path(
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
         )

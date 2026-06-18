@@ -24,7 +24,11 @@ import time
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    REGISTERED_DB_FILES,
+    get_hermes_home,
+    registered_db_root_entries,
+)
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -106,6 +110,63 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+
+
+def _cleanup_legacy_database_files(hermes_home: Path) -> None:
+    """Remove explicitly registered empty legacy DB files and warn otherwise."""
+    for db_name, info in REGISTERED_DB_FILES.items():
+        if not info.get("auto_cleanup_legacy"):
+            continue
+        for legacy_name in info.get("legacy_names", ()):
+            legacy_path = hermes_home / legacy_name
+            try:
+                if not legacy_path.exists():
+                    continue
+                size = legacy_path.stat().st_size
+                if size == 0:
+                    legacy_path.unlink()
+                    logger.warning(
+                        "Removed empty legacy database %s for %s",
+                        legacy_path,
+                        db_name,
+                    )
+                else:
+                    logger.warning(
+                        "Keeping non-empty legacy database %s (%d bytes); "
+                        "manual review required before removal",
+                        legacy_path,
+                        size,
+                    )
+            except OSError as exc:
+                logger.warning(
+                    "Could not inspect legacy database %s: %s",
+                    legacy_path,
+                    exc,
+                )
+
+
+def _warn_unregistered_database_files(hermes_home: Path) -> None:
+    """Warn about root-level .db files not declared in REGISTERED_DB_FILES."""
+    registered = registered_db_root_entries(include_sidecars=True, include_legacy=True)
+    try:
+        candidates = list(hermes_home.glob("*.db"))
+    except OSError as exc:
+        logger.debug("Could not scan Hermes home for database files %s: %s", hermes_home, exc)
+        return
+    for db_file in candidates:
+        if db_file.name in registered:
+            continue
+        try:
+            size = db_file.stat().st_size
+        except OSError:
+            size = -1
+        logger.warning(
+            "Unregistered database file in Hermes home: %s (%d bytes). "
+            "Add it to REGISTERED_DB_FILES in hermes_constants.py to suppress this warning.",
+            db_file.name,
+            size,
+        )
+
 
 SCHEMA_VERSION = 16
 
@@ -707,6 +768,8 @@ class SessionDB:
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            _cleanup_legacy_database_files(self.db_path.parent)
+            _warn_unregistered_database_files(self.db_path.parent)
 
             def _connect_and_init():
                 self._conn = sqlite3.connect(

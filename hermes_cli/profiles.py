@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_constants import registered_db_root_entries
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -115,9 +116,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 #   state-snapshots     — quick-backup snapshot trees
 #   checkpoints         — session checkpoint data
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
-    "state.db",
-    "state.db-wal",
-    "state.db-shm",
+    *registered_db_root_entries(),
     "sessions",
     "backups",
     "state-snapshots",
@@ -207,9 +206,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "bin",                  # installed binaries (tirith, etc.)
     "node_modules",         # npm packages
     # Databases & runtime state
-    "state.db", "state.db-shm", "state.db-wal",
-    "hermes_state.db",
-    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    *registered_db_root_entries(),
     "gateway.pid", "gateway_state.json", "processes.json",
     "auth.json",            # API keys, OAuth tokens, credential pools
     ".env",                 # API keys (dotenv)

@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_constants import registered_db_root_entries
 
 
 # ---------------------------------------------------------------------------
@@ -101,9 +102,7 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     # Credentials & runtime secrets
     "auth.json", ".env",
     # Databases & runtime state
-    "state.db", "state.db-shm", "state.db-wal",
-    "hermes_state.db", "response_store.db",
-    "response_store.db-shm", "response_store.db-wal",
+    *registered_db_root_entries(),
     "gateway.pid", "gateway_state.json", "processes.json",
     "auth.lock", "active_profile", ".update_check",
     "errors.log", ".hermes_history",

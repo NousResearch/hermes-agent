@@ -11,6 +11,61 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 
 
+# Root-level SQLite database files owned by Hermes. Keep this registry as the
+# single source of truth for profile export/distribution exclusions and startup
+# hygiene checks. Values are intentionally plain dictionaries so this module
+# stays import-safe for early CLI startup paths.
+REGISTERED_DB_FILES = {
+    "state.db": {
+        "purpose": "session metadata, message history, and FTS indexes",
+        "module": "hermes_state.SessionDB",
+        "scope": "profile-or-default-home",
+        "durability": "durable",
+        "sync_semantics": "do_not_file_sync_multi_writer",
+        "legacy_names": ("hermes_state.db",),
+        "auto_cleanup_legacy": True,
+    },
+    "response_store.db": {
+        "purpose": "OpenAI Responses API conversation cache",
+        "module": "gateway.platforms.api_server.ResponseStore",
+        "scope": "machine-local",
+        "durability": "cache",
+        "sync_semantics": "do_not_sync",
+        "legacy_names": (),
+        "auto_cleanup_legacy": False,
+    },
+    "kanban.db": {
+        "purpose": "Kanban multi-agent work queue when a root-local board is used",
+        "module": "hermes_cli.kanban_db",
+        "scope": "machine-local-or-explicit-central-board",
+        "durability": "durable-coordination-state",
+        "sync_semantics": "single-writer-or-provider-required",
+        "legacy_names": (),
+        "auto_cleanup_legacy": False,
+    },
+}
+
+
+def sqlite_sidecar_names(db_name: str) -> tuple[str, str]:
+    """Return SQLite sidecar filenames for a root DB filename."""
+    return (f"{db_name}-wal", f"{db_name}-shm")
+
+
+def registered_db_root_entries(*, include_sidecars: bool = True, include_legacy: bool = True) -> frozenset[str]:
+    """Return root-level database filenames/sidecars known to Hermes."""
+    names: set[str] = set()
+    for db_name, info in REGISTERED_DB_FILES.items():
+        names.add(db_name)
+        if include_sidecars:
+            names.update(sqlite_sidecar_names(db_name))
+        if include_legacy:
+            for legacy_name in info.get("legacy_names", ()):
+                names.add(legacy_name)
+                if include_sidecars:
+                    names.update(sqlite_sidecar_names(legacy_name))
+    return frozenset(names)
+
+
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(

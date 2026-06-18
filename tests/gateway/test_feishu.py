@@ -2798,6 +2798,81 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_card_json_2_for_markdown_tables(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_markdown_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "**说明**\n\n"
+            "| 类型 | 作用 |\n"
+            "|---|---|\n"
+            "| session | 聊天档案 |\n"
+            "\n## 下一节"
+        )
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["schema"], "2.0")
+        self.assertEqual(payload["config"]["width_mode"], "fill")
+        self.assertEqual(
+            payload["body"]["elements"],
+            [
+                {
+                    "tag": "markdown",
+                    "content": content,
+                    "text_align": "left",
+                    "text_size": "normal",
+                }
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_markdown_table_inside_existing_code_fence_is_not_rewrapped(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```text\n| a | b |\n|---|---|\n| 1 | 2 |\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```text\n| a | b |\n|---|---|\n| 1 | 2 |\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_advanced_markdown_lines(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

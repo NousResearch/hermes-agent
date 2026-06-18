@@ -549,7 +549,7 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
-    rows = _build_markdown_post_rows(content)
+    rows = _build_markdown_post_rows(_protect_markdown_tables_for_feishu_md(content))
     return json.dumps(
         {
             "zh_cn": {
@@ -558,6 +558,92 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _build_markdown_card_payload(content: str) -> str:
+    """Build a Feishu Card JSON 2.0 payload for Markdown needing tables.
+
+    Feishu IM `post` messages use legacy rich-text `md` nodes, which do not
+    reliably render markdown tables. Card JSON 2.0's markdown component does
+    support tables, so table-bearing assistant replies are sent as interactive
+    cards while ordinary markdown continues to use post messages.
+    """
+    card = {
+        "schema": "2.0",
+        "config": {
+            "update_multi": True,
+            "width_mode": "fill",
+            "enable_forward": True,
+            "summary": {"content": _strip_markdown_to_plain_text(content)[:120] or "Hermes"},
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": content,
+                    "text_align": "left",
+                    "text_size": "normal",
+                }
+            ]
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _protect_markdown_tables_for_feishu_md(content: str) -> str:
+    """Wrap markdown tables in code fences before sending as Feishu post md.
+
+    Feishu post `md` nodes support most Markdown we emit (bold, headings,
+    lists, links, fences), but table blocks are a known sharp edge: clients can
+    render the whole post as blank or force callers to downgrade the entire
+    message to raw text.  Preserve the table text as a fenced `text` block while
+    keeping the rest of the reply in renderable markdown.
+    """
+    if not content or "|" not in content:
+        return content
+
+    lines = content.replace("\r\n", "\n").split("\n")
+    output: List[str] = []
+    i = 0
+    in_code_block = False
+
+    def _is_table_separator(line: str) -> bool:
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            return False
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+    def _is_table_row(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+    while i < len(lines):
+        line = lines[i]
+        if _MARKDOWN_FENCE_OPEN_RE.match(line.strip()) or _MARKDOWN_FENCE_CLOSE_RE.match(line.strip()):
+            in_code_block = not in_code_block
+            output.append(line)
+            i += 1
+            continue
+
+        if (
+            not in_code_block
+            and i + 1 < len(lines)
+            and _is_table_row(line)
+            and _is_table_separator(lines[i + 1])
+        ):
+            table_lines = [line, lines[i + 1]]
+            i += 2
+            while i < len(lines) and _is_table_row(lines[i]):
+                table_lines.append(lines[i])
+                i += 1
+            output.extend(["```text", *table_lines, "```"])
+            continue
+
+        output.append(line)
+        i += 1
+
+    return "\n".join(output)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -4374,12 +4460,8 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_markdown_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

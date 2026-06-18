@@ -33,6 +33,7 @@ from agent.prompt_builder import (
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
@@ -122,6 +123,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Universal parallel-tool-call guidance.  Tells the model to batch
+    # independent tool calls into one assistant turn rather than emitting one
+    # call per turn — the runtime already runs independent calls concurrently
+    # (read-only tools always; non-overlapping path-scoped file ops), so the
+    # only thing missing was steering the model to produce the batch.  Cuts
+    # round-trips and the resent-context cost that compounds over a long
+    # conversation.  Gated by config.yaml ``agent.parallel_tool_call_guidance``
+    # (default True) and only injected when tools are actually loaded.
+    if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []

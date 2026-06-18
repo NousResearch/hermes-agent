@@ -1218,6 +1218,27 @@ def _ensure_session_db_row(session: dict) -> None:
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
+    # The composer override may carry the RESOLVED provider "custom" for a named
+    # ``providers:`` / ``custom_providers:`` entry. Persisting bare "custom" here
+    # (the very first DB write for a fresh desktop session, before the agent is
+    # built) is the origin of the recurring "No LLM provider configured" rows:
+    # on the next resume bare "custom" routes to OpenRouter with no key. Recover
+    # the durable ``custom:<name>`` identity from the override's base_url, else
+    # the configured provider, so a routable identity is persisted from the
+    # start (matches _runtime_model_config's normalization).
+    if str(model_config.get("provider") or "").strip().lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            healed = canonical_custom_identity(
+                base_url=model_config.get("base_url") or None
+            )
+            if healed:
+                model_config["provider"] = healed
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed (db row)", exc_info=True
+            )
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
     if tier := session.get("create_service_tier_override"):
@@ -1579,6 +1600,28 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
 
+    # Heal a bare ``"custom"`` provider stored by an older build (or any leak
+    # site that bypassed _runtime_model_config's normalization). Bare custom is
+    # the resolved billing class, not a routable identity — restoring it as the
+    # session's provider override routes the resume to the OpenRouter default
+    # URL with no api_key, surfacing as "No LLM provider configured". Recover
+    # the durable ``custom:<name>`` menu key from the stored base_url, falling
+    # back to the configured provider when the row has no base_url (the
+    # recurring Desktop/TUI regression vector). If neither names a real entry,
+    # drop the bare provider entirely so resume falls back to the configured
+    # default rather than the broken OpenRouter route.
+    if provider.strip().lower() == "custom":
+        healed = None
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            healed = canonical_custom_identity(base_url=base_url or None)
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed", exc_info=True
+            )
+        provider = healed or ("" if not base_url else provider)
+
     if model:
         # Use the same dict-shaped override that live /model switches use so a
         # DB-restored session can preserve custom endpoint metadata across both
@@ -1613,21 +1656,27 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     if model:
         config["model"] = model
     if provider:
-        if provider == "custom" and base_url:
+        if provider.strip().lower() == "custom":
             # ``agent.provider`` is the RESOLVED provider, and for any named
             # ``providers:`` / ``custom_providers:`` entry that is the literal
             # string "custom" — persisting it loses the entry identity, so a
             # later resume/rebuild cannot re-resolve the entry's credentials
             # (the api_key is deliberately never persisted; see
             # _stored_session_runtime_overrides). Recover the canonical
-            # ``custom:<name>`` menu key from the endpoint URL so
-            # resolve_runtime_provider() can find the entry again.
+            # ``custom:<name>`` menu key from the endpoint URL when present,
+            # else from the configured provider — this second fallback is the
+            # fix for sessions built WITHOUT a base_url on the override (the
+            # recurring Desktop/TUI "No LLM provider configured" regression:
+            # bare "custom" with no base_url was persisted verbatim and routed
+            # to OpenRouter with no key on the next resume).
             try:
                 from hermes_cli.runtime_provider import (
-                    find_custom_provider_identity,
+                    canonical_custom_identity,
                 )
 
-                provider = find_custom_provider_identity(base_url) or provider
+                provider = (
+                    canonical_custom_identity(base_url=base_url) or provider
+                )
             except Exception:
                 logger.debug(
                     "custom provider identity lookup failed", exc_info=True
@@ -3550,25 +3599,27 @@ def _make_agent(
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
         resolve_kwargs = {}
-        if (
-            override_base_url
-            and str(requested_provider or "").strip().lower() == "custom"
-        ):
+        if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
             # (see _runtime_model_config) stored the resolved provider
             # "custom", which _get_named_custom_provider cannot match back to
             # a named ``providers:`` / ``custom_providers:`` entry — the
-            # rebuild then either raised auth_unavailable or silently
-            # resolved placeholder credentials against the patched-back
-            # base_url. Recover the entry identity from the persisted
-            # base_url; failing that, hand the base_url to the direct-alias
-            # branch so pool/env credentials can still be resolved for it.
-            from hermes_cli.runtime_provider import find_custom_provider_identity
+            # rebuild then either raised auth_unavailable, silently resolved
+            # placeholder credentials against the patched-back base_url, or
+            # (when no base_url was stored) routed to the OpenRouter default
+            # with no key, surfacing as "No LLM provider configured". Recover
+            # the entry identity from the persisted base_url, falling back to
+            # the configured provider when the override carries no base_url
+            # (the recurring Desktop/TUI regression vector).
+            from hermes_cli.runtime_provider import canonical_custom_identity
 
-            recovered = find_custom_provider_identity(override_base_url)
+            recovered = canonical_custom_identity(base_url=override_base_url or None)
             if recovered:
                 requested_provider = recovered
-            resolve_kwargs["explicit_base_url"] = override_base_url
+            if override_base_url:
+                # Failing identity recovery, still hand the base_url to the
+                # direct-alias branch so pool/env credentials resolve for it.
+                resolve_kwargs["explicit_base_url"] = override_base_url
         runtime = resolve_runtime_provider(
             requested=requested_provider,
             target_model=model or None,

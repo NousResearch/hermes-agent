@@ -81,10 +81,9 @@ class TestMain:
         monkeypatch.setattr("tui_gateway.entry.resolve_skin", MagicMock(return_value={}))
         write_json = MagicMock(return_value=True)
         monkeypatch.setattr("tui_gateway.entry.write_json", write_json)
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
+        monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
-        with pytest.raises(SystemExit):
-            entry.main()
+        entry.main()
 
         # write_json should have been called only once (for gateway.ready startup),
         # not for the blank lines
@@ -103,10 +102,9 @@ class TestMain:
         monkeypatch.setattr("tui_gateway.entry.dispatch", mock_dispatch)
         write_json = MagicMock(return_value=True)
         monkeypatch.setattr("tui_gateway.entry.write_json", write_json)
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
+        monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
-        with pytest.raises(SystemExit):
-            entry.main()
+        entry.main()
 
         mock_dispatch.assert_called_once()
         # write_json called: once for gateway.ready, once for response
@@ -123,10 +121,9 @@ class TestMain:
         write_json = MagicMock(return_value=True)
         monkeypatch.setattr("tui_gateway.entry.write_json", write_json)
         monkeypatch.setattr("tui_gateway.entry.dispatch", MagicMock())
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
+        monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
-        with pytest.raises(SystemExit):
-            entry.main()
+        entry.main()
 
         # Check the parse error was written
         parse_error_call = None
@@ -188,10 +185,9 @@ class TestMain:
         monkeypatch.setattr("tui_gateway.entry.dispatch", MagicMock(return_value=None))
         write_json = MagicMock(return_value=True)
         monkeypatch.setattr("tui_gateway.entry.write_json", write_json)
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
+        monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
-        with pytest.raises(SystemExit):
-            entry.main()
+        entry.main()
 
         # write_json called exactly once (gateway.ready), not for response
         assert write_json.call_count == 1
@@ -207,10 +203,8 @@ class TestMain:
         write_json = MagicMock(return_value=True)
         monkeypatch.setattr("tui_gateway.entry.write_json", write_json)
         monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
 
-        with pytest.raises(SystemExit):
-            entry.main()
+        entry.main()
 
         entry._log_exit.assert_called_once_with("stdin EOF (TUI closed the command pipe)")
 
@@ -226,14 +220,12 @@ class TestMain:
             return_value={"mcp_servers": {"test-server": {"command": "echo"}}}
         ))
         monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", MagicMock())
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
         monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
         saved = entry._mcp_discovery_thread
         try:
             entry._mcp_discovery_thread = None
-            with pytest.raises(SystemExit):
-                entry.main()
+            entry.main()
             assert entry._mcp_discovery_thread is not None
             assert entry._mcp_discovery_thread.name == "tui-mcp-discovery"
         finally:
@@ -248,14 +240,12 @@ class TestMain:
         monkeypatch.setattr("tui_gateway.entry.resolve_skin", MagicMock(return_value={}))
         monkeypatch.setattr("tui_gateway.entry.write_json", MagicMock(return_value=True))
         monkeypatch.setattr("hermes_cli.config.read_raw_config", MagicMock(return_value={}))
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
         monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
         saved = entry._mcp_discovery_thread
         try:
             entry._mcp_discovery_thread = None
-            with pytest.raises(SystemExit):
-                entry.main()
+            entry.main()
             assert entry._mcp_discovery_thread is None
         finally:
             entry._mcp_discovery_thread = saved
@@ -270,14 +260,12 @@ class TestMain:
         monkeypatch.setattr("tui_gateway.entry.write_json", MagicMock(return_value=True))
         monkeypatch.setattr("hermes_cli.config.read_raw_config", MagicMock(side_effect=OSError("config corrupted")))
         monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", MagicMock())
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
         monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
         saved = entry._mcp_discovery_thread
         try:
             entry._mcp_discovery_thread = None
-            with pytest.raises(SystemExit):
-                entry.main()
+            entry.main()
             # Fallback to True means the MCP discovery thread IS started
             assert entry._mcp_discovery_thread is not None
         finally:
@@ -295,14 +283,12 @@ class TestMain:
             return_value={"mcp_servers": {"test-server": {"command": "echo"}}}
         ))
         monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", MagicMock(side_effect=RuntimeError("fail")))
-        monkeypatch.setattr(sys, "exit", MagicMock(side_effect=SystemExit(0)))
         monkeypatch.setattr("tui_gateway.entry._log_exit", MagicMock())
 
         saved = entry._mcp_discovery_thread
         try:
             entry._mcp_discovery_thread = None
-            with pytest.raises(SystemExit):
-                entry.main()
+            entry.main()
             # Thread was started and finished; ensure no crash
             thread = entry._mcp_discovery_thread
             if thread:

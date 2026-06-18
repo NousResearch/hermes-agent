@@ -272,7 +272,7 @@ def _clear_tool_defs_cache() -> None:
 # Tools that always receive full schemas in stub mode — the main agent calls
 # these directly to think, remember, and delegate.  Everything else is reduced
 # to a name+description stub so the model routes tool use through delegate_task.
-_STUB_MODE_FULL_TOOLS: frozenset = frozenset({
+_STUB_MODE_FULL_TOOLS: frozenset[str] = frozenset({
     "delegate_task",
     "memory",
     "skills_list",

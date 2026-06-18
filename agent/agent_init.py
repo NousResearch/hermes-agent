@@ -954,11 +954,12 @@ def init_agent(
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
     # Get available tools with filtering
-    _tool_stub_mode = bool(
-        cfg_get(agent_cfg, "tools", "stub_mode", default=False)
-        if isinstance(agent_cfg, dict)
-        else False
-    )
+    _tool_stub_mode = False
+    try:
+        from hermes_cli.config import load_config as _load_tools_cfg
+        _tool_stub_mode = bool(cfg_get(_load_tools_cfg(), "tools", "stub_mode", default=False))
+    except Exception:
+        pass
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,

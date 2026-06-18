@@ -954,10 +954,21 @@ def init_agent(
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
     # Get available tools with filtering
+    _tool_stub_mode = False
+    try:
+        from hermes_cli.config import load_config as _load_tools_cfg
+        # Subagents must always receive full schemas — stub_mode is a main-thread
+        # context optimisation and the delegate_task contract requires that
+        # subagents can actually invoke the tools they're handed.
+        if platform != "subagent":
+            _tool_stub_mode = bool(cfg_get(_load_tools_cfg(), "tools", "stub_mode", default=False))
+    except Exception:
+        pass
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        stub_mode=_tool_stub_mode,
     )
     
     # Show tool configuration and store valid tool names for validation

@@ -18,6 +18,7 @@ from agent.auxiliary_client import (
     _fixed_temperature_for_model,
     _is_arcee_trinity_thinking,
     _is_codex_gpt55,
+    _is_codex_spark,
 )
 
 
@@ -156,4 +157,76 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
             "trinity-large-thinking", "openrouter", allow_codex_gpt55_autoraise=False
         )
         == 0.75
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex gpt-5.3-codex-spark compaction-threshold autoraise
+#
+# gpt-5.3-codex-spark is Codex-OAuth-only (ChatGPT Pro entitlement) with a
+# native 128K context window.  The default 50% compaction trigger would fire
+# at ~64K — wasting half the usable window, often before the session has
+# accumulated enough turns to summarize meaningfully.  This route raises the
+# trigger to 70% (~90K) to preserve more raw context while leaving ~38K
+# headroom before the 128K hard limit.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.3-codex-spark",
+        "openai/gpt-5.3-codex-spark",  # aggregator-prefixed (still on the codex route)
+        "GPT-5.3-CODEX-SPARK",  # case-insensitive
+        "  gpt-5.3-codex-spark  ",  # whitespace tolerant
+    ],
+)
+def test_is_codex_spark_matches_on_codex_provider(model: str) -> None:
+    assert _is_codex_spark(model, "openai-codex") is True
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["openrouter", "openai", "copilot", "openai-api", "", None],
+)
+def test_is_codex_spark_rejects_non_codex_providers(provider) -> None:
+    # spark on any non-Codex route is not a real slug — no override.
+    assert _is_codex_spark("gpt-5.3-codex-spark", provider) is False
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.5",  # different family
+        "gpt-5.3-codex",  # sibling, not spark
+        "gpt-5.3",  # bare 5.3, not spark
+        "gpt-5.3-codex-spark-mini",  # hypothetical variant — not matched yet
+        "", None,
+    ],
+)
+def test_is_codex_spark_rejects_non_spark_models(model) -> None:
+    assert _is_codex_spark(model, "openai-codex") is False
+
+
+def test_compression_threshold_for_codex_spark() -> None:
+    assert _compression_threshold_for_model("gpt-5.3-codex-spark", "openai-codex") == 0.70
+    assert _compression_threshold_for_model("openai/gpt-5.3-codex-spark", "openai-codex") == 0.70
+
+
+def test_compression_threshold_codex_spark_other_routes_unaffected() -> None:
+    # Same slug, different route → no override (keep the user's config value).
+    assert _compression_threshold_for_model("gpt-5.3-codex-spark", "openrouter") is None
+    assert _compression_threshold_for_model("gpt-5.3-codex-spark", "openai") is None
+    assert _compression_threshold_for_model("gpt-5.3-codex-spark") is None  # no provider
+
+
+def test_compression_threshold_codex_spark_not_gated_by_gpt55_optout() -> None:
+    # The spark autoraise is independent of the gpt-5.5 opt-out flag — 128K is
+    # the model's native window, so 70% is unambiguously correct regardless of
+    # whether the user opted out of the (artificial-cap) gpt-5.5 autoraise.
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.3-codex-spark", "openai-codex", allow_codex_gpt55_autoraise=False
+        )
+        == 0.70
     )

@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -329,3 +329,42 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+def test_run_job_script_starts_new_session_on_posix(hermes_env):
+    from cron.scheduler import _run_job_script
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho hi\n")
+
+    with patch("cron.scheduler.sys.platform", "darwin"), patch(
+        "cron.scheduler.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="ok\n", stderr=""),
+    ) as run_mock:
+        ok, output = _run_job_script("alert.sh")
+
+    assert ok is True
+    assert output == "ok"
+    assert run_mock.call_args.kwargs["start_new_session"] is True
+    assert "creationflags" not in run_mock.call_args.kwargs
+
+
+def test_run_job_script_keeps_windows_capture_flags(hermes_env):
+    from cron.scheduler import _run_job_script
+
+    script_path = hermes_env / "scripts" / "alert.py"
+    script_path.write_text("print('hi')\n")
+
+    with patch("cron.scheduler.sys.platform", "win32"), patch(
+        "cron.scheduler.windows_hide_flags",
+        return_value=1234,
+    ), patch(
+        "cron.scheduler.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="ok\n", stderr=""),
+    ) as run_mock:
+        ok, output = _run_job_script("alert.py")
+
+    assert ok is True
+    assert output == "ok"
+    assert run_mock.call_args.kwargs["creationflags"] == 1234
+    assert "start_new_session" not in run_mock.call_args.kwargs

@@ -968,7 +968,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [sys.executable, str(path)]
 
     try:
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        # Isolate POSIX cron scripts in their own session so a signal aimed at
+        # the child process group cannot also tear down the gateway process.
+        popen_kwargs = (
+            {"creationflags": windows_hide_flags()}
+            if sys.platform == "win32"
+            else {"start_new_session": True}
+        )
         result = subprocess.run(
             argv,
             capture_output=True,

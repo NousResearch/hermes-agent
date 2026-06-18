@@ -24,6 +24,7 @@ import os
 import json
 import re
 import asyncio
+import contextvars
 import logging
 import threading
 import time
@@ -211,6 +212,42 @@ TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
+
+# Optional per-task pin for the resolved tool names. The module global above is
+# shared process-wide, so when concurrent delegation subagents each resolve a
+# different toolset they race on it — the execute_code sandbox-scope fallback
+# (see ``handle_function_call``) could then hand one task a sibling task's tool
+# list (TR-F1). A delegation worker pins this ContextVar to its own child's
+# toolset; ``get_last_resolved_tool_names`` prefers the pin and falls back to the
+# global, so any caller that never pins is no worse off than before. Left
+# unpinned outside delegation workers — ``get_tool_definitions`` keeps writing
+# only the global, so non-delegation callers behave exactly as before.
+_last_resolved_tool_names_var: contextvars.ContextVar[Optional[List[str]]] = (
+    contextvars.ContextVar("hermes_last_resolved_tool_names", default=None)
+)
+
+
+def get_last_resolved_tool_names() -> List[str]:
+    """Return the resolved tool-name scope, preferring a per-task pin (set by
+    delegation workers) and falling back to the process-global written by
+    ``get_tool_definitions``."""
+    scoped = _last_resolved_tool_names_var.get()
+    if scoped is not None:
+        return scoped
+    return _last_resolved_tool_names
+
+
+def set_resolved_tool_names_scope(names: List[str]) -> "contextvars.Token":
+    """Pin a per-task resolved-tool-name scope for the current context/thread.
+    Delegation workers bind a child's own toolset here so the execute_code
+    sandbox fallback can never read a concurrent sibling's list (TR-F1).
+    Returns a token for :func:`reset_resolved_tool_names_scope`."""
+    return _last_resolved_tool_names_var.set(list(names))
+
+
+def reset_resolved_tool_names_scope(token: "contextvars.Token") -> None:
+    """Restore the scope saved by :func:`set_resolved_tool_names_scope`."""
+    _last_resolved_tool_names_var.reset(token)
 
 
 # =============================================================================
@@ -975,8 +1012,10 @@ def handle_function_call(
         _dispatch_start = time.monotonic()
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            # the parent's tool set. When absent, fall back to the per-task
+            # ContextVar scope (isolated across concurrent delegation workers),
+            # then the process-global as a last resort.
+            sandbox_enabled = enabled_tools if enabled_tools is not None else get_last_resolved_tool_names()
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,

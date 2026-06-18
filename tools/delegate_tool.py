@@ -1505,10 +1505,27 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
+            # Pin this child's own toolset as the per-task resolved-tool-name
+            # scope for the worker thread. Without this, the execute_code
+            # sandbox-scope fallback (model_tools.get_last_resolved_tool_names)
+            # would read the process-global, which a concurrent sibling child
+            # may have overwritten with its own toolset (TR-F1). The child runs
+            # in its own thread/context, so the bind is naturally isolated and
+            # reset on completion.
+            import model_tools as _mt
+
+            _child_scope = sorted(getattr(child, "valid_tool_names", None) or [])
+            _scope_token = (
+                _mt.set_resolved_tool_names_scope(_child_scope) if _child_scope else None
             )
+            try:
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                )
+            finally:
+                if _scope_token is not None:
+                    _mt.reset_resolved_tool_names_scope(_scope_token)
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:

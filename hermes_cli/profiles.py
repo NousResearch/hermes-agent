@@ -35,6 +35,20 @@ from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
+
+def _safe_copy2(src: str, dst: str) -> None:
+    """Race-condition-safe wrapper around :func:`shutil.copy2`.
+
+    When cloning a live profile, files can be deleted or have their
+    permissions changed between the directory listing and the actual
+    copy.  Rather than aborting the entire ``copytree``, skip files
+    that vanish or become inaccessible.
+    """
+    try:
+        shutil.copy2(src, dst)
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
     "memories",
@@ -122,6 +136,11 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "backups",
     "state-snapshots",
     "checkpoints",
+    # Runtime artifacts that may be root-owned or deleted mid-copy.
+    ".gateway-planned-stop.json",
+    "gateway.lock",
+    "auth.lock",
+    "kanban.db.init.lock",
 })
 
 # Marker file written by `hermes profile create --no-skills`.  When present in
@@ -856,6 +875,7 @@ def create_profile(
             source_dir,
             profile_dir,
             ignore=_clone_all_copytree_ignore(source_dir),
+            copy_function=_safe_copy2,
         )
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:

@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections import OrderedDict
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -3733,6 +3734,605 @@ class HermesIndexSource(SkillSource):
         )
 
 
+# ---------------------------------------------------------------------------
+# ARD (Agentic Resource Discovery) source adapter
+# ---------------------------------------------------------------------------
+
+# Default ARD registries to query.  The HF Discover endpoint is the reference
+# implementation of the ARD spec v0.9.  Users can add more via config or taps.
+_DEFAULT_ARD_REGISTRIES: List[str] = [
+    "https://huggingface-hf-discover.hf.space",
+]
+
+# ARD media-type constants (IANA-style, per spec §3)
+ARD_TYPE_SKILL = "application/ai-skill"
+ARD_TYPE_MCP_SERVER = "application/mcp-server+json"
+ARD_TYPE_MCP_SERVER_CARD = "application/mcp-server-card+json"
+ARD_TYPE_A2A_AGENT = "application/a2a-agent-card+json"
+
+# All recognized MCP-type media types
+_ARD_MCP_TYPES = frozenset({ARD_TYPE_MCP_SERVER, ARD_TYPE_MCP_SERVER_CARD})
+
+_ARD_CACHE_TTL = 600  # 10 min cache for catalog fetches
+
+
+def _get_ard_registries() -> List[str]:
+    """Return the list of ARD registries to query (from config or defaults)."""
+    try:
+        from hermes_constants import get_hermes_home
+        import yaml as _yaml
+
+        config_path = get_hermes_home() / "config.yaml"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                cfg = _yaml.safe_load(f) or {}
+            user_registries = (
+                cfg.get("skills_hub", {}).get("ard_registries")
+                or cfg.get("ard_registries")
+            )
+            if isinstance(user_registries, list) and user_registries:
+                return [str(r) for r in user_registries]
+    except Exception:
+        pass
+    return list(_DEFAULT_ARD_REGISTRIES)
+
+
+def _guarded_http_post_json(
+    url: str, json_body: dict, *, timeout: int = 20,
+    headers: Optional[dict] = None,
+) -> Optional[dict]:
+    """POST JSON to an ARD endpoint with SSRF and safety checks."""
+    if not is_safe_url(url):
+        logger.warning("Blocked unsafe ARD endpoint URL: %s", url)
+        return None
+
+    blocked = check_website_access(url)
+    if blocked:
+        logger.info(
+            "Blocked ARD POST for %s by rule %s", blocked["host"], blocked["rule"]
+        )
+        return None
+
+    try:
+        resp = httpx.post(
+            url,
+            json=json_body,
+            headers=headers or {"Content-Type": "application/json"},
+            timeout=timeout,
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            logger.debug("ARD search returned %d for %s", resp.status_code, url)
+            return None
+        return resp.json()
+    except (httpx.HTTPError, ValueError, Exception) as exc:
+        logger.debug("ARD POST failed for %s: %s", url, exc)
+        return None
+
+
+class ArdSource(SkillSource):
+    """Discover skills, MCP servers, and agents via ARD-compliant registries.
+
+    Implements the Agentic Resource Discovery specification (v0.9 Draft):
+    - Queries ``POST /search`` on ARD registries with natural-language text
+    - Supports type filtering (application/ai-skill, application/mcp-server+json, etc.)
+    - Supports federation modes (auto, referrals, none)
+    - Falls back to static ``/.well-known/ai-catalog.json`` when /search is unavailable
+
+    ARD entries are mapped to SkillMeta:
+    - ``application/ai-skill``     → standard skill (name, description)
+    - ``application/mcp-server+json`` → stored in extra['mcp'] for auto-registration
+    - ``application/a2a-agent-card+json`` → stored in extra['a2a'] (informational)
+
+    When the agent requests an ARD result of type MCP, ArdSource.fetch() triggers
+    MCP server auto-registration via the mcp_tool infrastructure instead of
+    downloading a SKILL.md bundle.
+    """
+
+    def __init__(self, registries: Optional[List[str]] = None):
+        self._registries = registries or _get_ard_registries()
+        self._catalog_cache: Dict[str, Tuple[float, dict]] = {}
+        self._search_cache: Dict[str, SkillMeta] = {}  # identifier → meta
+
+    def source_id(self) -> str:
+        return "ard"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    # -- ARD search -------------------------------------------------------
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        """Search all configured ARD registries with federation support.
+
+        Federation modes (per ARD spec §7):
+        - auto (default): query primary registries, follow referrals
+        - referrals: explicit referral following
+        - none: only query explicitly configured registries
+        """
+        if not self._registries:
+            return []
+
+        all_results: List[SkillMeta] = []
+        queried = set()
+        to_query = list(self._registries)
+
+        # BFS through referrals (max 2 hops to prevent infinite loops)
+        for hop in range(3):
+            if not to_query or len(all_results) >= limit:
+                break
+
+            next_batch = []
+            for registry_url in to_query:
+                if registry_url in queried:
+                    continue
+                queried.add(registry_url)
+
+                results, referrals = self._search_registry_with_referrals(
+                    registry_url, query, limit
+                )
+                all_results.extend(results)
+
+                # Follow referrals (federation)
+                for ref in referrals:
+                    if ref not in queried and ref not in to_query:
+                        next_batch.append(ref)
+
+            to_query = next_batch
+
+        # Deduplicate by identifier, keep first (highest score from first registry)
+        seen: set = set()
+        deduped: List[SkillMeta] = []
+        for r in all_results:
+            if r.identifier not in seen:
+                seen.add(r.identifier)
+                deduped.append(r)
+                # Cache for inspect() lookups
+                self._search_cache[r.identifier] = r
+        return deduped[:limit]
+
+    def _search_registry_with_referrals(
+        self, registry_url: str, query: str, limit: int
+    ) -> Tuple[List[SkillMeta], List[str]]:
+        """Query a registry and return (results, referral_urls).
+
+        Parses the federation response for referral entries.
+        """
+        search_url = registry_url.rstrip("/") + "/search"
+        body = {
+            "query": {
+                "text": query or "",
+                "filter": {
+                    "type": [
+                        ARD_TYPE_SKILL,
+                        ARD_TYPE_MCP_SERVER,
+                        ARD_TYPE_MCP_SERVER_CARD,
+                    ],
+                },
+            },
+            "pageSize": min(limit, 20),
+        }
+
+        data = _guarded_http_post_json(search_url, body, timeout=20)
+        if data is None:
+            # Fallback: try static catalog
+            results = self._search_static_catalog(registry_url, query, limit)
+            return results, []
+
+        entries = data.get("results") or data.get("entries") or []
+        results = [self._entry_to_meta(e, registry_url) for e in entries if e][:limit]
+
+        # Extract referrals from federation response
+        referrals: List[str] = []
+        fed_info = data.get("federation") or {}
+        if isinstance(fed_info, dict):
+            ref_list = fed_info.get("referrals", [])
+            if isinstance(ref_list, list):
+                for ref in ref_list:
+                    if isinstance(ref, str) and ref.startswith("http"):
+                        referrals.append(ref)
+
+        return results, referrals
+
+    def _search_registry(
+        self, registry_url: str, query: str, limit: int
+    ) -> List[SkillMeta]:
+        """Query a single ARD registry's POST /search endpoint."""
+        # Try local cache first (offline/fast path)
+        cached = _search_ard_cache(query, limit, registry_url)
+        if cached is not None:
+            return cached
+
+        search_url = registry_url.rstrip("/") + "/search"
+        body = {
+            "query": {
+                "text": query or "",
+                "filter": {
+                    "type": [
+                        ARD_TYPE_SKILL,
+                        ARD_TYPE_MCP_SERVER,
+                        ARD_TYPE_MCP_SERVER_CARD,
+                    ],
+                },
+            },
+            "pageSize": min(limit, 20),
+        }
+
+        data = _guarded_http_post_json(search_url, body, timeout=20)
+        if data is None:
+            # Fallback: try static catalog
+            return self._search_static_catalog(registry_url, query, limit)
+
+        entries = data.get("results") or data.get("entries") or []
+        return [self._entry_to_meta(e, registry_url) for e in entries if e][:limit]
+
+    def _search_static_catalog(
+        self, registry_url: str, query: str, limit: int
+    ) -> List[SkillMeta]:
+        """Fallback: fetch /.well-known/ai-catalog.json and filter client-side."""
+        import time
+
+        now = time.time()
+        cached = self._catalog_cache.get(registry_url)
+        if cached and (now - cached[0]) < _ARD_CACHE_TTL:
+            catalog = cached[1]
+        else:
+            catalog_url = registry_url.rstrip("/") + "/.well-known/ai-catalog.json"
+            resp = _guarded_http_get(catalog_url, timeout=15)
+            if resp is None or resp.status_code != 200:
+                return []
+            try:
+                catalog = resp.json()
+            except (ValueError, Exception):
+                return []
+            self._catalog_cache[registry_url] = (now, catalog)
+
+        entries = catalog.get("entries") or catalog.get("resources") or []
+        query_lower = (query or "").lower()
+        results: List[SkillMeta] = []
+        for e in entries:
+            entry_type = e.get("type", "")
+            if entry_type not in (ARD_TYPE_SKILL, ARD_TYPE_MCP_SERVER,
+                                  ARD_TYPE_MCP_SERVER_CARD):
+                continue
+            # Simple keyword filter on displayName + description
+            display = str(e.get("displayName", "")).lower()
+            desc = str(e.get("description", "")).lower()
+            tags = " ".join(str(t) for t in e.get("tags", [])).lower()
+            haystack = f"{display} {desc} {tags}"
+            if query_lower and not any(
+                word in haystack for word in query_lower.split()
+            ):
+                continue
+            results.append(self._entry_to_meta(e, registry_url))
+        return results[:limit]
+
+    def _entry_to_meta(self, entry: dict, registry_url: str) -> SkillMeta:
+        """Convert an ARD catalog entry to SkillMeta."""
+        identifier = str(entry.get("identifier", ""))
+        display_name = str(entry.get("displayName", identifier.rsplit(":", 1)[-1]))
+        entry_type = str(entry.get("type", ARD_TYPE_SKILL))
+        description = str(entry.get("description", ""))
+        url = str(entry.get("url", ""))
+        tags = entry.get("tags", []) if isinstance(entry.get("tags"), list) else []
+        rep_queries = (
+            entry.get("representativeQueries", [])
+            if isinstance(entry.get("representativeQueries"), list)
+            else []
+        )
+        metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+
+        extra: Dict[str, Any] = {
+            "ard_type": entry_type,
+            "ard_registry": registry_url,
+            "representativeQueries": rep_queries,
+            "source_url": url,
+        }
+
+        # For MCP server entries (including server cards), construct the
+        # actual MCP endpoint URL. HF Spaces use a specific convention:
+        #   spaceId: "user/space" → https://user-space.hf.space/gradio_api/mcp
+        if entry_type in _ARD_MCP_TYPES:
+            mcp_url = url
+            transport = "streamable_http"
+
+            # If the URL points to a server.json card file, we need to
+            # either fetch it (deferred to fetch()) or construct the
+            # endpoint from the Space metadata.
+            space_id = metadata.get("spaceId", "")
+            if space_id:
+                # HF Gradio Spaces: construct MCP endpoint from spaceId
+                # Convention: https://{author}-{space-slug}.hf.space/gradio_api/mcp
+                parts = space_id.split("/")
+                if len(parts) == 2:
+                    author, space_slug = parts
+                    space_slug = space_slug.replace(".", "-")
+                    mcp_url = (
+                        f"https://{author}-{space_slug}.hf.space/gradio_api/mcp"
+                    )
+                    transport = "streamable_http"
+
+            extra["mcp"] = {
+                "url": mcp_url,
+                "name": display_name,
+                "transport": transport,
+                "card_url": url if "server.json" in url else None,
+                "space_id": space_id or None,
+            }
+        elif entry_type == ARD_TYPE_A2A_AGENT:
+            extra["a2a"] = {"url": url}
+
+        return SkillMeta(
+            name=display_name,
+            description=description,
+            source="ard",
+            identifier=identifier or f"ard:{display_name}",
+            trust_level="community",
+            tags=tags,
+            extra=extra,
+        )
+
+    # -- ARD inspect -------------------------------------------------------
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        """Fetch metadata for a single ARD entry by its identifier."""
+        # 1. Check search cache first (covers the common case: search → install)
+        if identifier in self._search_cache:
+            return self._search_cache[identifier]
+
+        # 2. Parse registry_url from identifier or search all registries
+        registry_url = ""
+        entry_urn = identifier
+        if identifier.startswith("ard:"):
+            # Format: ard:<registry_host>:<urn>
+            parts = identifier.split(":", 2)
+            if len(parts) >= 3:
+                registry_url = parts[1]
+                entry_urn = parts[2]
+
+        for reg in self._registries:
+            if registry_url and registry_url not in reg:
+                continue
+            catalog = self._get_catalog(reg)
+            if not catalog:
+                continue
+            for entry in catalog.get("entries", []):
+                if entry.get("identifier") == entry_urn:
+                    meta = self._entry_to_meta(entry, reg)
+                    self._search_cache[identifier] = meta
+                    return meta
+        return None
+
+    def _get_catalog(self, registry_url: str) -> Optional[dict]:
+        """Fetch and cache the static catalog for a registry."""
+        import time
+
+        now = time.time()
+        cached = self._catalog_cache.get(registry_url)
+        if cached and (now - cached[0]) < _ARD_CACHE_TTL:
+            return cached[1]
+
+        catalog_url = registry_url.rstrip("/") + "/.well-known/ai-catalog.json"
+        resp = _guarded_http_get(catalog_url, timeout=15)
+        if resp is None or resp.status_code != 200:
+            return None
+        try:
+            catalog = resp.json()
+        except (ValueError, Exception):
+            return None
+        self._catalog_cache[registry_url] = (now, catalog)
+        return catalog
+
+    # -- ARD fetch ---------------------------------------------------------
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        """Fetch an ARD resource.
+
+        For skills (application/ai-skill): downloads the SKILL.md (and
+        agents.md) from the entry's URL.
+
+        For MCP servers (application/mcp-server+json): returns a minimal
+        bundle whose metadata contains the MCP connection config, enabling
+        the caller (skills_tool) to auto-register the MCP server.
+        """
+        meta = self.inspect(identifier)
+        if meta is None:
+            return None
+
+        entry_type = meta.extra.get("ard_type", ARD_TYPE_SKILL)
+        source_url = meta.extra.get("source_url", "")
+
+        if entry_type in _ARD_MCP_TYPES:
+            # Return a bundle whose metadata carries the MCP config.
+            # The skills_tool / hub CLI will detect this and auto-register
+            # the MCP server instead of writing SKILL.md to disk.
+            return SkillBundle(
+                name=meta.name,
+                files={},  # no files to install — it's a live MCP endpoint
+                source="ard",
+                identifier=identifier,
+                trust_level="community",
+                metadata={
+                    "ard_type": ARD_TYPE_MCP_SERVER,
+                    "mcp": meta.extra.get("mcp", {}),
+                },
+            )
+
+        # Standard skill: fetch SKILL.md from the URL
+        if not source_url:
+            return None
+
+        # Fetch the SKILL.md content
+        text = self._fetch_skill_content(source_url)
+        if text is None:
+            return None
+
+        return SkillBundle(
+            name=meta.name,
+            files={"SKILL.md": text},
+            source="ard",
+            identifier=identifier,
+            trust_level="community",
+            metadata={
+                "ard_type": ARD_TYPE_SKILL,
+                "ard_registry": meta.extra.get("ard_registry", ""),
+            },
+        )
+
+    @staticmethod
+    def _fetch_skill_content(url: str) -> Optional[str]:
+        """Fetch SKILL.md or agents.md content from a URL."""
+        # Try the URL as-is first (may point directly to SKILL.md)
+        resp = _guarded_http_get(url, timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.text
+
+        # Try appending /SKILL.md
+        resp = _guarded_http_get(url.rstrip("/") + "/SKILL.md", timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.text
+
+        # Try /agents.md (HF convention for skill-aware Spaces)
+        resp = _guarded_http_get(url.rstrip("/") + "/agents.md", timeout=20)
+        if resp is not None and resp.status_code == 200:
+            content = resp.text
+            # Wrap agents.md as a skill by adding minimal frontmatter
+            if not content.startswith("---"):
+                content = (
+                    "---\n"
+                    f"name: skill-from-ard\n"
+                    f"description: Discovered via ARD\n"
+                    "---\n\n"
+                    + content
+                )
+            return content
+
+        return None
+
+    @staticmethod
+    def _fetch_text(url: str) -> Optional[str]:
+        """Shared fetch helper (matches WellKnownSkillSource pattern)."""
+        resp = _guarded_http_get(url, timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.text
+        return None
+
+
+def is_mcp_bundle(bundle: SkillBundle) -> bool:
+    """Check if a SkillBundle is an ARD MCP server (not a file-based skill)."""
+    return bundle.metadata.get("ard_type") in _ARD_MCP_TYPES
+
+
+# ---------------------------------------------------------------------------
+# ARD local cache (for offline/faster search)
+# ---------------------------------------------------------------------------
+
+_ARD_CACHE: Optional[List[Dict[str, Any]]] = None
+
+
+def _load_ard_cache() -> List[Dict[str, Any]]:
+    """Load cached ARD entries from disk (built by scripts/build_ard_cache.py).
+
+    Returns empty list if no cache exists. Cache is loaded once per session.
+    """
+    global _ARD_CACHE
+    if _ARD_CACHE is not None:
+        return _ARD_CACHE
+    cache_path = HUB_DIR / "ard-cache.json"
+    if not cache_path.exists():
+        _ARD_CACHE = []
+        return _ARD_CACHE
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        entries = data.get("entries", []) if isinstance(data, dict) else []
+        _ARD_CACHE = entries if isinstance(entries, list) else []
+    except (ValueError, OSError):
+        _ARD_CACHE = []
+    return _ARD_CACHE
+
+
+def _search_ard_cache(
+    query: str, limit: int, registry_url: str = ""
+) -> Optional[List[SkillMeta]]:
+    """Search the local ARD cache. Returns None if cache is empty/stale.
+
+    This provides an offline/fast path for ArdSource._search_registry()
+    when the cache has been built by scripts/build_ard_cache.py.
+    """
+    entries = _load_ard_cache()
+    if not entries:
+        return None
+
+    # Check if cache has entries for this registry
+    if registry_url:
+        reg_entries = [
+            e for e in entries
+            if isinstance(e, dict) and registry_url in str(e.get("registry", ""))
+        ]
+        if not reg_entries:
+            return None
+    else:
+        reg_entries = entries
+
+    query_lower = (query or "").lower()
+    query_words = [w for w in query_lower.split() if len(w) >= 2]
+
+    scored: List[Tuple[int, SkillMeta]] = []
+    for entry in reg_entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("displayName", ""))
+        desc = str(entry.get("description", ""))
+        tags = " ".join(str(t) for t in entry.get("tags", []))
+
+        if not query_words:
+            score = 50
+        else:
+            haystack = f"{name} {desc} {tags}".lower()
+            matches = sum(1 for w in query_words if w in haystack)
+            if matches == 0:
+                continue
+            score = int((matches / max(len(query_words), 1)) * 100)
+
+        meta = SkillMeta(
+            name=name,
+            description=desc,
+            source="ard-cache",
+            identifier=str(entry.get("identifier", name)),
+            trust_level="community",
+            tags=entry.get("tags", []),
+            extra={
+                "ard_type": entry.get("type", ARD_TYPE_SKILL),
+                "ard_registry": entry.get("registry", registry_url),
+                "source_url": entry.get("source_url", ""),
+                "mcp": entry.get("mcp"),
+                "from_cache": True,
+            },
+        )
+        scored.append((score, meta))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [m for _, m in scored[:limit]]
+
+
+def get_mcp_config_from_bundle(bundle: SkillBundle) -> Optional[Dict[str, Any]]:
+    """Extract MCP server config from an ARD MCP bundle.
+
+    Returns a dict suitable for mcp_tool.add_mcp_server():
+        {"name": ..., "url": ..., "transport": "streamable_http"}
+    """
+    if not is_mcp_bundle(bundle):
+        return None
+    mcp = bundle.metadata.get("mcp", {})
+    if not mcp.get("url"):
+        return None
+    return {
+        "name": mcp.get("name", bundle.name),
+        "url": mcp["url"],
+        "transport": mcp.get("transport", "streamable_http"),
+    }
+
+
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
     """
     Create all configured source adapters.
@@ -3747,6 +4347,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     sources: List[SkillSource] = [
         OptionalSkillSource(),        # Official optional skills (highest priority)
         HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
+        ArdSource(),                  # ARD: Agentic Resource Discovery (MCP/skill/agent)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
         UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
@@ -3797,7 +4398,8 @@ def parallel_search_sources(
     # ~70 GitHub API calls per search for unauthenticated users.
     _index_available = False
     _api_source_ids = frozenset({"github", "skills-sh", "clawhub",
-                                  "claude-marketplace", "lobehub", "well-known"})
+                                  "claude-marketplace", "lobehub", "well-known",
+                                  "ard"})
     if source_filter == "all":
         for src in sources:
             if (src.source_id() == "hermes-index"
@@ -3886,3 +4488,472 @@ def unified_search(query: str, sources: List[SkillSource],
     deduped = list(seen.values())
 
     return deduped[:limit]
+
+
+# ---------------------------------------------------------------------------
+# ARD Publisher — export Hermes capabilities as ai-catalog.json
+# ---------------------------------------------------------------------------
+
+def _generate_ard_skill_entries(
+    skills_data: List[Dict[str, Any]],
+    domain: str,
+) -> List[Dict[str, Any]]:
+    """Convert skill list to ARD catalog entries."""
+    entries = []
+    for skill in skills_data:
+        name = skill.get("name", "")
+        if not name:
+            continue
+        description = skill.get("description", "")
+        category = skill.get("category", "")
+
+        # URN: urn:ai:<domain>:skill:<category>:<name>
+        path_parts = [p for p in [category, name] if p]
+        urn = f"urn:ai:{domain}:skill:{':'.join(path_parts)}"
+
+        entry = {
+            "identifier": urn,
+            "displayName": name,
+            "type": ARD_TYPE_SKILL,
+            "description": description[:500],  # ARD spec: description max ~500 chars
+            "url": "",  # Local skills have no external URL
+        }
+        if category:
+            entry["tags"] = [category]
+        entries.append(entry)
+    return entries
+
+
+def _generate_ard_mcp_entries(
+    mcp_servers: Dict[str, dict],
+    domain: str,
+) -> List[Dict[str, Any]]:
+    """Convert MCP server config to ARD catalog entries."""
+    entries = []
+    for name, cfg in mcp_servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        url = cfg.get("url", "")
+        if not url:
+            continue
+
+        urn = f"urn:ai:{domain}:mcp:{name}"
+        entry = {
+            "identifier": urn,
+            "displayName": f"{name} (MCP Server)",
+            "type": ARD_TYPE_MCP_SERVER,
+            "url": url,
+            "description": f"MCP server: {name}",
+            "tags": ["mcp-server"],
+        }
+        entries.append(entry)
+    return entries
+
+
+def generate_ard_catalog(
+    domain: str = "hermes.local",
+    output_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Generate an ARD-compatible ai-catalog.json from Hermes capabilities.
+
+    Exports installed skills and MCP servers as an ARD catalog manifest,
+    making Hermes discoverable by other ARD-compliant agents.
+
+    Args:
+        domain: Domain for URN identifiers (default: hermes.local)
+        output_path: Where to write ai-catalog.json.
+            Default: ~/.hermes/.well-known/ai-catalog.json
+
+    Returns:
+        The catalog dict (also written to disk if output_path is set).
+    """
+    catalog: Dict[str, Any] = {
+        "specVersion": "1.0",
+        "host": {
+            "displayName": "Hermes Agent",
+            "identifier": f"did:web:{domain}",
+        },
+        "entries": [],
+    }
+
+    # Collect installed skills
+    try:
+        from tools.skills_tool import _find_all_skills
+
+        skills_data = _find_all_skills()
+        skill_entries = _generate_ard_skill_entries(skills_data, domain)
+        catalog["entries"].extend(skill_entries)
+    except Exception as e:
+        logger.debug("Failed to collect skills for ARD catalog: %s", e)
+
+    # Collect MCP servers from config
+    try:
+        import yaml as _yaml
+
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                cfg = _yaml.safe_load(f) or {}
+            mcp_servers = cfg.get("mcp_servers", {})
+            if isinstance(mcp_servers, dict):
+                mcp_entries = _generate_ard_mcp_entries(mcp_servers, domain)
+                catalog["entries"].extend(mcp_entries)
+    except Exception as e:
+        logger.debug("Failed to collect MCP servers for ARD catalog: %s", e)
+
+    # Collect built-in tools (as A2A-style capability descriptions)
+    try:
+        from tools.registry import registry as _tool_registry
+
+        tool_names = _tool_registry.get_all_tool_names()
+        for name in tool_names[:50]:  # cap to prevent huge catalogs
+            schema = _tool_registry.get_schema(name)
+            if not schema:
+                continue
+            func = schema.get("function", schema)
+            tool_name = func.get("name", name)
+            desc = func.get("description", "")
+            urn = f"urn:ai:{domain}:tool:{tool_name}"
+            catalog["entries"].append({
+                "identifier": urn,
+                "displayName": tool_name,
+                "type": "application/ai-skill",  # tools are callable skills
+                "description": desc[:500],
+                "tags": ["builtin-tool"],
+                "url": "",  # no external URL — tools are internal to Hermes
+            })
+    except Exception as e:
+        logger.debug("Failed to collect tools for ARD catalog: %s", e)
+
+    # Write to disk if output_path is specified
+    if output_path:
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(catalog, f, indent=2, ensure_ascii=False)
+
+    return catalog
+
+
+def publish_ard_catalog(domain: str = "hermes.local") -> Path:
+    """Generate and write ai-catalog.json to ~/.hermes/.well-known/.
+
+    Returns the path to the written file.
+    """
+    from hermes_constants import get_hermes_home
+
+    well_known_dir = get_hermes_home() / ".well-known"
+    catalog_path = well_known_dir / "ai-catalog.json"
+
+    generate_ard_catalog(domain=domain, output_path=str(catalog_path))
+    logger.info("ARD catalog published: %d entries at %s",
+                len(json.loads(catalog_path.read_text())["entries"]),
+                catalog_path)
+    return catalog_path
+
+
+# ---------------------------------------------------------------------------
+# ARD Search endpoint (local)
+# ---------------------------------------------------------------------------
+
+def ard_local_search(
+    query: str,
+    limit: int = 10,
+    filter_types: Optional[List[str]] = None,
+    semantic: bool = False,
+) -> List[Dict[str, Any]]:
+    """Search local Hermes capabilities using ARD search semantics.
+
+    This provides a local POST /search equivalent that other agents
+    can query via the dashboard or an HTTP endpoint.
+
+    Args:
+        query: Natural language search query
+        limit: Max results
+        filter_types: Optional list of ARD media types to filter by
+        semantic: If True, use embedding-based ranking instead of keywords.
+            Requires model provider with embeddings support.
+
+    Returns:
+        List of ARD catalog entries with relevance scores.
+    """
+    catalog = generate_ard_catalog()
+
+    # Filter by type first
+    entries = [
+        e for e in catalog.get("entries", [])
+        if not filter_types or e.get("type", "") in filter_types
+    ]
+
+    if semantic:
+        _invalidate_embeddings_if_stale()
+        return _ard_semantic_search(query, entries, limit)
+
+    # Keyword-based scoring (fallback / default)
+    query_lower = (query or "").lower()
+    query_words = [w for w in query_lower.split() if len(w) >= 2]
+
+    scored = []
+    for entry in entries:
+        haystack = " ".join([
+            str(entry.get("displayName", "")),
+            str(entry.get("description", "")),
+            " ".join(str(t) for t in entry.get("tags", [])),
+        ]).lower()
+
+        if not query_words:
+            score = 50  # neutral score for empty query (browse mode)
+        else:
+            matches = sum(1 for w in query_words if w in haystack)
+            score = int((matches / max(len(query_words), 1)) * 100)
+            if score == 0:
+                continue
+
+        entry_copy = dict(entry)
+        entry_copy["score"] = score
+        scored.append(entry_copy)
+
+    scored.sort(key=lambda e: e.get("score", 0), reverse=True)
+    return scored[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Semantic search via embeddings
+# ---------------------------------------------------------------------------
+
+_EMBEDDINGS_CACHE: Optional[Dict[str, list]] = None
+_EMBEDDINGS_CACHE_PATH: Optional[Path] = None
+
+
+def _get_embeddings_cache_path() -> Path:
+    """Return the path to the embeddings cache file."""
+    global _EMBEDDINGS_CACHE_PATH
+    if _EMBEDDINGS_CACHE_PATH is None:
+        _EMBEDDINGS_CACHE_PATH = HUB_DIR / "ard-embeddings.json"
+    return _EMBEDDINGS_CACHE_PATH
+
+
+def _load_embeddings_cache() -> Dict[str, list]:
+    """Load cached embeddings from disk."""
+    global _EMBEDDINGS_CACHE
+    if _EMBEDDINGS_CACHE is not None:
+        return _EMBEDDINGS_CACHE
+    cache_path = _get_embeddings_cache_path()
+    loaded: Dict[str, list] = {}
+    if cache_path.exists():
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                loaded = data
+        except (ValueError, OSError):
+            pass
+    _EMBEDDINGS_CACHE = loaded
+    return loaded
+
+
+def _save_embeddings_cache(cache: Dict[str, list]) -> None:
+    """Save embeddings cache to disk."""
+    global _EMBEDDINGS_CACHE
+    _EMBEDDINGS_CACHE = cache
+    cache_path = _get_embeddings_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+
+
+def _invalidate_embeddings_if_stale() -> bool:
+    """Invalidate the embeddings cache if the catalog has changed.
+
+    Computes a lightweight hash of the current catalog entry identifiers
+    and compares it against the stored hash. If they differ (new skills
+    added/removed), the cache is cleared and re-populated on next search.
+
+    Returns True if the cache was invalidated.
+    """
+    cache_path = _get_embeddings_cache_path()
+    hash_path = cache_path.parent / "ard-embeddings.hash"
+
+    # Compute current catalog signature (just URNs — fast)
+    try:
+        catalog = generate_ard_catalog()
+        urns = sorted(
+            e.get("identifier", "") for e in catalog.get("entries", [])
+        )
+        current_hash = hashlib.md5("|".join(urns).encode()).hexdigest()
+    except Exception:
+        return False
+
+    # Compare with stored hash
+    stored_hash = ""
+    if hash_path.exists():
+        try:
+            stored_hash = hash_path.read_text().strip()
+        except OSError:
+            pass
+
+    if stored_hash == current_hash:
+        return False  # cache is current
+
+    # Invalidate
+    global _EMBEDDINGS_CACHE
+    _EMBEDDINGS_CACHE = None
+    if cache_path.exists():
+        try:
+            cache_path.unlink()
+        except OSError:
+            pass
+
+    # Write new hash
+    try:
+        hash_path.parent.mkdir(parents=True, exist_ok=True)
+        hash_path.write_text(current_hash, encoding="utf-8")
+    except OSError:
+        pass
+
+    logger.info("ARD embeddings cache invalidated (catalog changed)")
+    return True
+
+
+_QUERY_EMBEDDING_LRU: "OrderedDict[str, list]" = OrderedDict()
+_QUERY_EMBEDDING_LRU_MAX = 500
+
+
+def _generate_embedding(text: str) -> Optional[list]:
+    """Generate an embedding vector for text using the configured model provider.
+
+    Uses OpenAI-compatible embeddings API. Falls back to None if unavailable.
+    Query embeddings are cached in an LRU (max 500 entries) to avoid
+    re-embedding identical repeated queries.
+    """
+    # LRU cache for query embeddings (key = text hash)
+    cache_key = hashlib.md5(text[:8000].encode()).hexdigest()
+    if cache_key in _QUERY_EMBEDDING_LRU:
+        _QUERY_EMBEDDING_LRU.move_to_end(cache_key)
+        return _QUERY_EMBEDDING_LRU[cache_key]
+
+    try:
+        import os
+
+        from hermes_constants import get_hermes_home
+
+        # Try to get embeddings config
+        import yaml as _yaml
+
+        config_path = get_hermes_home() / "config.yaml"
+        if not config_path.exists():
+            return None
+
+        with open(config_path, "r") as f:
+            cfg = _yaml.safe_load(f) or {}
+
+        # Check for embeddings model config
+        embed_model = (
+            cfg.get("embeddings", {}).get("model")
+            or cfg.get("embedding_model")
+            or "text-embedding-3-small"
+        )
+        base_url = (
+            cfg.get("embeddings", {}).get("base_url")
+            or cfg.get("base_url")
+            or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        )
+        api_key = (
+            cfg.get("embeddings", {}).get("api_key")
+            or cfg.get("api_key")
+            or os.getenv("OPENAI_API_KEY")
+        )
+
+        if not api_key:
+            return None
+
+        import openai
+
+        client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=30)
+        response = client.embeddings.create(model=embed_model, input=text[:8000])
+        embedding = response.data[0].embedding
+
+        # Cache in LRU
+        _QUERY_EMBEDDING_LRU[cache_key] = embedding
+        _QUERY_EMBEDDING_LRU.move_to_end(cache_key)
+        if len(_QUERY_EMBEDDING_LRU) > _QUERY_EMBEDDING_LRU_MAX:
+            _QUERY_EMBEDDING_LRU.popitem(last=False)
+
+        return embedding
+
+    except Exception as e:
+        logger.debug("Embedding generation failed: %s", e)
+        return None
+
+
+def _cosine_similarity(a: list, b: list) -> float:
+    """Compute cosine similarity between two vectors."""
+    try:
+        import numpy as np
+
+        arr_a = np.array(a, dtype=np.float32)
+        arr_b = np.array(b, dtype=np.float32)
+        norm_a = np.linalg.norm(arr_a)
+        norm_b = np.linalg.norm(arr_b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(arr_a, arr_b) / (norm_a * norm_b))
+    except Exception:
+        return 0.0
+
+
+def _ard_semantic_search(
+    query: str,
+    entries: List[Dict[str, Any]],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Perform embedding-based semantic search over ARD catalog entries.
+
+    Falls back to keyword search if embeddings are unavailable.
+    """
+    if not query.strip():
+        # Empty query: return entries with neutral score
+        return [{**e, "score": 50} for e in entries[:limit]]
+
+    # Generate query embedding
+    query_embedding = _generate_embedding(query)
+    if query_embedding is None:
+        logger.debug("ARD semantic search: no embedding API, falling back to keywords")
+        # Fallback: keyword search
+        return ard_local_search(query, limit=limit, semantic=False)
+
+    # Build/load embeddings cache for entries
+    cache = _load_embeddings_cache()
+
+    # Generate embeddings for entries that aren't cached
+    scored = []
+    for entry in entries:
+        urn = entry.get("identifier", "")
+        # Build text for embedding: displayName + description
+        text = " ".join([
+            str(entry.get("displayName", "")),
+            str(entry.get("description", "")),
+        ]).strip()
+
+        if not text:
+            continue
+
+        # Check cache
+        entry_embedding = cache.get(urn)
+        if entry_embedding is None:
+            entry_embedding = _generate_embedding(text)
+            if entry_embedding is not None:
+                cache[urn] = entry_embedding
+
+        if entry_embedding is None:
+            continue
+
+        score = int(_cosine_similarity(query_embedding, entry_embedding) * 100)
+        scored.append({**entry, "score": max(0, min(100, score))})
+
+    # Save cache (even partial) for next time
+    if cache:
+        _save_embeddings_cache(cache)
+
+    scored.sort(key=lambda e: e.get("score", 0), reverse=True)
+    return scored[:limit]

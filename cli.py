@@ -7251,6 +7251,218 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+    def _handle_ard_command(self, cmd: str):
+        """Handle /ard top-level command — ARD discovery operations.
+
+        Subcommands:
+          /ard search <query> [--semantic] [--source remote|local] [--limit N]
+          /ard publish [--domain D]
+          /ard serve [--port 8390]
+          /ard catalog
+        """
+        from hermes_cli.skills_hub import (
+            ard_local_search, ChatConsole,
+        )
+
+        console = ChatConsole()
+
+        # Simple subcommand parsing
+        parts = cmd.strip().split(None, 1)
+        # parts[0] = "/ard" or "/ard-discover"
+        remaining = parts[1] if len(parts) > 1 else ""
+        parts2 = remaining.split(None, 1)
+        action = parts2[0].lower() if parts2 else ""
+        args_str = parts2[1] if len(parts2) > 1 else ""
+        args = args_str.split() if args_str else []
+
+        valid = ("search", "publish", "serve", "catalog", "explore",
+                 "help", "--help", "-h")
+        if not action or action not in valid:
+            console.print("\n[bold cyan]Agentic Resource Discovery (ARD)[/]")
+            console.print("  [cyan]/ard search[/] <query> [--semantic] [--source remote|local] [--limit N]")
+            console.print("      Search local capabilities or remote ARD registries")
+            console.print("  [cyan]/ard publish[/] [--domain D]")
+            console.print("      Generate and publish ai-catalog.json")
+            console.print("  [cyan]/ard serve[/] [--port 8390]")
+            console.print("      Start security-focused ARD registry server")
+            console.print("  [cyan]/ard catalog[/]")
+            console.print("      Show current published catalog summary")
+            console.print("  [cyan]/ard explore[/]")
+            console.print("      Show facets/aggregations from catalog\n")
+            return
+
+        if action == "search":
+            if not args:
+                console.print("[bold red]Usage:[/] /ard search <query> [--semantic] [--source remote|local] [--limit N]\n")
+                return
+
+            # Parse flags
+            semantic = "--semantic" in args
+            source = "local"
+            if "--source" in args:
+                idx = args.index("--source")
+                if idx + 1 < len(args):
+                    source = args[idx + 1]
+            limit = 10
+            if "--limit" in args:
+                idx = args.index("--limit")
+                if idx + 1 < len(args):
+                    try:
+                        limit = int(args[idx + 1])
+                    except ValueError:
+                        pass
+
+            # Build query excluding flags and their values
+            flag_with_value = {"--limit", "--source", "--domain", "--port"}
+            query_parts = []
+            skip_next = False
+            for a in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in flag_with_value:
+                    skip_next = True
+                    continue
+                if a.startswith("-"):
+                    continue
+                query_parts.append(a)
+            query = " ".join(query_parts)
+
+            if not query.strip():
+                console.print("[red]Query is required[/]")
+                return
+
+            if source == "remote":
+                from tools.skills_hub import ArdSource
+                src = ArdSource()
+                results = src.search(query, limit=limit)
+                console.print(f"\n[bold]ARD Remote Search[/] — {len(results)} results\n")
+                for r in results:
+                    mcp = r.extra.get("mcp")
+                    tag = "[purple]MCP[/]" if mcp else "[blue]SKILL[/]"
+                    cached = " (cached)" if r.extra.get("from_cache") else ""
+                    console.print(f"  {tag} {r.name}{cached}")
+                    if r.description:
+                        console.print(f"      [dim]{r.description[:120]}[/]")
+                    if mcp:
+                        console.print(f"      [blue]{mcp.get('url', '')}[/]")
+            else:
+                results = ard_local_search(
+                    query, limit=limit, semantic=semantic
+                )
+                mode = "semantic" if semantic else "keyword"
+                console.print(f"\n[bold]ARD Local Search[/] ({mode}) — {len(results)} results\n")
+                for r in results:
+                    score = r.get("score", 0)
+                    bar = "█" * (score // 10) + "░" * (10 - score // 10)
+                    name = r.get("displayName", "?")
+                    type_label = r.get("type", "").split("/")[-1]
+                    console.print(f"  [{bar}] {score:3d}  [cyan]{name}[/]")
+                    if r.get("description"):
+                        console.print(f"         [dim]{r['description'][:100]}[/]")
+
+        elif action == "publish":
+            domain = "hermes.local"
+            if "--domain" in args:
+                idx = args.index("--domain")
+                if idx + 1 < len(args):
+                    domain = args[idx + 1]
+
+            from tools.skills_hub import publish_ard_catalog
+            path = publish_ard_catalog(domain=domain)
+            import json
+            data = json.loads(path.read_text())
+            from collections import Counter
+            types = Counter(e["type"].split("/")[-1] for e in data["entries"])
+
+            console.print(f"\n[green]Catalog published[/]")
+            console.print(f"  [bold]{len(data['entries'])}[/] entries")
+            console.print(f"  Types: {dict(types)}")
+            console.print(f"  Domain: {domain}")
+            console.print(f"  Path: {path}")
+            console.print(f"  Well-known: ~/.hermes/.well-known/ai-catalog.json\n")
+
+        elif action == "serve":
+            port = 8390
+            if "--port" in args:
+                idx = args.index("--port")
+                if idx + 1 < len(args):
+                    try:
+                        port = int(args[idx + 1])
+                    except ValueError:
+                        pass
+
+            console.print(f"\n[cyan]Starting Security ARD Registry on port {port}...[/]")
+            console.print("[dim]Press Ctrl+C to stop[/]\n")
+
+            import subprocess
+            import sys
+            script = str(Path(__file__).parent / "scripts" / "security_ard_registry.py")
+            try:
+                subprocess.run(
+                    [sys.executable, script, "--port", str(port)],
+                    cwd=str(Path(__file__).parent),
+                )
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Registry stopped[/]")
+
+        elif action == "catalog":
+            from hermes_constants import get_hermes_home
+            import json
+
+            catalog_path = get_hermes_home() / ".well-known" / "ai-catalog.json"
+            if not catalog_path.exists():
+                console.print("[yellow]No catalog published. Run /ard publish first.[/]")
+                return
+
+            data = json.loads(catalog_path.read_text())
+            console.print(f"\n[bold]ARD Catalog[/]")
+            console.print(f"  specVersion: {data.get('specVersion', '?')}")
+            console.print(f"  entries: {len(data.get('entries', []))}")
+
+            from collections import Counter
+            entries = data.get("entries", [])
+            types = Counter(e["type"].split("/")[-1] for e in entries)
+            console.print(f"  types: {dict(types)}")
+
+            # Show first 10
+            console.print(f"\n[dim]First 10 entries:[/]")
+            for e in entries[:10]:
+                name = e.get("displayName", "?")
+                eid = e.get("identifier", "")
+                console.print(f"  • {name}")
+                console.print(f"    [dim]{eid}[/]")
+            if len(entries) > 10:
+                console.print(f"  [dim]... and {len(entries) - 10} more[/]")
+            console.print()
+
+        elif action == "explore":
+            from tools.skills_hub import ard_local_search
+            from collections import Counter
+
+            results = ard_local_search("", limit=500)
+            if not results:
+                console.print("[yellow]No entries. Run /ard publish first.[/]")
+                return
+
+            types = Counter(r.get("type", "").split("/")[-1] for r in results)
+            console.print(f"\n[bold]ARD Catalog Facets[/]")
+            console.print(f"  Total: {len(results)} entries")
+            console.print(f"  Types:")
+            for t, c in types.most_common():
+                console.print(f"    {t}: {c}")
+
+            # Tag aggregation
+            tags = Counter()
+            for r in results:
+                for t in r.get("tags", []):
+                    tags[t] += 1
+            if tags:
+                console.print(f"  Top tags:")
+                for t, c in tags.most_common(10):
+                    console.print(f"    {t}: {c}")
+            console.print()
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -7569,6 +7781,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._handle_skills_command(cmd_original)
         elif canonical == "memory":
             self._handle_memory_command(cmd_original)
+        elif canonical == "ard":
+            self._handle_ard_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":

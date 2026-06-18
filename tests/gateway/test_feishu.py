@@ -159,6 +159,58 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+    def test_normalize_location_renders_name_and_coordinates(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps(
+                {
+                    "name": "Apple Park, Cupertino",
+                    "longitude": "-122.0090",
+                    "latitude": "37.3349",
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.raw_type, "location")
+        self.assertEqual(normalized.relation_kind, "location")
+        self.assertEqual(
+            normalized.text_content,
+            "📍 Apple Park, Cupertino (37.3349,-122.0090)",
+        )
+        self.assertEqual(normalized.metadata["name"], "Apple Park, Cupertino")
+        self.assertEqual(normalized.metadata["latitude"], "37.3349")
+        self.assertEqual(normalized.metadata["longitude"], "-122.0090")
+
+    def test_normalize_location_handles_missing_name(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps(
+                {
+                    "longitude": "-122.0090",
+                    "latitude": "37.3349",
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.relation_kind, "location")
+        self.assertEqual(normalized.text_content, "📍 (37.3349,-122.0090)")
+        self.assertEqual(normalized.metadata["name"], "")
+
+    def test_normalize_location_falls_back_when_payload_empty(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="location",
+            raw_content=json.dumps({}),
+        )
+
+        self.assertEqual(normalized.relation_kind, "location")
+        self.assertEqual(normalized.text_content, "📍 (location)")
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {

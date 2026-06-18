@@ -871,8 +871,36 @@ def normalize_feishu_message(
         return _normalize_share_chat_message(payload)
     if normalized_type in {"interactive", "card"}:
         return _normalize_interactive_message(normalized_type, payload)
+    if normalized_type == "location":
+        return _normalize_location_message(payload)
 
     return FeishuNormalizedMessage(raw_type=normalized_type, text_content="")
+
+
+def _normalize_location_message(payload: Dict[str, Any]) -> FeishuNormalizedMessage:
+    """Render Feishu location messages as text so they flow through the text pipeline.
+
+    Feishu sends location messages with a payload of {"name", "longitude", "latitude"}.
+    Without this normalizer the message_type "location" falls through to the empty
+    fallback and is silently dropped by _process_inbound_message.
+    """
+    name = str(payload.get("name", "") or "").strip()
+    longitude = str(payload.get("longitude", "") or "").strip()
+    latitude = str(payload.get("latitude", "") or "").strip()
+
+    parts: List[str] = []
+    if name:
+        parts.append(name)
+    if latitude and longitude:
+        parts.append(f"({latitude},{longitude})")
+    text_content = "📍 " + " ".join(parts) if parts else "📍 (location)"
+
+    return FeishuNormalizedMessage(
+        raw_type="location",
+        text_content=text_content,
+        relation_kind="location",
+        metadata={"name": name, "longitude": longitude, "latitude": latitude},
+    )
 
 
 def _load_feishu_payload(raw_content: str) -> Dict[str, Any]:

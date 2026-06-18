@@ -373,6 +373,21 @@ class TestTurnTraceIsolation:
 
         assert k_pre_api == k_post_api == k_post_turn
 
+    def test_trace_key_strings_unchanged_by_refactor(self):
+        """Pin the exact key strings across all task/session/turn/api
+        combinations so the _scope_prefix extraction can never silently change
+        a key (keys are matched across hooks; a drift breaks finalization)."""
+        mod = self._fresh_plugin()
+        tk = mod._trace_key
+        assert tk("t", "s", turn_id="u") == "task:t:turn:u"
+        assert tk("", "s", turn_id="u") == "session:s:turn:u"
+        assert tk("t", "s", api_request_id="r") == "task:t:api:r"
+        assert tk("", "s", api_request_id="r") == "session:s:api:r"
+        assert tk("t", "s") == "t"                       # legacy: bare task_id
+        assert tk("", "s") == "session:s"
+        # turn_id wins over api_request_id when both are present.
+        assert tk("t", "s", turn_id="u", api_request_id="r") == "task:t:turn:u"
+
 
 # ---------------------------------------------------------------------------
 # Placeholder-credential guard (#23823).

@@ -219,6 +219,15 @@ def _get_langfuse() -> Optional[Langfuse]:
     return _LANGFUSE_CLIENT
 
 
+def _scope_prefix(task_id: str, session_id: str) -> str:
+    """The task/session/thread prefix shared by every trace-key shape."""
+    if task_id:
+        return f"task:{task_id}"
+    if session_id:
+        return f"session:{session_id}"
+    return f"thread:{threading.get_ident()}"
+
+
 def _trace_key(
     task_id: str,
     session_id: str,
@@ -231,27 +240,20 @@ def _trace_key(
     Older Hermes paths only expose ``task_id``/``session_id``. Newer paths
     pass ``turn_id`` and ``api_request_id`` in LLM/tool hooks; when present,
     they must scope trace state so concurrent requests sharing one task/session
-    never collide.
+    never collide. ``turn_id`` is preferred over ``api_request_id`` so the
+    turn-level ``post_llm_call`` hook (which carries ``turn_id`` but no
+    ``api_request_id``) resolves to the same key as the request-level hooks.
     """
     if turn_id:
-        if task_id:
-            return f"task:{task_id}:turn:{turn_id}"
-        if session_id:
-            return f"session:{session_id}:turn:{turn_id}"
-        return f"thread:{threading.get_ident()}:turn:{turn_id}"
-
+        return f"{_scope_prefix(task_id, session_id)}:turn:{turn_id}"
     if api_request_id:
-        if task_id:
-            return f"task:{task_id}:api:{api_request_id}"
-        if session_id:
-            return f"session:{session_id}:api:{api_request_id}"
-        return f"thread:{threading.get_ident()}:api:{api_request_id}"
-
+        return f"{_scope_prefix(task_id, session_id)}:api:{api_request_id}"
+    # Legacy shape: a bare ``task_id`` (NOT the ``task:`` prefix) when present,
+    # otherwise the session/thread prefix. Kept distinct for backward
+    # compatibility with keys minted before turn/request scoping existed.
     if task_id:
         return task_id
-    if session_id:
-        return f"session:{session_id}"
-    return f"thread:{threading.get_ident()}"
+    return _scope_prefix(task_id, session_id)
 
 
 def _is_base64_data_uri(value: str) -> bool:

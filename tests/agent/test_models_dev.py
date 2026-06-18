@@ -184,6 +184,33 @@ class TestFetchModelsDev:
         assert len(result) == len(SAMPLE_REGISTRY)
 
     @patch("agent.models_dev.requests.get")
+    def test_fetch_uses_explicit_headers(self, mock_get):
+        """models.dev requests should include explicit headers.
+
+        models.dev may reject default client fingerprints with HTTP 403. Keep
+        a stable User-Agent/Accept header contract so fetch_models_dev does not
+        fall back to stale curated lists during transient anti-bot filtering.
+        """
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = SAMPLE_REGISTRY
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        with patch.object(md, "_save_disk_cache"):
+            _ = fetch_models_dev(force_refresh=True)
+
+        mock_get.assert_called_once_with(
+            md.MODELS_DEV_URL,
+            timeout=15,
+            headers=md._MODELS_DEV_HEADERS,
+        )
+
+    @patch("agent.models_dev.requests.get")
     def test_fetch_failure_returns_stale_cache(self, mock_get):
         mock_get.side_effect = Exception("network error")
 

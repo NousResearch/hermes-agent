@@ -2,7 +2,14 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { fileURLToPath } = require('node:url')
 
-const DEFAULT_FETCH_TIMEOUT_MS = 15_000
+// Default timeout for authenticated Desktop -> backend API calls. Kept generous
+// because profile-heavy remote installs can make startup data calls (e.g.
+// GET /api/profiles) take ~30s+; the previous 15s value timed out a backend
+// that had already passed the readiness check, surfacing as a spurious
+// "Could not connect to Hermes gateway" (#48504). Readiness/auth probes
+// (/api/status, /api/auth/providers) pass their own short explicit timeouts,
+// so a genuinely-down backend is still detected quickly regardless of this.
+const DEFAULT_FETCH_TIMEOUT_MS = 60_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 

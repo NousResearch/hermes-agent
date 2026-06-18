@@ -1024,6 +1024,38 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
         self.assertEqual(creds["provider"], "custom")
 
+    def test_direct_endpoint_uses_configured_api_key_env(self):
+        # Direct endpoints can be non-OpenAI providers. When api_key_env is set,
+        # delegation must use that key instead of inheriting the parent's key.
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "custom",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key_env": "GLM_API_KEY",
+        }
+        with patch.dict(os.environ, {"GLM_API_KEY": "glm-key-from-env"}, clear=False):
+            creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_key"], "glm-key-from-env")
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://api.z.ai/api/coding/paas/v4")
+
+    def test_direct_endpoint_api_key_env_missing_raises(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "custom",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+            "api_key_env": "MISSING_DELEGATION_KEY",
+        }
+        env_without_key = {
+            k: v for k, v in os.environ.items() if k != "MISSING_DELEGATION_KEY"
+        }
+        with patch.dict(os.environ, env_without_key, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("MISSING_DELEGATION_KEY", str(ctx.exception))
+
     def test_direct_endpoint_no_raise_when_only_provider_env_key_present(self):
         # Even if OPENAI_API_KEY is absent, no ValueError — _build_child_agent uses parent key.
         parent = _make_mock_parent(depth=0)

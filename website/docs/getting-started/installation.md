@@ -81,7 +81,18 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 
 ## Prerequisites
 
-**Installer:** On non-Windows platforms, the only prerequisite is **Git**. The installer automatically handles everything else:
+**Installer:** On non-Windows platforms, the installer needs the bootstrap tools required to download the script, clone the repo, and extract runtime archives.
+
+On Debian/Ubuntu/WSL images, install them with:
+
+```bash
+sudo apt update
+sudo apt install -y curl git xz-utils
+```
+
+Other Linux distributions need the equivalent packages for `curl`, `git`, and `xz`/`.tar.xz` extraction. macOS normally includes the archive tooling already; install Git if `git --version` is not available.
+
+After those bootstrap tools are available, the installer automatically handles everything else:
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)
@@ -90,7 +101,7 @@ That logs you in, sets Nous as your provider, and turns on the Tool Gateway in o
 - **ffmpeg** (audio format conversion for TTS)
 
 :::info
-You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you. Just make sure `git` is available (`git --version`).
+You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you.
 :::
 
 :::tip Nix users
@@ -149,6 +160,7 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 | `hermes: command not found` | Reload your shell (`source ~/.bashrc`) or check PATH |
 | `API key not set` | Run `hermes model` to configure your provider, or `hermes config set OPENROUTER_API_KEY your_key` |
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
+| `tar (child): xz: Cannot exec` while installing Node.js | Install `xz-utils` (`sudo apt install xz-utils`) and rerun the installer |
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
 

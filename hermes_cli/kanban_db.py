@@ -5888,8 +5888,13 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) AND the current task assignee
+        is the SAME profile that posted the PR comment.  A prior worker
+        already opened a PR; re-spawning the SAME assignee risks a duplicate
+        PR on the same task.  If the assignee differs from the PR author
+        (e.g. a reviewer performing sign-off after the author blocked for
+        review), the respawn is allowed — a different role will not open
+        another PR.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -5956,13 +5961,27 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Guard ONLY when the current assignee is the SAME profile that posted
+    #    the PR comment.  A different assignee (e.g. a reviewer performing a
+    #    mandatory sign-off) will NOT open a duplicate PR — the guard would
+    #    permanently wedge the review handoff.  See t_3c058a31.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    task_row = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    task_assignee = task_row["assignee"] if task_row else None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT author, body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+            # The PR was opened by THIS assignee — re-spawning would risk a
+            # duplicate PR.  Guard it (preserve original anti-duplicate intent).
+            if task_assignee and c["author"] == task_assignee:
+                return "active_pr"
+            # Different assignee from the PR author (e.g. reviewer handoff) —
+            # this spawn is a different role and will NOT open another PR.
+            # Allow it.
 
     return None
 

@@ -1711,15 +1711,39 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
 
 
 def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+    """A GitHub PR URL in a recent comment triggers active_pr when the
+    assignee is the SAME profile that opened the PR (duplicate-PR risk)."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
-            conn, t, "worker",
+            conn, t, "alice",
             "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "active_pr"
+
+
+def test_respawn_guard_active_pr_different_assignee_allowed(kanban_home):
+    """active_pr guard must NOT block a different assignee (e.g. reviewer
+    performing sign-off after the PR author blocked for review).
+
+    Regression test for t_3c058a31: the guard wedged the review handoff
+    because it fired unconditionally when any PR URL comment existed,
+    regardless of whether the next spawn was the same or a different worker.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-handoff", assignee="athena")
+        # PR was opened by 'apollo' (the author), but the task is now
+        # assigned to 'athena' for review — she will NOT open a duplicate PR.
+        kb.add_comment(
+            conn, t, "apollo",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None, (
+        "active_pr guard must not block a different assignee (reviewer); "
+        f"got reason={reason!r}"
+    )
 
 
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
@@ -1811,7 +1835,8 @@ def test_dispatch_respawn_guard_skips_recent_success(
 def test_dispatch_respawn_guard_skips_active_pr(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once skips (but does not block) a task with an active PR comment."""
+    """dispatch_once skips (but does not block) a task with an active PR
+    comment where the assignee IS the PR author (same-worker re-spawn)."""
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -1820,7 +1845,7 @@ def test_dispatch_respawn_guard_skips_active_pr(
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
-            conn, t, "worker",
+            conn, t, "alice",
             "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
@@ -1830,6 +1855,36 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_allows_different_assignee_with_pr(
+    kanban_home, all_assignees_spawnable
+):
+    """dispatch_once spawns a task whose assignee differs from the PR author,
+    even when a recent PR URL comment exists on the task.
+
+    Regression test for t_3c058a31: Apollo opened a PR and blocked for review,
+    the card was reassigned to Athena for sign-off, but the active_pr guard
+    permanently blocked her spawn.
+    """
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-handoff", assignee="athena")
+        # PR was opened by 'apollo', but task is now assigned to 'athena'
+        kb.add_comment(
+            conn, t, "apollo",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t not in [tid for tid, _ in res.respawn_guarded]
+    assert t in spawned_ids
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "running"
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

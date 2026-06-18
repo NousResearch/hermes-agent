@@ -10,15 +10,31 @@ test('rebuilt mac app candidates include the x64 electron-builder output', () =>
 
   assert.deepEqual(candidates, [
     path.join(root, 'apps', 'desktop', 'release', 'mac-x64', 'Hermes.app'),
-    path.join(root, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
     path.join(root, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
   ])
+  assert.equal(
+    candidates.includes(path.join(root, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app')),
+    false
+  )
 })
 
 test('rebuilt mac app candidates prefer arm64 on Apple Silicon', () => {
   const root = '/tmp/hermes-update'
   const candidates = rebuiltMacAppCandidates(root, 'arm64')
 
-  assert.equal(candidates[0], path.join(root, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'))
-  assert.ok(candidates.includes(path.join(root, 'apps', 'desktop', 'release', 'mac-x64', 'Hermes.app')))
+  assert.deepEqual(candidates, [
+    path.join(root, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
+    path.join(root, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
+  ])
+  assert.equal(
+    candidates.includes(path.join(root, 'apps', 'desktop', 'release', 'mac-x64', 'Hermes.app')),
+    false
+  )
+})
+
+test('rebuilt mac app candidates fall back to legacy mac output for unknown arch', () => {
+  const root = '/tmp/hermes-update'
+  assert.deepEqual(rebuiltMacAppCandidates(root, 'ppc'), [
+    path.join(root, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
+  ])
 })

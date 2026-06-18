@@ -16,7 +16,7 @@ function uniqueValues(values) {
 function rebuiltMacAppCandidates(updateRoot, arch = process.arch) {
   const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
   const currentArchDir = arch === 'x64' ? 'mac-x64' : arch === 'arm64' ? 'mac-arm64' : null
-  return uniqueValues([currentArchDir, 'mac-arm64', 'mac-x64', 'mac']).map(directory =>
+  return uniqueValues([currentArchDir, 'mac']).map(directory =>
     path.join(releaseDir, directory, 'Hermes.app')
   )
 }

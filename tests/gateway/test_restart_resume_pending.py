@@ -928,7 +928,7 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
 
 
 @pytest.mark.asyncio
-async def test_startup_auto_resume_includes_crash_recovery():
+async def test_startup_auto_resume_includes_crash_recovery(monkeypatch):
     """Crash-recovered sessions (reason=restart_interrupted) are also auto-resumed.
 
     suspend_recently_active() marks in-flight sessions with resume_reason
@@ -951,7 +951,11 @@ async def test_startup_auto_resume_includes_crash_recovery():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    runner.session_store.has_meaningful_transcript = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        runner.session_store,
+        "has_meaningful_transcript",
+        lambda _session_id: True,
+    )
     adapter.handle_message = AsyncMock()
 
     scheduled = runner._schedule_resume_pending_sessions()

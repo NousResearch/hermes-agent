@@ -94,6 +94,11 @@ class FakeThread:
         return _iter()
 
 
+class SendableFakeThread(FakeThread):
+    async def send(self, content=None, reference=None, **kwargs):
+        return SimpleNamespace(id=444, content=content, reference=reference, **kwargs)
+
+
 @pytest.fixture
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
@@ -581,6 +586,57 @@ async def test_discord_thread_default_keeps_responding_after_participation(adapt
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_send_to_existing_thread_marks_participation(adapter):
+    """Outbound thread sends should make later no-mention replies eligible."""
+    thread = SendableFakeThread(channel_id=456, name="cron-created-thread")
+    adapter._client.get_channel = lambda channel_id: thread if channel_id == 456 else None
+
+    result = await adapter.send("123", "scheduled update", metadata={"thread_id": "456"})
+
+    assert result.success is True
+    assert "456" in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_discord_forum_thread_send_marks_participation(adapter):
+    """Forum posts create threads; those threads should accept follow-ups."""
+    forum = FakeForumChannel(channel_id=222, name="stock")
+
+    async def create_thread(*, name, content):
+        return SimpleNamespace(id=333, message=SimpleNamespace(id=444))
+
+    forum.create_thread = create_thread
+
+    result = await adapter._send_to_forum(forum, "scheduled update")
+
+    assert result.success is True
+    assert result.raw_response["thread_id"] == "333"
+    assert "333" in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_discord_forum_file_thread_send_marks_participation(adapter):
+    """Forum file posts create threads; those threads should accept follow-ups."""
+    forum = FakeForumChannel(channel_id=222, name="stock")
+
+    async def create_thread(**kwargs):
+        return SimpleNamespace(id=334, message=SimpleNamespace(id=445))
+
+    forum.create_thread = create_thread
+
+    result = await adapter._forum_post_file(
+        forum,
+        thread_name="scheduled chart",
+        content="scheduled update",
+        file=SimpleNamespace(filename="chart.png"),
+    )
+
+    assert result.success is True
+    assert result.raw_response["thread_id"] == "334"
+    assert "334" in adapter._threads
 
 
 @pytest.mark.asyncio

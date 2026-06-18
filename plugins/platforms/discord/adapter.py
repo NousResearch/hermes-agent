@@ -1655,6 +1655,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if message_ids:
                 _target_id = thread_id or chat_id
                 self._last_self_message_id[_target_id] = message_ids[-1]
+                if thread_id:
+                    self._threads.mark(str(thread_id))
 
             return SendResult(
                 success=True,
@@ -1715,6 +1717,8 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_response: Dict[str, Any] = {"message_ids": message_ids, "thread_id": thread_id}
         if warnings:
             raw_response["warnings"] = warnings
+        if thread_id:
+            self._threads.mark(thread_id)
 
         return SendResult(
             success=True,
@@ -1775,6 +1779,8 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
         starter_msg = getattr(thread, "message", None)
         message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+        if thread_id:
+            self._threads.mark(thread_id)
 
         return SendResult(
             success=True,

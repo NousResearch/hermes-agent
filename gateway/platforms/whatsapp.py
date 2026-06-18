@@ -275,9 +275,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        # dm_policy already honors WHATSAPP_DM_POLICY, so the allowlist must honor
+        # WHATSAPP_ALLOWED_USERS too. Without the env fallback an env-only setup
+        # (dm_policy=allowlist via env, no config extra) runs with an empty
+        # allowlist and drops every authorized DM at intake.
+        self._allow_from = self._coerce_allow_list(
+            config.extra.get("allow_from")
+            or config.extra.get("allowFrom")
+            or os.getenv("WHATSAPP_ALLOWED_USERS", "")
+        )
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        # Same parity for groups: WHATSAPP_GROUP_POLICY is honored from env and
+        # gateway/config.py bridges WHATSAPP_GROUP_ALLOWED_USERS, so the adapter
+        # must read it back — otherwise group_policy=allowlist drops every
+        # allowed group at intake and the bridged env var is a no-op.
+        self._group_allow_from = self._coerce_allow_list(
+            config.extra.get("group_allow_from")
+            or config.extra.get("groupAllowFrom")
+            or os.getenv("WHATSAPP_GROUP_ALLOWED_USERS", "")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None

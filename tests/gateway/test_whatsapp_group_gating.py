@@ -298,6 +298,93 @@ def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):
     assert __import__("os").environ["WHATSAPP_ALLOWED_USERS"] == "6281234567890@s.whatsapp.net"
 
 
+# --- Env-only allowlist parity (real constructor, intake behavior) ---
+#
+# The config bridge above writes WHATSAPP_ALLOWED_USERS / WHATSAPP_GROUP_ALLOWED_USERS
+# from YAML, and users can set them directly in .env. These tests go through the
+# real WhatsAppAdapter.__init__ (not _make_adapter, which bypasses the
+# constructor) to prove the adapter actually honors those env vars at intake.
+
+
+def test_dm_allowlist_honors_env_only_allowed_users(monkeypatch):
+    """Env-only setup (WHATSAPP_DM_POLICY + WHATSAPP_ALLOWED_USERS, no config
+    extra) must populate the DM allowlist. Otherwise dm_policy=allowlist runs
+    with an empty allowlist and drops every listed user at intake — the
+    documented, config-bridged env vars become no-ops."""
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "6281234567890@s.whatsapp.net")
+    monkeypatch.delenv("WHATSAPP_GROUP_POLICY", raising=False)
+    monkeypatch.delenv("WHATSAPP_GROUP_ALLOWED_USERS", raising=False)
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+
+    assert adapter._dm_policy == "allowlist"
+    assert adapter._allow_from == {"6281234567890@s.whatsapp.net"}
+    assert adapter._is_dm_allowed("6281234567890@s.whatsapp.net") is True
+    assert adapter._is_dm_allowed("99999@s.whatsapp.net") is False
+    # Intake gate, not just the bridge: a listed sender is processed, a
+    # stranger is dropped.
+    assert adapter._should_process_message(_dm_message()) is True
+    assert adapter._should_process_message(
+        _dm_message(senderId="99999@s.whatsapp.net")
+    ) is False
+
+
+def test_group_allowlist_honors_env_only_group_allowed_users(monkeypatch):
+    """Group parity: WHATSAPP_GROUP_ALLOWED_USERS is bridged by config.py but
+    had no consumer, so group_policy=allowlist dropped every allowed group at
+    intake. The adapter must read the env var back."""
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "120363001234567890@g.us")
+    monkeypatch.delenv("WHATSAPP_DM_POLICY", raising=False)
+    monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+
+    assert adapter._group_policy == "allowlist"
+    assert adapter._group_allow_from == {"120363001234567890@g.us"}
+    assert adapter._is_group_allowed("120363001234567890@g.us") is True
+    assert adapter._is_group_allowed("99999@g.us") is False
+    # Intake gate: the listed group passes, an unlisted group is dropped.
+    assert adapter._should_process_message(_group_message("hello")) is True
+    assert adapter._should_process_message(
+        _group_message("hello", chatId="99999@g.us")
+    ) is False
+
+
+def test_allowlist_extra_takes_precedence_over_env(monkeypatch):
+    """Config extra wins over the env fallback, so an explicit allowlist is
+    never silently widened by a stray WHATSAPP_ALLOWED_USERS /
+    WHATSAPP_GROUP_ALLOWED_USERS."""
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "env-user@s.whatsapp.net")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "env-group@g.us")
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "dm_policy": "allowlist",
+                "allow_from": ["cfg-user@s.whatsapp.net"],
+                "group_policy": "allowlist",
+                "group_allow_from": ["cfg-group@g.us"],
+            },
+        )
+    )
+
+    assert adapter._allow_from == {"cfg-user@s.whatsapp.net"}
+    assert adapter._group_allow_from == {"cfg-group@g.us"}
+    assert adapter._is_dm_allowed("cfg-user@s.whatsapp.net") is True
+    assert adapter._is_dm_allowed("env-user@s.whatsapp.net") is False
+    assert adapter._is_group_allowed("cfg-group@g.us") is True
+    assert adapter._is_group_allowed("env-group@g.us") is False
+
+
 # --- Broadcast / status / newsletter pseudo-chats are always dropped ---
 
 

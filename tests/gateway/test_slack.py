@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
@@ -3080,6 +3080,27 @@ class TestMessageSplitting:
         assert kwargs.get("mrkdwn") is True
 
     @pytest.mark.asyncio
+    async def test_send_disables_url_previews_when_unfurl_off(self, adapter):
+        """With gateway.slack.unfurl=false, posts must suppress link/media
+        unfurling so URLs don't expand into noisy preview cards."""
+        adapter.config.extra["unfurl"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "see https://example.com/article")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs.get("unfurl_links") is False
+        assert kwargs.get("unfurl_media") is False
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_url_previews_by_default(self, adapter):
+        """Default behavior leaves Slack's unfurling untouched — no unfurl
+        flags are sent, so Slack applies its native preview behavior."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "see https://example.com/article")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
         """Pre-escaped &amp; in sent messages must not become &amp;amp;."""
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
@@ -3820,3 +3841,27 @@ class TestSlashEphemeralAck:
         # the normal single-user case; the ContextVar path is the precise one.
         # The key invariant is: when the ContextVar IS set, it matches exactly.
         assert ctx is not None  # fallback path finds the entry
+
+
+class TestUnfurlConfigBridging:
+    """gateway.slack.unfurl must bridge from YAML into PlatformConfig.extra so
+    the send path can read it — guards the allowlist wiring in
+    load_gateway_config (a non-allowlisted key would be silently dropped)."""
+
+    def _write_config(self, tmp_path, content: str):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(content, encoding="utf-8")
+        return hermes_home
+
+    def test_top_level_unfurl_false_bridges_to_extra(self, tmp_path, monkeypatch):
+        hermes_home = self._write_config(tmp_path, "slack:\n  unfurl: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        cfg = load_gateway_config()
+        assert cfg.platforms[Platform.SLACK].extra.get("unfurl") is False
+
+    def test_unfurl_absent_when_not_configured(self, tmp_path, monkeypatch):
+        hermes_home = self._write_config(tmp_path, "slack:\n  require_mention: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        cfg = load_gateway_config()
+        assert "unfurl" not in cfg.platforms[Platform.SLACK].extra

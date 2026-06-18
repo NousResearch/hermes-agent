@@ -1163,6 +1163,10 @@ class SlackAdapter(BasePlatformAdapter):
             # reply_broadcast: also post thread replies to the main channel.
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
+            # When gateway.slack.unfurl is false, suppress Slack's link/media
+            # previews so posted URLs don't expand into preview cards. Defaults
+            # to true, preserving Slack's native unfurling behavior.
+            unfurl = self.config.extra.get("unfurl", True)
 
             for i, chunk in enumerate(chunks):
                 kwargs = {
@@ -1170,6 +1174,9 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                if not unfurl:
+                    kwargs["unfurl_links"] = False
+                    kwargs["unfurl_media"] = False
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply

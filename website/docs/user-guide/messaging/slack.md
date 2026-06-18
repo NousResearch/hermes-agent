@@ -348,6 +348,26 @@ platforms:
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 
+### Link Previews
+
+By default Slack expands posted URLs into preview cards ("unfurling"). For bots
+that post a lot of links — news feeds, digests, alerts — this is often noise.
+Set `unfurl: false` to suppress link and media previews on the bot's own posts:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      # Suppress Slack link/media previews on the bot's posts (default: true)
+      unfurl: false
+```
+
+The top-level `slack.unfurl` shorthand is also accepted.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.extra.unfurl` | `true` | When `false`, the bot's posts disable Slack's `unfurl_links`/`unfurl_media`, so posted URLs don't expand into preview cards. |
+
 ### Session Isolation
 
 ```yaml

@@ -1,0 +1,7 @@
+name: voice_call
+version: 0.1.0
+description: "Hermes voice calling tool and FastAPI Twilio voice service for guarded outbound/inbound calls."
+author: NousResearch
+kind: standalone
+provides_tools:
+  - voice_call

@@ -317,6 +317,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "voice_call": {
+        "description": "Guarded phone calls through the bundled Twilio/FastAPI voice calling plugin",
+        "tools": ["voice_call"],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

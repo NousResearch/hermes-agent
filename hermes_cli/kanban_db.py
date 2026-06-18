@@ -2864,10 +2864,16 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     no ``"unblocked"`` event has fired since), the task is sticky and
     ``recompute_ready`` must *not* auto-promote it.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    When no block/unblock event exists, a task created directly with
+    ``initial_status='blocked'`` is also sticky: the ``created`` event
+    payload records ``status='blocked'`` and represents an explicit
+    operator parking state, not a circuit-breaker recovery candidate.
+
+    Returns ``False`` when there is no such event at all and the task was
+    not initially created blocked (e.g. the task was set to
+    ``status='blocked'`` by the circuit breaker or by direct DB
+    manipulation) — preserves the pre-#28712 auto-recover semantics for
+    that path.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -2875,7 +2881,22 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    if row:
+        return row["kind"] == "blocked"
+
+    created = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'created' "
+        "ORDER BY id ASC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not created or not created["payload"]:
+        return False
+    try:
+        payload = json.loads(created["payload"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("status") == "blocked"
 
 
 def recompute_ready(

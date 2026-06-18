@@ -100,6 +100,35 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
 
 
 # ---------------------------------------------------------------------------
+# Operator-created blocked tasks are parking brakes, not dispatch candidates
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_not_auto_promoted_by_recompute_ready(kanban_home: Path) -> None:
+    """A task created with ``initial_status='blocked'`` is an explicit
+    operator parking state.  It must not be promoted by the dispatcher just
+    because it has no parents; only an explicit unblock/promote action should
+    release it."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="parked before dispatch",
+            assignee="research-assistant",
+            initial_status="blocked",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+        promoted = kb.recompute_ready(conn)
+
+        assert promoted == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------
 

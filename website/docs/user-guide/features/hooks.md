@@ -360,6 +360,7 @@ the [Plugins guide](/docs/user-guide/features/plugins).
 def register(ctx):
     ctx.register_hook("pre_tool_call", my_tool_observer)
     ctx.register_hook("post_tool_call", my_tool_logger)
+    ctx.register_hook("execution_receipt", my_receipt_sink)
     ctx.register_hook("pre_llm_call", my_memory_callback)
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
@@ -379,6 +380,7 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
+| [`execution_receipt`](#execution_receipt) | After Hermes builds a redacted local execution receipt for a tool outcome | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -502,6 +504,32 @@ def track_metrics(tool_name, result, duration_ms=0, **kwargs):
 def register(ctx):
     ctx.register_hook("post_tool_call", track_metrics)
 ```
+
+---
+
+### `execution_receipt`
+
+Fires after Hermes has built a redacted `tool_complete` receipt for an agent-loop tool outcome. This hook is for durable local evidence streams and audit-style summaries; it is separate from `post_tool_call` so plugins do not need to store raw tool arguments or raw tool results.
+
+**Callback signature:**
+
+```python
+def my_callback(receipt: dict, **kwargs):
+```
+
+`receipt` is a v0 JSON-compatible object containing IDs (`session_id`, `task_id`, `turn_id`, `api_request_id`, `tool_call_id`), `trace_id`, `span_id`, `sequence_number`, `timestamp`, `tool_name`, `status`, `duration_ms`, redacted `args` and `result` metadata, `links`, `evidence_gaps`, and redaction fields.
+
+**Return value:** Ignored.
+
+**Privacy defaults:** Receipts do not include raw terminal output, file contents, prompts, environment variables, tokens, raw error messages, or full tool arguments/results by default.
+
+**Built-in sink:** Enable the bundled local JSONL plugin with:
+
+```bash
+hermes plugins enable observability/execution_receipts
+```
+
+It writes to `$HERMES_HOME/execution-receipts/receipts.jsonl` and adds `/receipts status`, `/receipts tail [N]`, and `/receipts gaps`. These receipts are best-effort local telemetry only: no routing, policy enforcement, or cryptographic signing.
 
 ---
 

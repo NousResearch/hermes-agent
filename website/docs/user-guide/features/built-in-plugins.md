@@ -59,6 +59,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `observability/nemo_relay` | hooks | Relay observability events (turns / LLM calls / tools) to an NVIDIA NeMo endpoint |
+| `observability/execution_receipts` | hook + slash command | Persist redacted local execution receipts and inspect them with `/receipts` |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
@@ -68,7 +69,33 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
 | `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 
-Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
+Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for selected hooks-based plugins follows.
+
+### observability/execution_receipts
+
+Persists redacted, metadata-only execution receipts to local JSONL. This is useful when you want a durable local evidence stream of what Hermes attempted and how each tool outcome ended without sending telemetry to an external service.
+
+**How it works:**
+
+| Hook | Behaviour |
+|---|---|
+| `execution_receipt` | Appends one sanitized `tool_complete` receipt per agent-loop tool outcome. Raw args/results are dropped if a caller accidentally passes them. |
+
+**State:** receipts live at `$HERMES_HOME/execution-receipts/receipts.jsonl`. The plugin creates the directory as owner-only (`0700`) and the JSONL file as owner-only (`0600`) where the platform supports chmod.
+
+**Slash command** — `/receipts` available in both CLI and gateway sessions:
+
+```text
+/receipts status        # total/corrupt/gaps/writer_errors/status counts
+/receipts tail [N]      # latest safe receipt summaries, no raw args/results
+/receipts gaps          # missing sequence numbers and evidence-gap codes
+```
+
+**Privacy/non-goals:** P1 receipts do not store raw terminal output, file contents, prompts, environment variables, tokens, child summaries, raw error messages, or full tool arguments/results. They are best-effort local telemetry only: no routing, no policy enforcement, and no cryptographic signing.
+
+**Enabling:** `hermes plugins enable observability/execution_receipts`.
+
+**Disabling again:** `hermes plugins disable observability/execution_receipts`.
 
 ### disk-cleanup
 

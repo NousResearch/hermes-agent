@@ -139,6 +139,7 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    "execution_receipt",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",

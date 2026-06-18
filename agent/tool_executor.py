@@ -19,6 +19,7 @@ import os
 import random
 import threading
 import time
+import uuid
 from typing import Any, Optional
 
 from agent.display import (
@@ -93,6 +94,78 @@ def _emit_terminal_post_tool_call(
         pass
 
 
+def _execution_receipt_trace_id(agent) -> str:
+    trace_id = getattr(agent, "_execution_receipt_trace_id", None)
+    if not trace_id:
+        trace_id = f"trace-{uuid.uuid4().hex}"
+        try:
+            setattr(agent, "_execution_receipt_trace_id", trace_id)
+        except Exception:
+            pass
+    return str(trace_id)
+
+
+def _next_execution_receipt_sequence(agent) -> int:
+    try:
+        current = int(getattr(agent, "_execution_receipt_sequence", 0) or 0) + 1
+        setattr(agent, "_execution_receipt_sequence", current)
+        return current
+    except Exception:
+        return 0
+
+
+def _tool_call_args_for_receipt(tool_call) -> dict:
+    try:
+        parsed = json.loads(getattr(tool_call.function, "arguments", "{}"))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _emit_terminal_execution_receipt(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    result: Any,
+    effective_task_id: str,
+    tool_call_id: str,
+    duration_ms: int | None,
+    status: str,
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    try:
+        from hermes_cli import plugins
+
+        if not plugins.has_hook("execution_receipt"):
+            return
+    except Exception:
+        return
+
+    try:
+        from agent.execution_receipts import emit_tool_execution_receipt
+
+        emit_tool_execution_receipt(
+            session_id=getattr(agent, "session_id", "") or "",
+            task_id=effective_task_id or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            tool_call_id=tool_call_id or "",
+            tool_name=function_name,
+            status=status,
+            duration_ms=duration_ms,
+            args=function_args if isinstance(function_args, dict) else {},
+            result=result,
+            sequence_number=_next_execution_receipt_sequence(agent),
+            trace_id=_execution_receipt_trace_id(agent),
+            error_type=error_type,
+            error_message=error_message,
+        )
+    except Exception:
+        logger.debug("execution receipt emission failed", exc_info=True)
+
+
 def _cancelled_tool_result(reason: str = "user interrupt") -> str:
     return json.dumps(
         {
@@ -116,6 +189,7 @@ def _emit_cancelled_terminal_post_tool_call(
     middleware_trace: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     result = _cancelled_tool_result(reason)
+    duration_ms = int((time.time() - start_time) * 1000)
     _emit_terminal_post_tool_call(
         agent,
         function_name=function_name,
@@ -123,11 +197,23 @@ def _emit_cancelled_terminal_post_tool_call(
         result=result,
         effective_task_id=effective_task_id,
         tool_call_id=tool_call_id,
-        duration_ms=int((time.time() - start_time) * 1000),
+        duration_ms=duration_ms,
         status="cancelled",
         error_type=error_type,
         error_message=f"Tool execution cancelled by {reason}",
         middleware_trace=list(middleware_trace or []),
+    )
+    _emit_terminal_execution_receipt(
+        agent,
+        function_name=function_name,
+        function_args=function_args,
+        result=result,
+        effective_task_id=effective_task_id,
+        tool_call_id=tool_call_id,
+        duration_ms=duration_ms,
+        status="cancelled",
+        error_type=error_type,
+        error_message=f"Tool execution cancelled by {reason}",
     )
     return result
 
@@ -253,9 +339,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         for tc in tool_calls:
+            skipped_name = tc.function.name
+            skipped_result = f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]"
+            _emit_terminal_execution_receipt(
+                agent,
+                function_name=skipped_name,
+                function_args=_tool_call_args_for_receipt(tc),
+                result=skipped_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=tc.id,
+                duration_ms=0,
+                status="cancelled",
+                error_type="keyboard_interrupt",
+                error_message="Tool execution cancelled by user interrupt",
+            )
             messages.append(make_tool_result_message(
-                tc.function.name,
-                f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
+                skipped_name,
+                skipped_result,
                 tc.id,
             ))
         return
@@ -628,8 +728,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         blocked = False
         if r is None:
             # Tool was cancelled (interrupt) or thread didn't return
+            function_name = name
+            function_args = args
+            is_error = True
+            blocked = False
             if agent._interrupt_requested:
                 function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                receipt_status = "cancelled"
+                receipt_error_type = "keyboard_interrupt"
+                receipt_error_message = "Tool execution cancelled by user interrupt"
                 _emit_terminal_post_tool_call(
                     agent,
                     function_name=name,
@@ -644,6 +751,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
+                receipt_status = "error"
+                receipt_error_type = "thread_missing_result"
+                receipt_error_message = function_result
                 _emit_terminal_post_tool_call(
                     agent,
                     function_name=name,
@@ -659,6 +769,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_duration = 0.0
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
+            receipt_status = "blocked" if blocked else ("error" if is_error else "ok")
+            if blocked:
+                receipt_error_type = "guardrail_block" if blocked_by_guardrail else "plugin_block"
+                receipt_error_message = _multimodal_text_summary(function_result)[:200]
+            elif is_error:
+                receipt_error_type = "tool_error"
+                receipt_error_message = None
+            else:
+                receipt_error_type = None
+                receipt_error_message = None
 
             if not blocked:
                 function_result = agent._append_guardrail_observation(
@@ -697,6 +817,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if agent.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
+
+        _emit_terminal_execution_receipt(
+            agent,
+            function_name=function_name,
+            function_args=function_args,
+            result=function_result,
+            effective_task_id=effective_task_id,
+            tool_call_id=getattr(tc, "id", "") or "",
+            duration_ms=int(tool_duration * 1000),
+            status=receipt_status,
+            error_type=receipt_error_type,
+            error_message=receipt_error_message,
+        )
 
         # Print cute message per tool
         if agent._should_emit_quiet_tool_messages():
@@ -779,10 +912,23 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
+                skipped_content = f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]"
+                _emit_terminal_execution_receipt(
+                    agent,
+                    function_name=skipped_name,
+                    function_args=_tool_call_args_for_receipt(skipped_tc),
+                    result=skipped_content,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=skipped_tc.id,
+                    duration_ms=0,
+                    status="cancelled",
+                    error_type="keyboard_interrupt",
+                    error_message="Tool execution cancelled by user interrupt",
+                )
                 skip_msg = {
                     "role": "tool",
                     "name": skipped_name,
-                    "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
+                    "content": skipped_content,
                     "tool_call_id": skipped_tc.id,
                 }
                 messages.append(skip_msg)
@@ -1336,6 +1482,38 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
 
+        if _execution_blocked:
+            _receipt_status = "blocked"
+            if _block_msg is not None:
+                _receipt_error_type = _block_error_type
+                _receipt_error_message = _block_msg
+            else:
+                _receipt_error_type = "guardrail_block"
+                _receipt_error_message = (
+                    getattr(_guardrail_block_decision, "message", None)
+                    or "Tool blocked by guardrail policy"
+                )
+        elif _is_error_result:
+            _receipt_status = "error"
+            _receipt_error_type = "tool_error"
+            _receipt_error_message = None
+        else:
+            _receipt_status = "ok"
+            _receipt_error_type = None
+            _receipt_error_message = None
+        _emit_terminal_execution_receipt(
+            agent,
+            function_name=function_name,
+            function_args=function_args,
+            result=function_result,
+            effective_task_id=effective_task_id,
+            tool_call_id=getattr(tool_call, "id", "") or "",
+            duration_ms=int(tool_duration * 1000),
+            status=_receipt_status,
+            error_type=_receipt_error_type,
+            error_message=_receipt_error_message,
+        )
+
         # Track file-mutation outcome for the turn-end verifier.  See
         # the concurrent path for the rationale; both paths must feed
         # the same state so the footer reflects every tool call in the
@@ -1412,9 +1590,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
+                skipped_content = f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]"
+                _emit_terminal_execution_receipt(
+                    agent,
+                    function_name=skipped_name,
+                    function_args=_tool_call_args_for_receipt(skipped_tc),
+                    result=skipped_content,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=skipped_tc.id,
+                    duration_ms=0,
+                    status="cancelled",
+                    error_type="user_interrupt",
+                    error_message="Tool execution skipped because user sent a new message",
+                )
                 messages.append(make_tool_result_message(
                     skipped_name,
-                    f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
+                    skipped_content,
                     skipped_tc.id,
                 ))
             break

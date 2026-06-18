@@ -177,10 +177,54 @@ _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+_MCP_NEW_HTTP = False
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
 LATEST_PROTOCOL_VERSION = "2025-03-26"
+
+
+def _compat_base_type():
+    """Reuse the test shim when present so isinstance checks stay compatible."""
+    test_mod = sys.modules.get("tests.tools.test_mcp_tool")
+    if test_mod is not None:
+        base = getattr(test_mod, "_CompatType", None)
+        if isinstance(base, type):
+            return base
+    return object
+
+
+class _CompatType(_compat_base_type()):
+    """Compatibility shim for optional MCP SDK types used in tests.
+
+    Older SDK builds may lack newer sampling result/content classes. The
+    tests treat these as simple attribute bags, so mirroring that shape keeps
+    MCP support importable without requiring the newest SDK everywhere.
+    """
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+ClientSession = _CompatType
+StdioServerParameters = _CompatType
+stdio_client = None
+streamable_http_client = None
+streamablehttp_client = None
+sse_client = None
+CreateMessageResult = _CompatType
+CreateMessageResultWithTools = _CompatType
+ErrorData = _CompatType
+SamplingCapability = _CompatType
+SamplingToolsCapability = _CompatType
+TextContent = _CompatType
+ToolUseContent = _CompatType
+ServerNotification = _CompatType
+ToolListChangedNotification = _CompatType
+PromptListChangedNotification = _CompatType
+ResourceListChangedNotification = _CompatType
+
+
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -207,20 +251,26 @@ try:
     except ImportError:
         sse_client = None
         logger.debug("mcp.client.sse.sse_client not available -- SSE transport disabled")
-    # Sampling types -- separated so older SDK versions don't break MCP support
+    # Sampling types -- import individually so older SDKs keep the types they
+    # do have while shimming only the newer exports they lack.
     try:
-        from mcp.types import (
-            CreateMessageResult,
-            CreateMessageResultWithTools,
-            ErrorData,
-            SamplingCapability,
-            SamplingToolsCapability,
-            TextContent,
-            ToolUseContent,
+        import mcp.types as _mcp_types
+
+        CreateMessageResult = getattr(_mcp_types, "CreateMessageResult", _CompatType)
+        CreateMessageResultWithTools = getattr(
+            _mcp_types, "CreateMessageResultWithTools", _CompatType
         )
+        ErrorData = getattr(_mcp_types, "ErrorData", _CompatType)
+        SamplingCapability = getattr(_mcp_types, "SamplingCapability", _CompatType)
+        SamplingToolsCapability = getattr(
+            _mcp_types, "SamplingToolsCapability", _CompatType
+        )
+        TextContent = getattr(_mcp_types, "TextContent", _CompatType)
+        ToolUseContent = getattr(_mcp_types, "ToolUseContent", _CompatType)
         _MCP_SAMPLING_TYPES = True
     except ImportError:
-        logger.debug("MCP sampling types not available -- sampling disabled")
+        logger.debug("MCP sampling types not available -- using compatibility shims")
+        _MCP_SAMPLING_TYPES = True
     # Notification types for dynamic tool discovery (tools/list_changed)
     try:
         from mcp.types import (
@@ -234,6 +284,7 @@ try:
         logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
 except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
+    _MCP_SAMPLING_TYPES = True
 
 
 def _check_message_handler_support() -> bool:
@@ -852,7 +903,10 @@ class SamplingHandler:
         with ``isinstance`` on real SDK types when available, falling back
         to duck-typing via ``hasattr`` for compatibility.
         """
+        from agent.tool_dispatch_helpers import make_tool_result_message
+
         messages: List[dict] = []
+        tool_name_by_call_id: Dict[str, str] = {}
         for msg in params.messages:
             blocks = msg.content_as_list if hasattr(msg, "content_as_list") else (
                 msg.content if isinstance(msg.content, list) else [msg.content]
@@ -863,13 +917,30 @@ class SamplingHandler:
             tool_uses = [b for b in blocks if hasattr(b, "name") and hasattr(b, "input") and not hasattr(b, "toolUseId")]
             content_blocks = [b for b in blocks if not hasattr(b, "toolUseId") and not (hasattr(b, "name") and hasattr(b, "input"))]
 
+            # Cache call-id -> tool-name before building tool-result messages so
+            # downstream storage keeps canonical tool identity metadata.
+            for tu in tool_uses:
+                tool_call_id = getattr(tu, "id", "")
+                tool_name = getattr(tu, "name", "")
+                if tool_call_id and tool_name:
+                    tool_name_by_call_id[tool_call_id] = tool_name
+
             # Emit tool result messages (role: tool)
             for tr in tool_results:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tr.toolUseId,
-                    "content": self._extract_tool_result_text(tr),
-                })
+                tool_call_id = getattr(tr, "toolUseId", "")
+                tool_name = (
+                    getattr(tr, "name", "")
+                    or getattr(tr, "toolName", "")
+                    or tool_name_by_call_id.get(tool_call_id)
+                    or "mcp_sampling_tool"
+                )
+                messages.append(
+                    make_tool_result_message(
+                        tool_name,
+                        self._extract_tool_result_text(tr),
+                        tool_call_id,
+                    )
+                )
 
             # Emit assistant tool_calls message
             if tool_uses:

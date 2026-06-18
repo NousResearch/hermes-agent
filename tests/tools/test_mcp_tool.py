@@ -2661,19 +2661,31 @@ class TestConvertMessages:
         assert "data:image/png;base64,abc123" in parts[1]["image_url"]["url"]
 
     def test_tool_result_message(self):
+        tu_block = SimpleNamespace(
+            id="call_1", name="get_weather", input={"city": "London"}
+        )
+        assistant_msg = SimpleNamespace(
+            role="assistant",
+            content=[tu_block],
+            content_as_list=[tu_block],
+        )
         inner = SimpleNamespace(text="42 degrees")
         tr_block = SimpleNamespace(toolUseId="call_1", content=[inner])
-        msg = SimpleNamespace(
+        tool_msg = SimpleNamespace(
             role="user",
             content=[tr_block],
             content_as_list=[tr_block],
         )
-        params = _make_sampling_params(messages=[msg])
+        params = _make_sampling_params(messages=[assistant_msg, tool_msg])
         result = self.handler._convert_messages(params)
-        assert len(result) == 1
-        assert result[0]["role"] == "tool"
-        assert result[0]["tool_call_id"] == "call_1"
-        assert result[0]["content"] == "42 degrees"
+        assert len(result) == 2
+        assert result[0]["role"] == "assistant"
+        assert result[0]["tool_calls"][0]["function"]["name"] == "get_weather"
+        assert result[1]["role"] == "tool"
+        assert result[1]["name"] == "get_weather"
+        assert result[1]["tool_name"] == "get_weather"
+        assert result[1]["tool_call_id"] == "call_1"
+        assert result[1]["content"] == "42 degrees"
 
     def test_tool_use_message(self):
         tu_block = SimpleNamespace(

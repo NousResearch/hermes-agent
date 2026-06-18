@@ -464,21 +464,22 @@ export function StatusRule({
       ? noticeReserve
       : stringWidth(status)
 
+  const SEP = stringWidth(' │ ')
+  const hasModelText = !!modelText
   const essentialWidth =
     stringWidth('─ ') +
     slotWidth +
-    stringWidth(' │ ') +
-    stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (hasModelText ? SEP + stringWidth(modelText) : 0) +
+    (ctxLabel ? SEP + stringWidth(ctxLabel) : 0)
 
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
+  const displayCwdLabel = cwdLabel === '~' ? '' : cwdLabel
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, displayCwdLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
   // descending priority order — bar, duration, compressions, voice, session
   // count, bg, cost. Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
-  const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
   const fits = (w: number) => {
     if (tailBudget >= w) {
@@ -564,10 +565,12 @@ export function StatusRule({
               {' (dev credits)'}
             </Text>
           ) : null}
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {modelText}
-          </Text>
+          {hasModelText ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {modelText}
+            </Text>
+          ) : null}
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
@@ -642,7 +645,7 @@ export function StatusRule({
           <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
           <Box flexShrink={0} width={rightWidth}>
             <Text color={t.color.label} wrap="truncate-end">
-              {cwdLabel}
+              {displayCwdLabel}
             </Text>
           </Box>
         </>

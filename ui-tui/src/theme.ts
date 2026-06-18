@@ -15,6 +15,20 @@ export interface ThemeColors {
   warn: string
 
   prompt: string
+  inputText: string
+  inputBorder: string
+  inputBackground: string
+  codeBackground: string
+  syntaxText: string
+  syntaxComment: string
+  syntaxKeyword: string
+  syntaxString: string
+  syntaxNumber: string
+  syntaxFunction: string
+  syntaxType: string
+  syntaxConstant: string
+  syntaxOperator: string
+  syntaxInvalid: string
   sessionLabel: string
   sessionBorder: string
 
@@ -91,6 +105,8 @@ const ANSI_NORMALIZED_FOREGROUNDS: readonly (keyof ThemeColors)[] = [
   'error',
   'warn',
   'prompt',
+  'inputText',
+  'inputBorder',
   'statusFg',
   'statusGood',
   'statusWarn',
@@ -277,6 +293,20 @@ export const DARK_THEME: Theme = {
     warn: '#ffa726',
 
     prompt: '#FFF8DC',
+    inputText: '#FFF8DC',
+    inputBorder: '#CD7F32',
+    inputBackground: '#101018',
+    codeBackground: '#1e1e2e',
+    syntaxText: '#cdd6f4',
+    syntaxComment: '#9399b2',
+    syntaxKeyword: '#cba6f7',
+    syntaxString: '#a6e3a1',
+    syntaxNumber: '#fab387',
+    syntaxFunction: '#89b4fa',
+    syntaxType: '#f9e2af',
+    syntaxConstant: '#fab387',
+    syntaxOperator: '#89dceb',
+    syntaxInvalid: '#f38ba8',
     // sessionLabel/sessionBorder intentionally track the `dim` value — they
     // are "same role, same colour" by design.  fromSkin's banner_dim fallback
     // relies on this pairing (#11300).
@@ -325,6 +355,20 @@ export const LIGHT_THEME: Theme = {
     warn: '#E65100',
 
     prompt: '#2B2014',
+    inputText: '#2B2014',
+    inputBorder: '#7A4F1F',
+    inputBackground: '#FFFFFF',
+    codeBackground: '#F5F5F5',
+    syntaxText: '#3D2F13',
+    syntaxComment: '#7A5A0F',
+    syntaxKeyword: '#6D28D9',
+    syntaxString: '#166534',
+    syntaxNumber: '#C2410C',
+    syntaxFunction: '#1D4ED8',
+    syntaxType: '#92400E',
+    syntaxConstant: '#C2410C',
+    syntaxOperator: '#0E7490',
+    syntaxInvalid: '#C62828',
     sessionLabel: '#7A5A0F',
     sessionBorder: '#7A5A0F',
 
@@ -555,15 +599,29 @@ export function fromSkin(
       warn: c('ui_warn') ?? d.color.warn,
 
       prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
+      inputText: c('input_text') ?? c('ui_text') ?? c('banner_text') ?? d.color.inputText,
+      inputBorder: c('input_border') ?? c('input_rule') ?? c('ui_border') ?? c('banner_border') ?? d.color.inputBorder,
+      inputBackground: c('input_background') ?? c('input_bg') ?? d.color.inputBackground,
+      codeBackground: c('code_block_background') ?? c('code_background') ?? d.color.codeBackground,
+      syntaxText: c('syntax_text') ?? c('code_text') ?? d.color.syntaxText,
+      syntaxComment: c('syntax_comment') ?? c('code_comment') ?? d.color.syntaxComment,
+      syntaxKeyword: c('syntax_keyword') ?? c('code_keyword') ?? d.color.syntaxKeyword,
+      syntaxString: c('syntax_string') ?? c('code_string') ?? d.color.syntaxString,
+      syntaxNumber: c('syntax_number') ?? c('code_number') ?? d.color.syntaxNumber,
+      syntaxFunction: c('syntax_function') ?? c('code_function') ?? d.color.syntaxFunction,
+      syntaxType: c('syntax_type') ?? c('syntax_class') ?? c('code_type') ?? d.color.syntaxType,
+      syntaxConstant: c('syntax_constant') ?? c('code_constant') ?? d.color.syntaxConstant,
+      syntaxOperator: c('syntax_operator') ?? c('code_operator') ?? d.color.syntaxOperator,
+      syntaxInvalid: c('syntax_invalid') ?? c('code_invalid') ?? d.color.syntaxInvalid,
       sessionLabel: c('session_label') ?? muted,
       sessionBorder: c('session_border') ?? muted,
 
-      statusBg: d.color.statusBg,
-      statusFg: d.color.statusFg,
+      statusBg: c('status_bar_bg') ?? d.color.statusBg,
+      statusFg: c('status_bar_text') ?? d.color.statusFg,
       statusGood: c('ui_ok') ?? d.color.statusGood,
       statusWarn: c('ui_warn') ?? d.color.statusWarn,
-      statusBad: d.color.statusBad,
-      statusCritical: d.color.statusCritical,
+      statusBad: c('status_bar_bad') ?? d.color.statusBad,
+      statusCritical: c('status_bar_critical') ?? d.color.statusCritical,
       selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
 
       diffAdded: d.color.diffAdded,

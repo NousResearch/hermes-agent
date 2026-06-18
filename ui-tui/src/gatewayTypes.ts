@@ -183,6 +183,7 @@ export interface SessionActivateResponse {
 }
 
 export interface SessionListItem {
+  ended_at?: number
   id: string
   message_count: number
   preview: string

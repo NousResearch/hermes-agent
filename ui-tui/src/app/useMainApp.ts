@@ -836,7 +836,8 @@ export function useMainApp(gw: GatewayClient) {
           paste,
           queueRef: composerRefs.queueRef,
           selection,
-          setInput: composerActions.setInput
+          setInput: composerActions.setInput,
+          syncQueue: composerActions.syncQueue
         },
         gateway,
         local: {

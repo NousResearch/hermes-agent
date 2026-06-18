@@ -857,9 +857,14 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     # Input/prompt: leave unset by default so the typed text inherits
     # the terminal's foreground color (readable in both light and dark
     # color schemes).  Skins can opt into a colored prompt by setting
-    # `prompt` explicitly in their YAML.
+    # `prompt` explicitly in their YAML.  Skins can also opt into a
+    # colored typed-input foreground with `input_text`; when absent it
+    # remains terminal-default for backward compatibility.
     prompt = skin.get_color("prompt", "")
+    input_text = skin.get_color("input_text", "")
+    input_background = skin.get_color("input_background", "")
     input_rule = skin.get_color("input_rule", "#CD7F32")
+    input_area = f"bg:{input_background} {input_text}".strip() if input_background else input_text
     title = skin.get_color("banner_title", "#FFD700")
     text = skin.get_color("banner_text", "#FFF8DC")
     dim = skin.get_color("banner_dim", "#555555")
@@ -881,11 +886,9 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
 
     return {
-        # Typed input always uses terminal default fg/bg so it's
-        # readable in both light and dark Terminal.app modes.  The
-        # skin's `prompt` color (if any) only styles the prompt symbol,
-        # NOT the user's typed text.
-        "input-area": "",
+        # Typed input uses terminal default fg/bg unless a skin sets
+        # colors.input_text / colors.input_background explicitly.
+        "input-area": input_area,
         "placeholder": f"{dim} italic",
         "prompt": prompt,
         "prompt-working": f"{dim} italic",

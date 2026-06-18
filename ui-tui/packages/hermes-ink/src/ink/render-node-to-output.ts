@@ -976,7 +976,7 @@ function renderNodeToOutput(
             scrollHint = null
           }
 
-          if (hint && prevScreen && safeForFastPath) {
+          if (hint && prevScreen && safeForFastPath && !node.style.opaque) {
             const { top, bottom, delta } = hint
             const w = Math.floor(width)
             output.blit(prevScreen, Math.floor(x), top, w, bottom - top + 1)
@@ -1198,21 +1198,23 @@ function renderNodeToOutput(
             // and disable blit so children don't restore shifted content.
             //
             // No scroll (spinner tick, content edit): child positions in
-            // prevScreen are still valid. Skip the viewport clear and pass
-            // prevScreen so unchanged children blit. Dirty children already
-            // self-clear via their own cached-rect clear. Without this, a
-            // spinner inside ScrollBox forces a full-content rewrite every
-            // frame — on wide terminals over tmux (no BSU/ESU) the
-            // bandwidth crosses the chunk boundary and the frame tears.
+            // prevScreen are still valid. Normally keep blit for performance,
+            // but if the ScrollBox is marked opaque, wipe the viewport first.
+            // This prevents stale right-edge tails from previous wider rows
+            // when virtualized transcript content shrinks/reflows in-place.
             const scrolled = contentCached && contentCached.y !== contentY
+            const clearViewport = Boolean(scrolled || node.style.opaque)
 
-            if (scrolled && y1 !== undefined && y2 !== undefined) {
-              output.clear({
-                x: Math.floor(x),
-                y: Math.floor(y1),
-                width: Math.floor(width),
-                height: Math.floor(y2 - y1)
-              })
+            if (clearViewport && y1 !== undefined && y2 !== undefined) {
+              const clearX = Math.floor(x)
+              const clearY = Math.floor(y1)
+              const clearWidth = Math.floor(width)
+              const clearHeight = Math.floor(y2 - y1)
+
+              if (clearWidth > 0 && clearHeight > 0) {
+                const spaces = ' '.repeat(clearWidth)
+                output.write(clearX, clearY, Array(clearHeight).fill(spaces).join('\n'))
+              }
             }
 
             // positionChanged (ScrollBox height shrunk — pill mount) means a
@@ -1227,7 +1229,7 @@ function renderNodeToOutput(
               contentX,
               contentY,
               hasRemovedChild,
-              scrolled || positionChanged ? undefined : prevScreen,
+              scrolled || positionChanged || node.style.opaque ? undefined : prevScreen,
               scrollTop,
               scrollTop + innerHeight,
               boxBackgroundColor

@@ -283,6 +283,8 @@ my project #3          Can you check the test failures?          yesterday     2
 —                      What's the weather in Las Vegas?          3d ago        20250303_101500_f
 ```
 
+In the TUI, `/resume` uses the saved-session picker for closed transcripts. Its list is ordered by the most recently closed sessions first and the age column uses minute/hour/day labels such as `just now`, `5m ago`, `3h ago`, `yesterday`, and `3d ago`.
+
 When no sessions have titles, a simpler format is used:
 
 ```

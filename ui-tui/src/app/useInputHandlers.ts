@@ -21,7 +21,15 @@ import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
-const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
+const ctrlChar = (target: string) => String.fromCharCode(target.toLowerCase().charCodeAt(0) - 96)
+
+const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => {
+  const lower = ch?.toLowerCase() ?? ''
+
+  return (key.ctrl && lower === target.toLowerCase()) || ch === ctrlChar(target)
+}
+
+const DOUBLE_ESCAPE_INTERRUPT_MS = 900
 
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
@@ -94,6 +102,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const wheelAccelRef = useRef(initWheelAccelForHost())
 
   const precisionWheelRef = useRef(initPrecisionWheel())
+  const lastPlainEscapeRef = useRef(0)
 
   useEffect(() => () => clearTimeout(scrollIdleTimer.current ?? undefined), [])
 
@@ -259,6 +268,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   useInput((ch, key) => {
     const live = getUiState()
 
+    if (!key.escape) {
+      lastPlainEscapeRef.current = 0
+    }
+
     if (isBlocked) {
       // When approval/clarify/confirm overlays are active, their own useInput
       // handlers must receive keystrokes (arrow keys, numbers, Enter).  Only
@@ -420,6 +433,37 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return voiceRecordToggle()
     }
 
+    // Double Esc is the explicit, low-accident interrupt path.  Some terminal
+    // stacks swallow Ctrl+C/Ctrl+X or report ctrl chords as control chars;
+    // plain Esc is the most reliable key they still pass to Ink.
+    if (key.escape && !key.ctrl && !key.meta && !key.shift && live.busy && live.sid) {
+      const now = Date.now()
+
+      if (now - lastPlainEscapeRef.current <= DOUBLE_ESCAPE_INTERRUPT_MS) {
+        lastPlainEscapeRef.current = 0
+
+        return turnController.interruptTurn({
+          appendMessage: actions.appendMessage,
+          gw: gateway.gw,
+          sid: live.sid,
+          sys: actions.sys
+        })
+      }
+
+      lastPlainEscapeRef.current = now
+
+      if (cState.queueEditIdx !== null) {
+        cActions.clearIn()
+        actions.sys('queue edit cancelled — press Esc again to interrupt')
+
+        return
+      }
+
+      actions.sys('press Esc again to interrupt')
+
+      return
+    }
+
     // Queue-edit cancel beats selection-clear for plain Esc: the queue header
     // explicitly promises "Esc cancel", so honoring it takes priority over the
     // implicit selection-dismissal convention. Without an active edit, fall through.
@@ -487,7 +531,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ sessions: true })
     }
 
-    if (key.ctrl && ch.toLowerCase() === 'c') {
+    if (isCtrl(key, ch, 'c')) {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({
           appendMessage: actions.appendMessage,

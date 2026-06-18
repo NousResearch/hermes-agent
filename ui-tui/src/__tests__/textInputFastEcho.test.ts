@@ -178,6 +178,20 @@ describe('supportsFastEchoTerminal', () => {
     expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
+  it('disables fast-echo by default inside tmux', () => {
+    expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'tmux' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(supportsFastEchoTerminal({ TMUX: '/private/tmp/tmux-501/default,1,0' } as NodeJS.ProcessEnv)).toBe(false)
+  })
+
+  it('allows explicit tmux fast-echo opt-in via env override', () => {
+    expect(
+      supportsFastEchoTerminal({
+        HERMES_TUI_TMUX_FAST_ECHO: '1',
+        TMUX: '/private/tmp/tmux-501/default,1,0'
+      } as NodeJS.ProcessEnv)
+    ).toBe(true)
+  })
+
   it('disables fast-echo by default in Termux mode', () => {
     expect(
       supportsFastEchoTerminal({ TERMUX_VERSION: '0.118.0', PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)

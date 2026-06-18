@@ -40,6 +40,31 @@ from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
+_SKILL_TURN = (
+    '[IMPORTANT: The user has invoked the "release-triage" skill, indicating they want '
+    "you to follow its instructions. The full skill content is loaded below.]\n\n"
+    "# Release Triage\n\n"
+    "Large skill body that should stay model-facing only.\n\n"
+    "The user has provided the following instruction alongside the skill invocation: "
+    "summarize the failing release checks"
+)
+
+_BARE_SKILL_TURN = (
+    '[IMPORTANT: The user has invoked the "release-triage" skill, indicating they want '
+    "you to follow its instructions. The full skill content is loaded below.]\n\n"
+    "# Release Triage\n\n"
+    "Large skill body with no user instruction."
+)
+
+_BARE_BUNDLE_TURN = (
+    '[IMPORTANT: The user has invoked the "backend-dev" skill bundle, '
+    "loading 2 skills together. Treat every skill below as active guidance for this turn.]\n\n"
+    "Bundle: backend-dev\n"
+    "Skills loaded: test-driven-development, code-review\n\n"
+    '[Loaded as part of the "backend-dev" skill bundle.]\n\n'
+    "Large bundled skill body with no user instruction."
+)
+
 
 @pytest.fixture()
 def mock_manager():
@@ -1344,6 +1369,95 @@ class TestPrompt:
         assert mock_title.call_args.args[2] == "fix the broken ACP history"
         assert mock_title.call_args.args[3] == "Here is the fix."
         assert callable(mock_title.call_args.kwargs["title_callback"])
+
+    @pytest.mark.asyncio
+    async def test_prompt_persists_skill_instruction_for_preview_and_title(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            return {
+                "final_response": "The release check summary is ready.",
+                "messages": [
+                    {"role": "user", "content": kwargs["user_message"]},
+                    {"role": "assistant", "content": "The release check summary is ready."},
+                ],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=mock_run)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_title:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text=_SKILL_TURN)],
+                session_id=new_resp.session_id,
+            )
+
+        state.agent.run_conversation.assert_called_once()
+        run_kwargs = state.agent.run_conversation.call_args.kwargs
+        assert run_kwargs["user_message"] == _SKILL_TURN
+        assert run_kwargs["persist_user_message"] == "summarize the failing release checks"
+        mock_title.assert_called_once()
+        assert mock_title.call_args.args[2] == "summarize the failing release checks"
+
+    @pytest.mark.asyncio
+    async def test_prompt_persists_bare_skill_label_not_scaffold(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "Ready.",
+            "messages": [
+                {"role": "user", "content": _BARE_SKILL_TURN},
+                {"role": "assistant", "content": "Ready."},
+            ],
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_title:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text=_BARE_SKILL_TURN)],
+                session_id=new_resp.session_id,
+            )
+
+        run_kwargs = state.agent.run_conversation.call_args.kwargs
+        assert run_kwargs["user_message"] == _BARE_SKILL_TURN
+        assert run_kwargs["persist_user_message"] == "release-triage skill"
+        assert not run_kwargs["persist_user_message"].startswith("[IMPORTANT:")
+        assert mock_title.call_args.args[2] == "release-triage skill"
+
+    @pytest.mark.asyncio
+    async def test_prompt_persists_bare_bundle_label_not_scaffold(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "Ready.",
+            "messages": [
+                {"role": "user", "content": _BARE_BUNDLE_TURN},
+                {"role": "assistant", "content": "Ready."},
+            ],
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_title:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text=_BARE_BUNDLE_TURN)],
+                session_id=new_resp.session_id,
+            )
+
+        run_kwargs = state.agent.run_conversation.call_args.kwargs
+        assert run_kwargs["user_message"] == _BARE_BUNDLE_TURN
+        assert run_kwargs["persist_user_message"] == "backend-dev skill bundle"
+        assert not run_kwargs["persist_user_message"].startswith("[IMPORTANT:")
+        assert mock_title.call_args.args[2] == "backend-dev skill bundle"
 
     @pytest.mark.asyncio
     async def test_prompt_sends_session_info_update_after_auto_title(self, agent):

@@ -18363,19 +18363,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # explaining that no response arrived (so the agent can adapt
             # rather than hang forever).
             # ------------------------------------------------------------------
-            def _clarify_callback_sync(question: str, choices) -> str:
+            def _clarify_callback_sync(
+                question: str,
+                choices=None,
+                options=None,
+                display_type: str = "buttons",
+                auth_policy: str = "session_owner_only",
+                timeout_seconds=None,
+                **kwargs,
+            ) -> str:
+                """Unified clarify callback handling both simple and rich paths.
+
+                Simple path:  callback(question, choices)
+                Rich path:    callback(question, choices=None, options=[...], ...)
+                """
                 from tools import clarify_gateway as _clarify_mod
                 import uuid as _uuid
+                import json as _json
 
                 if not _status_adapter:
                     return ""
 
+                is_rich = options is not None
                 clarify_id = _uuid.uuid4().hex[:10]
                 _clarify_mod.register(
                     clarify_id=clarify_id,
                     session_key=session_key or "",
                     question=question,
                     choices=list(choices) if choices else None,
+                    options=options,
+                    display_type=display_type if is_rich else None,
+                    auth_policy=auth_policy if is_rich else None,
                 )
 
                 # Pause typing — like approval, we don't want a "thinking..."
@@ -18396,6 +18414,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         clarify_id=clarify_id,
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
+                        options=options,
+                        display_type=display_type if is_rich else None,
+                        auth_policy=auth_policy if is_rich else None,
+                        timeout_seconds=timeout_seconds if is_rich else None,
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -18418,11 +18440,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _clarify_mod.clear_session(session_key or "")
                     return "[clarify prompt could not be delivered]"
 
-                timeout = _clarify_mod.get_clarify_timeout()
+                # Use caller-provided timeout or fall back to config default
+                if timeout_seconds is not None:
+                    timeout = int(timeout_seconds)
+                else:
+                    timeout = _clarify_mod.get_clarify_timeout()
                 response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
+                    if is_rich:
+                        return _json.dumps({
+                            "status": "timeout",
+                            "message": f"User did not respond within {int(timeout / 60)}m",
+                        }, ensure_ascii=False)
                     return f"[user did not respond within {int(timeout / 60)}m]"
+
+                # Rich path: response may already be a JSON result string from
+                # the adapter/view callback.  Pass it through directly.
+                if is_rich:
+                    try:
+                        parsed = _json.loads(response)
+                        if isinstance(parsed, dict) and "status" in parsed:
+                            return response
+                    except (_json.JSONDecodeError, ValueError):
+                        pass
+                    # Wrap a plain-string rich response
+                    return _json.dumps({
+                        "status": "answered",
+                        "value": response,
+                    }, ensure_ascii=False)
+
                 return response
 
             agent.clarify_callback = _clarify_callback_sync

@@ -2277,6 +2277,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 _clarify_tool(
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
+                    options=next_args.get("options"),
+                    display_type=next_args.get("display_type", "buttons"),
+                    auth_policy=next_args.get("auth_policy", "session_owner_only"),
+                    timeout_seconds=next_args.get("timeout_seconds"),
                     callback=agent.clarify_callback,
                 ),
                 next_args,

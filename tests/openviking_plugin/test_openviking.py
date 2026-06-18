@@ -150,7 +150,7 @@ class TestOpenVikingSkillQuerySafety:
         assert RecordingVikingClient.calls == [
             (
                 "/api/v1/search/find",
-                {"query": "make a skill for release triage", "top_k": 5},
+                {"query": "make a skill for release triage", "limit": 5},
             )
         ]
 
@@ -181,7 +181,7 @@ class TestOpenVikingSkillQuerySafety:
         assert RecordingVikingClient.calls == [
             (
                 "/api/v1/search/find",
-                {"query": "fix the failing retrieval test", "top_k": 5},
+                {"query": "fix the failing retrieval test", "limit": 5},
             )
         ]
 
@@ -223,17 +223,26 @@ class TestOpenVikingSkillQuerySafety:
         )
 
         provider.sync_turn(skill_message, "Done.")
-        assert provider._sync_thread is not None
-        provider._sync_thread.join(timeout=5.0)
+        assert provider._drain_writers("session-1", timeout=5.0)
 
         assert RecordingVikingClient.calls == [
             (
-                "/api/v1/sessions/session-1/messages",
-                {"role": "user", "content": "make a skill for release triage"},
-            ),
-            (
-                "/api/v1/sessions/session-1/messages",
-                {"role": "assistant", "content": "Done."},
+                "/api/v1/sessions/session-1/messages/batch",
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {"type": "text", "text": "make a skill for release triage"},
+                            ],
+                        },
+                        {
+                            "role": "assistant",
+                            "parts": [{"type": "text", "text": "Done."}],
+                            "peer_id": "hermes",
+                        },
+                    ]
+                },
             ),
         ]
 
@@ -251,7 +260,8 @@ class TestOpenVikingSkillQuerySafety:
 
         provider.sync_turn(skill_message, "Done.")
 
-        assert provider._sync_thread is None
+        assert provider._turn_count == 0
+        assert provider._inflight_writers == {}
         assert RecordingVikingClient.calls == []
 
 
@@ -465,8 +475,8 @@ class TestOpenVikingBrowse:
 class TestOpenVikingMemoryUriBuilder:
     """Regression tests for _build_memory_uri — fixes #36969.
 
-    Before the fix the URI omitted /agent/{agent}/, causing all agents
-    under the same user to share the same memory namespace.
+    OpenViking's current memory layout stores peer-scoped memories under
+    viking://user/peers/{peer_id}/...
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -475,19 +485,19 @@ class TestOpenVikingMemoryUriBuilder:
         p._agent = agent
         return p
 
-    def test_uri_layout_includes_agent_segment(self):
-        """URI must contain /agent/{agent}/ between user and memories."""
+    def test_uri_layout_includes_peer_segment(self):
+        """URI must contain /peers/{peer_id}/ between user and memories."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/alice/agent/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
-    def test_uri_uses_configured_agent_not_default(self):
-        """_agent value must be interpolated — not hardcoded to 'hermes'."""
+    def test_uri_uses_configured_peer_not_default(self):
+        """_agent value is the OpenViking actor peer ID, not hardcoded to 'hermes'."""
         p = self._make_provider(user="alice", agent="research-bot")
         uri = p._build_memory_uri("entities")
-        assert "/agent/research-bot/" in uri
-        assert "/agent/hermes/" not in uri
+        assert "/peers/research-bot/" in uri
+        assert "/peers/hermes/" not in uri
 
     def test_uri_slug_is_twelve_hex_chars_and_unique(self):
         """Slug must be 12 hex chars and differ between calls."""

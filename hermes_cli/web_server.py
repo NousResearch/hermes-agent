@@ -70,7 +70,10 @@ from gateway.status import (
 from utils import env_var_enabled
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import (
+        FastAPI, File, Form, HTTPException, Request, UploadFile,
+        WebSocket, WebSocketDisconnect,
+    )
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -84,11 +87,8 @@ except ImportError:
 
         _lazy_ensure("tool.dashboard", prompt=False)
         from fastapi import (
-            FastAPI,
-            HTTPException,
-            Request,
-            WebSocket,
-            WebSocketDisconnect,
+            FastAPI, File, Form, HTTPException, Request, UploadFile,
+            WebSocket, WebSocketDisconnect,
         )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -1552,6 +1552,74 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
         raise HTTPException(status_code=403, detail="File is not writable")
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+
+    return {
+        "ok": True,
+        "entry": _managed_file_entry(policy, target),
+        "path": display_path,
+        **_managed_response_meta(policy),
+    }
+
+
+# Stream uploads to disk in fixed-size chunks. The legacy JSON endpoint above
+# buffers the whole file as a base64 data URL in a JSON body, which (a) inflates
+# the payload ~33%, (b) holds the entire file (plus its decoded copy) in memory,
+# and (c) reliably trips upstream proxy body-size/timeout limits with a 502 on
+# large backup archives (NS-501). This multipart endpoint reads the request body
+# in 1 MiB chunks straight to a temp file, enforces the size cap as it goes, and
+# atomically renames into place — constant memory, no base64 inflation.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+@app.post("/api/files/upload-stream")
+async def upload_managed_file_stream(
+    request: Request,
+    file: UploadFile = File(...),
+    path: str = Form(...),
+    overwrite: bool = Form(True),
+):
+    policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
+    if target.exists() and target.is_dir():
+        raise HTTPException(status_code=409, detail="A directory already exists at that path")
+    if target.exists() and not overwrite:
+        raise HTTPException(status_code=409, detail="File already exists")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create parent directory: {exc}")
+
+    # Write to a sibling temp file first so a partial/aborted upload never
+    # clobbers an existing file, then atomically rename into place.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent)
+    )
+    tmp_path = Path(tmp_name)
+    total = 0
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MANAGED_FILE_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="File is too large")
+                out.write(chunk)
+        os.replace(tmp_path, target)
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    except PermissionError:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+    finally:
+        await file.close()
 
     return {
         "ok": True,
@@ -7701,17 +7769,35 @@ async def list_mcp_catalog(profile: Optional[str] = None):
             }
         for entry in catalog_entries:
             auth = entry.auth
+            transport = entry.transport
+            install = entry.install
             entries.append({
                 "name": entry.name,
                 "description": entry.description,
                 "source": entry.source,
-                "transport": entry.transport.type,
+                "transport": transport.type,
                 "auth_type": getattr(auth, "type", "none"),
                 # Env vars the user must supply (names + prompts only, never values).
                 "required_env": [
                     {"name": e.name, "prompt": e.prompt, "required": e.required}
                     for e in getattr(auth, "env", []) or []
                 ],
+                # Transport details so the UI can show exactly what connects/runs.
+                # The trust model (docs: user-guide/features/mcp) tells users to
+                # inspect command/args/url and the install bootstrap before
+                # installing — surface them rather than hiding them in the repo.
+                "command": transport.command,
+                "args": list(transport.args or []),
+                "url": transport.url,
+                # Git bootstrap (present only for entries that clone + build).
+                "install_url": install.url if install else None,
+                "install_ref": install.ref if install else None,
+                "bootstrap": list(install.bootstrap) if install else [],
+                # Default tool pre-selection hint and post-install guidance.
+                "default_enabled": list(entry.tools.default_enabled)
+                if entry.tools.default_enabled is not None
+                else None,
+                "post_install": entry.post_install or "",
                 "needs_install": entry.install is not None,
                 "installed": installed_state.get(entry.name, (False, False))[0],
                 "enabled": installed_state.get(entry.name, (False, False))[1],

@@ -6,6 +6,7 @@ const buildOverlayState = (): OverlayState => ({
   agents: false,
   agentsInitialHistoryIndex: 0,
   approval: null,
+  billing: null,
   clarify: null,
   confirm: null,
   modelPicker: false,
@@ -21,9 +22,20 @@ export const $overlayState = atom<OverlayState>(buildOverlayState())
 
 export const $isBlocked = computed(
   $overlayState,
-  ({ agents, approval, clarify, confirm, modelPicker, pager, pluginsHub, secret, sessions, skillsHub, sudo }) =>
+  ({ agents, approval, billing, clarify, confirm, modelPicker, pager, pluginsHub, secret, sessions, skillsHub, sudo }) =>
     Boolean(
-      agents || approval || clarify || confirm || modelPicker || pager || pluginsHub || secret || sessions || skillsHub || sudo
+      agents ||
+        approval ||
+        billing ||
+        clarify ||
+        confirm ||
+        modelPicker ||
+        pager ||
+        pluginsHub ||
+        secret ||
+        sessions ||
+        skillsHub ||
+        sudo
     )
 )
 

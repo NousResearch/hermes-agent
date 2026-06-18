@@ -466,19 +466,23 @@ class TestSanePathIncludesHomebrew:
         for entry in _SANE_PATH.split(":"):
             assert entry in path_entries
 
-    def test_make_run_env_fills_missing_homebrew_when_usr_bin_present(self):
+    def test_make_run_env_fills_missing_homebrew_when_usr_bin_present(self, monkeypatch):
         """macOS launchd PATH can include /usr/bin while missing Homebrew."""
+        from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
         launchd_env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(":")
         assert "/opt/homebrew/bin" in path_entries
         assert "/opt/homebrew/sbin" in path_entries
 
-    def test_make_run_env_does_not_duplicate_existing_sane_entries(self):
+    def test_make_run_env_does_not_duplicate_existing_sane_entries(self, monkeypatch):
+        from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
         existing_env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(os.environ, existing_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(":")
@@ -486,10 +490,12 @@ class TestSanePathIncludesHomebrew:
         assert path_entries.count("/usr/local/bin") == 1
         assert path_entries.count("/usr/bin") == 1
 
-    def test_make_run_env_real_launchd_path_gains_homebrew(self):
+    def test_make_run_env_real_launchd_path_gains_homebrew(self, monkeypatch):
         """The literal macOS launchd PATH is the production trigger for #35613."""
+        from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
         launchd_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(":")
@@ -498,10 +504,12 @@ class TestSanePathIncludesHomebrew:
         # Original entries keep their leading precedence.
         assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
-    def test_make_run_env_collapses_duplicate_caller_entries(self):
+    def test_make_run_env_collapses_duplicate_caller_entries(self, monkeypatch):
         """Duplicates already present in the caller PATH are de-duplicated."""
+        from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
         dup_env = {"PATH": "/usr/bin:/usr/bin:/custom/bin:/custom/bin:/bin"}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(os.environ, dup_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(":")
@@ -510,10 +518,12 @@ class TestSanePathIncludesHomebrew:
         # First-occurrence order is preserved for the caller entries.
         assert path_entries[:3] == ["/usr/bin", "/custom/bin", "/bin"]
 
-    def test_make_run_env_strips_empty_path_entries(self):
+    def test_make_run_env_strips_empty_path_entries(self, monkeypatch):
         """Leading/trailing/double colons (== CWD on POSIX) are dropped."""
+        from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
         empty_env = {"PATH": "/usr/bin::/bin:"}
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(os.environ, empty_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(":")

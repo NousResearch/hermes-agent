@@ -286,7 +286,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     emit_stage(&app, "rebuild", StageState::Running, None, None);
     let started = Instant::now();
     let rebuild_args: Vec<String> = vec!["desktop".into(), "--build-only".into()];
-    let rebuild = run_streamed(
+    let mut rebuild = run_streamed(
         &app,
         &hermes,
         &rebuild_args,
@@ -295,6 +295,33 @@ async fn run_update(app: AppHandle) -> Result<()> {
         Some("rebuild"),
     )
     .await?;
+
+    // Retry-once: the first `--build-only` can return nonzero on a still-settling
+    // post-update tree or a network-blocked Electron fetch that our self-heal
+    // repaired mid-run. A second attempt then builds clean off the healed dist
+    // (the content-hash stamp makes it a near-no-op when the first actually
+    // succeeded). Without this the updater bails here and never reaches the
+    // relaunch below — the app updates but doesn't restart. Matches the
+    // retry-once `hermes update` already does above, and `hermes update`'s own
+    // desktop rebuild in cmd_update.
+    if rebuild_needs_retry(rebuild.exit_code) {
+        emit_log(
+            &app,
+            Some("rebuild"),
+            LogStream::Stdout,
+            "[rebuild] first desktop rebuild failed; retrying once (a self-healed \
+             Electron download builds clean on the second run)…",
+        );
+        rebuild = run_streamed(
+            &app,
+            &hermes,
+            &rebuild_args,
+            &install_root,
+            &child_env,
+            Some("rebuild"),
+        )
+        .await?;
+    }
     let rebuild_ms = started.elapsed().as_millis() as u64;
 
     if rebuild.exit_code != Some(0) {
@@ -531,6 +558,14 @@ fn is_locked(path: &Path) -> bool {
         Ok(_) => false,
         Err(_) => true,
     }
+}
+
+/// Whether the `desktop --build-only` rebuild should be retried once. Any
+/// non-success exit qualifies: the common cause is a transient first-attempt
+/// failure (still-settling tree / self-healed Electron download) that a clean
+/// second run resolves.
+fn rebuild_needs_retry(exit_code: Option<i32>) -> bool {
+    exit_code != Some(0)
 }
 
 /// Spawn `hermes <args>` from `cwd`, stream stdout/stderr as Log events on the
@@ -968,6 +1003,16 @@ mod tests {
             Some("main".to_string())
         );
         assert_eq!(update_branch_from_args(["--update"]), None);
+    }
+
+    #[test]
+    fn rebuild_retries_only_on_failure() {
+        assert!(!rebuild_needs_retry(Some(0)), "a clean rebuild must not retry");
+        assert!(rebuild_needs_retry(Some(1)), "a failed rebuild retries once");
+        assert!(
+            rebuild_needs_retry(None),
+            "a killed/signalled rebuild (no exit code) retries once"
+        );
     }
 
     #[test]

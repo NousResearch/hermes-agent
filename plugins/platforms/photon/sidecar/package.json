@@ -6,7 +6,8 @@
   "type": "module",
   "main": "index.mjs",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
   },
   "engines": {
     "node": ">=18.17"

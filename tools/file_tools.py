@@ -1654,7 +1654,7 @@ def search_tool(
             for m in result.matches:
                 if hasattr(m, "content") and m.content:
                     m.content = redact_sensitive_text(m.content, code_file=True)
-        result_dict = result.to_dict()
+        result_dict = result.to_dict(densify=True)
 
         if omitted:
             result_dict["_omitted"] = (

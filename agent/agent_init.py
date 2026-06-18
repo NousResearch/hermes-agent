@@ -953,10 +953,36 @@ def init_agent(
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
+    # Auto-disable vision toolset when the main model lacks native vision.
+    # Non-vision models get image descriptions via the Gateway's auxiliary
+    # vision pre-analysis; exposing vision_analyze to them causes redundant
+    # auxiliary API calls and confusing errors.  See issue #43951.
+    _effective_disabled = list(disabled_toolsets) if disabled_toolsets else []
+    if "vision" not in _effective_disabled:
+        try:
+            from agent.image_routing import decide_image_input_mode
+            from hermes_cli.config import load_config as _load_cfg
+            _img_mode = decide_image_input_mode(
+                (agent.provider or "").strip(),
+                (agent.model or "").strip(),
+                _load_cfg(),
+            )
+            if _img_mode == "text":
+                _effective_disabled.append("vision")
+                if not agent.quiet_mode:
+                    print("   ℹ️  Auto-disabled vision toolset (model lacks native vision)")
+        except Exception:
+            pass  # If detection fails, leave vision enabled (safe default)
+
+    # Store effective disabled list so downstream code (MCP reload, etc.)
+    # sees the auto-disabled vision toolset.
+    if _effective_disabled:
+        agent.disabled_toolsets = _effective_disabled
+
     # Get available tools with filtering
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
-        disabled_toolsets=disabled_toolsets,
+        disabled_toolsets=_effective_disabled or None,
         quiet_mode=agent.quiet_mode,
     )
     

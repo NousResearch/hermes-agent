@@ -3949,10 +3949,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+
+        # --- High-priority command bypass (#40683) ---
+        # Slash commands like /steer, /stop, /new, /queue must be parsed
+        # BEFORE the busy_text_mode early return.  Without this, commands
+        # arriving during busy+queue mode are silently dropped to the cold
+        # path and treated as plain text — the user thinks /steer worked
+        # but it was queued as a pending message instead.
+        _is_high_priority_command = False
+        if event.message_type == MessageType.TEXT:
+            _evt_cmd = event.get_command()
+            if _evt_cmd:
+                from hermes_cli.commands import (
+                    ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
+                    resolve_command as _resolve_cmd_for_busy,
+                )
+                _cmd_def = _resolve_cmd_for_busy(_evt_cmd)
+                if _cmd_def and _cmd_def.name in _DEDICATED_HANDLERS:
+                    _is_high_priority_command = True
+
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
+            and not _is_high_priority_command
         ):
             return False
 

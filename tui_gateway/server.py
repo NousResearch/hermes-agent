@@ -753,7 +753,7 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
 
-def _status_update(sid: str, kind: str, text: str | None = None):
+def _status_update(sid: str, kind: str, text: str | None = None, *, agent=None):
     body = (text if text is not None else kind).strip()
     if not body:
         return
@@ -766,7 +766,13 @@ def _status_update(sid: str, kind: str, text: str | None = None):
 
         if COMPACTION_STATUS_MARKER in body:
             out_kind = "compacting"
-    _emit("status.update", sid, {"kind": out_kind, "text": body})
+    payload: dict = {"kind": out_kind, "text": body}
+    if agent is not None:
+        try:
+            payload["usage"] = _get_usage(agent)
+        except Exception:
+            pass
+    _emit("status.update", sid, payload)
 
 
 def _estimate_image_tokens(width: int, height: int) -> int:
@@ -2994,7 +3000,10 @@ def _agent_cbs(sid: str) -> dict:
             {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
         ),
         "status_callback": lambda kind, text=None: _status_update(
-            sid, str(kind), None if text is None else str(text)
+            sid,
+            str(kind),
+            None if text is None else str(text),
+            agent=(_sessions.get(sid) or {}).get("agent"),
         ),
         # Credits/notice spine (L1): an AgentNotice fired by the agent becomes a
         # notification.show WS event; a recovery clear becomes notification.clear.

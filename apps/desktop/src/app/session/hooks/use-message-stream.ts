@@ -1072,6 +1072,10 @@ export function useMessageStream({
           })
         }
       } else if (event.type === 'status.update') {
+        if (payload?.usage && (!explicitSid || isActiveEvent)) {
+          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        }
+
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)

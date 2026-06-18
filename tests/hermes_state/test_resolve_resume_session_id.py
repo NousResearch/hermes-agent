@@ -159,3 +159,51 @@ def test_redirects_from_message_bearing_parent_to_child(db):
     db.append_message("continued", role="assistant", content="new reply")
 
     assert db.resolve_resume_session_id("original") == "continued"
+
+
+def test_compression_tip_handles_pre_ended_real_child_and_ws_orphan_sibling(db):
+    # Real desktop repro shape from a long GUI session:
+    #
+    #   root --compression--> real continuation --compression--> live tip
+    #     \
+    #      `-- stale websocket sibling ended by ws_orphan_reap
+    #
+    # The real continuation row can be inserted before root.ended_at is written,
+    # so the old child.started_at >= parent.ended_at discriminator rejects it and
+    # follows the stale websocket sibling instead. That makes the GUI look like
+    # the latest conversation was lost. Resuming root must land on live_tip.
+    base = int(time.time()) - 10_000
+    db.create_session("root", source="tui")
+    db.append_message("root", role="user", content="pre-compression")
+    db.end_session("root", "compression")
+
+    db.create_session("real_cont", source="tui", parent_session_id="root")
+    db.append_message("real_cont", role="user", content="real continuation")
+    db.end_session("real_cont", "compression")
+
+    db.create_session("ws_orphan", source="tui", parent_session_id="root")
+    db.append_message("ws_orphan", role="user", content="stale websocket")
+    db.end_session("ws_orphan", "ws_orphan_reap")
+
+    db.create_session("live_tip", source="tui", parent_session_id="real_cont")
+    db.append_message("live_tip", role="user", content="latest real turn")
+
+    conn = db._conn
+    assert conn is not None
+    conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (base, base + 1000))
+    # The real continuation starts before root.ended_at, exactly the race that
+    # broke the old timestamp-based chain walk.
+    conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'real_cont'", (base + 500, base + 2000))
+    conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'ws_orphan'", (base + 1000, base + 3000))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'live_tip'", (base + 2000,))
+    conn.commit()
+
+    assert db.get_compression_tip("root") == "live_tip"
+    assert db.resolve_resume_session_id("root") == "live_tip"
+
+    listed = db.list_sessions_rich(limit=10, order_by_last_active=True)
+    ids = {row["id"] for row in listed}
+    assert "live_tip" in ids
+    assert "real_cont" not in ids
+    assert "ws_orphan" not in ids
+

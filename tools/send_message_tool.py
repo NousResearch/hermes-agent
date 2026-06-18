@@ -60,7 +60,7 @@ _HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
-_VOICE_EXTS = {".ogg", ".opus"}
+_VOICE_EXTS = {".ogg", ".opus", ".amr"}
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
@@ -1639,29 +1639,22 @@ async def _send_dingtalk(extra, chat_id, message):
         return _error(f"DingTalk send failed: {e}")
 
 
-async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
+async def _send_wecom(extra, chat_id, message, media_files=None):
+    """Send via WeCom using the Gateway's live adapter (no second WebSocket)."""
     try:
-        from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
+        from gateway.platforms.wecom import send_wecom_direct, check_wecom_requirements
         if not check_wecom_requirements():
             return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
     except ImportError:
         return {"error": "WeCom adapter not available."}
 
     try:
-        from gateway.config import PlatformConfig
-        pconfig = PlatformConfig(extra=extra)
-        adapter = WeComAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error(f"WeCom: failed to connect - {adapter.fatal_error_message or 'unknown error'}")
-        try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"WeCom send failed: {result.error}")
-            return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
-        finally:
-            await adapter.disconnect()
+        return await send_wecom_direct(
+            extra=extra,
+            chat_id=chat_id,
+            message=message,
+            media_files=media_files,
+        )
     except Exception as e:
         return _error(f"WeCom send failed: {e}")
 

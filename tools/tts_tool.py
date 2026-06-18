@@ -919,6 +919,67 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     return None
 
 
+def _convert_to_amr(mp3_path: str, amr_nb: bool = True) -> Optional[str]:
+    """Convert an MP3 file to AMR format for WeCom/WeChat native voice bubbles.
+
+    WeCom and WeChat natively support AMR-NB (narrowband, 8 kHz) voice messages.
+    - AMR-NB: 8000 Hz, 12.2 kbps (highest quality mode), ~91 KB/min
+    - AMR-WB: 16000 Hz, 23.85 kbps (optional, for WeChat personal use)
+
+    Args:
+        mp3_path: Path to the input MP3 file.
+        amr_nb: If True (default), produce AMR-NB (8 kHz). If False, AMR-WB (16 kHz).
+
+    Returns:
+        Path to the .amr file, or None if conversion fails.
+    """
+    if not _has_ffmpeg():
+        return None
+    if not os.path.isfile(mp3_path) or os.path.getsize(mp3_path) == 0:
+        return None
+
+    amr_path = mp3_path.rsplit(".", 1)[0] + ".amr"
+    if amr_nb:
+        codec_args = ["-acodec", "libopencore_amrnb", "-ar", "8000", "-b:a", "12.2k"]
+    else:
+        codec_args = ["-acodec", "libvo_amrwbenc", "-ar", "16000", "-b:a", "23.85k"]
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-nostdin", "-loglevel", "error",
+             "-i", mp3_path, "-ac", "1"]
+            + codec_args
+            + [amr_path, "-y"],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "ffmpeg AMR conversion failed with return code %d: %s",
+                result.returncode,
+                result.stderr.decode("utf-8", errors="ignore")[:200],
+            )
+            return None
+        if os.path.exists(amr_path):
+            size = os.path.getsize(amr_path)
+            if size == 0:
+                return None
+            # Mild size guard: AMR files over 5 MB are almost certainly
+            # abnormal. The WeCom adapter enforces a stricter 2 MB limit
+            # downstream for voice bubbles specifically.
+            if size > 5 * 1024 * 1024:
+                logger.warning("AMR file too large (%d bytes), discarding", size)
+                os.unlink(amr_path)
+                return None
+            return amr_path
+    except subprocess.TimeoutExpired:
+        logger.warning("ffmpeg AMR conversion timed out after 30s")
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found in PATH")
+    except Exception as e:
+        logger.warning("ffmpeg AMR conversion failed: %s", e, exc_info=True)
+    return None
+
+
 # ===========================================================================
 # Provider: Edge TTS (free)
 # ===========================================================================
@@ -2027,6 +2088,10 @@ def text_to_speech_tool(
 
     On messaging platforms, the returned MEDIA:<path> tag is intercepted
     by the send pipeline and delivered as a native voice message.
+
+    在企业微信/微信平台上，调用此工具生成的语音将作为原生语音消息发送。
+    推荐在以下场景使用：用户发送语音消息后以语音回复、用户明确要求语音回复。
+
     In CLI mode, the file is saved to ~/voice-memos/.
 
     Args:
@@ -2065,6 +2130,7 @@ def text_to_speech_tool(
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
+    want_amr = (platform in ("wecom", "weixin"))
 
     # Determine output path
     if output_path:
@@ -2293,6 +2359,16 @@ def text_to_speech_tool(
                 voice_compatible = True
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
+
+        if want_amr and file_str.endswith(".mp3"):
+            amr_path = _convert_to_amr(file_str)
+            if amr_path:
+                file_str = amr_path
+                voice_compatible = True
+            else:
+                logger.info(
+                    "AMR conversion failed for platform=%s; falling back to MP3 file attachment", platform
+                )
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)

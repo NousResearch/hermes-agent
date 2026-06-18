@@ -139,6 +139,13 @@ def _entry_matches(entries: List[str], target: str) -> bool:
     return False
 
 
+# Live-adapter pool for send_message / cron delivery reuse.
+# Registered by the running Gateway; queried by send_wecom_direct().
+# Keyed by bot_id — collisions (two Gateway instances sharing a bot_id)
+# are detected and logged but tolerated (last-write-wins).
+_LIVE_ADAPTERS: Dict[str, "WeComAdapter"] = {}
+
+
 class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
@@ -223,6 +230,12 @@ class WeComAdapter(BasePlatformAdapter):
             )
             await self._open_connection()
             self._mark_connected()
+            if self._bot_id in _LIVE_ADAPTERS and _LIVE_ADAPTERS[self._bot_id] is not self:
+                logger.warning(
+                    "[%s] bot_id=%s already registered by another adapter instance; overwriting",
+                    self.name, self._bot_id,
+                )
+            _LIVE_ADAPTERS[self._bot_id] = self
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             logger.info("[%s] Connected to %s", self.name, self._ws_url)
@@ -239,6 +252,7 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from WeCom."""
+        _LIVE_ADAPTERS.pop(self._bot_id, None)
         self._running = False
         self._mark_disconnected()
 
@@ -1631,5 +1645,125 @@ def qr_scan_for_bot_info(
         time.sleep(_QR_POLL_INTERVAL)
 
     print()  # newline after dots
-    print(f"  QR scan timed out ({timeout_seconds // 60} minutes). Please try again.")
-    return None
+
+
+# ---------------------------------------------------------------------------
+# One-shot send helper (send_message / cron delivery)
+# ---------------------------------------------------------------------------
+
+# Inline media-type constants to avoid reverse-dependency on send_message_tool.py.
+_WECOM_DIRECT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_WECOM_DIRECT_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
+_WECOM_DIRECT_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".amr"}
+_WECOM_DIRECT_VOICE_EXTS = {".ogg", ".opus", ".amr"}
+
+
+async def send_wecom_direct(
+    *,
+    extra: Dict[str, Any],
+    chat_id: str,
+    message: str,
+    media_files: Optional[List[Tuple[str, bool]]] = None,
+) -> Dict[str, Any]:
+    """One-shot send helper for ``send_message`` and cron delivery.
+
+    Reuses the live Gateway adapter's existing WebSocket when available.
+    Does NOT create a separate WebSocket connection — avoids the
+    dual-connection conflict that severs the Gateway's WeCom channel.
+
+    Caller's responsibility: ``media_files`` paths MUST have been validated
+    (``filter_media_delivery_paths`` / ``validate_media_delivery_path``).
+    This function adds a defence-in-depth check but the primary sanitisation
+    belongs upstream.
+    """
+    bot_id = str(extra.get("bot_id") or os.getenv("WECOM_BOT_ID", "")).strip()
+    if not bot_id:
+        return {
+            "error": (
+                "企业微信机器人未配置。"
+                "请在 ~/.hermes/config.yaml 中设置 WECOM_BOT_ID 和 WECOM_BOT_SECRET，"
+                "或使用二维码扫码配置后重试。"
+            )
+        }
+
+    live_adapter = _LIVE_ADAPTERS.get(bot_id)
+    if live_adapter is None:
+        return {
+            "error": (
+                "企业微信消息通道未启动。"
+                "请先运行 hermes gateway start 或在机器人管理中开启消息通道。"
+            )
+        }
+
+    # Check transport-layer health, not just the is_connected flag.
+    # is_connected (→ self._running) stays True during reconnect backoff,
+    # but self._ws is closed — sending would raise RuntimeError.
+    if not (live_adapter._ws and not live_adapter._ws.closed):
+        return {
+            "error": (
+                "企业微信连接未就绪（WebSocket 已断开，Gateway 可能正在自动重连）。"
+                "请稍后重试，或检查 hermes gateway status 确认连接状态。"
+            )
+        }
+
+    last_result: Optional[SendResult] = None
+    if message.strip():
+        last_result = await live_adapter.send(chat_id, message)
+        if not last_result.success:
+            return {"error": f"企业微信消息发送失败：{last_result.error}"}
+
+    for media_path, is_voice in (media_files or []):
+        # Defence-in-depth: re-validate even though caller should have sanitised.
+        safe_path = _validate_media_path(media_path)
+        if safe_path is None:
+            return {
+                "error": (
+                    f"文件路径不合法或不在允许目录中：{os.path.basename(media_path)}。"
+                    "仅支持来自音频缓存目录的文件。"
+                )
+            }
+
+        ext = os.path.splitext(safe_path)[1].lower()
+        if ext in _WECOM_DIRECT_IMAGE_EXTS:
+            last_result = await live_adapter.send_image_file(chat_id, safe_path)
+        elif ext in _WECOM_DIRECT_VIDEO_EXTS:
+            last_result = await live_adapter.send_video(chat_id, safe_path)
+        elif ext in _WECOM_DIRECT_VOICE_EXTS and is_voice:
+            last_result = await live_adapter.send_voice(chat_id, safe_path)
+        elif ext in _WECOM_DIRECT_AUDIO_EXTS:
+            last_result = await live_adapter.send_voice(chat_id, safe_path)
+        else:
+            last_result = await live_adapter.send_document(chat_id, safe_path)
+
+        if not last_result.success:
+            return {"error": f"企业微信媒体发送失败：{last_result.error}"}
+
+    if last_result is None:
+        return {"error": "没有可发送的文本或媒体内容"}
+
+    return {
+        "success": True,
+        "platform": "wecom",
+        "chat_id": chat_id,
+        "message_id": last_result.message_id,
+    }
+
+
+def _validate_media_path(media_path: str) -> Optional[str]:
+    """Defence-in-depth path validation for media files.
+
+    Resolves symlinks, expands user home, and checks against the
+    global media denylist. Returns the canonical absolute path on
+    success, or None if the path is rejected.
+    """
+    try:
+        from gateway.platforms.base import validate_media_delivery_path
+        return validate_media_delivery_path(media_path)
+    except ImportError:
+        # Fallback: basic checks when base.py is not importable.
+        expanded = os.path.expanduser(media_path)
+        if not os.path.isabs(expanded):
+            expanded = os.path.abspath(expanded)
+        if not os.path.isfile(expanded):
+            return None
+        return expanded

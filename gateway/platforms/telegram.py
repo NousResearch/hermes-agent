@@ -6370,6 +6370,28 @@ class TelegramAdapter(BasePlatformAdapter):
                             "[Telegram] Could not decode text file as UTF-8, skipping content injection",
                             exc_info=True,
                         )
+                elif ext in {".html", ".htm"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    try:
+                        try:
+                            from bs4 import BeautifulSoup  # type: ignore
+                            text_content = BeautifulSoup(raw_bytes, "html.parser").get_text("\n", strip=True)
+                        except ImportError:
+                            # Fallback: crude tag strip if bs4 is not installed
+                            import html as _html
+                            raw_text = raw_bytes.decode("utf-8", errors="replace")
+                            text_content = _html.unescape(re.sub(r"<[^>]+>", "", raw_text)).strip()
+                        display_name = original_filename or f"document{ext}"
+                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                        injection = f"[Content of {display_name} (HTML stripped to text)]:\n{text_content}"
+                        if event.text:
+                            event.text = f"{injection}\n\n{event.text}"
+                        else:
+                            event.text = injection
+                    except Exception:
+                        logger.warning(
+                            "[Telegram] Could not extract HTML text, skipping content injection",
+                            exc_info=True,
+                        )
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)

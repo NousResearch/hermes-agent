@@ -788,6 +788,147 @@ class TestConvertMessages:
         assert len(user_msgs) == 1
         assert len(user_msgs[0]["content"]) == 2
 
+    def test_minimax_serializes_parallel_tool_results_for_routed_model(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "I will inspect both.",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
+        ]
+
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://opencode.ai/zen/go",
+            model="minimax-m3",
+        )
+
+        assert [m["role"] for m in result] == ["assistant", "user", "assistant", "user"]
+        assert [b["type"] for b in result[0]["content"]] == ["text", "tool_use"]
+        assert result[0]["content"][1]["id"] == "tc_1"
+        assert result[1]["content"][0]["tool_use_id"] == "tc_1"
+        assert [b["type"] for b in result[2]["content"]] == ["tool_use"]
+        assert result[2]["content"][0]["id"] == "tc_2"
+        assert result[3]["content"][0]["tool_use_id"] == "tc_2"
+
+    def test_direct_minimax_endpoint_serializes_parallel_tool_results(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
+        ]
+
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://api.minimaxi.com/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assert [m["role"] for m in result] == ["assistant", "user", "assistant", "user"]
+        assert result[0]["content"][0]["id"] == "tc_1"
+        assert result[1]["content"][0]["tool_use_id"] == "tc_1"
+        assert result[2]["content"][0]["id"] == "tc_2"
+        assert result[3]["content"][0]["tool_use_id"] == "tc_2"
+
+    def test_minimax_model_name_alone_does_not_change_native_anthropic(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages, model="provider/minimax-m3")
+
+        assert [m["role"] for m in result] == ["assistant", "user"]
+        assert len(result[1]["content"]) == 2
+
+    def test_minimax_keeps_context_text_out_of_tool_result_turn(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+            {
+                "role": "user",
+                "content": "[CONTEXT COMPACTION — REFERENCE ONLY] compacted history",
+            },
+        ]
+
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://opencode.ai/zen/go",
+            model="minimax-m3",
+        )
+
+        assert [m["role"] for m in result] == ["assistant", "user", "assistant", "user"]
+        assert result[1]["content"] == [
+            {"type": "tool_result", "tool_use_id": "tc_1", "content": "result 1"}
+        ]
+        assert result[2]["content"] == [
+            {"type": "text", "text": "(tool result received)"}
+        ]
+        assert result[3]["content"] == "[CONTEXT COMPACTION — REFERENCE ONLY] compacted history"
+
+    def test_minimax_does_not_drop_mixed_extra_tool_results(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_old", "function": {"name": "old_tool", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_old", "content": "old result"},
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
+            {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
+        ]
+
+        _, result = convert_messages_to_anthropic(
+            messages,
+            base_url="https://opencode.ai/zen/go",
+            model="minimax-m3",
+        )
+
+        user_msgs = [m for m in result if m["role"] == "user"]
+        tool_result_ids = [
+            block["tool_use_id"]
+            for msg in user_msgs
+            for block in msg["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        assert set(tool_result_ids) == {"tc_old", "tc_1", "tc_2"}
+
     def test_strips_orphaned_tool_use(self):
         messages = [
             {

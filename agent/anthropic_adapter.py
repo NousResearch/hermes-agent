@@ -569,6 +569,38 @@ def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     )
 
 
+def _is_minimax_family_model(model: str | None) -> bool:
+    if not isinstance(model, str):
+        return False
+    normalized = model.strip().lower()
+    if not normalized:
+        return False
+    # Accept common routed slugs such as ``provider/minimax-m3`` without
+    # treating direct Anthropic calls as MiniMax solely because of the model.
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized.startswith("minimax-")
+
+
+def _requires_minimax_tool_result_ordering(
+    base_url: str | None,
+    model: str | None,
+) -> bool:
+    """Return True for MiniMax Anthropic-compatible routes.
+
+    MiniMax can reject Anthropic-valid parallel tool result batches with
+    ``tool call result does not follow tool call (2013)``.  Direct MiniMax
+    Anthropic endpoints are detected by URL.  Private/provider gateways such as
+    OpenCode Go are detected only when they are third-party Anthropic endpoints
+    *and* the selected upstream model is in the MiniMax family, keeping native
+    Anthropic requests untouched even if a caller uses a MiniMax-looking slug.
+    """
+    return _is_minimax_anthropic_endpoint(base_url) or (
+        _is_third_party_anthropic_endpoint(base_url)
+        and _is_minimax_family_model(model)
+    )
+
+
 def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for Azure-hosted Anthropic Messages endpoints.
 
@@ -1996,6 +2028,137 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
                 m["content"] = [{"type": "text", "text": "(tool result removed)"}]
 
 
+def _serialize_minimax_parallel_tool_results(result: List[Dict[str, Any]]) -> None:
+    """Split exact parallel tool-use/result batches into adjacent pairs.
+
+    Anthropic accepts one assistant turn with multiple ``tool_use`` blocks
+    followed by one user turn with matching ``tool_result`` blocks. MiniMax's
+    Anthropic-compatible API is stricter and can require each result block to
+    follow its own immediately preceding tool-use turn.  To avoid data loss,
+    only rewrite exact adjacent batches whose tool_use ids and tool_result ids
+    match one-for-one; malformed or mixed batches are left untouched for the
+    existing sanitizers/error handling.
+    """
+    serialized: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(result):
+        current = result[i]
+        next_msg = result[i + 1] if i + 1 < len(result) else None
+        current_content = current.get("content")
+        next_content = next_msg.get("content") if isinstance(next_msg, dict) else None
+
+        if (
+            current.get("role") == "assistant"
+            and isinstance(current_content, list)
+            and isinstance(next_msg, dict)
+            and next_msg.get("role") == "user"
+            and isinstance(next_content, list)
+        ):
+            tool_uses = [
+                b
+                for b in current_content
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            ]
+            tool_results = [
+                b
+                for b in next_content
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            ]
+            tool_use_ids = [b.get("id") for b in tool_uses]
+            tool_result_ids = [b.get("tool_use_id") for b in tool_results]
+            if (
+                len(tool_uses) > 1
+                and len(tool_results) > 1
+                and len(set(tool_use_ids)) == len(tool_use_ids)
+                and len(set(tool_result_ids)) == len(tool_result_ids)
+                and set(tool_use_ids) == set(tool_result_ids)
+                and all(tool_use_ids)
+                and all(tool_result_ids)
+            ):
+                result_by_id = {b["tool_use_id"]: b for b in tool_results}
+                segments: List[List[Dict[str, Any]]] = []
+                segment: List[Dict[str, Any]] = []
+                for block in current_content:
+                    segment.append(block)
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        segments.append(segment)
+                        segment = []
+                if segment and segments:
+                    segments[-1].extend(segment)
+
+                candidate_messages: List[Dict[str, Any]] = []
+                for segment_blocks in segments:
+                    segment_tool_ids = [
+                        b.get("id")
+                        for b in segment_blocks
+                        if isinstance(b, dict) and b.get("type") == "tool_use"
+                    ]
+                    if len(segment_tool_ids) != 1:
+                        candidate_messages = []
+                        break
+                    tool_id = segment_tool_ids[0]
+                    assistant_msg = dict(current)
+                    assistant_msg["content"] = segment_blocks
+                    user_msg = dict(next_msg)
+                    user_msg["content"] = [result_by_id[tool_id]]
+                    candidate_messages.extend([assistant_msg, user_msg])
+
+                if candidate_messages:
+                    serialized.extend(candidate_messages)
+                    remaining_user_blocks = [
+                        b
+                        for b in next_content
+                        if not (
+                            isinstance(b, dict)
+                            and b.get("type") == "tool_result"
+                        )
+                    ]
+                    if remaining_user_blocks:
+                        user_msg = dict(next_msg)
+                        user_msg["content"] = remaining_user_blocks
+                        serialized.append(user_msg)
+                    i += 2
+                    continue
+
+        serialized.append(current)
+        i += 1
+
+    result[:] = serialized
+
+
+def _content_has_tool_result(content: Any) -> bool:
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
+
+
+def _separate_minimax_tool_result_user_turns(result: List[Dict[str, Any]]) -> None:
+    """Keep non-tool user text out of MiniMax tool-result turns.
+
+    After splitting a parallel tool batch, any ordinary user/context message
+    that follows the final tool result must remain a separate user turn. Since
+    Anthropic alternation forbids adjacent user messages, insert a neutral
+    assistant acknowledgement before that ordinary user turn instead of letting
+    ``_merge_consecutive_roles`` fold it into the tool_result payload.
+    """
+    separated: List[Dict[str, Any]] = []
+    for message in result:
+        if (
+            separated
+            and separated[-1].get("role") == "user"
+            and message.get("role") == "user"
+            and _content_has_tool_result(separated[-1].get("content"))
+            and not _content_has_tool_result(message.get("content"))
+        ):
+            separated.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "(tool result received)"}],
+            })
+        separated.append(message)
+    result[:] = separated
+
+
 def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Merge consecutive same-role messages to enforce Anthropic alternation.
 
@@ -2246,6 +2409,9 @@ def convert_messages_to_anthropic(
         result.append(_convert_user_message(content))
 
     _strip_orphaned_tool_blocks(result)
+    if _requires_minimax_tool_result_ordering(base_url, model):
+        _serialize_minimax_parallel_tool_results(result)
+        _separate_minimax_tool_result_user_turns(result)
     result = _merge_consecutive_roles(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)

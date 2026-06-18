@@ -107,6 +107,71 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 
 
 MAX_COMMANDS_PER_SCOPE = 30
+_EXEC_APPROVAL_COMMAND_PREVIEW_LIMIT = 3000
+_PIPE_TO_INTERPRETER_RE = re.compile(
+    r"\|\s*(?:sudo\s+)?(?:env\s+)?"
+    r"(?:bash|sh|zsh|fish|python(?:3)?|node|ruby|perl|php|pwsh|powershell)\b",
+    re.IGNORECASE,
+)
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    """Return text capped at limit chars, preserving room for an ellipsis."""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _security_scan_title(description: str) -> str:
+    """Extract the primary scanner title from a formatted security description."""
+    match = re.search(
+        r"Security scan\s+[—-]\s+(?:\[[^\]]+\]\s*)?([^:;]+)",
+        description,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _exec_approval_plain_language(command: str, description: str) -> Dict[str, str]:
+    """Build deterministic, user-facing approval explanation text.
+
+    Keep this local and heuristic-based: approval prompts must not make an
+    extra model call before asking the user whether execution is allowed.
+    """
+    command_text = command or ""
+    description_text = (description or "dangerous command").strip()
+    description_lower = description_text.lower()
+    is_pipe_to_interpreter = (
+        "pipe to interpreter" in description_lower
+        or bool(_PIPE_TO_INTERPRETER_RE.search(command_text))
+    )
+
+    if is_pipe_to_interpreter:
+        action = "Pipe command output directly into an interpreter."
+        risk = (
+            "Output from a download or another command can execute as code before "
+            "you inspect it."
+        )
+    elif re.search(r"(?:^|[;&|]\s*)rm\s+[^\n]*(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)", command_text):
+        action = "Force-delete files or directories from the terminal."
+        risk = "The deletion may cover a broad path or be hard to undo."
+    elif re.search(r"(?:^|[;&|]\s*)sudo\b", command_text):
+        action = "Run a terminal command with administrator privileges."
+        risk = "Administrator privileges can change system settings or protected files."
+    else:
+        action = "Run a terminal command."
+        title = _security_scan_title(description_text)
+        if title:
+            risk = f"The security scanner flagged this as '{title}'."
+        else:
+            risk = f"Detected reason: {_truncate_text(description_text, 240)}"
+
+    if description_lower.startswith("security scan"):
+        why = "The security scanner flagged this command, so Hermes needs your approval before running it."
+    else:
+        why = "Hermes classified this as potentially risky and needs your approval before running it."
+
+    return {"action": action, "why": why, "risk": risk}
 
 
 def check_telegram_requirements() -> bool:
@@ -3221,9 +3286,17 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            cmd_preview = _truncate_text(command, _EXEC_APPROVAL_COMMAND_PREVIEW_LIMIT)
+            explanation = _exec_approval_plain_language(command, description)
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"<b>What will run</b>\n"
+                f"{_html.escape(explanation['action'])}\n\n"
+                f"<b>Why approval is needed</b>\n"
+                f"{_html.escape(explanation['why'])}\n\n"
+                f"<b>Risk to review</b>\n"
+                f"{_html.escape(explanation['risk'])}\n\n"
+                f"<b>Raw command</b>\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )

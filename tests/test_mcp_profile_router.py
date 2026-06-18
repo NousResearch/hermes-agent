@@ -532,7 +532,7 @@ def test_workspace_context_hydration_tracks_instruction_staleness_and_blocks_pow
         require_fresh_workspace_context(workspace_id, context_token=token)
 
 
-def test_disabled_powerful_tool_wrappers_require_fresh_context_before_rejecting(
+def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
     hermes_home,
     tmp_path,
 ):
@@ -580,13 +580,29 @@ def test_disabled_powerful_tool_wrappers_require_fresh_context_before_rejecting(
 
     refreshed = json.loads(workspace_instructions_get(workspace_id))
     fresh_token = refreshed["context"]["context_token"]
-    write_disabled = json.loads(
-        file_write(workspace_id, "notes.md", "beta\n", context_token=fresh_token)
+    patch_result = json.loads(
+        file_patch(workspace_id, "notes.md", "alpha", "beta", context_token=fresh_token)
     )
-    assert write_disabled["ok"] is False
-    assert write_disabled["error"]["code"] == "tool_disabled"
-    assert write_disabled["llm_calls"] == 0
-    assert notes.read_text(encoding="utf-8") == "alpha\n"
+    assert patch_result["ok"] is True
+    assert patch_result["llm_calls"] == 0
+    assert patch_result["patch"]["replacements"] == 1
+    assert patch_result["patch"]["audit"] == {
+        "tool": "file_patch",
+        "llm_calls": 0,
+        "root_exposed": False,
+    }
+    assert "-alpha" in patch_result["patch"]["diff"]["unified"]
+    assert "+beta" in patch_result["patch"]["diff"]["unified"]
+    assert str(workspace_root) not in json.dumps(patch_result)
+    assert notes.read_text(encoding="utf-8") == "beta\n"
+
+    write_result = json.loads(
+        file_write(workspace_id, "created.txt", "created\n", context_token=fresh_token)
+    )
+    assert write_result["ok"] is True
+    assert write_result["llm_calls"] == 0
+    assert write_result["write"]["path"] == "created.txt"
+    assert (workspace_root / "created.txt").read_text(encoding="utf-8") == "created\n"
 
     terminal_disabled = json.loads(
         terminal_run(
@@ -599,6 +615,79 @@ def test_disabled_powerful_tool_wrappers_require_fresh_context_before_rejecting(
     assert terminal_disabled["error"]["code"] == "tool_disabled"
     assert terminal_disabled["llm_calls"] == 0
     assert not (workspace_root / "SHOULD_NOT_EXIST").exists()
+
+
+def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+    notes = workspace_root / "notes.md"
+    notes.write_text("alpha alpha\n", encoding="utf-8")
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    outside_file = outside_root / "leak.txt"
+    outside_file.write_text("leak\n", encoding="utf-8")
+    link = workspace_root / "link"
+    try:
+        link.symlink_to(outside_file)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    denied = json.loads(file_write(workspace_id, "notes.md", "beta\n", context_token=token))
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "filesystem_write_not_allowed"
+    assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True, "write": True},
+            }
+        },
+    )
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    not_unique = json.loads(
+        file_patch(workspace_id, "notes.md", "alpha", "beta", context_token=token)
+    )
+    assert not_unique["ok"] is False
+    assert not_unique["error"]["code"] == "patch_match_not_unique"
+    assert notes.read_text(encoding="utf-8") == "alpha alpha\n"
+
+    for blocked_path, expected_code in (
+        (".env", "secret_path_denied"),
+        ("../outside.txt", "path_outside_workspace"),
+        ("link", "symlink_traversal_denied"),
+    ):
+        blocked = json.loads(
+            file_write(workspace_id, blocked_path, "blocked\n", context_token=token)
+        )
+        assert blocked["ok"] is False
+        assert blocked["error"]["code"] == expected_code
+    assert outside_file.read_text(encoding="utf-8") == "leak\n"
 
 
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):

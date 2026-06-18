@@ -10,6 +10,7 @@ metadata here rather than exposing arbitrary Hermes tools by default.
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import hashlib
 import json
@@ -60,6 +61,8 @@ MAX_FILE_READ_CHARS = 60_000
 MAX_FILE_SEARCH_RESULTS = 50
 MAX_FILE_SEARCH_BYTES = 1_000_000
 MAX_SEARCH_LINE_CHARS = 500
+MAX_FILE_WRITE_CHARS = 200_000
+MAX_WRITE_DIFF_CHARS = 20_000
 ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
 MAX_CONTEXT_FILE_CHARS = 12_000
 MAX_CONTEXT_FILE_BYTES = 128_000
@@ -568,8 +571,8 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
     "file_patch": RouterToolMetadata(
         name="file_patch",
         description=(
-            "Future write tool; disabled until write policy/tests exist and always "
-            "requires fresh workspace context before execution."
+            "Direct write tool; disabled from default public MCP exposure and always "
+            "requires fresh workspace context plus filesystem.write policy."
         ),
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
@@ -580,8 +583,8 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
     "file_write": RouterToolMetadata(
         name="file_write",
         description=(
-            "Future write tool; disabled until write policy/tests exist and always "
-            "requires fresh workspace context before execution."
+            "Direct write tool; disabled from default public MCP exposure and always "
+            "requires fresh workspace context plus filesystem.write policy."
         ),
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
@@ -775,6 +778,33 @@ def resolve_workspace_path(
         raise ProfileRouterError("symlink_traversal_denied", "path escapes workspace root")
     _ensure_not_secret_path(str(resolved_candidate))
     return str(resolved_candidate)
+
+
+def resolve_workspace_write_path(workspace: WorkspaceMetadata, path: str) -> Path:
+    """Resolve a workspace-relative write path without following unsafe symlinks."""
+
+    if not isinstance(path, str):
+        raise ProfileRouterError("invalid_path", "path must be a string")
+    raw_path = path.strip()
+    if not raw_path or raw_path == ".":
+        raise ProfileRouterError("invalid_path", "write path must name a file")
+    if raw_path.startswith("/"):
+        raise ProfileRouterError("absolute_path_not_allowed", "path must be workspace-relative")
+
+    normalized_candidate = posixpath.normpath(posixpath.join(workspace.root, raw_path))
+    if not _path_within_root(normalized_candidate, workspace.root):
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root")
+    _ensure_not_secret_path(normalized_candidate)
+
+    candidate = Path(normalized_candidate)
+    if candidate.is_symlink():
+        raise ProfileRouterError("symlink_traversal_denied", "write path may not be a symlink")
+    if candidate.exists():
+        resolved = Path(resolve_workspace_path(workspace, raw_path, require_exists=True))
+        if resolved.is_dir():
+            raise ProfileRouterError("not_a_file", "write path must be a file")
+        return resolved
+    return Path(resolve_workspace_path(workspace, raw_path, require_exists=False))
 
 
 class WorkspaceRegistry:
@@ -1438,6 +1468,178 @@ def search_workspace_files(
     return payload
 
 
+def _require_workspace_write_access(
+    workspace_id: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> WorkspaceMetadata:
+    """Require fresh context and explicit filesystem.write policy."""
+
+    workspace = require_fresh_workspace_context(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    _ref, route_policy, _router_policy = _require_local_profile_policy(workspace.profile_ref)
+    if not route_policy.allow_filesystem_write:
+        raise ProfileRouterError(
+            "filesystem_write_not_allowed",
+            f"Filesystem write is disabled by profile_router policy: {workspace.profile_ref}",
+        )
+    return workspace
+
+
+def _read_patchable_text(path: Path, public_path: str) -> str:
+    _ensure_text_file(path)
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProfileRouterError(
+            "text_encoding_not_supported",
+            f"File must be valid UTF-8 for write/patch operations: {public_path}",
+        ) from exc
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", f"File is not readable: {public_path}") from exc
+
+
+def _validate_write_content(content: str) -> None:
+    if not isinstance(content, str):
+        raise ProfileRouterError("invalid_content", "content must be a string")
+    if len(content) > MAX_FILE_WRITE_CHARS:
+        raise ProfileRouterError(
+            "content_too_large",
+            f"content exceeds {MAX_FILE_WRITE_CHARS} characters",
+        )
+
+
+def _bounded_unified_diff(before: str, after: str, rel_path: str) -> dict:
+    diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{rel_path}",
+            tofile=f"b/{rel_path}",
+        )
+    )
+    truncated = len(diff) > MAX_WRITE_DIFF_CHARS
+    if truncated:
+        diff = diff[:MAX_WRITE_DIFF_CHARS] + "\n... [diff truncated]\n"
+    return {"unified": diff, "truncated": truncated, "max_chars": MAX_WRITE_DIFF_CHARS}
+
+
+def _write_operation_payload(
+    workspace: WorkspaceMetadata,
+    *,
+    tool_name: str,
+    rel_path: str,
+    before: str,
+    after: str,
+    replacements: int | None = None,
+) -> dict:
+    payload = {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "path": posixpath.normpath(rel_path.strip()),
+        "bytes_written": len(after.encode("utf-8")),
+        "changed": before != after,
+        "diff": _bounded_unified_diff(before, after, posixpath.normpath(rel_path.strip())),
+        "audit": {
+            "tool": tool_name,
+            "llm_calls": 0,
+            "root_exposed": False,
+        },
+    }
+    if replacements is not None:
+        payload["replacements"] = replacements
+    return payload
+
+
+def patch_workspace_file(
+    workspace_id: str,
+    path: str,
+    old_string: str,
+    new_string: str,
+    *,
+    replace_all: bool = False,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Apply a bounded literal text patch after context and write-policy gates."""
+
+    assert_default_tools_are_no_model()
+    if not isinstance(old_string, str) or old_string == "":
+        raise ProfileRouterError("invalid_patch", "old_string must be a non-empty string")
+    if not isinstance(new_string, str):
+        raise ProfileRouterError("invalid_patch", "new_string must be a string")
+    _validate_write_content(new_string)
+
+    workspace = _require_workspace_write_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    resolved_path = resolve_workspace_write_path(workspace, path)
+    before = _read_patchable_text(resolved_path, path)
+    match_count = before.count(old_string)
+    if match_count == 0:
+        raise ProfileRouterError("patch_match_not_found", "old_string was not found")
+    if match_count > 1 and not replace_all:
+        raise ProfileRouterError(
+            "patch_match_not_unique",
+            "old_string matched more than once; set replace_all=true to replace all matches",
+        )
+    replacements = match_count if replace_all else 1
+    after = before.replace(old_string, new_string, replacements)
+    _validate_write_content(after)
+    try:
+        resolved_path.write_text(after, encoding="utf-8")
+    except OSError as exc:
+        raise ProfileRouterError("file_not_writable", f"File is not writable: {path}") from exc
+    return _write_operation_payload(
+        workspace,
+        tool_name="file_patch",
+        rel_path=path,
+        before=before,
+        after=after,
+        replacements=replacements,
+    )
+
+
+def write_workspace_file(
+    workspace_id: str,
+    path: str,
+    content: str,
+    *,
+    context_token: str | None = None,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Write a UTF-8 text file after context and write-policy gates."""
+
+    assert_default_tools_are_no_model()
+    _validate_write_content(content)
+    workspace = _require_workspace_write_access(
+        workspace_id,
+        context_token=context_token,
+        registry=registry,
+    )
+    resolved_path = resolve_workspace_write_path(workspace, path)
+    before = ""
+    if resolved_path.exists():
+        before = _read_patchable_text(resolved_path, path)
+    try:
+        resolved_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise ProfileRouterError("file_not_writable", f"File is not writable: {path}") from exc
+    return _write_operation_payload(
+        workspace,
+        tool_name="file_write",
+        rel_path=path,
+        before=before,
+        after=content,
+    )
+
+
 def _safe_profile_summary(
     info: ProfileInfo,
     *,
@@ -1766,13 +1968,27 @@ def file_patch(
     replace_all: bool = False,
     context_token: str | None = None,
 ) -> str:
-    """Disabled future wrapper: context-gated patch without execution."""
+    """Direct wrapper: patch text after context/write-policy gates.
+
+    The tool remains disabled in default metadata and is not registered on the
+    public MCP surface yet; direct calls exercise the fail-closed write path for
+    focused Phase 5 tests.
+    """
 
     try:
-        _reject_disabled_powerful_tool_after_context(
+        return _tool_envelope(
             "file_patch",
-            workspace_id,
-            context_token=context_token,
+            {
+                "ok": True,
+                "patch": patch_workspace_file(
+                    workspace_id,
+                    path,
+                    old_string,
+                    new_string,
+                    replace_all=replace_all,
+                    context_token=context_token,
+                ),
+            },
         )
     except ProfileRouterError as exc:
         return _tool_error("file_patch", exc)
@@ -1784,13 +2000,25 @@ def file_write(
     content: str,
     context_token: str | None = None,
 ) -> str:
-    """Disabled future wrapper: context-gated write without execution."""
+    """Direct wrapper: write text after context/write-policy gates.
+
+    The tool remains disabled in default metadata and is not registered on the
+    public MCP surface yet; direct calls exercise the fail-closed write path for
+    focused Phase 5 tests.
+    """
 
     try:
-        _reject_disabled_powerful_tool_after_context(
+        return _tool_envelope(
             "file_write",
-            workspace_id,
-            context_token=context_token,
+            {
+                "ok": True,
+                "write": write_workspace_file(
+                    workspace_id,
+                    path,
+                    content,
+                    context_token=context_token,
+                ),
+            },
         )
     except ProfileRouterError as exc:
         return _tool_error("file_write", exc)

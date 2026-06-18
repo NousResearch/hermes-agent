@@ -99,8 +99,8 @@ OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
-LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac", ".silk"}
+LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif", ".ogg"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
@@ -1137,29 +1137,35 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
 
-        try:
-            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
-            transcript = " ".join(segment.text.strip() for segment in segments)
-        except Exception as exc:
-            # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
-            # AFTER the model loaded successfully.  Evict the broken cached
-            # model, reload on CPU, retry once.  Without this the module-
-            # global `_local_model` is poisoned and every subsequent voice
-            # message on this process fails identically until restart.
-            if not _looks_like_cuda_lib_error(exc):
-                raise
-            logger.warning(
-                "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
-                "evicting cached model and retrying on CPU (int8).",
-                exc,
-            )
-            _local_model = None
-            _local_model_name = None
-            from faster_whisper import WhisperModel
-            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            _local_model_name = model_name
-            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
-            transcript = " ".join(segment.text.strip() for segment in segments)
+        # Convert non-native formats (e.g. WeChat .silk) before passing to Whisper
+        with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
+            prepared_input, prep_error = _prepare_local_audio(file_path, work_dir)
+            if prep_error:
+                return {"success": False, "transcript": "", "error": prep_error}
+
+            try:
+                segments, info = _local_model.transcribe(prepared_input, **transcribe_kwargs)
+                transcript = " ".join(segment.text.strip() for segment in segments)
+            except Exception as exc:
+                # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
+                # AFTER the model loaded successfully.  Evict the broken cached
+                # model, reload on CPU, retry once.  Without this the module-
+                # global `_local_model` is poisoned and every subsequent voice
+                # message on this process fails identically until restart.
+                if not _looks_like_cuda_lib_error(exc):
+                    raise
+                logger.warning(
+                    "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
+                    "evicting cached model and retrying on CPU (int8).",
+                    exc,
+                )
+                _local_model = None
+                _local_model_name = None
+                from faster_whisper import WhisperModel
+                _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+                _local_model_name = model_name
+                segments, info = _local_model.transcribe(prepared_input, **transcribe_kwargs)
+                transcript = " ".join(segment.text.strip() for segment in segments)
 
         logger.info(
             "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
@@ -1178,6 +1184,17 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     audio_path = Path(file_path)
     if audio_path.suffix.lower() in LOCAL_NATIVE_AUDIO_FORMATS:
         return file_path, None
+
+    # Handle WeChat .silk format via pilk (pure Python SILK decoder, no ffmpeg needed)
+    if audio_path.suffix.lower() == ".silk":
+        try:
+            import pilk
+            converted_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
+            pilk.silk_to_wav(file_path, converted_path, rate=24000)
+            return converted_path, None
+        except Exception as e:
+            logger.error("pilk .silk decode failed for %s: %s", file_path, e)
+            return None, f"Failed to decode .silk audio: {e}"
 
     ffmpeg = _find_ffmpeg_binary()
     if not ffmpeg:

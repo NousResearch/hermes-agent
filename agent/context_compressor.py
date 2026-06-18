@@ -802,6 +802,14 @@ class ContextCompressor(ContextEngine):
 
         baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
         if baseline <= 0:
+            # Cold start: no compression has happened yet so baseline was
+            # never set — but the provider already confirmed the context
+            # fits (last_real_prompt_tokens < threshold, checked above).
+            # Bootstrap deferral when real usage is well under threshold;
+            # otherwise fall through and let compression proceed.
+            if self.last_real_prompt_tokens < self.threshold_tokens * 0.80:
+                self.last_rough_tokens_when_real_prompt_fit = rough_tokens
+                return True
             return False
 
         growth = max(0, rough_tokens - baseline)

@@ -322,6 +322,20 @@ function RunningMessageHarness({ message }: { message: ThreadMessage }) {
   )
 }
 
+function StaticThreadHarness({ messages, sessionKey }: { messages: ThreadMessage[]; sessionKey: string }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages,
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread sessionKey={sessionKey} />
+    </AssistantRuntimeProvider>
+  )
+}
+
 function ReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantReasoningMessage(' The user is asking what this file is.')],
@@ -395,6 +409,32 @@ function DismissibleErrorHarness({ onDismissError }: { onDismissError: (messageI
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
+  })
+
+  it('pins restored session switches to the latest message across layout frames', async () => {
+    let scrollHeight = 900
+    const firstMessages = [userMessage(), assistantMessage('older answer', false)]
+    const secondMessages = [
+      { ...userMessage(), id: 'user-2', content: [{ type: 'text', text: 'Newer question' }] },
+      { ...assistantMessage('newer answer', false), id: 'assistant-2' }
+    ] as ThreadMessage[]
+
+    const { container, rerender } = render(<StaticThreadHarness messages={firstMessages} sessionKey="session-old" />)
+    const viewport = container.querySelector('[data-slot="aui_thread-viewport"]') as HTMLDivElement
+
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    viewport.scrollTop = 0
+    scrollHeight = 1800
+
+    rerender(<StaticThreadHarness messages={secondMessages} sessionKey="session-new" />)
+
+    await wait(40)
+
+    expect(viewport.scrollTop).toBe(1800)
   })
 
   it('renders assistant text incrementally before completion', async () => {

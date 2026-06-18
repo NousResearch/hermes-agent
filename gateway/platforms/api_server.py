@@ -3343,6 +3343,146 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": str(e)}, status=500)
 
     # ------------------------------------------------------------------
+    # Config endpoints — persona (SOUL.md) + toolsets list
+    #
+    # All four handlers (GET/PUT persona, GET/PUT toolsets) gate on the
+    # existing ``_check_auth`` bearer-token middleware — same guard as
+    # ``/api/jobs/*``. When the api_server platform has no ``key`` configured
+    # the auth check no-ops (matching the rest of the surface), so behavior
+    # is identical to the existing 401-or-allow contract.
+    #
+    # Schema stability: response bodies are intentionally a thin pass-through
+    # of existing on-disk shapes:
+    #   - ``persona``  is the raw text contents of ``SOUL.md`` (string).
+    #   - ``toolsets`` is the list-of-strings under ``toolsets:`` in
+    #     ``config.yaml``, validated as ``^[a-zA-Z0-9_-]+$`` on PUT.
+    # No separate API version is introduced; these inherit whatever stability
+    # contract those config fields already have. If the underlying schema
+    # gains nested fields, the response body shape can grow (additive) without
+    # breaking existing clients.
+    #
+    # Reload behavior:
+    #   - PUT persona    → rewrites SOUL.md atomically. Picked up the next
+    #                     time an agent session starts (SOUL.md is loaded
+    #                     fresh per agent boot, not cached cross-session).
+    #                     In-flight conversations don't observe mid-session
+    #                     persona changes.
+    #   - PUT toolsets   → goes through ``hermes_cli.config.save_config``
+    #                     (atomic write); subsequent ``load_config`` calls
+    #                     re-read via mtime-based caching, so the next agent
+    #                     invocation in this gateway picks the new value up
+    #                     without a restart.
+    # If callers need true mid-session reload (rare), restart the gateway —
+    # there is no hot-swap of an active agent's persona/toolsets today.
+    # ------------------------------------------------------------------
+
+    _MAX_PERSONA_LENGTH = 50_000  # SOUL.md is a system prompt; cap defensive
+    _TOOLSET_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+    async def _handle_get_persona(self, request: "web.Request") -> "web.Response":
+        """GET /api/config/persona — return SOUL.md contents (empty string if missing).
+
+        Auth: bearer token via ``_check_auth`` (same as ``/api/jobs/*``).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_constants import get_hermes_home
+            soul_path = get_hermes_home() / "SOUL.md"
+            content = soul_path.read_text(encoding="utf-8") if soul_path.exists() else ""
+            return web.json_response({"persona": content})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_set_persona(self, request: "web.Request") -> "web.Response":
+        """PUT /api/config/persona — overwrite SOUL.md with the provided content.
+
+        Auth: bearer token via ``_check_auth``. Reload: takes effect on the
+        next agent session boot (SOUL.md is loaded fresh per session, not
+        hot-swapped into in-flight conversations).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+            content = body.get("persona", "")
+            if not isinstance(content, str):
+                return web.json_response(
+                    {"error": "persona must be a string"}, status=400,
+                )
+            if len(content) > self._MAX_PERSONA_LENGTH:
+                return web.json_response(
+                    {"error": f"persona must be ≤ {self._MAX_PERSONA_LENGTH} characters"},
+                    status=400,
+                )
+            from hermes_constants import get_hermes_home
+            soul_path = get_hermes_home() / "SOUL.md"
+            soul_path.parent.mkdir(parents=True, exist_ok=True)
+            soul_path.write_text(content, encoding="utf-8")
+            return web.json_response({"ok": True, "persona": content})
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_get_toolsets(self, request: "web.Request") -> "web.Response":
+        """GET /api/config/toolsets — return the enabled-toolsets list from config.yaml.
+
+        Auth: bearer token via ``_check_auth``. Response shape is
+        ``{"toolsets": [str, ...]}`` — a thin pass-through of the
+        ``toolsets:`` field in ``config.yaml``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            toolsets = config.get("toolsets", [])
+            if not isinstance(toolsets, list):
+                toolsets = []
+            return web.json_response({"toolsets": toolsets})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_set_toolsets(self, request: "web.Request") -> "web.Response":
+        """PUT /api/config/toolsets — replace the enabled-toolsets list in config.yaml.
+
+        Auth: bearer token via ``_check_auth``. Items validated against
+        ``^[a-zA-Z0-9_-]+$`` and de-duplicated server-side preserving order.
+        Reload: ``save_config`` writes atomically; next ``load_config`` call
+        in any agent invocation picks up the new value via mtime-based cache
+        (no gateway restart required for new sessions).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+            toolsets = body.get("toolsets")
+            if not isinstance(toolsets, list) or not all(
+                isinstance(t, str) and self._TOOLSET_KEY_RE.match(t) for t in toolsets
+            ):
+                return web.json_response(
+                    {"error": "toolsets must be a list of [a-zA-Z0-9_-]+ strings"},
+                    status=400,
+                )
+            # De-duplicate while preserving order
+            seen: set = set()
+            deduped = [t for t in toolsets if not (t in seen or seen.add(t))]
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            config["toolsets"] = deduped
+            save_config(config)
+            return web.json_response({"ok": True, "toolsets": deduped})
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ------------------------------------------------------------------
     # Output extraction helper
     # ------------------------------------------------------------------
 
@@ -4196,6 +4336,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Config CRUD — persona (SOUL.md) and enabled-toolsets list
+            self._app.router.add_get("/api/config/persona", self._handle_get_persona)
+            self._app.router.add_put("/api/config/persona", self._handle_set_persona)
+            self._app.router.add_get("/api/config/toolsets", self._handle_get_toolsets)
+            self._app.router.add_put("/api/config/toolsets", self._handle_set_toolsets)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)

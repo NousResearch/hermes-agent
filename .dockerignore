@@ -103,5 +103,6 @@ acp_registry/
 .hadolint.yaml
 .mailmap
 
-# Top-level LICENSE (not matched by *.md); not needed inside the container
-LICENSE
+# Top-level LICENSE (not matched by *.md); needed inside the container so
+# that PEP 639 license-files resolution succeeds when a companion container
+# runs ``uv pip install /opt/hermes[all]`` against a shared volume.

@@ -197,11 +197,18 @@ COPY . .
 # resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
-# Keep /opt/hermes immutable for the runtime hermes user. Hosted/container
-# instances must not be able to self-edit the installed source or venv; user
-# data, skills, plugins, config, logs, and dashboard uploads live under
-# /opt/data instead. Root can still repair the image during build/boot, but
-# supervised Hermes processes drop to the non-root hermes user.
+# Keep /opt/hermes largely immutable for the runtime hermes user.
+# Hosted/container instances must not be able to self-edit the installed
+# source or venv; user data, skills, plugins, config, logs, and dashboard
+# uploads live under /opt/data instead.  Root can still repair the image
+# during build/boot, but supervised Hermes processes drop to the non-root
+# hermes user.
+#
+# a+w is deliberately NOT set (no world-write), but group-write (a+rX,g+w)
+# is required so that a companion WebUI container — which may run as a
+# different UID in the same group — can ``uv pip install /opt/hermes[all]``
+# and create the ephemeral ``hermes_agent.egg-info/`` directory when the
+# source tree is shared via a Docker volume.
 USER root
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
@@ -209,7 +216,8 @@ RUN mkdir -p /opt/hermes/bin && \
     printf 'docker\n' > /opt/hermes/.install_method && \
     chown -R root:root /opt/hermes && \
     chmod -R a+rX /opt/hermes && \
-    chmod -R a-w /opt/hermes
+    chmod -R a-w /opt/hermes && \
+    chmod g+w /opt/hermes
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
 # volume that is commonly bind-mounted from the host and even shared with a
@@ -242,7 +250,8 @@ ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
         chmod u+w /opt/hermes && \
         printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha && \
-        chmod a-w /opt/hermes /opt/hermes/.hermes_build_sha; \
+        chmod a-w,g+w /opt/hermes && \
+        chmod a-w /opt/hermes/.hermes_build_sha; \
     fi
 
 # ---------- s6-overlay service wiring ----------

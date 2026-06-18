@@ -40,6 +40,10 @@ PROFILE_DIR="$HOME_DIR/profiles/$SLUG"
 echo "→ creating profile: $SLUG"
 hermes profile create "$SLUG" 2>/dev/null || echo "  (profile already exists, continuing)"
 mkdir -p "$PROFILE_DIR"
+# Per-customer skills dir (volume-persisted). Auto-discovered as this profile's
+# local skills root when the gateway runs — this is where customer-authored
+# skills land. Empty is fine; the shared library comes via skills.external_dirs.
+mkdir -p "$PROFILE_DIR/skills"
 
 echo "→ writing config.yaml (Avocado MCP scoped to this customer, safe toolset, manual approvals)"
 cat > "$PROFILE_DIR/config.yaml" <<YAML
@@ -62,6 +66,12 @@ mcp_servers:
       Authorization: "Bearer $AVOCADO_MCP_KEY"
     connect_timeout: 60
     timeout: 180
+skills:
+  # Curated Avocado skill templates, baked into the image at this path and
+  # shared across every customer. This customer's own custom skills live in
+  # \$PROFILE_DIR/skills (the profile-local dir, auto-discovered, no config).
+  external_dirs:
+    - /opt/hermes/avocado-skills
 platform_toolsets:
   telegram:
     - image_gen
@@ -101,6 +111,7 @@ chmod 600 "$PROFILE_DIR/.env"
 if [ "$(id -u)" = 0 ] && id hermes >/dev/null 2>&1; then
   echo "→ chowning profile config to hermes user (script ran as root)"
   chown hermes:hermes "$PROFILE_DIR/config.yaml" "$PROFILE_DIR/.env"
+  chown -R hermes:hermes "$PROFILE_DIR/skills"
 fi
 
 echo "→ starting this profile's gateway (the bot goes live)"

@@ -19,10 +19,15 @@ reach the agent, the model, or any MCP.
 
 Inbound API (auth: ``Authorization: Bearer $FLEET_PROVISION_SECRET``):
 
-    POST /provision    {tenantId, botToken, botUsername?, avocadoMcpKey,
-                        pairingCode}            -> 200 {"ok": true}
-    POST /deprovision  {tenantId}               -> 200 {"ok": true}
-    GET  /health       (no auth)                -> 200 {"ok": true}
+    POST /provision        {tenantId, botToken, botUsername?, avocadoMcpKey,
+                            pairingCode}            -> 200 {"ok": true}
+    POST /provision-slack  {tenantId, avocadoMcpKey, soul?,
+                            slack:{botToken, appToken, workspaceName?}}
+                                                    -> 200 {"ok": true}
+    POST /deprovision      {tenantId, channel?}     -> 200 {"ok": true}
+                           (channel="telegram"|"slack" drops one channel and
+                            keeps the rest; omit channel for full teardown)
+    GET  /health           (no auth)                -> 200 {"ok": true}
 
 Outbound callback (pairing, auth: same bearer secret):
 
@@ -227,29 +232,40 @@ never as a form or checklist. Remember what you learn.
 """
 
 
-def _write_profile_files(
-    slug: str, *, bot_token: str, telegram_user_id: str,
-    avocado_mcp_key: str, soul: Optional[str] = None,
-) -> None:
-    """Write config.yaml + .env + SOUL.md for a paired tenant profile.
+# Creative-safe toolset for every channel: no terminal/file/code/computer_use,
+# so a connected channel can never reach a shell. Applied per-platform.
+SAFE_TOOLSET = [
+    "image_gen", "vision", "tts", "web", "memory",
+    "session_search", "messaging", "clarify", "todo",
+]
 
-    Mirrors provision-in-container.sh: Avocado MCP scoped to the tenant's
-    key, creative-safe toolset only (no terminal/file/code), manual
-    approvals, cron denied. No OPENROUTER_API_KEY line — the profile
-    inherits the shared fleet key from the Railway service variable.
 
-    Branding: SOUL.md (identity slot #1 of the system prompt) presents the
-    agent as "Super Agent" by Avocado AI — never Hermes/Nous. ``soul`` is
-    the user's saved business/personal profile from the app; when absent,
-    the agent is instructed to interview the user over the first messages.
-    HERMES_BRAND_NAME white-labels /help + the Telegram command menu, and
-    TELEGRAM_HOME_CHANNEL (the paired private chat) suppresses the
-    "set a home channel" onboarding nudge.
+def _render_config_yaml(*, avocado_mcp_key: str,
+                        tg_ready: bool, sl_ready: bool) -> str:
+    """Build config.yaml from whichever channels are READY for this tenant.
+
+    Avocado MCP scoped to the tenant's key, creative-safe toolset per
+    platform, manual approvals, cron denied. No OPENROUTER_API_KEY — the
+    profile inherits the shared fleet key from the Railway service variable.
+    Telegram and Slack each get their own ``platform_toolsets`` entry +
+    enable block ONLY when ready, so rendering one channel never disables
+    the other.
     """
-    pdir = _profile_dir(slug)
-    pdir.mkdir(parents=True, exist_ok=True)
+    toolsets = ""
+    if tg_ready:
+        toolsets += "  telegram:\n" + "".join(f"    - {t}\n" for t in SAFE_TOOLSET)
+    if sl_ready:
+        toolsets += "  slack:\n" + "".join(f"    - {t}\n" for t in SAFE_TOOLSET)
 
-    config = f"""model:
+    blocks = ""
+    if tg_ready:
+        blocks += "telegram:\n  enabled: true\n  reactions: false\n"
+    if sl_ready:
+        # Slack also auto-enables from SLACK_BOT_TOKEN in .env (gateway
+        # config.py), but an explicit block keeps intent obvious.
+        blocks += "slack:\n  enabled: true\n"
+
+    return f"""model:
   default: {DEFAULT_MODEL}
   provider: openrouter
 agent:
@@ -269,31 +285,49 @@ mcp_servers:
     connect_timeout: 60
     timeout: 180
 platform_toolsets:
-  telegram:
-    - image_gen
-    - vision
-    - tts
-    - web
-    - memory
-    - session_search
-    - messaging
-    - clarify
-    - todo
-telegram:
-  enabled: true
-  reactions: false
-cron:
+{toolsets}{blocks}cron:
   wrap_response: true
 """
-    env = (
-        f"TELEGRAM_BOT_TOKEN={bot_token}\n"
-        f"TELEGRAM_ALLOWED_USERS={telegram_user_id}\n"
-        f"TELEGRAM_HOME_CHANNEL={telegram_user_id}\n"
-        "HERMES_BRAND_NAME=Super Agent\n"
-        f"HERMES_MAX_ITERATIONS={MAX_ITER}\n"
-        "AUTO_UPDATE=false\n"
-    )
-    soul_clean = (soul or "").strip()[:8000]
+
+
+def _render_env(*, rec: Dict[str, Any], tg_ready: bool, sl_ready: bool) -> str:
+    """Build .env from the ready channels. Telegram locks the allowlist to
+    the paired user; Slack is whole-workspace (no allowlist). Branding is
+    white-labelled to "Super Agent" via HERMES_BRAND_NAME.
+    """
+    lines: list[str] = []
+    if tg_ready:
+        tuid = rec.get("telegramUserId", "")
+        lines += [
+            f"TELEGRAM_BOT_TOKEN={rec['botToken']}",
+            f"TELEGRAM_ALLOWED_USERS={tuid}",
+            f"TELEGRAM_HOME_CHANNEL={tuid}",
+        ]
+    if sl_ready:
+        sl = rec["slack"]
+        lines += [
+            f"SLACK_BOT_TOKEN={sl['botToken']}",
+            f"SLACK_APP_TOKEN={sl['appToken']}",
+        ]
+    lines += [
+        "HERMES_BRAND_NAME=Super Agent",
+        f"HERMES_MAX_ITERATIONS={MAX_ITER}",
+        "AUTO_UPDATE=false",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _write_profile_files(slug: str, rec: Dict[str, Any], *,
+                         tg_ready: bool, sl_ready: bool) -> None:
+    """Write config.yaml + .env + SOUL.md for a tenant from its full channel
+    set. SOUL.md (identity slot #1) presents the agent as "Super Agent" by
+    Avocado AI, never Hermes/Nous. ``rec['soul']`` is the user's saved
+    profile; when absent the agent interviews the user over first messages.
+    """
+    pdir = _profile_dir(slug)
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    soul_clean = (rec.get("soul") or "").strip()[:8000]
     user_section = (
         SOUL_KNOWN_USER.format(soul=soul_clean)
         if soul_clean else SOUL_FIRST_MEETING
@@ -301,9 +335,18 @@ cron:
     (pdir / "SOUL.md").write_text(
         SOUL_TEMPLATE.format(user_section=user_section), encoding="utf-8",
     )
-    (pdir / "config.yaml").write_text(config, encoding="utf-8")
+    (pdir / "config.yaml").write_text(
+        _render_config_yaml(
+            avocado_mcp_key=rec["avocadoMcpKey"],
+            tg_ready=tg_ready, sl_ready=sl_ready,
+        ),
+        encoding="utf-8",
+    )
     env_path = pdir / ".env"
-    env_path.write_text(env, encoding="utf-8")
+    env_path.write_text(
+        _render_env(rec=rec, tg_ready=tg_ready, sl_ready=sl_ready),
+        encoding="utf-8",
+    )
     os.chmod(env_path, 0o600)
 
 
@@ -502,10 +545,59 @@ class FleetController:
             await _tg_say(self._http, token, chat_id, MSG_TRANSIENT)
         return ok
 
+    async def _render_profile(self, tenant_id: str) -> bool:
+        """Rebuild a tenant's profile (config + env + gateway) from the FULL
+        set of ready channels in the registry. The single source of truth for
+        what a tenant's gateway runs — telegram pairing, slack connect, and
+        per-channel disconnect all funnel through here, so adding/removing one
+        channel never clobbers another.
+
+        Readiness: telegram = paired (status=='paired' + token); slack =
+        both tokens present. If NO channel is ready, the profile is torn down
+        entirely (the caller decides whether to drop the registry entry).
+        """
+        rec = self.registry.get(tenant_id)
+        if rec is None:
+            return False
+        slug = rec["slug"]
+        tg_ready = rec.get("status") == "paired" and bool(rec.get("botToken"))
+        sl = rec.get("slack")
+        sl_ready = bool(sl and sl.get("botToken") and sl.get("appToken"))
+
+        if not tg_ready and not sl_ready:
+            log.info("render[%s]: no active channels — tearing profile down", slug)
+            await _run_hermes("-p", slug, "gateway", "stop", timeout=60)
+            await _run_hermes("profile", "delete", slug, "--yes", timeout=60)
+            shutil.rmtree(_profile_dir(slug), ignore_errors=True)
+            return True
+
+        log.info("render[%s] 1/3: ensuring profile (telegram=%s slack=%s)",
+                 slug, tg_ready, sl_ready)
+        rc, out = await _run_hermes("profile", "create", slug)
+        if rc != 0 and "exist" not in out.lower():
+            log.error("render[%s] FAILED at profile create (rc=%s): %s",
+                      slug, rc, out[-300:])
+            return False
+
+        log.info("render[%s] 2/3: writing config + env + soul", slug)
+        _write_profile_files(slug, rec, tg_ready=tg_ready, sl_ready=sl_ready)
+
+        log.info("render[%s] 3/3: restarting gateway", slug)
+        await _run_hermes("-p", slug, "gateway", "stop", timeout=60)
+        rc, out = await _run_hermes("-p", slug, "gateway", "start", timeout=120)
+        if rc != 0:
+            log.error("render[%s] FAILED at gateway start (rc=%s): %s",
+                      slug, rc, out[-300:])
+            return False
+        log.info("render[%s]: gateway up", slug)
+        return True
+
     async def _finalize_pairing(self, tenant_id: str,
                                 telegram_user_id: str,
                                 last_update_offset: int = 0) -> bool:
-        """Create + start the real Hermes profile, locked to the paired user.
+        """Lock the paired Telegram user into the registry, then (re)render the
+        profile. Rendering goes through _render_profile, so any Slack channel
+        already configured for this tenant comes up alongside Telegram.
 
         Every step logs before it runs — this chain died silently once
         (self-cancellation via _stop_poller) and we never want to grep in
@@ -519,13 +611,13 @@ class FleetController:
         # Retire our poller entry BEFORE the gateway starts: two getUpdates
         # consumers on one token fight each other with 409s. (_stop_poller
         # is self-call-safe: it never cancels the current task.)
-        log.info("finalize[%s] 1/6: retiring pairing poller", slug)
+        log.info("finalize[%s] 1/4: retiring pairing poller", slug)
         self._stop_poller(tenant_id)
 
         # Ack the consumed /start update with Telegram so the real gateway
         # doesn't re-receive it as the first message after takeover.
         if last_update_offset and self._http is not None:
-            log.info("finalize[%s] 2/6: acking telegram updates", slug)
+            log.info("finalize[%s] 2/4: acking telegram updates", slug)
             try:
                 await _tg(self._http, rec["botToken"], "getUpdates",
                           offset=last_update_offset, timeout=0)
@@ -533,34 +625,15 @@ class FleetController:
                 log.warning("finalize[%s]: update ack failed (gateway may "
                             "see the /start message once — harmless)", slug)
 
-        log.info("finalize[%s] 3/6: creating hermes profile", slug)
-        rc, out = await _run_hermes("profile", "create", slug)
-        if rc != 0 and "exist" not in out.lower():
-            log.error("finalize[%s] FAILED at profile create (rc=%s): %s",
-                      slug, rc, out[-300:])
-            return False
-
-        log.info("finalize[%s] 4/6: writing config + env + soul (allowlist locked)", slug)
-        _write_profile_files(
-            slug,
-            bot_token=rec["botToken"],
-            telegram_user_id=telegram_user_id,
-            avocado_mcp_key=rec["avocadoMcpKey"],
-            soul=rec.get("soul"),
-        )
-
-        log.info("finalize[%s] 5/6: starting gateway", slug)
-        await _run_hermes("-p", slug, "gateway", "stop", timeout=60)
-        rc, out = await _run_hermes("-p", slug, "gateway", "start", timeout=120)
-        if rc != 0:
-            log.error("finalize[%s] FAILED at gateway start (rc=%s): %s",
-                      slug, rc, out[-300:])
-            return False
-
-        log.info("finalize[%s] 6/6: flipping registry to paired", slug)
+        log.info("finalize[%s] 3/4: marking paired (allowlist locked)", slug)
         rec.update(status="paired", telegramUserId=telegram_user_id)
         rec.pop("pairingCode", None)  # single-use
         self.registry.put(tenant_id, rec)
+
+        log.info("finalize[%s] 4/4: rendering profile", slug)
+        if not await self._render_profile(tenant_id):
+            log.error("finalize[%s] FAILED at render", slug)
+            return False
         log.info("tenant paired: %s (telegram user locked)", slug)
         return True
 
@@ -601,11 +674,13 @@ class FleetController:
 
         slug = tenant_slug(tenant_id)
         async with self._lock(tenant_id):
-            # Idempotent refresh: silence any existing gateway/poller first
+            # Idempotent refresh: silence any existing telegram poller first
             # so the new token's poller is the only getUpdates consumer.
             self._stop_poller(tenant_id)
-            await _run_hermes("-p", slug, "gateway", "stop", timeout=60)
-            self.registry.put(tenant_id, {
+            # Merge onto any existing record so a Slack channel already
+            # configured for this tenant survives a telegram (re)connect.
+            rec = self.registry.get(tenant_id) or {}
+            rec.update({
                 "slug": slug,
                 "status": "unpaired",
                 "botToken": bot_token,
@@ -614,8 +689,13 @@ class FleetController:
                 "pairingCode": code,
                 "soul": soul,
             })
+            rec.pop("telegramUserId", None)  # re-pair from scratch
+            self.registry.put(tenant_id, rec)
+            # Telegram isn't ready until paired; render brings up Slack alone
+            # if present, or tears the profile down while we await pairing.
+            await self._render_profile(tenant_id)
             self._start_poller(tenant_id)
-        log.info("tenant provisioned (unpaired): %s", slug)
+        log.info("tenant provisioned (telegram unpaired): %s", slug)
         return web.json_response({"ok": True})
 
     async def handle_deprovision(self, request: web.Request) -> web.Response:
@@ -627,19 +707,96 @@ class FleetController:
             return web.json_response({"ok": False, "error": "invalid json"},
                                      status=400)
         tenant_id = str(body.get("tenantId") or "").strip()
+        channel = str(body.get("channel") or "").strip().lower()
         if not tenant_id:
             return web.json_response({"ok": False, "error": "tenantId required"},
                                      status=400)
         slug = tenant_slug(tenant_id)
         async with self._lock(tenant_id):
-            self._stop_poller(tenant_id)
-            await _run_hermes("-p", slug, "gateway", "stop", timeout=60)
-            await _run_hermes("profile", "delete", slug, "--yes", timeout=60)
-            # Belt & braces: the CLI delete unregisters the s6 slot; make
-            # sure no profile remnants survive on the volume either way.
-            shutil.rmtree(_profile_dir(slug), ignore_errors=True)
-            self.registry.remove(tenant_id)
-        log.info("tenant deprovisioned: %s", slug)
+            rec = self.registry.get(tenant_id)
+            if channel in ("telegram", "slack") and rec is not None:
+                # Per-channel disconnect: drop just one channel, keep the rest.
+                if channel == "telegram":
+                    self._stop_poller(tenant_id)
+                    for k in ("botToken", "botUsername", "pairingCode",
+                              "telegramUserId", "status"):
+                        rec.pop(k, None)
+                else:
+                    rec.pop("slack", None)
+                self.registry.put(tenant_id, rec)
+                # Re-render with whatever remains; _render_profile tears the
+                # profile down if nothing is left.
+                await self._render_profile(tenant_id)
+                tg_left = rec.get("status") == "paired" and bool(rec.get("botToken"))
+                if not tg_left and not rec.get("slack"):
+                    self.registry.remove(tenant_id)
+                log.info("channel %s disconnected for %s", channel, slug)
+            else:
+                # Full teardown (no channel given) — account deletion path.
+                self._stop_poller(tenant_id)
+                await _run_hermes("-p", slug, "gateway", "stop", timeout=60)
+                await _run_hermes("profile", "delete", slug, "--yes", timeout=60)
+                # Belt & braces: the CLI delete unregisters the s6 slot; make
+                # sure no profile remnants survive on the volume either way.
+                shutil.rmtree(_profile_dir(slug), ignore_errors=True)
+                self.registry.remove(tenant_id)
+                log.info("tenant deprovisioned (full): %s", slug)
+        return web.json_response({"ok": True})
+
+    async def handle_provision_slack(self, request: web.Request) -> web.Response:
+        """Connect (or refresh) a tenant's Slack channel. No pairing — the
+        pasted xoxb-/xapp- token pair proves possession of the workspace app,
+        so the channel lands ready immediately and the profile is rendered
+        (alongside Telegram if already paired). Whole-workspace access: no
+        per-user allowlist.
+        """
+        if (err := self._check_auth(request)) is not None:
+            return err
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"},
+                                     status=400)
+        tenant_id = str(body.get("tenantId") or "").strip()
+        avk = str(body.get("avocadoMcpKey") or "").strip()
+        slack = body.get("slack") or {}
+        bot_token = str(slack.get("botToken") or "").strip()
+        app_token = str(slack.get("appToken") or "").strip()
+        workspace = slack.get("workspaceName") or None
+        soul_raw = body.get("soul")
+        soul = str(soul_raw).strip() if isinstance(soul_raw, str) else None
+        if not tenant_id or not avk or not bot_token or not app_token:
+            return web.json_response(
+                {"ok": False,
+                 "error": "tenantId, avocadoMcpKey, slack.botToken, slack.appToken required"},
+                status=400)
+        if not bot_token.startswith("xoxb-") or not app_token.startswith("xapp-"):
+            return web.json_response(
+                {"ok": False, "error": "slack tokens must be xoxb-/xapp-"},
+                status=400)
+        if re.search(r"[\r\n\x00]", tenant_id + avk + bot_token + app_token):
+            return web.json_response({"ok": False, "error": "invalid characters"},
+                                     status=400)
+
+        slug = tenant_slug(tenant_id)
+        async with self._lock(tenant_id):
+            rec = self.registry.get(tenant_id) or {}
+            rec["slug"] = slug
+            rec["avocadoMcpKey"] = avk
+            if soul is not None:
+                rec["soul"] = soul
+            rec.setdefault("soul", None)
+            rec["slack"] = {
+                "botToken": bot_token,
+                "appToken": app_token,
+                "workspaceName": workspace,
+            }
+            self.registry.put(tenant_id, rec)
+            ok = await self._render_profile(tenant_id)
+        if not ok:
+            return web.json_response({"ok": False, "error": "render failed"},
+                                     status=500)
+        log.info("slack connected for %s", slug)
         return web.json_response({"ok": True})
 
     async def handle_health(self, request: web.Request) -> web.Response:
@@ -662,6 +819,7 @@ def main() -> None:
     controller = FleetController()
     app = web.Application()
     app.router.add_post("/provision", controller.handle_provision)
+    app.router.add_post("/provision-slack", controller.handle_provision_slack)
     app.router.add_post("/deprovision", controller.handle_deprovision)
     app.router.add_get("/health", controller.handle_health)
 

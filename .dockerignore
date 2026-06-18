@@ -55,6 +55,11 @@ htmlcov/
 # Documentation
 *.md
 
+# Avocado shared skill library — vendored here so `COPY . .` bakes it to
+# /opt/hermes/avocado-skills (referenced by each profile's skills.external_dirs).
+# Explicit re-include so the SKILL.md / README.md never get dropped by *.md.
+!avocado-skills/**
+
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
 .hermes-docker/

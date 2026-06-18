@@ -663,6 +663,107 @@ class TestSlackSocketWatchdog:
             finally:
                 await adapter.disconnect()
 
+    @pytest.mark.asyncio
+    async def test_backfill_processes_missed_mentions_after_stale_socket(self):
+        adapter = SlackAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="xoxb-fake",
+                extra={
+                    "backfill_channels": ["C123"],
+                    "socket_stale_after_s": 0,
+                    "backfill_interval_s": 0,
+                },
+            )
+        )
+        adapter._running = True
+        adapter._bot_user_id = "U_BOT"
+        adapter._team_bot_user_ids = {"T123": "U_BOT"}
+        adapter._channel_team = {"C123": "T123"}
+        adapter._last_inbound_monotonic -= 999
+        adapter.handle_message = AsyncMock()
+
+        client = AsyncMock()
+        client.conversations_history = AsyncMock(
+            return_value={
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "channel": "C123",
+                        "team": "T123",
+                        "channel_type": "channel",
+                        "user": "U123",
+                        "text": "<@U_BOT> are you alive?",
+                        "ts": "1781157901.420039",
+                    }
+                ],
+            }
+        )
+        client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Yuan Ming"}}}
+        )
+        adapter._app = MagicMock()
+        adapter._app.client = client
+
+        processed = await adapter._backfill_missed_mentions_if_stale()
+
+        assert processed == 1
+        client.conversations_history.assert_awaited_once()
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "are you alive?"
+        assert event.source.chat_id == "C123"
+        assert event.message_id == "1781157901.420039"
+
+    @pytest.mark.asyncio
+    async def test_backfill_ignores_non_mentions_in_channels(self):
+        adapter = SlackAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="xoxb-fake",
+                extra={
+                    "backfill_channels": ["C123"],
+                    "socket_stale_after_s": 0,
+                    "backfill_interval_s": 0,
+                },
+            )
+        )
+        adapter._running = True
+        adapter._bot_user_id = "U_BOT"
+        adapter._team_bot_user_ids = {"T123": "U_BOT"}
+        adapter._channel_team = {"C123": "T123"}
+        adapter._last_inbound_monotonic -= 999
+        adapter.handle_message = AsyncMock()
+
+        client = AsyncMock()
+        client.conversations_history = AsyncMock(
+            return_value={
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "channel": "C123",
+                        "team": "T123",
+                        "channel_type": "channel",
+                        "user": "U123",
+                        "text": "ordinary chatter",
+                        "ts": "1781157901.420039",
+                    }
+                ],
+            }
+        )
+        client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Yuan Ming"}}}
+        )
+        adapter._app = MagicMock()
+        adapter._app.client = client
+
+        processed = await adapter._backfill_missed_mentions_if_stale()
+
+        assert processed == 0
+        adapter.handle_message.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # TestSlackProxyBehavior

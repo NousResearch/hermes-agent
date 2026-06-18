@@ -377,6 +377,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        self._last_inbound_monotonic = 0.0
+        self._last_backfill_monotonic = 0.0
+        self._last_seen_message_ts_by_channel: Dict[str, str] = {}
+        self._backfilled_message_ts: set[str] = set()
+        self._BACKFILLED_TS_MAX = 5000
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -485,6 +490,11 @@ class SlackAdapter(BasePlatformAdapter):
                 connected = await self._socket_transport_connected()
                 if connected is False:
                     await self._restart_socket_mode("transport disconnected")
+                    continue
+
+                processed = await self._backfill_missed_mentions_if_stale()
+                if processed:
+                    await self._restart_socket_mode("missed Slack mentions backfilled")
             except asyncio.CancelledError:
                 raise
             except Exception:  # pragma: no cover - defensive logging
@@ -492,6 +502,158 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Socket Mode watchdog iteration failed; continuing",
                     exc_info=True,
                 )
+
+    def _slack_extra_float(self, key: str, default: float) -> float:
+        raw = self.config.extra.get(key, default)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, value)
+
+    def _slack_backfill_channels(self) -> list[str]:
+        raw = self.config.extra.get("backfill_channels")
+        channels: list[str] = []
+        if isinstance(raw, list):
+            channels.extend(str(part).strip() for part in raw if str(part).strip())
+        elif raw is not None:
+            channels.extend(
+                part.strip() for part in str(raw).split(",") if part.strip()
+            )
+
+        channels.extend(sorted(self._slack_allowed_channels()))
+        channels.extend(sorted(self._slack_free_response_channels()))
+        channels.extend(sorted(self._channel_team.keys()))
+
+        seen: set[str] = set()
+        unique: list[str] = []
+        for channel in channels:
+            if channel and channel not in seen:
+                seen.add(channel)
+                unique.append(channel)
+        return unique[:20]
+
+    def _mark_slack_inbound(self, event: dict) -> None:
+        self._last_inbound_monotonic = time.monotonic()
+        channel_id = str(event.get("channel") or "").strip()
+        ts = str(event.get("ts") or "").strip()
+        team_id = str(event.get("team") or event.get("team_id") or "").strip()
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+        if channel_id and ts:
+            previous = self._last_seen_message_ts_by_channel.get(channel_id, "")
+            if not previous or self._slack_ts_greater(ts, previous):
+                self._last_seen_message_ts_by_channel[channel_id] = ts
+
+    @staticmethod
+    def _slack_ts_greater(left: str, right: str) -> bool:
+        try:
+            return float(left) > float(right)
+        except (TypeError, ValueError):
+            return str(left) > str(right)
+
+    async def _backfill_missed_mentions_if_stale(self) -> int:
+        """Fetch recent messages from watched channels when Socket Mode is quiet.
+
+        A live TCP/WebSocket task is not enough: Slack/Bolt can stay alive while
+        no app events arrive. When the inbound stream is stale, scan explicitly
+        configured/known channels for recent messages that would have triggered
+        the adapter, process them once, and let the watchdog reconnect Socket
+        Mode afterwards.
+        """
+        if not self._running or not self._app:
+            return 0
+
+        now = time.monotonic()
+        stale_after_s = self._slack_extra_float("socket_stale_after_s", 300.0)
+        if stale_after_s and (now - self._last_inbound_monotonic) < stale_after_s:
+            return 0
+
+        interval_s = self._slack_extra_float(
+            "backfill_interval_s", stale_after_s or 300.0
+        )
+        if interval_s and (now - self._last_backfill_monotonic) < interval_s:
+            return 0
+        self._last_backfill_monotonic = now
+
+        channels = self._slack_backfill_channels()
+        if not channels:
+            return 0
+
+        window_s = self._slack_extra_float("backfill_window_s", 900.0)
+        processed = 0
+        wall_oldest = max(0.0, time.time() - window_s)
+
+        for channel_id in channels:
+            client = self._get_client(channel_id)
+            if client is None:
+                continue
+            oldest = self._last_seen_message_ts_by_channel.get(channel_id)
+            if not oldest:
+                oldest = f"{wall_oldest:.6f}"
+            try:
+                result = await client.conversations_history(
+                    channel=channel_id,
+                    oldest=oldest,
+                    inclusive=False,
+                    limit=20,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[Slack] Missed-mention backfill failed for %s: %s",
+                    channel_id,
+                    exc,
+                )
+                continue
+
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                continue
+
+            team_id = self._channel_team.get(channel_id, "")
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            for message in sorted(messages, key=lambda msg: str(msg.get("ts", ""))):
+                msg_ts = str(message.get("ts") or "").strip()
+                if not msg_ts or msg_ts in self._backfilled_message_ts:
+                    continue
+                if message.get("bot_id") or message.get("subtype") == "bot_message":
+                    continue
+                subtype = message.get("subtype")
+                if subtype in {"message_changed", "message_deleted"}:
+                    continue
+
+                text = str(message.get("text") or "")
+                channel_type = str(message.get("channel_type") or "")
+                is_dm = channel_type in {"im", "mpim"} or channel_id.startswith("D")
+                is_mentioned = bool(bot_uid and f"<@{bot_uid}>" in text)
+                if not is_dm and not is_mentioned:
+                    continue
+
+                event = dict(message)
+                event.setdefault("channel", channel_id)
+                if team_id:
+                    event.setdefault("team", team_id)
+                if not event.get("channel_type"):
+                    event["channel_type"] = (
+                        "im" if channel_id.startswith("D") else "channel"
+                    )
+
+                self._backfilled_message_ts.add(msg_ts)
+                if len(self._backfilled_message_ts) > self._BACKFILLED_TS_MAX:
+                    for old_ts in list(self._backfilled_message_ts)[
+                        : self._BACKFILLED_TS_MAX // 2
+                    ]:
+                        self._backfilled_message_ts.discard(old_ts)
+
+                await self._handle_slack_message(event)
+                processed += 1
+
+        if processed:
+            logger.warning(
+                "[Slack] Backfilled %d missed mention(s) after stale Socket Mode",
+                processed,
+            )
+        return processed
 
     def _on_socket_watchdog_done(self, task: asyncio.Task) -> None:
         if task is not self._socket_watchdog_task:
@@ -2256,6 +2418,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
+        self._mark_slack_inbound(event)
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
             return

@@ -1276,8 +1276,8 @@ def _read_nous_auth() -> Optional[dict]:
 
 
 def _nous_api_key(provider: dict) -> str:
-    """Extract a usable Nous inference JWT from stored auth state."""
-    from hermes_cli.auth import _nous_invoke_jwt_is_usable
+    """Extract a usable Nous inference credential from stored auth state."""
+    from hermes_cli.auth import _nous_runtime_token_is_usable
 
     for token_key, expiry_key in (
         ("agent_key", "agent_key_expires_at"),
@@ -1286,12 +1286,12 @@ def _nous_api_key(provider: dict) -> str:
         token = provider.get(token_key)
         if not isinstance(token, str) or not token.strip():
             continue
-        if _nous_invoke_jwt_is_usable(
+        if _nous_runtime_token_is_usable(
             token,
             scope=provider.get("scope"),
             expires_at=provider.get(expiry_key),
         ):
-            return token
+            return token.strip()
     return ""
 
 
@@ -1645,7 +1645,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         api_key = _nous_api_key(nous or {})
         if not api_key:
             logger.warning(
-                "Auxiliary Nous client unavailable: no usable inference JWT found "
+                "Auxiliary Nous client unavailable: no usable inference credential found "
                 "(run: hermes auth add nous)."
             )
             _mark_provider_unhealthy("nous", ttl=60)

@@ -353,6 +353,22 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
+
+def _load_reasoning_max_lines_from_config() -> int:
+    """Load reasoning max lines from config.yaml display section."""
+    from hermes_cli.config import cfg_get, load_config
+
+    try:
+        cfg = load_config()
+        raw = cfg_get(cfg, "display", "reasoning_max_lines")
+        if raw is None:
+            return 0
+        val = int(raw)
+        return max(val, 0)
+    except Exception:
+        return 0
+
+
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from config files.
@@ -4536,10 +4552,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"  {_DIM}[thinking] {preview_text}{_RST}")
             return
 
+        _max_lines = _load_reasoning_max_lines_from_config()
         lines = preview_text.splitlines()
-        if len(lines) > 5:
-            preview = "\n".join(lines[:5])
-            preview += f"\n  ... ({len(lines) - 5} more lines)"
+        if _max_lines > 0 and len(lines) > _max_lines:
+            preview = "\n".join(lines[:_max_lines])
+            preview += f"\n  ... ({len(lines) - _max_lines} more lines)"
         else:
             preview = preview_text
         _cprint(f"  {_DIM}[thinking] {preview}{_RST}")

@@ -1557,6 +1557,10 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # TUI composer submit key: "enter" (default) submits on Enter,
+        # newline on Cmd/Ctrl+Enter; "cmd_enter" swaps so Enter inserts
+        # a newline and Cmd/Ctrl+Enter submits.
+        "submit_key": "enter",
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

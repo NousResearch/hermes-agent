@@ -29,6 +29,7 @@ const buildUiState = (): UiState => ({
   status: 'summoning hermes…',
   statusBar: 'top',
   streaming: true,
+  submitKey: 'enter',
   theme: DEFAULT_THEME,
   usage: ZERO
 })

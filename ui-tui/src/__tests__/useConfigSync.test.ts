@@ -48,6 +48,21 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(false)
   })
 
+  it('defaults submitKey to enter when config omits submit_key', () => {
+    applyDisplay({ config: { display: {} } }, vi.fn())
+    expect($uiState.get().submitKey).toBe('enter')
+  })
+
+  it('sets submitKey to cmd_enter when config sets submit_key', () => {
+    applyDisplay({ config: { display: { submit_key: 'cmd_enter' } } }, vi.fn())
+    expect($uiState.get().submitKey).toBe('cmd_enter')
+  })
+
+  it('falls back to enter for unknown submit_key values', () => {
+    applyDisplay({ config: { display: { submit_key: 'something_else' } } }, vi.fn())
+    expect($uiState.get().submitKey).toBe('enter')
+  })
+
   it('coerces legacy true + "on" alias to top', () => {
     const setBell = vi.fn()
 

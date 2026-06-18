@@ -136,6 +136,7 @@ export interface UiState {
   status: string
   statusBar: StatusBarMode
   streaming: boolean
+  submitKey: 'enter' | 'cmd_enter'
   theme: Theme
   usage: Usage
 }

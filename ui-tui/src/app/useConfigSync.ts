@@ -216,7 +216,8 @@ export const applyDisplay = (
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
-    streaming: d.streaming !== false
+    streaming: d.streaming !== false,
+    submitKey: d.submit_key === 'cmd_enter' ? 'cmd_enter' : 'enter'
   })
 }
 

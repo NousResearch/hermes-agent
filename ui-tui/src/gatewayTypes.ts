@@ -90,6 +90,8 @@ export interface ConfigDisplayConfig {
   // validation anyway.
   tui_status_indicator?: string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
+  /** TUI composer submit key: "enter" (default) or "cmd_enter" (swap). */
+  submit_key?: string
 }
 
 export interface ConfigVoiceConfig {

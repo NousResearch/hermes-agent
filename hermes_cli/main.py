@@ -11491,6 +11491,10 @@ def cmd_tools(args):
         from hermes_cli.tools_config import run_post_setup_command
 
         sys.exit(run_post_setup_command(args))
+    elif action == "diagnose":
+        from hermes_cli.tools_diagnose import tools_diagnose_command
+
+        tools_diagnose_command(args)
     else:
         _require_tty("tools")
         from hermes_cli.tools_config import tools_command

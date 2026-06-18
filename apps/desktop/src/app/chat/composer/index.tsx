@@ -1409,8 +1409,13 @@ export function ChatBar({
       drainingQueueRef.current = true
 
       try {
+        const queueSessionKey = activeQueueSessionKey
         const accepted = await Promise.resolve(
-          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
+          onSubmit(entry.text, {
+            attachments: entry.attachments,
+            fromQueue: true,
+            targetStoredSessionId: queueSessionKey
+          })
         )
 
         if (accepted === false) {
@@ -1418,7 +1423,7 @@ export function ChatBar({
         }
 
         drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(activeQueueSessionKey, entry.id)
+        removeQueuedPrompt(queueSessionKey, entry.id)
         resetBrowseState(sessionId)
 
         return true

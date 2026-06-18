@@ -48,7 +48,7 @@ interface HarnessHandle {
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (
     text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
+    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean; targetStoredSessionId?: string | null }
   ) => Promise<boolean>
 }
 
@@ -56,6 +56,7 @@ function Harness({
   busyRef,
   onReady,
   onSeedState,
+  onSelectedStoredSessionIdRef,
   refreshSessions,
   requestGateway,
   resumeStoredSession,
@@ -64,7 +65,8 @@ function Harness({
 }: {
   busyRef?: MutableRefObject<boolean>
   onReady: (handle: HarnessHandle) => void
-  onSeedState?: (state: Record<string, unknown>) => void
+  onSeedState?: (state: Record<string, unknown>, storedSessionId?: string | null) => void
+  onSelectedStoredSessionIdRef?: (ref: MutableRefObject<string | null>) => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
@@ -75,6 +77,9 @@ function Harness({
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = {
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
   }
+
+  onSelectedStoredSessionIdRef?.(selectedStoredSessionIdRef)
+
   const localBusyRef = busyRef ?? { current: false }
   const stateRef = useRef({
     messages: seedMessages ?? [],
@@ -96,11 +101,11 @@ function Harness({
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (_sessionId, updater) => {
+    updateSessionState: (_sessionId, updater, updateStoredSessionId) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
-      onSeedState?.(next)
+      onSeedState?.(next, updateStoredSessionId)
 
       return next as never
     }
@@ -322,6 +327,56 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
       session_id: RUNTIME_SESSION_ID,
       text: 'queued message'
+    })
+  })
+
+  it('keeps a queued send bound to its session when the user switches chats mid-submit', async () => {
+    const storedArgs: Array<string | null | undefined> = []
+    let selectedRef: MutableRefObject<string | null> | null = null
+    let submitAttempts = 0
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+        // Repro: the queued prompt starts in one session, then the user clicks
+        // another chat before the async submit path finishes its optimistic
+        // stale-runtime recovery. Old code reread this mutable ref and resumed
+        // the newly selected chat instead of the queued prompt's owning chat.
+        selectedRef!.current = 'session-clicked-mid-submit'
+
+        if (submitAttempts === 1) {
+          throw new Error('404: {"detail":"Session not found"}')
+        }
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'recovered-runtime' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={(_state, storedSessionId) => storedArgs.push(storedSessionId)}
+        onSelectedStoredSessionIdRef={ref => {
+          selectedRef = ref
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="queued-session"
+      />
+    )
+
+    await handle!.submitText('queued follow-up', {
+      fromQueue: true,
+      targetStoredSessionId: 'queued-session'
+    })
+
+    expect(storedArgs).toEqual(['queued-session', 'queued-session'])
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'queued-session'
     })
   })
 

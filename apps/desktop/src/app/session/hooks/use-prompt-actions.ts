@@ -327,6 +327,7 @@ interface PromptActionsOptions {
 interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+  targetStoredSessionId?: string | null
 }
 
 /** Everything a slash handler needs about the invocation it's serving. */
@@ -551,6 +552,7 @@ export function usePromptActions({
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
       const attachments = options?.attachments ?? $composerAttachments.get()
+      const submitStoredSessionId = options?.targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -618,7 +620,7 @@ export function usePromptActions({
             // (what made drained-after-interrupt sends go silent).
             interrupted: false
           }),
-          selectedStoredSessionIdRef.current
+          submitStoredSessionId
         )
 
       // After sync rewrites refs, refresh the optimistic message in place so the
@@ -630,7 +632,7 @@ export function usePromptActions({
             ...state,
             messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
           }),
-          selectedStoredSessionIdRef.current
+          submitStoredSessionId
         )
 
       const dropOptimistic = (sid: null | string) => {
@@ -649,7 +651,7 @@ export function usePromptActions({
             awaitingResponse: false,
             pendingBranchGroup: null
           }),
-          selectedStoredSessionIdRef.current
+          submitStoredSessionId
         )
       }
 
@@ -708,16 +710,18 @@ export function usePromptActions({
         try {
           await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
         } catch (firstErr) {
-          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
+          if (isSessionNotFoundError(firstErr) && submitStoredSessionId) {
             // Re-register the session in the gateway and get a fresh live ID.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current
+              session_id: submitStoredSessionId
             })
 
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
+              if (selectedStoredSessionIdRef.current === submitStoredSessionId) {
+                activeSessionIdRef.current = recoveredId
+              }
               await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
             } else {
               submitErr = firstErr

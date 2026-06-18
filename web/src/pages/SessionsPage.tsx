@@ -60,6 +60,7 @@ import {
   DialogTitle,
 } from "@nous-research/ui/ui/components/dialog";
 import { useSystemActions } from "@/contexts/useSystemActions";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -374,6 +375,7 @@ function MessageList({
 
 function SessionRow({
   session,
+  profile,
   snippet,
   searchQuery,
   isExpanded,
@@ -398,12 +400,12 @@ function SessionRow({
     if (isExpanded && messages === null && !loading) {
       setLoading(true);
       api
-        .getSessionMessages(session.id)
+        .getSessionMessages(session.id, session.profile ?? profile)
         .then((resp) => setMessages(resp.messages))
         .catch((err) => setError(String(err)))
         .finally(() => setLoading(false));
     }
-  }, [isExpanded, session.id, messages, loading]);
+  }, [isExpanded, session.id, session.profile, profile, messages, loading]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
@@ -760,14 +762,15 @@ export default function SessionsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
+  const { profile } = useProfileScope();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
 
   const refreshEmptyCount = useCallback(() => {
     api
-      .getEmptySessionsCount()
+      .getEmptySessionsCount(profile)
       .then((r) => setEmptyCount(r.count))
       .catch(() => {});
-  }, []);
+  }, [profile]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -809,21 +812,21 @@ export default function SessionsPage() {
   const loadSessions = useCallback((p: number) => {
     setLoading(true);
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE, profile)
       .then((resp) => {
         setSessions(resp.sessions);
         setTotal(resp.total);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [profile]);
 
   const loadStats = useCallback(() => {
     api
-      .getSessionStats()
+      .getSessionStats(profile)
       .then(setStats)
       .catch(() => {});
-  }, []);
+  }, [profile]);
 
   useEffect(() => {
     loadStats();
@@ -835,20 +838,29 @@ export default function SessionsPage() {
   }, [loadSessions, page, refreshEmptyCount]);
 
   useEffect(() => {
+    setPage(0);
+    setExpandedId(null);
+    setSearch("");
+    setSearchResults(null);
+    setSearching(false);
+    clearSelection();
+  }, [profile, clearSelection]);
+
+  useEffect(() => {
     const loadOverview = () => {
       api
         .getStatus()
         .then(setStatus)
         .catch(() => {});
       api
-        .getSessions(50)
+        .getSessions(50, 0, profile)
         .then((r) => setOverviewSessions(r.sessions))
         .catch(() => {});
     };
     loadOverview();
     const id = setInterval(loadOverview, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [profile]);
 
   useEffect(() => {
     const el = logScrollRef.current;
@@ -898,7 +910,7 @@ export default function SessionsPage() {
     setSearching(true);
     debounceRef.current = setTimeout(() => {
       api
-        .searchSessions(search.trim())
+        .searchSessions(search.trim(), profile)
         .then((resp) => setSearchResults(resp.results))
         .catch(() => setSearchResults(null))
         .finally(() => setSearching(false));
@@ -907,13 +919,13 @@ export default function SessionsPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [search]);
+  }, [search, profile]);
 
   const sessionDelete = useConfirmDelete({
     onDelete: useCallback(
       async (id: string) => {
         try {
-          await api.deleteSession(id);
+          await api.deleteSession(id, profile);
           setSessions((prev) => prev.filter((s) => s.id !== id));
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
@@ -938,6 +950,7 @@ export default function SessionsPage() {
       },
       [
         expandedId,
+        profile,
         refreshEmptyCount,
         showToast,
         loadStats,
@@ -1008,7 +1021,7 @@ export default function SessionsPage() {
     }
     setDeletingSelected(true);
     try {
-      const resp = await api.bulkDeleteSessions(ids);
+      const resp = await api.bulkDeleteSessions(ids, profile);
       showToast(
         t.sessions.selectedSessionsDeleted.replace(
           "{count}",
@@ -1038,6 +1051,7 @@ export default function SessionsPage() {
     expandedId,
     loadSessions,
     page,
+    profile,
     refreshEmptyCount,
     selectedIds,
     showToast,
@@ -1048,7 +1062,7 @@ export default function SessionsPage() {
   const handleDeleteEmpty = useCallback(async () => {
     setDeletingEmpty(true);
     try {
-      const resp = await api.deleteEmptySessions();
+      const resp = await api.deleteEmptySessions(profile);
       // Show count in the toast so users get confirmation of the actual
       // number removed (which may differ slightly from `emptyCount` if a
       // session entered/left the "empty" set between the count fetch and
@@ -1075,6 +1089,7 @@ export default function SessionsPage() {
   }, [
     loadSessions,
     page,
+    profile,
     refreshEmptyCount,
     showToast,
     t.sessions.emptySessionsDeleted,
@@ -1084,7 +1099,7 @@ export default function SessionsPage() {
   const handleRename = useCallback(
     async (id: string, title: string) => {
       try {
-        await api.renameSession(id, title);
+        await api.renameSession(id, title, profile);
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
@@ -1097,13 +1112,13 @@ export default function SessionsPage() {
         showToast("Failed to rename session", "error");
       }
     },
-    [showToast, loadStats],
+    [profile, showToast, loadStats],
   );
 
   const handleExport = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(api.exportSessionUrl(id), {
+        const res = await fetch(api.exportSessionUrl(id, profile), {
           credentials: "include",
           headers: {
             "X-Hermes-Session-Token":
@@ -1123,7 +1138,7 @@ export default function SessionsPage() {
         showToast("Failed to export session", "error");
       }
     },
-    [showToast],
+    [profile, showToast],
   );
 
   const handlePrune = useCallback(async () => {
@@ -1134,7 +1149,7 @@ export default function SessionsPage() {
     }
     setPruning(true);
     try {
-      const resp = await api.pruneSessions(days);
+      const resp = await api.pruneSessions(days, undefined, profile);
       showToast(
         `Pruned ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
         "success",
@@ -1148,7 +1163,7 @@ export default function SessionsPage() {
     } finally {
       setPruning(false);
     }
-  }, [pruneDays, showToast, loadSessions, loadStats]);
+  }, [pruneDays, profile, showToast, loadSessions, loadStats]);
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -1597,6 +1612,7 @@ export default function SessionsPage() {
                 <SessionRow
                   key={s.id}
                   session={s}
+                  profile={profile}
                   snippet={snippetMap.get(s.id)}
                   searchQuery={search || undefined}
                   isExpanded={expandedId === s.id}
@@ -1695,6 +1711,7 @@ interface SessionRowProps {
   onRename: (id: string, title: string) => Promise<void>;
   onSelectClick: (event: React.MouseEvent) => void;
   onToggle: () => void;
+  profile: string;
   resumeInChatEnabled: boolean;
   searchQuery?: string;
   session: SessionInfo;

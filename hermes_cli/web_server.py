@@ -6607,14 +6607,12 @@ async def cancel_oauth_session(
 
 
 
-def _session_latest_descendant(session_id: str):
+def _session_latest_descendant(session_id: str, profile: Optional[str] = None):
     """Resolve a session id to the newest child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
     """
-    from hermes_state import SessionDB
-
     def row_get(row, key, index):
         if isinstance(row, dict):
             return row.get(key)
@@ -6626,7 +6624,7 @@ def _session_latest_descendant(session_id: str):
             except Exception:
                 return None
 
-    db = SessionDB()
+    db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid or not db.get_session(sid):
@@ -6855,8 +6853,11 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
-async def get_session_latest_descendant(session_id: str):
-    latest, path = _session_latest_descendant(session_id)
+async def get_session_latest_descendant(
+    session_id: str,
+    profile: Optional[str] = None,
+):
+    latest, path = _session_latest_descendant(session_id, profile)
     if not latest:
         raise HTTPException(status_code=404, detail="Session not found")
     return {

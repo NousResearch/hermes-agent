@@ -96,7 +96,7 @@ import threading
 import time
 from typing import Callable
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional
+from typing import Any, Coroutine, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)

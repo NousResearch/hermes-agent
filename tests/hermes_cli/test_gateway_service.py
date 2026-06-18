@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -2589,6 +2590,40 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_escapes_dynamic_xml_strings(self, tmp_path, monkeypatch):
+        """Dynamic launchd values can contain XML-sensitive chars in user paths."""
+        hermes_home = tmp_path / "Hermes & Co"
+        hermes_home.mkdir()
+        venv_dir = tmp_path / "venv & tools"
+        venv_dir.mkdir()
+
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/Users/a&b/.venv/bin/python")
+        monkeypatch.setattr(gateway_cli, "_stable_service_working_dir", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway&dev")
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda _home=None: "--profile a&b")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv_dir)
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: ["/tmp/a&b/bin"])
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("PATH", "/usr/bin:/tmp/c&d/bin")
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "&amp;" in plist
+        parsed = plistlib.loads(plist.encode("utf-8"))
+        assert parsed["Label"] == "ai.hermes.gateway&dev"
+        assert parsed["ProgramArguments"][:5] == [
+            "/Users/a&b/.venv/bin/python",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "a&b",
+        ]
+        assert parsed["WorkingDirectory"] == str(hermes_home)
+        assert parsed["EnvironmentVariables"]["PATH"] == "/tmp/a&b/bin:/usr/bin:/tmp/c&d/bin"
+        assert parsed["EnvironmentVariables"]["VIRTUAL_ENV"] == str(venv_dir)
+        assert parsed["EnvironmentVariables"]["HERMES_HOME"] == str(hermes_home)
 
     def test_launchd_plist_supports_aqua_and_background_sessions(self):
         # macOS 26+ only loads the agent in non-Aqua sessions when the plist

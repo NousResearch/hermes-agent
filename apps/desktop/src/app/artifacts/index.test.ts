@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { collectArtifactsForSession } from './index'
+import { collectArtifactsForSession, formatArtifactTime } from './index'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -22,6 +22,29 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
     ...overrides
   }
 }
+
+describe('formatArtifactTime', () => {
+  it('converts epoch seconds to correct month (Jun, not Jan)', () => {
+    // 1781773226 seconds = 2026-06-18 17:00:26 UTC
+    // Before fix, seconds were passed directly to new Date() → Jan 21 1970
+    const result = formatArtifactTime(1781773226)
+    expect(result).toContain('Jun')
+    expect(result).not.toContain('Jan')
+  })
+
+  it('handles millisecond timestamps (>= 1e12) correctly', () => {
+    const msTimestamp = 1781773226000 // already in ms
+    const result = formatArtifactTime(msTimestamp)
+    expect(result).toContain('Jun')
+    expect(result).not.toContain('Jan')
+  })
+
+  it('produces same output for equivalent seconds and milliseconds', () => {
+    const seconds = 1781773226
+    const milliseconds = 1781773226000
+    expect(formatArtifactTime(seconds)).toBe(formatArtifactTime(milliseconds))
+  })
+})
 
 describe('collectArtifactsForSession', () => {
   it('indexes plain https links from assistant text', () => {

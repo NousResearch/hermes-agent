@@ -305,8 +305,12 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
   return Array.from(found.values())
 }
 
-function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+export function formatArtifactTime(timestamp: number): string {
+  // Backend timestamps (message.timestamp, session.started_at, session.last_active)
+  // are Unix epoch seconds from Python's time.time(). Convert to milliseconds
+  // for JavaScript Date. Threshold: values < 1e12 are seconds, >= 1e12 are ms.
+  const ms = timestamp < 1e12 ? timestamp * 1000 : timestamp
+  return ARTIFACT_TIME_FMT.format(new Date(ms))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

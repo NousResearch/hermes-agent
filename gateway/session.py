@@ -1302,6 +1302,16 @@ class SessionStore:
                      _flush_messages_to_session_db(), preventing the
                      duplicate-write bug (#860).
         """
+        platform_message_id = message.get("platform_message_id") or message.get("message_id")
+        if self._db and platform_message_id:
+            try:
+                existing = self._db.get_messages_as_conversation(session_id)
+                for row in existing:
+                    if str(row.get("platform_message_id") or row.get("message_id") or "") == str(platform_message_id):
+                        logger.debug("Skipping duplicate transcript append for session=%s platform_message_id=%s", session_id, platform_message_id)
+                        return
+            except Exception as e:
+                logger.debug("Session DB dedupe check failed: %s", e)
         if self._db and not skip_db:
             try:
                 self._db.append_message(
@@ -1319,9 +1329,7 @@ class SessionStore:
                     # Platform-side message id (yuanbao msg_id, telegram update_id, …).
                     # Accept either explicit ``platform_message_id`` or the legacy
                     # ``message_id`` key the JSONL transcript used.
-                    platform_message_id=(
-                        message.get("platform_message_id") or message.get("message_id")
-                    ),
+                    platform_message_id=platform_message_id,
                     observed=bool(message.get("observed")),
                     timestamp=message.get("timestamp"),
                 )

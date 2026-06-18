@@ -544,6 +544,29 @@ class TestSessionStoreRewriteTranscript:
         reloaded = store.load_transcript(session_id)
         assert reloaded == []
 
+    def test_append_to_transcript_dedupes_platform_message_id(self, store):
+        session_id = "test_session_dedupe"
+        store._db.create_session(session_id=session_id, source="test")
+
+        first = {
+            "role": "user",
+            "content": "hello",
+            "platform_message_id": "12345",
+        }
+        second = {
+            "role": "user",
+            "content": "hello again",
+            "platform_message_id": "12345",
+        }
+
+        store.append_to_transcript(session_id, first)
+        store.append_to_transcript(session_id, second)
+
+        rows = store.load_transcript(session_id)
+        assert len(rows) == 1
+        assert rows[0]["content"] == "hello"
+        assert rows[0].get("message_id") == "12345"
+
 
 class TestLoadTranscriptDBOnly:
     """After spec 002, load_transcript reads only from state.db."""

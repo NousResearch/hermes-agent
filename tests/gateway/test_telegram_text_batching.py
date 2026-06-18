@@ -7,7 +7,7 @@ from the same session and aggregate them before dispatching.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,11 +26,23 @@ def _make_adapter():
     adapter.config = config
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
+    adapter._pending_text_batch_started_at = {}
+    adapter._pending_photo_batches = {}
+    adapter._pending_photo_batch_tasks = {}
+    adapter._pending_photo_batch_started_at = {}
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
+    adapter._text_batch_split_delay_seconds = 0.2
+    adapter._media_batch_delay_seconds = 0.1
+    adapter._SPLIT_THRESHOLD = 4096
+    adapter._TEXT_BATCH_FAST_LEN = 320
+    adapter._TEXT_BATCH_SHORT_LEN = 1024
+    adapter._TEXT_BATCH_FAST_DELAY_S = 0.05
+    adapter._TEXT_BATCH_SHORT_DELAY_S = 0.1
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._message_handler = AsyncMock()
     adapter.handle_message = AsyncMock()
+    adapter._persist_telegram_ingress_event = MagicMock()
     return adapter
 
 
@@ -121,6 +133,45 @@ class TestTextBatching:
 
         assert len(adapter._pending_text_batches) == 0
         assert len(adapter._pending_text_batch_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_watchdog_flushes_stale_text_batch(self):
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.01
+        adapter._text_batch_split_delay_seconds = 0.02
+        event = _make_event("stuck batch")
+        adapter._mark_text_batch_started("session-1", event)
+        adapter._persist_telegram_ingress_event = MagicMock()
+        adapter.handle_message = AsyncMock()
+
+        # Simulate a stale batch by forcing the start time into the past.
+        adapter._pending_text_batch_started_at["session-1"] -= 1.0
+
+        await adapter._drain_stale_ingress_batches()
+
+        adapter._persist_telegram_ingress_event.assert_called_once()
+        adapter.handle_message.assert_awaited_once()
+        assert "session-1" not in adapter._pending_text_batches
+        assert "session-1" not in adapter._pending_text_batch_started_at
+
+    @pytest.mark.asyncio
+    async def test_watchdog_flushes_stale_photo_batch(self):
+        adapter = _make_adapter()
+        adapter._media_batch_delay_seconds = 0.01
+        event = _make_event("photo batch")
+        event.media_urls = ["/tmp/a.jpg"]
+        event.media_types = ["image/jpeg"]
+        adapter._mark_photo_batch_started("photo-1", event)
+        adapter._persist_telegram_ingress_event = MagicMock()
+        adapter.handle_message = AsyncMock()
+        adapter._pending_photo_batch_started_at["photo-1"] -= 1.0
+
+        await adapter._drain_stale_ingress_batches()
+
+        adapter._persist_telegram_ingress_event.assert_called_once()
+        adapter.handle_message.assert_awaited_once()
+        assert "photo-1" not in adapter._pending_photo_batches
+        assert "photo-1" not in adapter._pending_photo_batch_started_at
 
     @pytest.mark.asyncio
     async def test_dm_topic_batching_recovers_thread_before_keying(self):

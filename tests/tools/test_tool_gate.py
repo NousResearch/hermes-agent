@@ -376,6 +376,7 @@ class TestReplay:
         r = approval_module.check_tool_approval("echo_tool", {"msg": "hi"})
         pid = r["pending_id"]
 
+        approval_card = r["card_id"]
         out = tool_gate.approve_action(pid)
         assert out["ok"] is True
         exec_card = out["exec_card_id"]
@@ -386,8 +387,90 @@ class TestReplay:
         assert tool_gate.parse_replay_marker(task.body) == pid
         # Assigned to a real profile so the dispatcher will spawn it.
         assert task.assignee
+        # Born READY (no blocking parent) so the dispatcher claims it — a parent
+        # link would strand it in 'todo' until the review-only approval card is
+        # 'done' (which never happens).
+        assert task.status == "ready"
+        # The human approval card is archived once approved (off the active board).
+        approval = kb.get_task(conn, approval_card)
+        assert approval is not None and approval.status == "archived"
         # Idempotent: approving again returns the same exec card (no dup).
         rec = wa.get_pending(tool_gate.SUBSYSTEM, pid)
         assert rec["status"] == "approved"
         out2 = tool_gate.approve_action(pid)
         assert out2["ok"] is False  # already approved
+
+
+class TestMattermostCardCallback:
+    """Cross-process deferred-card button resolution: the worker posts the
+    buttons (persisting the secret to the pending record); the gateway validates
+    the click against that on-disk record, NOT in-memory adapter state. Mirrors
+    the closures the Mattermost adapter builds for ``kind == "card"``."""
+
+    ALLOWED = {"u_alon"}
+
+    def _stage(self, home):
+        _set_gate(home, enabled=True, require_approval=["echo_tool"],
+                  force_deferred=["echo_tool"])
+        os.environ["HERMES_CRON_SESSION"] = "1"
+        r = approval_module.check_tool_approval("echo_tool", {"msg": "hi"})
+        pid = r["pending_id"]
+        wa.update_pending(tool_gate.SUBSYSTEM, pid, {"mm_secret": "sekret"})
+        return pid
+
+    def _callback(self, pid, *, user, token, choice):
+        from plugins.platforms.mattermost import approval as mm
+        rec = wa.get_pending(tool_gate.SUBSYSTEM, pid)
+
+        def secret_for(_ref):
+            return (rec or {}).get("mm_secret")
+
+        class Guard:
+            def pop(self, _ref, _default=True):
+                if rec is None or rec.get("mm_resolved"):
+                    return True
+                wa.update_pending(tool_gate.SUBSYSTEM, pid, {"mm_resolved": True})
+                return False
+
+        def approve(p):
+            return tool_gate.approve_action(p)
+
+        def discard(p):
+            wa.discard_pending(tool_gate.SUBSYSTEM, p)
+
+        ctx = {"kind": "card", "pending_id": pid, "token": token,
+               "choice": choice, "post_ref": "r1"}
+        return mm.handle_callback(ctx, user, allowed_users=self.ALLOWED,
+                                  expected_secret_for=secret_for, resolved_store=Guard(),
+                                  resolve_fn=None, approve_fn=approve, discard_fn=discard)
+
+    def test_approve_resolves_and_spawns_exec(self, hermes_home):
+        pid = self._stage(hermes_home)
+        res = self._callback(pid, user="u_alon", token="sekret", choice="once")
+        assert res["ok"] and res["status"] == "resolved"
+        assert "Approved" in (res["update_text"] or "")
+        assert wa.get_pending(tool_gate.SUBSYSTEM, pid)["status"] == "approved"
+
+    def test_bad_token_rejected(self, hermes_home):
+        pid = self._stage(hermes_home)
+        res = self._callback(pid, user="u_alon", token="WRONG", choice="once")
+        assert res["ok"] is False and res["status"] == "bad_token"
+        assert wa.get_pending(tool_gate.SUBSYSTEM, pid)["status"] == "pending"
+
+    def test_unauthorized_user_rejected(self, hermes_home):
+        pid = self._stage(hermes_home)
+        res = self._callback(pid, user="intruder", token="sekret", choice="once")
+        assert res["ok"] is False and res["status"] == "unauthorized"
+
+    def test_double_click_guarded(self, hermes_home):
+        pid = self._stage(hermes_home)
+        first = self._callback(pid, user="u_alon", token="sekret", choice="once")
+        assert first["ok"]
+        second = self._callback(pid, user="u_alon", token="sekret", choice="once")
+        assert second["ok"] is False and second["status"] == "already_resolved"
+
+    def test_deny_discards(self, hermes_home):
+        pid = self._stage(hermes_home)
+        res = self._callback(pid, user="u_alon", token="sekret", choice="deny")
+        assert res["ok"] and res["status"] == "resolved"
+        assert wa.get_pending(tool_gate.SUBSYSTEM, pid) is None

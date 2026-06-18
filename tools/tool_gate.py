@@ -237,6 +237,75 @@ def _resolve_tenant(deferred: dict) -> str:
 # Deferred staging + Kanban card
 # ---------------------------------------------------------------------------
 
+def _post_mattermost_approval(pending_id: str, summary: str) -> None:
+    """Post approve/deny buttons to the Mattermost approvals channel for a
+    staged action (best-effort). No-op unless ``MATTERMOST_URL`` + ``_TOKEN`` +
+    ``MATTERMOST_APPROVALS_CHANNEL_ID`` + ``MATTERMOST_APPROVAL_CALLBACK_URL``
+    are all set.
+
+    Runs in the staging process — which for the cron sweep is an *unattended
+    worker* with no live Mattermost adapter — so it talks to the Mattermost REST
+    API directly. The per-action shared secret is persisted to the pending
+    record (``mm_secret``) so the gateway's always-on callback site can validate
+    the button click cross-process. Never raises: a Mattermost hiccup must not
+    fail staging (the Kanban card + ``hermes action`` CLI still work).
+    """
+    import os
+    # Ensure the PROFILE .env is loaded into os.environ. Not every staging
+    # context has it: the TUI worker (tui_gateway.slash_worker) and some
+    # entrypoints load the *default* ~/.hermes/.env at import time and only
+    # switch to the profile's config.yaml on demand — so the gate fires
+    # (config-driven) but os.environ lacks the profile's MATTERMOST_* secrets.
+    # HERMES_HOME points at the profile here (the pending store is profile-
+    # scoped), so this idempotently fills in the profile .env (override=True).
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+    except Exception:
+        pass
+    url = os.getenv("MATTERMOST_URL", "").rstrip("/")
+    token = os.getenv("MATTERMOST_TOKEN", "")
+    channel = os.getenv("MATTERMOST_APPROVALS_CHANNEL_ID", "")
+    callback = os.getenv("MATTERMOST_APPROVAL_CALLBACK_URL", "")
+    logger.info("MMAPPROVAL[%s]: entry url=%s token=%s channel=%s callback=%s",
+                pending_id, bool(url), bool(token), bool(channel), bool(callback))
+    if not (url and token and channel and callback):
+        logger.info("MMAPPROVAL[%s]: skipped (missing config)", pending_id)
+        return
+    try:
+        import json as _json
+        import urllib.request
+        from tools import write_approval as wa
+        from plugins.platforms.mattermost import approval as mm_approval
+
+        secret = uuid.uuid4().hex
+        post_ref = uuid.uuid4().hex
+        wa.update_pending(SUBSYSTEM, pending_id,
+                          {"mm_secret": secret, "mm_post_ref": post_ref})
+        text = (f"🛂 **Outbound action awaiting approval**\n"
+                f"```\n{summary[:1500]}\n```\n(pending `{pending_id}`)")
+        attachment = mm_approval.build_approval_attachment(
+            text=text, callback_url=callback, kind="card",
+            token=secret, post_ref=post_ref, pending_id=pending_id,
+            include_scopes=False)
+        payload = _json.dumps({
+            "channel_id": channel,
+            "message": "",
+            "props": {"attachments": [attachment]},
+        }).encode()
+        req = urllib.request.Request(
+            f"{url}/api/v4/posts", data=payload, method="POST",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+        wa.update_pending(SUBSYSTEM, pending_id,
+                          {"mm_post_id": data.get("id"), "mm_channel_id": channel})
+        logger.info("MMAPPROVAL[%s]: posted ok, post_id=%s", pending_id, data.get("id"))
+    except Exception as e:  # pragma: no cover - network/runtime best-effort
+        logger.warning("MMAPPROVAL[%s]: post FAILED: %s", pending_id, e)
+
+
 def stage_deferred(tool_name: str, args: Optional[dict], *,
                    summary: str, config: dict) -> Dict[str, Any]:
     """Stage a tool call for out-of-band approval and open a Kanban card.
@@ -301,6 +370,11 @@ def stage_deferred(tool_name: str, args: Optional[dict], *,
     )
     if card_id:
         wa.update_pending(SUBSYSTEM, pending_id, {"card_id": card_id})
+
+    # Surface the action in the Mattermost approvals channel with approve/deny
+    # buttons (best-effort; no-op unless configured). Runs here in the staging
+    # process — possibly an unattended worker — so it posts via REST directly.
+    _post_mattermost_approval(pending_id, summary)
 
     card_note = f" as card {card_id}" if card_id else ""
     return {
@@ -407,9 +481,18 @@ def approve_action(pending_id: str) -> Dict[str, Any]:
         conn = kb.connect()
         exec_body = (
             f"{REPLAY_MARKER}: {pending_id}\n"
-            f"tool: {tool_name}\n\n"
+            f"tool: {tool_name}\n"
+            f"approval_card: {card_id or '-'}\n\n"
             f"Approved action — replay the staged tool call:\n\n    {summary}\n"
         )
+        # NOTE: do NOT link the exec card under the approval card via ``parents``.
+        # A parent dependency keeps a child in ``todo`` until every parent is
+        # ``done`` (see kb.create_task), but the approval card is human-review-only
+        # and is archived (below), never ``done`` — so a parent link would strand
+        # the exec card in ``todo`` and the dispatcher would never claim it.
+        # Approval *already happened* (it's what created this card), so execution
+        # must not be re-gated by the approval card's lifecycle. The link is kept
+        # for traceability via the ``approval_card:`` body line + idempotency_key.
         exec_card_id = kb.create_task(
             conn,
             title=f"Run approved: {summary}"[:200],
@@ -417,9 +500,16 @@ def approve_action(pending_id: str) -> Dict[str, Any]:
             assignee=profile,
             created_by=profile,
             tenant=tenant,
-            parents=[card_id] if card_id else (),
             idempotency_key=f"exec:{pending_id}",
         )
+        # Archive the human approval card: it has served its purpose, so it
+        # leaves the active board (mirrors reject, which also archives).
+        if card_id:
+            try:
+                kb.archive_task(conn, card_id)
+            except Exception as arch_err:
+                logger.warning("approve_action: could not archive approval card %s: %s",
+                               card_id, arch_err)
     except Exception as e:
         logger.error("Failed to create execution card for %s: %s", pending_id, e)
         return {"ok": False, "message": f"Could not spawn execution card: {e}"}

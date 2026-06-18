@@ -312,6 +312,19 @@ class MattermostAdapter(BasePlatformAdapter):
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
+
+        # Start the approval callback site at boot when configured. Deferred
+        # action buttons are posted by an unattended *worker* process (the cron
+        # sweep) but the click callback must be received by this always-on
+        # gateway — so the site can't start lazily on a first local post. Gated
+        # on MATTERMOST_APPROVAL_CALLBACK_URL so only the profile that opts in
+        # (property-ops) binds the port; other gateways (Ezra) skip it.
+        if self._approval_callback_url:
+            try:
+                await self._ensure_approval_site()
+            except Exception as exc:
+                logger.warning("Mattermost: approval callback site not started: %s", exc)
+
         return True
 
     async def disconnect(self) -> None:
@@ -545,26 +558,67 @@ class MattermostAdapter(BasePlatformAdapter):
 
         context = body.get("context") or {}
         posted_user_id = body.get("user_id") or ""
+        kind = str(context.get("kind") or "thread")
 
         def _approve(pending_id: str):
             from tools import tool_gate
             return tool_gate.approve_action(pending_id)
 
         def _discard(pending_id: str):
+            # Deny: drop the staged action so it can never replay, and archive
+            # its Kanban approval card (mirrors `hermes action reject`).
             from tools import write_approval as wa
             from tools import tool_gate
+            rec = wa.get_pending(tool_gate.SUBSYSTEM, pending_id)
             wa.discard_pending(tool_gate.SUBSYSTEM, pending_id)
+            card_id = (rec or {}).get("card_id")
+            if card_id:
+                try:
+                    from hermes_cli import kanban_db as kb
+                    with kb.connect_closing() as conn:
+                        kb.archive_task(conn, card_id)
+                except Exception:
+                    pass
 
         def _resolve(session_key: str, choice: str):
             from tools.approval import resolve_gateway_approval
             return resolve_gateway_approval(session_key, choice)
 
+        # Cross-process validation for deferred *card* buttons: the message was
+        # posted by an unattended worker, so the per-action secret + double-click
+        # state live in the pending record on disk (this gateway never saw an
+        # in-memory `post_ref`). Thread (inline) buttons keep the in-memory maps.
+        if kind == "card":
+            from tools import write_approval as wa
+            from tools import tool_gate
+            _pid = str(context.get("pending_id") or "")
+            _rec = wa.get_pending(tool_gate.SUBSYSTEM, _pid)
+
+            def _secret_for(_ref: str):
+                return (_rec or {}).get("mm_secret")
+
+            class _PendingGuard:
+                """Disk-backed double-click guard keyed on the pending record.
+                Returns True (=already-resolved → ignore) when the action is
+                gone or already claimed; claims it (persisted) on first click."""
+                def pop(self, _ref: str, _default: bool = True) -> bool:
+                    if _rec is None or _rec.get("mm_resolved"):
+                        return True
+                    wa.update_pending(tool_gate.SUBSYSTEM, _pid, {"mm_resolved": True})
+                    return False
+
+            expected_secret_for = _secret_for
+            resolved_store = _PendingGuard()
+        else:
+            expected_secret_for = lambda ref: self._approval_secrets.get(ref)
+            resolved_store = self._approval_resolved
+
         result = _approval.handle_callback(
             context,
             posted_user_id,
             allowed_users=self._allowed_users,
-            expected_secret_for=lambda ref: self._approval_secrets.get(ref),
-            resolved_store=self._approval_resolved,
+            expected_secret_for=expected_secret_for,
+            resolved_store=resolved_store,
             resolve_fn=_resolve,
             approve_fn=_approve,
             discard_fn=_discard,

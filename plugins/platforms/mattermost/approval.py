@@ -52,9 +52,14 @@ def is_user_authorized(user_id: str, allowed_users: Set[str]) -> bool:
 
 
 def build_action(name: str, callback_url: str, context: Dict[str, Any]) -> Dict[str, Any]:
-    """Build one Mattermost message-button action descriptor."""
+    """Build one Mattermost message-button action descriptor.
+
+    ``type: "button"`` is required by Mattermost; omitting it logs an
+    "invalid action type" warning and is rejected by newer server versions.
+    """
     return {
         "name": name,
+        "type": "button",
         "integration": {
             "url": callback_url,
             "context": context,

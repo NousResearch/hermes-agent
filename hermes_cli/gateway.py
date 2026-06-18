@@ -2322,7 +2322,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries = _build_service_path_dirs()
     resolved_node = shutil.which("node")
     if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        # Use the directory where ``node`` is *found on PATH*, NOT the
+        # symlink's resolved target. ``~/.local/bin/node`` is often a symlink
+        # into a specific profile's node install (e.g. profiles/jarvis/node/
+        # bin/node); calling .resolve() here would chase that symlink and bake
+        # one profile's node path into *every* profile's service unit. That
+        # cross-profile leak makes systemd_unit_is_current() perpetually false,
+        # so each gateway rewrites its unit + daemon-reload on every boot. Using
+        # the symlink's own parent keeps the generated unit profile-agnostic.
+        resolved_node_dir = str(Path(resolved_node).parent)
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
 
@@ -3030,7 +3038,13 @@ def generate_launchd_plist() -> str:
     priority_dirs = _build_service_path_dirs()
     resolved_node = shutil.which("node")
     if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        # Use the directory where ``node`` is *found on PATH*, NOT the symlink's
+        # resolved target. ``~/.local/bin/node`` is often a symlink into a
+        # specific profile's node install; calling .resolve() would chase it and
+        # bake one profile's path into every profile's service definition,
+        # breaking profile isolation and causing perpetual unit rewrites. See
+        # the matching fix in generate_systemd_unit().
+        resolved_node_dir = str(Path(resolved_node).parent)
         if resolved_node_dir not in priority_dirs:
             priority_dirs.append(resolved_node_dir)
     sane_path = ":".join(

@@ -17,9 +17,11 @@ vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn()
 vi.mock('@/lib/storage', () => ({
   arraysEqual: (a: unknown[], b: unknown[]) => a.length === b.length && a.every((value, index) => value === b[index]),
   persistBoolean: vi.fn(),
+  persistString: vi.fn(),
   persistStringArray: vi.fn(),
   persistStringRecord: vi.fn(),
   storedBoolean: vi.fn(() => false),
+  storedString: vi.fn(() => null),
   storedStringArray: vi.fn(() => []),
   storedStringRecord: vi.fn(() => ({}))
 }))

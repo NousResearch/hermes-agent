@@ -463,6 +463,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        self._polling_heartbeat_task: Optional[asyncio.Task] = None
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
         # _handle_polling_network_error sets this; _verify_polling_after_reconnect
@@ -1495,6 +1496,51 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
 
+    async def _polling_heartbeat_loop(self) -> None:
+        """Detect dead Telegram TCP sockets (CLOSE-WAIT) by periodic probing.
+
+        PTB's long-poll task blocks on epoll waiting for Telegram to push an
+        update.  When the underlying TCP connection enters CLOSE-WAIT (the remote
+        sent a FIN but the httpx pool has not yet noticed), epoll still reports
+        the socket as readable and no exception is raised — so PTB's
+        ``error_callback`` never fires and the gateway silently stops receiving
+        messages.
+
+        This loop probes ``getMe()`` every ``HEARTBEAT_INTERVAL`` seconds on the
+        *general* request path (not the getUpdates pool), so a healthy long-poll
+        waiting for the 30-second Telegram window is never interrupted.  On any
+        connect-level failure the loop hands off to
+        ``_handle_polling_network_error``, the same path triggered by PTB's own
+        ``error_callback``, which drains the dead pool and restarts polling.
+        """
+        HEARTBEAT_INTERVAL = 90   # seconds between probes
+        PROBE_TIMEOUT = 15        # seconds before declaring the path dead
+
+        await asyncio.sleep(HEARTBEAT_INTERVAL)   # let connect() fully settle
+        while True:
+            try:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                if not (self._app and self._app.bot):
+                    continue
+                await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+            except asyncio.CancelledError:
+                return
+            except (asyncio.TimeoutError, OSError) as probe_err:
+                logger.warning(
+                    "[%s] Polling heartbeat probe failed (%s); triggering reconnect",
+                    self.name, probe_err,
+                )
+                if self._polling_error_task and not self._polling_error_task.done():
+                    continue   # reconnect already in progress
+                loop = asyncio.get_running_loop()
+                self._polling_error_task = loop.create_task(
+                    self._handle_polling_network_error(probe_err)
+                )
+            except Exception:
+                # Non-connectivity errors (e.g. TelegramError 401) are not
+                # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
+                pass
+
     async def _verify_polling_after_reconnect(self) -> None:
         """Heartbeat probe scheduled after a successful reconnect.
 
@@ -2245,6 +2291,16 @@ class TelegramAdapter(BasePlatformAdapter):
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
+            # Start the persistent heartbeat loop in polling mode.
+            # Webhook mode uses incoming pushes — there is no long-poll socket
+            # to get stuck in CLOSE-WAIT, so the loop is not needed there.
+            if not self._webhook_mode:
+                if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
+                    self._polling_heartbeat_task.cancel()
+                self._polling_heartbeat_task = asyncio.ensure_future(
+                    self._polling_heartbeat_loop()
+                )
+
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.
             # Failures here are non-fatal — the bot works fine without topics.
@@ -2267,6 +2323,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Cancel the heartbeat before tearing down the app so the probe task
+        # cannot fire into a half-shutdown bot client.
+        if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
+            self._polling_heartbeat_task.cancel()
+            try:
+                await self._polling_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        self._polling_heartbeat_task = None
+
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()

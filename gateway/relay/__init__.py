@@ -79,40 +79,6 @@ def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
     return (gateway_id or None, secret or None)
 
 
-def relay_inbound_config() -> tuple[Optional[str], Optional[str], int]:
-    """Resolve (delivery_key, bind_host, bind_port) for the inbound receiver.
-
-    The connector delivers normalized inbound events to this gateway over a
-    SIGNED HTTP POST (not the outbound WS), verified with the per-tenant delivery
-    key issued at enrollment (``GATEWAY_RELAY_DELIVERY_KEY``). The receiver only
-    starts when a delivery key AND a bind port are configured — a gateway with no
-    public inbound URL (e.g. a purely outbound dev run) simply doesn't run it.
-
-    Env first (Docker), then ``gateway.relay_delivery_key`` /
-    ``gateway.relay_inbound_host`` / ``gateway.relay_inbound_port`` in config.yaml.
-    Port 0 (default/unset) -> receiver disabled.
-    """
-    key = os.environ.get("GATEWAY_RELAY_DELIVERY_KEY", "").strip()
-    host = os.environ.get("GATEWAY_RELAY_INBOUND_HOST", "").strip()
-    port_raw = os.environ.get("GATEWAY_RELAY_INBOUND_PORT", "").strip()
-    if not (key and port_raw):
-        try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            cfg = (_load_gateway_config().get("gateway") or {})
-            key = key or str(cfg.get("relay_delivery_key", "") or "").strip()
-            host = host or str(cfg.get("relay_inbound_host", "") or "").strip()
-            if not port_raw:
-                port_raw = str(cfg.get("relay_inbound_port", "") or "").strip()
-        except Exception:  # noqa: BLE001 - config absence/parse must never crash registration
-            pass
-    try:
-        port = int(port_raw) if port_raw else 0
-    except ValueError:
-        port = 0
-    return (key or None, host or "0.0.0.0", port)
-
-
 def relay_endpoint() -> Optional[str]:
     """The gateway's own PUBLIC inbound URL, asserted to the connector at provision.
 
@@ -318,8 +284,11 @@ def self_provision_if_managed() -> bool:
         logger.warning("relay self-provision failed (%s); gateway will boot without relay auth", exc)
         return False
 
-    # Set creds in-process so register_relay_adapter() + relay_inbound_config()
-    # read them from os.environ. Never logged.
+    # Set creds in-process so register_relay_adapter() reads them from os.environ
+    # (the per-gateway secret authenticates the outbound WS upgrade). The delivery
+    # key is still issued by the connector and persisted for forward-compat, but
+    # inbound now rides the WS (no HTTP receiver), so it is not consumed here.
+    # Never logged.
     os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
     os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")
     os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")

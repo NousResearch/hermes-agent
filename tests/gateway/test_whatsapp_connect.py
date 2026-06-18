@@ -149,6 +149,46 @@ class TestCloseBridgeLog:
 # data variable initialization
 # ---------------------------------------------------------------------------
 
+class TestHtmlDocumentAttachments:
+    """Regression tests for text document attachment metadata."""
+
+    def test_bridge_mime_map_covers_markdown_documents(self):
+        bridge_js = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge" / "bridge.js"
+        source = bridge_js.read_text(encoding="utf-8")
+
+        assert "md: 'text/markdown'" in source
+        assert "markdown: 'text/markdown'" in source
+        assert "'text/markdown': '.md'" in source
+
+    @pytest.mark.asyncio
+    async def test_bridge_cached_html_document_uses_bridge_mime(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._should_process_message = MagicMock(return_value=True)
+        html_path = tmp_path / "doc_abc_preview.html"
+        html_path.write_text("<html><body>Hello</body></html>", encoding="utf-8")
+
+        event = await adapter._build_message_event(
+            {
+                "chatId": "61400000000@c.us",
+                "senderId": "61400000000@c.us",
+                "body": "",
+                "hasMedia": True,
+                "mediaType": "document",
+                "mediaUrls": [str(html_path)],
+                "mediaMimeTypes": ["text/html"],
+                "isGroup": False,
+                "messageId": "msg-html",
+            }
+        )
+
+        assert event is not None
+        assert event.media_urls == [str(html_path)]
+        assert event.media_types == ["text/html"]
+        assert event.message_type.name == "DOCUMENT"
+        assert "[Content of preview.html]:" in event.text
+        assert "<html><body>Hello</body></html>" in event.text
+
+
 class TestDataInitialized:
     """Verify ``data = {}`` prevents NameError when resp.json() fails."""
 

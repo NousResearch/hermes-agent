@@ -1089,9 +1089,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
             raw_urls = data.get("mediaUrls", [])
+            raw_mime_types = data.get("mediaMimeTypes", []) or []
             cached_urls = []
             media_types = []
-            for url in raw_urls:
+            for idx, url in enumerate(raw_urls):
+                bridge_mime = raw_mime_types[idx] if idx < len(raw_mime_types) else None
                 if msg_type == MessageType.PHOTO and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_image_from_url(url, ext=".jpg")
@@ -1126,7 +1128,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # Local file path — bridge already downloaded the document
                     cached_urls.append(url)
                     ext = Path(url).suffix.lower()
-                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                    mime = bridge_mime or SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
                     media_types.append(mime)
                     print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):

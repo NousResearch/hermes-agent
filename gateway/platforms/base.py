@@ -1123,8 +1123,15 @@ def _log_safe_path(path: str) -> str:
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
+    ".html": "text/html",
+    ".htm": "text/html",
     ".md": "text/markdown",
+    ".markdown": "text/markdown",
     ".txt": "text/plain",
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".ts": "text/typescript",
+    ".py": "text/x-python",
     ".csv": "text/csv",
     ".log": "text/plain",
     ".json": "application/json",
@@ -1201,7 +1208,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".markdown", ".epub",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
     # Presentations
@@ -3018,6 +3025,7 @@ class BasePlatformAdapter(ABC):
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
         for match in media_pattern.finditer(scan_content):
+
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
@@ -3077,6 +3085,7 @@ class BasePlatformAdapter(ABC):
             raw path strings removed).
         """
         _LOCAL_MEDIA_EXTS = MEDIA_DELIVERY_EXTS
+
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)

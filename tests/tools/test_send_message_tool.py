@@ -864,6 +864,33 @@ class TestSendToPlatformWhatsapp:
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
 
+    def test_whatsapp_routes_media_via_local_bridge_sender(self, tmp_path):
+        chat_id = "test-user@lid"
+        report = tmp_path / "article.md"
+        report.write_text("# Report\n", encoding="utf-8")
+        media_files = [(str(report), False)]
+        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "doc123"})
+
+        with patch("tools.send_message_tool._send_whatsapp", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    chat_id,
+                    "attached",
+                    media_files=media_files,
+                )
+            )
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once_with(
+            {"bridge_port": 3000},
+            chat_id,
+            "attached",
+            media_files=media_files,
+            force_document=False,
+        )
+
 
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML

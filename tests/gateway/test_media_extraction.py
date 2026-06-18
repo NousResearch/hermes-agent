@@ -14,6 +14,8 @@ text-only reply, even when the path-based dedup set fails to capture it.
 import pytest
 import re
 
+from gateway.platforms.base import BasePlatformAdapter, SUPPORTED_DOCUMENT_TYPES
+
 
 def extract_media_tags_fixed(result_messages, history_len):
     """
@@ -468,6 +470,45 @@ class TestStaleToolMediaLeak:
             "On the compression fallback path, path-dedup must still exclude "
             f"known-old media, got {tags}"
         )
+
+
+class TestAttachmentPathExtraction:
+    """Regression coverage for native document attachment paths."""
+
+    @pytest.mark.parametrize(
+        ("extension", "path"),
+        [
+            ("html", "/tmp/hermes/report.html"),
+            ("md", "/tmp/hermes/article.md"),
+            ("markdown", "/tmp/hermes/article.markdown"),
+        ],
+    )
+    def test_media_tag_extracts_text_documents(self, extension, path):
+        media, cleaned = BasePlatformAdapter.extract_media(f"Done\nMEDIA:{path}")
+
+        assert media == [(path, False)]
+        assert "MEDIA:" not in cleaned
+        assert extension in path
+
+    @pytest.mark.parametrize("filename", ["preview.html", "article.md", "article.markdown"])
+    def test_bare_local_text_document_path_is_auto_detected(self, tmp_path, filename):
+        doc_path = tmp_path / filename
+        doc_path.write_text("ok", encoding="utf-8")
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(
+            f"I generated {doc_path} for you."
+        )
+
+        assert files == [str(doc_path)]
+        assert str(doc_path) not in cleaned
+
+    def test_html_and_common_text_document_mimes_are_known(self):
+        assert SUPPORTED_DOCUMENT_TYPES[".html"] == "text/html"
+        assert SUPPORTED_DOCUMENT_TYPES[".htm"] == "text/html"
+        assert SUPPORTED_DOCUMENT_TYPES[".md"] == "text/markdown"
+        assert SUPPORTED_DOCUMENT_TYPES[".markdown"] == "text/markdown"
+        assert SUPPORTED_DOCUMENT_TYPES[".css"] == "text/css"
+        assert SUPPORTED_DOCUMENT_TYPES[".js"] == "text/javascript"
 
 
 if __name__ == "__main__":

@@ -347,6 +347,7 @@ async function startSocket() {
       let hasMedia = false;
       let mediaType = '';
       const mediaUrls = [];
+      const mediaMimeTypes = [];
 
       if (messageContent.conversation) {
         body = messageContent.conversation;
@@ -402,7 +403,10 @@ async function startSocket() {
         body = messageContent.documentMessage.caption || '';
         hasMedia = true;
         mediaType = 'document';
-        const fileName = messageContent.documentMessage.fileName || 'document';
+        const mime = messageContent.documentMessage.mimetype || 'application/octet-stream';
+        const ext = extensionForMime(mime);
+        const rawFileName = messageContent.documentMessage.fileName || `document${ext}`;
+        const fileName = path.extname(rawFileName) ? rawFileName : `${rawFileName}${ext}`;
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
@@ -410,6 +414,7 @@ async function startSocket() {
           const filePath = path.join(DOCUMENT_CACHE_DIR, `doc_${randomBytes(6).toString('hex')}_${safeFileName}`);
           writeFileSync(filePath, buf);
           mediaUrls.push(filePath);
+          mediaMimeTypes.push(mime);
         } catch (err) {
           console.error('[bridge] Failed to download document:', err.message);
         }
@@ -451,6 +456,7 @@ async function startSocket() {
         hasMedia,
         mediaType,
         mediaUrls,
+        mediaMimeTypes,
         mentionedIds,
         quotedMessageId,
         quotedParticipant,
@@ -582,11 +588,53 @@ const MIME_MAP = {
   webp: 'image/webp', gif: 'image/gif',
   mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
   mkv: 'video/x-matroska', '3gp': 'video/3gpp',
+  ogg: 'audio/ogg', opus: 'audio/ogg', mp3: 'audio/mpeg',
+  wav: 'audio/wav', m4a: 'audio/mp4', flac: 'audio/flac',
   pdf: 'application/pdf',
+  html: 'text/html', htm: 'text/html', txt: 'text/plain',
+  md: 'text/markdown', markdown: 'text/markdown', css: 'text/css', js: 'text/javascript',
+  ts: 'text/typescript', py: 'text/x-python', csv: 'text/csv',
+  json: 'application/json', xml: 'application/xml',
+  yaml: 'application/yaml', yml: 'application/yaml', log: 'text/plain',
+  zip: 'application/zip', rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
+
+const MIME_EXTENSION_MAP = {
+  'text/html': '.html',
+  'application/xhtml+xml': '.html',
+  'text/plain': '.txt',
+  'text/markdown': '.md',
+  'text/css': '.css',
+  'text/csv': '.csv',
+  'application/json': '.json',
+  'application/xml': '.xml',
+  'text/xml': '.xml',
+  'application/yaml': '.yaml',
+  'text/yaml': '.yaml',
+  'application/pdf': '.pdf',
+  'application/zip': '.zip',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.ms-powerpoint': '.ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+};
+
+function mimeForExtension(ext, fallback = 'application/octet-stream') {
+  return MIME_MAP[(ext || '').toLowerCase()] || fallback;
+}
+
+function extensionForMime(mime) {
+  const normalized = String(mime || '').split(';', 1)[0].trim().toLowerCase();
+  return MIME_EXTENSION_MAP[normalized] || '';
+}
 
 function inferMediaType(ext) {
   if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
@@ -618,10 +666,10 @@ app.post('/send-media', async (req, res) => {
 
     switch (type) {
       case 'image':
-        msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        msgPayload = { image: buffer, caption: caption || undefined, mimetype: mimeForExtension(ext, 'image/jpeg') };
         break;
       case 'video':
-        msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        msgPayload = { video: buffer, caption: caption || undefined, mimetype: mimeForExtension(ext, 'video/mp4') };
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
@@ -657,7 +705,7 @@ app.post('/send-media', async (req, res) => {
           document: buffer,
           fileName: fileName || path.basename(filePath),
           caption: caption || undefined,
-          mimetype: MIME_MAP[ext] || 'application/octet-stream',
+          mimetype: mimeForExtension(ext),
         };
         break;
     }

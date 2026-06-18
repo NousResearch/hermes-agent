@@ -1,3 +1,17 @@
+def _sanitize_messages_for_api(messages: list) -> list:
+    INTERNAL_FIELDS = {'timestamp', 'finish_reason', 'call_id', 'response_item_id', 'reasoning', 'reasoning_details', 'token_count'}
+    sanitized = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            sanitized.append(msg)
+            continue
+        # Sadece en kritik alanlarý yüzeysel filtrele, iç nesnelere dokunma
+        clean = {k: v for k, v in msg.items() if k not in INTERNAL_FIELDS}
+        if 'tool_calls' in clean and isinstance(clean['tool_calls'], list):
+            clean['tool_calls'] = [{k: v for k, v in tc.items() if k not in INTERNAL_FIELDS} if isinstance(tc, dict) else tc for tc in clean['tool_calls']]
+        sanitized.append(clean)
+    return sanitized
+
 #!/usr/bin/env python3
 """
 AI Agent Runner with Tool Calling
@@ -922,7 +936,7 @@ class AIAgent:
         """
         stripped_messages = 0
         stripped_items = 0
-        target_messages = messages if isinstance(messages, list) else []
+        target_messages = _sanitize_messages_for_api(list(messages)) if isinstance(messages, list) else []
 
         for msg in target_messages:
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -1483,7 +1497,7 @@ class AIAgent:
         """
         self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
-        self._session_messages = messages
+        self._session_messages = _sanitize_messages_for_api(list(messages))
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
@@ -2240,7 +2254,7 @@ class AIAgent:
         """
         if not getattr(self, "_session_json_enabled", False):
             return
-        messages = messages or self._session_messages
+        messages = _sanitize_messages_for_api(list(messages)) or self._session_messages
         if not messages:
             return
 
@@ -5241,7 +5255,7 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder â€” see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages = _sanitize_messages_for_api(list(messages)), effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
 def main(
     query: str = None,

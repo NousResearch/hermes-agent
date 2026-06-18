@@ -1584,6 +1584,36 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_billing_route(
+        self,
+        session_id: str,
+        *,
+        provider: str,
+        base_url: str,
+        billing_mode: Optional[str] = None,
+    ) -> None:
+        """Unconditionally update the billing provider/base_url for a session.
+
+        Unlike ``update_token_counts`` which uses ``COALESCE(billing_provider, ?)``
+        (only filling in NULL), this unconditionally sets the billing fields so
+        that the dashboard reflects the user's latest /model switch.
+
+        Also nulls ``system_prompt`` so the cached snapshot (which embeds a
+        stale ``Model:`` / ``Provider:`` header) is rebuilt — matching the
+        behavior of ``update_session_model`` (see #48173, #48248).
+        """
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions SET
+                   billing_provider = ?,
+                   billing_base_url = ?,
+                   billing_mode = COALESCE(?, billing_mode),
+                   system_prompt = NULL
+                   WHERE id = ?""",
+                (provider, base_url, billing_mode, session_id),
+            )
+        self._execute_write(_do)
+
     def update_token_counts(
         self,
         session_id: str,

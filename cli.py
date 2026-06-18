@@ -14221,6 +14221,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
+            # On Windows, IME composition can deliver 2-20 characters in a
+            # single batch. Skip escape sequence stripping and paste detection
+            # for small batches to avoid interfering with IME input rendering.
+            # Actual pastes (200+ chars, 5+ lines) still exceed this threshold.
+            if sys.platform == "win32" and 0 < chars_added <= 20:
+                _prev_newline_count[0] = text.count("\n")
+                return
             if _paste_just_collapsed[0] or self._skip_paste_collapse:
                 _paste_just_collapsed[0] = False
                 self._skip_paste_collapse = False
@@ -15425,9 +15432,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
 
-        # Run the application with patch_stdout for proper output handling
+        # Run the application with patch_stdout for proper output handling.
+        # On Windows, use raw=True to avoid VT100 mode toggling during stdout
+        # flushes, which interferes with IME (Input Method Editor) composition.
+        # See #48161 for details.
+        _patch_stdout_kwargs = {"raw": True} if sys.platform == "win32" else {}
         try:
-            with patch_stdout():
+            with patch_stdout(**_patch_stdout_kwargs):
                 # Set the custom handler on prompt_toolkit's event loop
                 try:
                     import asyncio as _aio

@@ -192,6 +192,13 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
   },
   { prefix: 'ARCEE_', name: 'Arcee AI', priority: 20 },
   {
+    prefix: 'FEATHERLESS_',
+    name: 'Featherless',
+    description: 'Thousands of open-source models, serverless',
+    docsUrl: 'https://featherless.ai/',
+    priority: 20
+  },
+  {
     prefix: 'GMI_',
     name: 'GMI Cloud',
     description: 'GMI Cloud GPU + model serving',

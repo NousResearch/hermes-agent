@@ -2784,6 +2784,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "FEATHERLESS_API_KEY": {
+        "description": "Featherless API key",
+        "prompt": "Featherless API key",
+        "url": "https://featherless.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "FEATHERLESS_BASE_URL": {
+        "description": "Featherless base URL override",
+        "prompt": "Featherless base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "GMI_API_KEY": {
         "description": "GMI Cloud API key",
         "prompt": "GMI Cloud API key",

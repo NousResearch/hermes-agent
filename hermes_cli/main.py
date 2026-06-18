@@ -3040,6 +3040,7 @@ def select_provider_and_model(args=None):
         "huggingface",
         "xiaomi",
         "arcee",
+        "featherless",
         "gmi",
         "nvidia",
         "ollama-cloud",

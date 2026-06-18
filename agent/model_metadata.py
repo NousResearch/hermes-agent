@@ -53,6 +53,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "xiaomi",
     "arcee",
     "gmi",
+    "featherless",
     "tencent-tokenhub",
     "custom", "local",
     # Common aliases
@@ -65,6 +66,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
     "gmi-cloud", "gmicloud",
+    "featherless-ai", "featherlessai",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal", "novita-ai", "novitaai",
@@ -420,6 +422,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.stepfun.ai": "stepfun",
     "api.stepfun.com": "stepfun",
     "api.arcee.ai": "arcee",
+    "api.featherless.ai": "featherless",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
@@ -1635,7 +1638,7 @@ def get_model_context_length(
           cache fallback with suffix/version normalisation.  Only
           portal-derived values are persisted to disk.
        c. Codex OAuth /models probe
-       d. GMI /models endpoint
+       d. GMI / Featherless /models endpoint (provider-served context_length)
        e. Ollama native /api/show probe (any base_url, provider-agnostic)
        f. models.dev registry lookup (with :cloud/-cloud suffix fallback)
     6. OpenRouter live API metadata (Kimi-family 32k guard)
@@ -1879,6 +1882,15 @@ def get_model_context_length(
     if effective_provider == "gmi" and base_url:
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
+        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if ctx is not None:
+            return ctx
+    if effective_provider == "featherless" and base_url:
+        # Featherless serves each model at a provider-specific context_length
+        # (e.g. zai-org/GLM-5.2 at 256K, not the model's native 1M; an 8B Llama
+        # at 32K) exposed via /v1/models. Prefer that authoritative endpoint
+        # value over models.dev and the hardcoded native-context fallback so
+        # token budgeting matches what the endpoint will actually accept.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx

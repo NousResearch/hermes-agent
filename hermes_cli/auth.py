@@ -284,6 +284,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("ARCEEAI_API_KEY",),
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "featherless": ProviderConfig(
+        id="featherless",
+        name="Featherless",
+        auth_type="api_key",
+        inference_base_url="https://api.featherless.ai/v1",
+        api_key_env_vars=("FEATHERLESS_API_KEY",),
+        base_url_env_var="FEATHERLESS_BASE_URL",
+    ),
     "gmi": ProviderConfig(
         id="gmi",
         name="GMI Cloud",
@@ -1518,6 +1526,7 @@ def resolve_provider(
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
+        "featherless-ai": "featherless", "featherlessai": "featherless",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",

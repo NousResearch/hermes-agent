@@ -61,6 +61,7 @@ Current provider families include (see `plugins/model-providers/` for the comple
 - NVIDIA NIM
 - xAI (Grok)
 - Arcee
+- Featherless
 - GMI Cloud
 - StepFun
 - Qwen OAuth

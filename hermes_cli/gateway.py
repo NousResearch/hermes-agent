@@ -30,8 +30,8 @@ from hermes_cli.config import (
     is_managed,
     managed_error,
     read_raw_config,
-    save_config,
     save_env_value,
+    write_platform_config_field,
 )
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
@@ -4648,17 +4648,7 @@ def _runtime_health_lines() -> list[str]:
 
 def _set_platform_unauthorized_dm_behavior(platform_key: str, behavior: str) -> None:
     """Persist a platform-specific unauthorized-DM policy in config.yaml."""
-    cfg = read_raw_config()
-    platforms = cfg.setdefault("platforms", {})
-    if not isinstance(platforms, dict):
-        platforms = {}
-        cfg["platforms"] = platforms
-    platform_cfg = platforms.setdefault(platform_key, {})
-    if not isinstance(platform_cfg, dict):
-        platform_cfg = {}
-        platforms[platform_key] = platform_cfg
-    platform_cfg["unauthorized_dm_behavior"] = behavior
-    save_config(cfg)
+    write_platform_config_field(platform_key, "unauthorized_dm_behavior", behavior, raw=True)
 
 
 def _setup_standard_platform(platform: dict):

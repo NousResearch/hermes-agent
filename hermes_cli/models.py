@@ -1879,8 +1879,18 @@ def detect_static_provider_for_model(
         return None
 
     # --- Step 1: check static provider catalogs for a direct match ---
+    # If the current provider is a custom endpoint (custom or custom:*),
+    # never auto-switch away from it based on a static catalog match —
+    # the user explicitly configured their own endpoint and the same model
+    # name may be served there.
+    _is_custom_current = (
+        current_provider == "custom"
+        or current_provider.startswith("custom:")
+    )
     for pid, models in _PROVIDER_MODELS.items():
         if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
+            continue
+        if _is_custom_current:
             continue
         if any(name_lower == m.lower() for m in models):
             return (pid, name)

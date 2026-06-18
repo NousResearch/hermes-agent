@@ -301,6 +301,21 @@ class TestDetectProviderForModel:
         assert result is not None
         assert result[0] not in {"nous",}  # nous has claude models but shouldn't be suggested
 
+    def test_custom_provider_not_overridden_by_static_catalog(self):
+        """When current provider is custom:*, static catalog match must NOT
+        override it — otherwise a model served by the user's local endpoint
+        gets misattributed to the native provider (e.g. ollama)."""
+        # "llama-3.1-8b" exists in the static ollama catalog.  If the user's
+        # current provider is custom:ollama, detection must NOT switch to the
+        # native "ollama" provider.
+        result = detect_provider_for_model("llama-3.1-8b", "custom:ollama")
+        assert result is None, f"expected None but got {result}"
+
+    def test_custom_provider_bare_custom_not_overridden(self):
+        """Same as above but for bare 'custom' provider."""
+        result = detect_provider_for_model("llama-3.1-8b", "custom")
+        assert result is None, f"expected None but got {result}"
+
 
 class TestIsNousFreeTier:
     """Tests for is_nous_free_tier — account tier detection."""

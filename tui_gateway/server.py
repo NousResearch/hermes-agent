@@ -2044,9 +2044,9 @@ def _restart_slash_worker(sid: str, session: dict):
 
 
 def _persist_model_switch(result) -> None:
-    from hermes_cli.config import save_config
+    from hermes_cli.config import load_config, save_config
 
-    cfg = _load_cfg()
+    cfg = load_config()
     model_cfg = cfg.get("model")
     if not isinstance(model_cfg, dict):
         model_cfg = {}

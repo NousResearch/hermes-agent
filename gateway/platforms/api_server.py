@@ -23,6 +23,11 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/actions/{pending_id}     — staged-action detail
 - POST /v1/actions/{pending_id}/approve — approve a staged action (spawn exec card)
 - POST /v1/actions/{pending_id}/reject  — discard a staged action + archive its card
+- GET  /api/config                  — read a profile's config.yaml (?profile= to target a sibling)
+- PUT  /api/config                  — replace a profile's config.yaml (?profile= to target a sibling)
+- GET  /api/profiles                — list profiles on this host
+- POST /api/profiles                — create a new profile
+- POST /api/gateway/restart         — restart this gateway so a config write takes effect
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -4236,6 +4241,16 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/actions/{pending_id}", partial(actions_api.handle_get_action, self))
             self._app.router.add_post("/v1/actions/{pending_id}/approve", partial(actions_api.handle_approve_action, self))
             self._app.router.add_post("/v1/actions/{pending_id}/reject", partial(actions_api.handle_reject_action, self))
+            # Config + profile API (read/write config.yaml, list/create profiles,
+            # reload the gateway) over bearer auth — lets the master console drive
+            # capability provisioning through one API instead of the dashboard's
+            # session auth. Handlers live in a dedicated module; additive here.
+            from gateway.platforms import config_api
+            self._app.router.add_get("/api/config", partial(config_api.handle_get_config, self))
+            self._app.router.add_put("/api/config", partial(config_api.handle_put_config, self))
+            self._app.router.add_get("/api/profiles", partial(config_api.handle_list_profiles, self))
+            self._app.router.add_post("/api/profiles", partial(config_api.handle_create_profile, self))
+            self._app.router.add_post("/api/gateway/restart", partial(config_api.handle_restart_gateway, self))
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)

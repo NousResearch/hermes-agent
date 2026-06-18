@@ -570,6 +570,82 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+def _truthy_config_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return False
+
+
+def _action_preflight_enabled() -> bool:
+    """Return whether the Phase 2 dispatch-boundary hook is active.
+
+    Default is intentionally off for blast-radius control. Operators can enable
+    it with ``security.action_preflight.enabled: true`` or the test/ops env var
+    ``HERMES_ACTION_PREFLIGHT_ENABLED=1``.
+    """
+    env_value = os.getenv("HERMES_ACTION_PREFLIGHT_ENABLED")
+    if env_value is not None:
+        return _truthy_config_value(env_value)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+    except Exception as exc:
+        logger.debug("action_preflight config lookup failed: %s", exc)
+        return False
+    security = cfg.get("security") if isinstance(cfg, dict) else {}
+    if not isinstance(security, dict):
+        return False
+    action_preflight = security.get("action_preflight")
+    if isinstance(action_preflight, dict):
+        return _truthy_config_value(action_preflight.get("enabled"))
+    return _truthy_config_value(action_preflight)
+
+
+def _trusted_action_decision_parts(decision: Any):
+    if decision is None:
+        return None, False
+    try:
+        from tools.action_preflight import SemanticReceipt, TrustedActionDecision
+    except Exception:
+        return None, False
+    if isinstance(decision, TrustedActionDecision):
+        return decision.receipt, bool(decision.trusted and decision.source)
+    if isinstance(decision, SemanticReceipt):
+        # Backward-compatible test seam only: a bare receipt is not a trusted
+        # decision, because it lacks a runtime-owned source.
+        return decision, False
+    if isinstance(decision, dict):
+        receipt = decision.get("receipt")
+        trusted = bool(decision.get("trusted", False)) and bool(decision.get("source"))
+        if isinstance(receipt, SemanticReceipt):
+            return receipt, trusted
+    return None, False
+
+def _action_preflight_block_message(
+    function_name: str,
+    function_args: Dict[str, Any],
+    *,
+    trusted_action_decision: Optional[Any] = None,
+) -> Optional[str]:
+    if not _action_preflight_enabled():
+        return None
+    try:
+        from tools.action_preflight import classify_tool_action, validate_receipt
+        preflight = classify_tool_action(function_name, function_args or {}, workspace_root=os.getcwd())
+        receipt, trusted = _trusted_action_decision_parts(trusted_action_decision)
+        result = validate_receipt(preflight, receipt, trusted_decision=trusted)
+    except Exception as exc:
+        logger.exception("action_preflight failed closed for %s: %s", function_name, exc)
+        return "action_preflight failed closed before dispatch"
+    if result.allowed:
+        return None
+    return f"action_preflight blocked {function_name}: {result.reason}"
+
+
 # =========================================================================
 # Tool error sanitization
 # =========================================================================
@@ -888,6 +964,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    trusted_action_decision: Optional[Any] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -909,6 +986,8 @@ def handle_function_call(
                        matching ``get_tool_definitions`` semantics.
         disabled_toolsets: The session's disabled toolsets, applied as a
                        subtraction when scoping the bridge catalog.
+        trusted_action_decision: Runtime-owned action_preflight decision. This
+                       is deliberately separate from model-supplied args.
 
     Returns:
         Function result as a JSON string.
@@ -992,6 +1071,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                trusted_action_decision=trusted_action_decision,
             )
 
     _tool_original_args = dict(function_args)
@@ -1076,6 +1156,14 @@ def handle_function_call(
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
                 return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
+
+        preflight_block = _action_preflight_block_message(
+            function_name,
+            function_args,
+            trusted_action_decision=trusted_action_decision,
+        )
+        if preflight_block is not None:
+            return json.dumps({"error": preflight_block}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).

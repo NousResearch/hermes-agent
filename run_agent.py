@@ -1574,6 +1574,7 @@ class AIAgent:
         can drift after message-sequence repair.
         """
         if not self._session_db:
+            self._session_db_persisted_this_turn = False
             return
         self._apply_persist_user_message_override(messages)
         try:
@@ -1656,7 +1657,9 @@ class AIAgent:
                 )
                 flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)
+            self._session_db_persisted_this_turn = True
         except Exception as e:
+            self._session_db_persisted_this_turn = False
             logger.warning("Session DB append_message failed: %s", e)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
@@ -5236,7 +5239,8 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(
+        self._session_db_persisted_this_turn = False
+        result = run_conversation(
             self,
             user_message,
             system_message,
@@ -5246,6 +5250,11 @@ class AIAgent:
             persist_user_message,
             persist_user_timestamp,
         )
+        if isinstance(result, dict):
+            result["session_db_persisted"] = bool(
+                getattr(self, "_session_db_persisted_this_turn", False)
+            )
+        return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

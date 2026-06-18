@@ -12,6 +12,8 @@ This test covers the two fallback paths that previously lacked
 1. ``agent_failed_early`` path — transient 429/timeout failures
 2. ``not new_messages`` path — edge case where ``history_offset`` exceeds
    the actual message count
+3. Gateway fallback only skips its own write when the agent reports that
+   SQLite persistence actually succeeded this turn
 """
 
 import sys
@@ -138,6 +140,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
             "messages": [],
             "history_offset": 0,
             "last_prompt_tokens": 0,
+            "session_db_persisted": True,
         }
     )
 
@@ -168,6 +171,7 @@ async def test_agent_failed_early_no_skip_db_when_no_session_db(
             "messages": [],
             "history_offset": 0,
             "last_prompt_tokens": 0,
+            "session_db_persisted": False,
         }
     )
 
@@ -197,6 +201,7 @@ async def test_not_new_messages_skip_db_when_agent_has_session_db(
             "tools": [],
             "history_offset": 1,  # equals len(messages) → new_messages=[]
             "last_prompt_tokens": 0,
+            "session_db_persisted": True,
         }
     )
 
@@ -229,6 +234,7 @@ async def test_normal_path_skip_db_when_agent_has_session_db(
             "tools": [],
             "history_offset": 0,
             "last_prompt_tokens": 0,
+            "session_db_persisted": True,
         }
     )
 
@@ -238,4 +244,34 @@ async def test_normal_path_skip_db_when_agent_has_session_db(
 
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_fallback_writes_db_when_agent_persistence_failed(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+
+    # Gateway has a DB handle, but the agent reports that its own flush failed.
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "Hello!",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "session_db_persisted": False,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    _assert_user_call_has_skip_db(
+        runner.session_store.append_to_transcript.call_args_list, False
     )

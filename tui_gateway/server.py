@@ -8932,7 +8932,28 @@ def _(rid, params: dict) -> dict:
                     continue
                 ranked.append((rank, rel, basename))
 
-            ranked.sort(key=lambda r: (r[0], len(r[1]), r[1]))
+            # Frecency tie-breaker: within a textual rank tier, files the user
+            # references more often/recently float up. Loaded once per request.
+            # Injected as the SECOND sort key (after the textual rank tuple) so
+            # it never lets a frecent file cross a tier — an exact-name match
+            # always beats a hot substring match. Shared store with the CLI
+            # picker; both fed by the `@`-ref resolver in context_references.
+            frec_scores: dict[str, float] = {}
+            try:
+                from tools import file_frecency
+
+                if file_frecency.is_enabled() and ranked:
+                    abs_paths = [
+                        os.path.join(root, r[1]) for r in ranked
+                    ]
+                    frec_scores = file_frecency.score_many(abs_paths)
+            except Exception:
+                frec_scores = {}
+
+            def _frec(rel_path: str) -> float:
+                return frec_scores.get(os.path.join(root, rel_path), 0.0)
+
+            ranked.sort(key=lambda r: (r[0], -_frec(r[1]), len(r[1]), r[1]))
             tag = prefix_tag or "file"
             for _, rel, basename in ranked[:30]:
                 items.append(

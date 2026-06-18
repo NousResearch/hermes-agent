@@ -203,6 +203,22 @@ async def preprocess_context_references_async(
     )
 
 
+def _record_frecency(path: Path) -> None:
+    """Record a file-picker frecency hit for a resolved `@`-reference path.
+
+    Called only after a referenced path is confirmed to exist on send, so the
+    picker (CLI / TUI / Desktop, all of which resolve refs through this module)
+    learns which files the user actually uses. Pure best-effort: any failure is
+    swallowed so reference expansion never breaks on a telemetry write.
+    """
+    try:
+        from tools import file_frecency
+
+        file_frecency.record(path)
+    except Exception:  # noqa: BLE001 — telemetry must never break expansion
+        pass
+
+
 async def _expand_reference(
     ref: ContextReference,
     cwd: Path,
@@ -245,6 +261,7 @@ def _expand_file_reference(
         return f"{ref.raw}: file not found", None
     if not path.is_file():
         return f"{ref.raw}: path is not a file", None
+    _record_frecency(path)
     if _is_binary_file(path):
         # A binary file can't be inlined as text, but it IS on disk (the agent's
         # tools run where this resolves — the local cwd, or the staged copy in a
@@ -279,6 +296,7 @@ def _expand_folder_reference(
         return f"{ref.raw}: folder not found", None
     if not path.is_dir():
         return f"{ref.raw}: path is not a folder", None
+    _record_frecency(path)
 
     listing = _build_folder_listing(path, cwd)
     return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"

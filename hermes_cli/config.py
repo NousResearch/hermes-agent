@@ -1189,6 +1189,35 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
+    # `@`-file picker behavior (the file-reference completer in the CLI, TUI,
+    # and desktop composer). `frecency` ranks completions by how often and how
+    # recently you've referenced each file (frequency x recency, exponential
+    # decay), so files you work with float to the top. It's a boost layered on
+    # top of the existing fuzzy text match — a file that doesn't match what you
+    # typed is never surfaced just because it's frecent.
+    #
+    # - enabled:         master switch (default true). When false the picker
+    #                    uses the prior static fuzzy ordering — zero behavior
+    #                    change.
+    # - half_life_days:  how fast a file's frecency decays. At 1 day, a file you
+    #                    stop referencing loses half its weight every day, so
+    #                    the picker tracks what you're working on right now.
+    #                    Raise (e.g. 7, 30) for a calmer, longer memory.
+    # - weight:          how strongly frecency boosts a match, on the picker's
+    #                    0-100 static-score scale (CLI). Higher = frecency wins
+    #                    ties more decisively.
+    # - max_total:       aging cap. When the summed frecency weight across all
+    #                    tracked files exceeds this, all weights are scaled down
+    #                    and files below 1 are forgotten — bounds the store.
+    "picker": {
+        "frecency": {
+            "enabled": True,
+            "half_life_days": 1,
+            "weight": 40,
+            "max_total": 10000,
+        },
+    },
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,

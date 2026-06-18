@@ -115,6 +115,17 @@ Each cron job runs in a completely fresh agent session:
 - The prompt must be self-contained — cron jobs cannot ask clarifying questions
 - The `cronjob` toolset is disabled (recursion guard)
 
+### LLM Iteration Limit
+
+LLM-backed cron jobs use a cron-specific tool-calling iteration cap instead of
+inheriting the interactive `agent.max_turns` setting. The default is `30`, and it
+can be overridden with `cron.max_iterations` in `config.yaml` or the
+`HERMES_CRON_MAX_ITERATIONS` environment variable. The environment variable wins.
+
+This separation prevents one noisy recurring job from monopolizing the gateway
+cron ticker when a user has intentionally configured a high chat/session turn
+limit for interactive work.
+
 ## Skill-Backed Jobs
 
 A cron job can attach one or more skills via the `skills` field. At execution time:

@@ -30,7 +30,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1004,6 +1004,65 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script execution failed: {exc}"
 
 
+_DEFAULT_CRON_MAX_ITERATIONS = 30
+
+
+def _coerce_cron_max_iterations(raw: Any, source: str) -> int | None:
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, bool):
+        logger.warning(
+            "Invalid %s cron max_iterations=%r; using safe default %d",
+            source,
+            raw,
+            _DEFAULT_CRON_MAX_ITERATIONS,
+        )
+        return _DEFAULT_CRON_MAX_ITERATIONS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid %s cron max_iterations=%r; using safe default %d",
+            source,
+            raw,
+            _DEFAULT_CRON_MAX_ITERATIONS,
+        )
+        return _DEFAULT_CRON_MAX_ITERATIONS
+    if value > 0:
+        return value
+    logger.warning(
+        "Invalid %s cron max_iterations=%r; using safe default %d",
+        source,
+        raw,
+        _DEFAULT_CRON_MAX_ITERATIONS,
+    )
+    return _DEFAULT_CRON_MAX_ITERATIONS
+
+
+def _resolve_cron_max_iterations(cfg: dict | None) -> int:
+    """Return the tool-calling iteration cap for LLM-backed cron jobs.
+
+    Gateway/user chat sessions can legitimately use a high ``agent.max_turns``
+    value, but the gateway cron ticker is a single background loop. If a
+    recurring cron job inherits a huge chat cap (for example 500), one noisy
+    LLM-backed run can occupy the ticker for close to an hour and make unrelated
+    due jobs look stalled. Cron therefore has its own conservative default,
+    overridable explicitly via ``cron.max_iterations`` or
+    ``HERMES_CRON_MAX_ITERATIONS``.
+    """
+    env_value = _coerce_cron_max_iterations(os.getenv("HERMES_CRON_MAX_ITERATIONS", "").strip(), "env")
+    if env_value is not None:
+        return env_value
+
+    cron_cfg = (cfg or {}).get("cron") if isinstance(cfg, dict) else None
+    raw_config_value = cron_cfg.get("max_iterations") if isinstance(cron_cfg, dict) else None
+    config_value = _coerce_cron_max_iterations(raw_config_value, "config")
+    if config_value is not None:
+        return config_value
+
+    return _DEFAULT_CRON_MAX_ITERATIONS
+
+
 def _parse_wake_gate(script_output: str) -> bool:
     """Parse the last non-empty stdout line of a cron job's pre-check script
     as a wake gate.
@@ -1580,14 +1639,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
-        _cfg = {}
+        _cfg: dict = {}
         try:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
                 with open(_cfg_path, encoding="utf-8") as _f:
-                    _cfg = yaml.safe_load(_f) or {}
-                _cfg = _expand_env_vars(_cfg)
+                    _loaded_cfg = yaml.safe_load(_f) or {}
+                _expanded_cfg = _expand_env_vars(_loaded_cfg) if isinstance(_loaded_cfg, dict) else {}
+                _cfg = _expanded_cfg if isinstance(_expanded_cfg, dict) else {}
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
                     if isinstance(_model_cfg, str):
@@ -1635,8 +1695,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations: cron has its own conservative cap. Do not inherit
+        # a large interactive/gateway ``agent.max_turns`` value by default — a
+        # single long LLM-backed recurring job can otherwise monopolize the
+        # gateway cron ticker and delay unrelated due jobs.
+        max_iterations = _resolve_cron_max_iterations(_cfg if isinstance(_cfg, dict) else {})
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})

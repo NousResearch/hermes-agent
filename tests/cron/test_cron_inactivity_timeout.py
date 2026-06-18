@@ -311,3 +311,101 @@ class TestSysPathOrdering:
         """hermes_constants should be importable from cron context."""
         from hermes_constants import get_hermes_home
         assert callable(get_hermes_home)
+
+
+class TestCronRunLimits:
+    def test_default_max_iterations_is_capped_below_gateway_agent_max_turns(self, monkeypatch):
+        """Cron LLM jobs should not inherit a very large gateway/chat max_turns value.
+
+        Regression for scheduler starvation: a recurring LLM-backed cron job inherited
+        agent.max_turns=500 from config.yaml and ran 80+ tool/API turns for ~1h, holding
+        the cron ticker and delaying unrelated jobs. Default cron runs need a bounded
+        iteration cap unless a cron-specific override is set.
+        """
+        from cron.scheduler import _resolve_cron_max_iterations
+
+        monkeypatch.delenv("HERMES_CRON_MAX_ITERATIONS", raising=False)
+        cfg = {"agent": {"max_turns": 500}}
+
+        assert _resolve_cron_max_iterations(cfg) <= 50
+        assert _resolve_cron_max_iterations(cfg) == 30
+
+    def test_cron_max_iterations_can_be_overridden_in_cron_config(self, monkeypatch):
+        from cron.scheduler import _resolve_cron_max_iterations
+
+        monkeypatch.delenv("HERMES_CRON_MAX_ITERATIONS", raising=False)
+        cfg = {"agent": {"max_turns": 500}, "cron": {"max_iterations": 12}}
+
+        assert _resolve_cron_max_iterations(cfg) == 12
+
+    def test_invalid_cron_max_iterations_falls_back_to_safe_default(self, monkeypatch):
+        from cron.scheduler import _resolve_cron_max_iterations
+
+        monkeypatch.delenv("HERMES_CRON_MAX_ITERATIONS", raising=False)
+        for invalid_value in ("bogus", True):
+            cfg = {"agent": {"max_turns": 500}, "cron": {"max_iterations": invalid_value}}
+
+            assert _resolve_cron_max_iterations(cfg) == 30
+
+    def test_non_mapping_cron_config_falls_back_to_safe_default(self, monkeypatch):
+        from cron.scheduler import _resolve_cron_max_iterations
+
+        monkeypatch.delenv("HERMES_CRON_MAX_ITERATIONS", raising=False)
+        cfg = {"agent": {"max_turns": 500}, "cron": "bad"}
+
+        assert _resolve_cron_max_iterations(cfg) == 30
+
+    def test_env_cron_max_iterations_override_wins(self, monkeypatch):
+        from cron.scheduler import _resolve_cron_max_iterations
+
+        monkeypatch.setenv("HERMES_CRON_MAX_ITERATIONS", "9")
+        cfg = {"agent": {"max_turns": 500}, "cron": {"max_iterations": 12}}
+
+        assert _resolve_cron_max_iterations(cfg) == 9
+
+    def test_run_job_passes_resolved_cron_max_iterations_to_agent(self, tmp_path, monkeypatch):
+        import sys
+        import cron.scheduler as sched
+
+        observed: dict = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                observed["max_iterations"] = kwargs.get("max_iterations")
+
+            def run_conversation(self, *_args, **_kwargs):
+                return {"final_response": "done", "messages": []}
+
+            def get_activity_summary(self):
+                return {"seconds_since_activity": 0.0}
+
+        fake_mod = type(sys)("run_agent")
+        fake_mod.AIAgent = FakeAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
+
+        from hermes_cli import runtime_provider as _rtp
+        monkeypatch.setattr(
+            _rtp,
+            "resolve_runtime_provider",
+            lambda **_kwargs: {
+                "provider": "test",
+                "api_key": "k",
+                "base_url": "http://test.local",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None: "hi")
+        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
+        monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        monkeypatch.setenv("HERMES_CRON_MAX_ITERATIONS", "7")
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("agent:\n  max_turns: 500\ncron:\n  max_iterations: 12\n")
+        monkeypatch.setattr(sched, "_get_hermes_home", lambda: tmp_path)
+
+        success, _output, response, error = sched.run_job({"id": "abc", "name": "limit-job"})
+
+        assert success is True, f"run_job failed: error={error!r} response={response!r}"
+        assert observed["max_iterations"] == 7

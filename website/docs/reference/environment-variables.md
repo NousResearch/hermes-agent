@@ -584,6 +584,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_CRON_TIMEOUT` | Inactivity timeout for cron job agent runs in seconds (default: `600`). The agent can run indefinitely while actively calling tools or receiving stream tokens — this only triggers when idle. Set to `0` for unlimited. |
 | `HERMES_CRON_SCRIPT_TIMEOUT` | Timeout for pre-run scripts attached to cron jobs in seconds (default: `120`). Override for scripts that need longer execution (e.g., randomized delays for anti-bot timing). Also configurable via `cron.script_timeout_seconds` in `config.yaml`. |
 | `HERMES_CRON_MAX_PARALLEL` | Max cron jobs run in parallel per tick (default: `4`). |
+| `HERMES_CRON_MAX_ITERATIONS` | Max tool-calling iterations for LLM-backed cron jobs (default: `30`). Also configurable via `cron.max_iterations` in `config.yaml`; the environment variable wins. This is intentionally separate from `agent.max_turns` so high interactive chat limits do not let one recurring job monopolize the scheduler tick. |
 
 ## Agent Behavior
 

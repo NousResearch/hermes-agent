@@ -2204,6 +2204,11 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Maximum tool-calling iterations for LLM-backed cron jobs. This is
+        # intentionally separate from agent.max_turns so a high interactive
+        # chat cap cannot let one recurring job monopolize the scheduler tick.
+        # Also overridable via HERMES_CRON_MAX_ITERATIONS env var.
+        "max_iterations": 30,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

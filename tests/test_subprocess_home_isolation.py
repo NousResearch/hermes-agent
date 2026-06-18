@@ -289,6 +289,7 @@ class TestMakeRunEnvHomeInjection:
         fake_claude.write_text("#!/bin/sh\nprintf '%s\\n' \"$HOME\"\n", encoding="utf-8")
         fake_claude.chmod(0o755)
 
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setenv("HERMES_HOST_HOME", str(host_home))
         monkeypatch.setenv("HOME", "/dispatcher/home")

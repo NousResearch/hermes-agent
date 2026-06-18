@@ -128,6 +128,113 @@ def wilson_lower_bound(successes: int, total: int, z: float = WILSON_Z) -> float
     return (centre - margin) / denom
 
 
+# ---- PRD-8.2 gate split: separate the condensation gate from the recovery gate
+# The original single gate scored "no node ever formed" (condensation didn't
+# fire) IDENTICALLY to "model had a node and failed to recover the fact." Those
+# are different subsystems with different fixes, and conflating them mislabels a
+# condensation-trigger flake as an LCM recovery failure. It also scored a
+# transient provider error (HTTP 503/429/timeout) as a permanent recovery miss.
+# classify_trial buckets every trial into exactly one outcome so the verdict can
+# gate the two subsystems independently and exclude infra noise from the
+# correctness denominator. Pure + module-level so it is unit-controlled and can
+# re-score existing run JSON without a live re-run.
+
+_INFRA_ERROR_RE = re.compile(
+    r"\[recovery error:.*?(?:\b50\d\b|\b429\b|no eligible sub|timed? ?out|"
+    r"timeout|connection|temporarily|overloaded|unavailable)",
+    re.IGNORECASE,
+)
+
+# Trial outcome buckets (one per trial):
+#   RECOVERED        - node formed, fact recovered correctly
+#   CONFIDENT_WRONG  - node formed, model asserted a wrong owner (hard fail, any count > 0)
+#   RECOVERY_MISS    - node formed AND fact preserved, but model failed to recover (real LCM gap)
+#   NO_CONDENSATION  - no depth>=1 node ever formed (condensation-trigger gap, NOT a recovery gap)
+#   INFRA_ERROR      - transient provider/transport error during recovery (retryable, excluded)
+OUTCOME_RECOVERED = "recovered"
+OUTCOME_CONFIDENT_WRONG = "confident_wrong"
+OUTCOME_RECOVERY_MISS = "recovery_miss"
+OUTCOME_NO_CONDENSATION = "no_condensation"
+OUTCOME_INFRA_ERROR = "infra_error"
+
+
+def classify_trial(trial: dict) -> str:
+    """Bucket one trial dict (from the run JSON 'trials' list) into one outcome."""
+    answer = trial.get("node_served_answer") or ""
+    condensed = bool(trial.get("condensed"))
+    if trial.get("confident_wrong"):
+        return OUTCOME_CONFIDENT_WRONG
+    if trial.get("correct"):
+        return OUTCOME_RECOVERED
+    # not correct, not confident-wrong:
+    if _INFRA_ERROR_RE.search(answer):
+        return OUTCOME_INFRA_ERROR
+    if not condensed:
+        return OUTCOME_NO_CONDENSATION
+    # node formed, fact was preserved, model still didn't recover it = real gap
+    return OUTCOME_RECOVERY_MISS
+
+
+def compute_split_verdict(trials: list[dict], *, gate_eligible: bool = True) -> dict:
+    """Two-gate verdict over a trials list.
+
+    Gate 1 (RECOVERY CORRECTNESS, the binding Apollo gate): among trials where a
+      node formed AND no infra error occurred, recall must be >= 0.95, Wilson LB
+      >= 0.90, and confident_wrong == 0. Infra errors are EXCLUDED from the
+      denominator (retryable, not a recovery property).
+    Gate 2 (CONDENSATION RELIABILITY, a tuning gate, non-binding for correctness):
+      fraction of trials where a depth>=1 node formed. Reported and thresholded
+      separately so a condensation-trigger flake does not masquerade as a
+      recovery failure.
+    """
+    n = len(trials)
+    buckets: dict[str, int] = {}
+    for t in trials:
+        b = classify_trial(t)
+        buckets[b] = buckets.get(b, 0) + 1
+
+    recovered = buckets.get(OUTCOME_RECOVERED, 0)
+    confident_wrong = buckets.get(OUTCOME_CONFIDENT_WRONG, 0)
+    recovery_miss = buckets.get(OUTCOME_RECOVERY_MISS, 0)
+    no_condensation = buckets.get(OUTCOME_NO_CONDENSATION, 0)
+    infra_error = buckets.get(OUTCOME_INFRA_ERROR, 0)
+
+    # Gate 1 denominator: trials that actually reached the recovery test
+    # (node formed, no infra noise). = recovered + recovery_miss + confident_wrong.
+    recovery_eligible = recovered + recovery_miss + confident_wrong
+    recovery_rate = (recovered / recovery_eligible) if recovery_eligible else 0.0
+    recovery_wlb = wilson_lower_bound(recovered, recovery_eligible)
+
+    # Gate 2: condensation reliability over all non-infra trials
+    non_infra = n - infra_error
+    condensation_rate = ((non_infra - no_condensation) / non_infra) if non_infra else 0.0
+
+    recovery_gate_pass = (
+        recovery_eligible > 0
+        and recovery_rate >= 0.95
+        and recovery_wlb >= 0.90
+        and confident_wrong == 0
+    )
+    return {
+        "n": n,
+        "buckets": buckets,
+        "recovery_eligible_n": recovery_eligible,
+        "recovery_rate": round(recovery_rate, 4),
+        "recovery_wilson_lb": round(recovery_wlb, 4),
+        "confident_wrong": confident_wrong,
+        "recovery_miss": recovery_miss,
+        "no_condensation": no_condensation,
+        "infra_error": infra_error,
+        "condensation_rate": round(condensation_rate, 4),
+        "recovery_gate_pass": recovery_gate_pass,
+        "recovery_gate": (
+            "PASS" if (recovery_gate_pass and gate_eligible and recovery_eligible >= 180)
+            else "PASS-UNDERPOWERED" if recovery_gate_pass
+            else "FAIL"
+        ),
+    }
+
+
 @dataclass
 class TrialResult:
     idx: int
@@ -547,6 +654,11 @@ class ArmBHarness:
         confident_wrong = sum(1 for r in results if r.confident_wrong)
         wlb = wilson_lower_bound(node_recall, n)
 
+        # PRD-8.2 two-gate split: classify each trial and gate recovery-correctness
+        # separately from condensation-reliability, excluding transient infra errors.
+        trial_dicts = [vars(r) for r in results]
+        split = compute_split_verdict(trial_dicts, gate_eligible=(n >= 180))
+
         report = {
             "arm": "B-node-served",
             "model": self.cfg.model,
@@ -561,13 +673,16 @@ class ArmBHarness:
             "confident_wrong": confident_wrong,
             "duration_s": round(time.time() - t0, 1),
             "thresholds": {"recall>=": 0.95, "wilson_lb>=": 0.90, "confident_wrong": 0},
+            # --- PRD-8.2 split gates ---
+            "split_verdict": split,
             "verdict": (
                 "PASS" if (n >= 180 and node_recall / n >= 0.95 and wlb >= 0.90
                            and confident_wrong == 0)
                 else "PASS-UNDERPOWERED" if (node_recall / n >= 0.95 and confident_wrong == 0)
                 else "FAIL"
             ),
-            "trials": [vars(r) for r in results],
+            "recovery_verdict": split["recovery_gate"],
+            "trials": trial_dicts,
         }
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -595,6 +710,29 @@ def _render_md(rep: dict) -> str:
         f"- Confident-wrong: {rep['confident_wrong']} (required 0)",
         f"- Duration: {rep['duration_s']}s",
         "",
+    ]
+    sv = rep.get("split_verdict")
+    if sv:
+        b = sv["buckets"]
+        lines += [
+            "## PRD-8.2 split gates (recovery-correctness vs condensation-reliability)",
+            f"**Recovery verdict: {rep.get('recovery_verdict', sv['recovery_gate'])}** "
+            f"(binding Apollo gate — node formed, infra errors excluded)",
+            f"- Recovery-eligible trials (node formed, no infra error): {sv['recovery_eligible_n']}/{sv['n']}",
+            f"- Recovery recall: {sv['recovery_rate']} (required >= 0.95)",
+            f"- Recovery Wilson 95% LB: {sv['recovery_wilson_lb']} (required >= 0.90)",
+            f"- Confident-wrong: {sv['confident_wrong']} (required 0)",
+            "",
+            "Trial outcome breakdown:",
+            f"- recovered (correct): {b.get('recovered', 0)}",
+            f"- recovery_miss (node formed, fact preserved, not recovered — REAL gap): {b.get('recovery_miss', 0)}",
+            f"- confident_wrong (asserted wrong owner): {b.get('confident_wrong', 0)}",
+            f"- no_condensation (no node ever formed — condensation-trigger gap, NOT recovery): {b.get('no_condensation', 0)}",
+            f"- infra_error (transient 5xx/429/timeout — retryable, excluded): {b.get('infra_error', 0)}",
+            f"- Condensation reliability (non-infra): {sv['condensation_rate']}",
+            "",
+        ]
+    lines += [
         "## Trial records",
         "| idx | session | node | sentinel_in_node | correct | leaves | condensed |",
         "|---|---|---|---|---|---|---|",

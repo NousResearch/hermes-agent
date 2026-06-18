@@ -4364,7 +4364,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "API_SERVER_KEY": {
-        "description": "Bearer token for API server authentication. Required whenever the API server is enabled; server refuses to start without it.",
+        "description": "Bearer token(s) for API server authentication. Required whenever the API server is enabled; server refuses to start without it. Supply multiple comma-separated keys to allow several clients to authenticate with their own secret.",
         "prompt": "API server auth key",
         "url": None,
         "password": True,

@@ -850,7 +850,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if raw_port is None:
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
-        self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._api_keys: tuple[str, ...] = self._parse_api_keys(
+            extra.get("key", os.getenv("API_SERVER_KEY", "")),
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -900,6 +902,39 @@ class APIServerAdapter(BasePlatformAdapter):
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
+
+    @staticmethod
+    def _parse_api_keys(value: Any) -> tuple[str, ...]:
+        """Normalize one or more configured API keys into a stable tuple.
+
+        Accepts a comma-separated string (``key1,key2``) or a list/tuple of
+        keys. Blank segments are dropped and duplicates removed while
+        preserving order. A single key with no comma yields a 1-tuple, so
+        existing single-key deployments are unchanged.
+        """
+        if not value:
+            return ()
+
+        if isinstance(value, str):
+            items = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = [str(value)]
+
+        seen: set[str] = set()
+        keys: list[str] = []
+        for item in items:
+            cleaned = str(item).strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                keys.append(cleaned)
+        return tuple(keys)
+
+    @property
+    def _auth_enabled(self) -> bool:
+        """True when at least one API key is configured."""
+        return bool(self._api_keys)
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1054,14 +1089,20 @@ class APIServerAdapter(BasePlatformAdapter):
         connect() refuses to start the API server without API_SERVER_KEY, so
         the no-key branch only exists for tests or unsupported manual wiring.
         """
-        if not self._api_key:
+        if not self._api_keys:
             return None
 
         auth_header = request.headers.get("Authorization", "")
+        matched = False
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
+            # Compare against every key (no early break) to avoid leaking,
+            # via response timing, which/how many keys are configured.
+            for key in self._api_keys:
+                if hmac.compare_digest(token, key):
+                    matched = True
+        if matched:
+            return None  # Auth OK
 
         logger.warning(
             "API server rejected invalid API key: %s",
@@ -1108,7 +1149,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw:
             return None, None
 
-        if not self._api_key:
+        if not self._auth_enabled:
             logger.warning(
                 "X-Hermes-Session-Key rejected: no API key configured. "
                 "Set API_SERVER_KEY to enable long-term memory scoping."
@@ -1471,7 +1512,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "model": self._model_name,
             "auth": {
                 "type": "bearer",
-                "required": bool(self._api_key),
+                "required": bool(self._api_keys),
             },
             "runtime": {
                 "mode": "server_agent",
@@ -2137,7 +2178,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
-            if not self._api_key:
+            if not self._auth_enabled:
                 logger.warning(
                     "Session continuation via X-Hermes-Session-Id rejected: "
                     "no API key configured.  Set API_SERVER_KEY to enable "
@@ -4710,7 +4751,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _api_key_passes_startup_guard(self) -> bool:
         """Return True when API_SERVER_KEY is present and strong enough to start."""
-        if not self._api_key:
+        if not self._auth_enabled:
             logger.error(
                 "[%s] Refusing to start: API_SERVER_KEY is required for the API server, "
                 "including loopback-only binds on %s.",
@@ -4720,12 +4761,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             from hermes_cli.auth import has_usable_secret
-            if not has_usable_secret(self._api_key, min_length=16):
+            if any(not has_usable_secret(k, min_length=16) for k in self._api_keys):
                 logger.error(
-                    "[%s] Refusing to start: API_SERVER_KEY is a "
-                    "placeholder or too short (<16 chars). This endpoint "
+                    "[%s] Refusing to start: one or more API_SERVER_KEY values are "
+                    "placeholders or too short (<16 chars). This endpoint "
                     "dispatches terminal-capable agent work — a guessable "
-                    "key is remote code execution. Generate a strong secret "
+                    "key is remote code execution. Generate strong secrets "
                     "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
                     "before starting the API server on %s.",
                     self.name, self._host,

@@ -23,6 +23,8 @@ Hermes 本身需要配置好 provider（提供商）和工具后端，API 服务
 ```bash
 API_SERVER_ENABLED=true
 API_SERVER_KEY=change-me-local-dev
+# 用逗号分隔多个密钥，可让每个客户端使用各自的密钥：
+# API_SERVER_KEY=client-a-secret,client-b-secret
 # 可选：仅当浏览器需要直接调用 Hermes 时
 # API_SERVER_CORS_ORIGINS=http://localhost:3000
 ```

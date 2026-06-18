@@ -23,6 +23,8 @@ Add to `~/.hermes/.env`:
 ```bash
 API_SERVER_ENABLED=true
 API_SERVER_KEY=change-me-local-dev
+# Supply multiple comma-separated keys to give each client its own secret:
+# API_SERVER_KEY=client-a-secret,client-b-secret
 # Optional: only if a browser must call Hermes directly
 # API_SERVER_CORS_ORIGINS=http://localhost:3000
 ```

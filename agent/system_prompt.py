@@ -331,6 +331,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # ── Override SOUL.md CLI-centric formatting for non-CLI platforms ─
+    #
+    # SOUL.md (loaded as Agent Persona at the top of the prompt) contains
+    # instructions written for the CLI/TUI: "prefer plain text", "avoid
+    # unnecessary markdown", mobile-terminal splitting logic, etc.  These
+    # are correct on the CLI but wrong on platforms like Telegram, Discord,
+    # Mattermost, Matrix, WebUI, and others that support rich formatting.
+    #
+    # The platform-specific hint above is the authoritative guidance for
+    # the current channel — it always takes precedence.
+    if platform_key and platform_key not in ("cli", "cron"):
+        stable_parts.append(
+            "Note: The platform-specific formatting guidance above overrides "
+            "any earlier instructions about 'preferring plain text' or "
+            "'avoiding unnecessary markdown.' Those instructions apply "
+            "to the CLI/TUI only."
+        )
+
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
 

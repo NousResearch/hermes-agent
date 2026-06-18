@@ -2,6 +2,7 @@
 
 import shutil
 import json
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -178,6 +179,90 @@ class TestComputeRelativeDest:
         skill_dir = Path("/repo/skills/simple")
         dest = _compute_relative_dest(skill_dir, bundled)
         assert dest.name == "simple"
+
+
+class TestRmtreeWritableScopeGuard:
+    """``_rmtree_writable`` must refuse to remove anything outside
+    ``HERMES_HOME/skills/``.
+
+    The previous implementation called ``shutil.rmtree(path)`` on whatever
+    argument the caller passed. If any of the five call sites in
+    ``tools/skills_sync.py`` ever computes a path outside the skills
+    root — through a bad join, a missing default, a malicious
+    bundled-manifest entry, or a stale path in scope after an
+    exception — the result is a silent ``shutil.rmtree(~/.hermes/)``
+    that destroys the user's ``.env``, ``MEMORY.md``, ``kanban.db``,
+    custom skills, scripts, and the rest of the install in one go
+    (#48200).
+
+    The scope guard turns that into a loud ``ValueError`` so the
+    failure is observable, reproducible, and recoverable rather than
+    a data-loss incident.
+    """
+
+    def test_refuses_root_path(self, tmp_path):
+        """``Path('/')`` is the entire filesystem — must always be rejected."""
+        from tools.skills_sync import _rmtree_writable, SKILLS_DIR
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(Path("/"))
+
+    def test_refuses_hermes_home_itself(self, tmp_path):
+        """``~/.hermes/`` itself is what the #48200 wipe destroyed."""
+        from tools.skills_sync import _rmtree_writable
+
+        hermes = tmp_path / "home"
+        hermes.mkdir()
+        (hermes / "skills").mkdir()
+        with patch("tools.skills_sync.SKILLS_DIR", hermes / "skills"):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(hermes)
+
+    def test_refuses_sibling_directory(self, tmp_path):
+        """A directory that is a sibling of SKILLS_DIR (e.g. a wrong
+        ``bundled_dir`` computation) must be rejected, not silently rmtree'd.
+        """
+        from tools.skills_sync import _rmtree_writable
+
+        hermes = tmp_path / "home"
+        hermes.mkdir()
+        skills = hermes / "skills"
+        skills.mkdir()
+        not_skills = hermes / "kanban.db"  # any non-skills path
+        not_skills.mkdir()
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(not_skills)
+
+    def test_allows_skills_root_itself(self, tmp_path):
+        """The skills root directory IS allowed (used for full reset)."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            # No exception — rmtree is allowed on the root itself.
+            _rmtree_writable(skills)
+        assert not skills.exists()
+
+    def test_allows_subdirectory_of_skills(self, tmp_path):
+        """Any directory strictly under SKILLS_DIR is allowed."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        sub = skills / "category" / "old-skill"
+        sub.mkdir(parents=True)
+        (sub / "SKILL.md").write_text("# old")
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            _rmtree_writable(sub)
+
+        assert skills.exists()
+        assert not sub.exists()
 
 
 class TestSyncSkills:

@@ -925,6 +925,15 @@ DEFAULT_CONFIG = {
         # plausible-looking output when a real path is blocked.  Costs ~80
         # tokens in the cached system prompt.  Set False to disable globally.
         "task_completion_guidance": True,
+        # Universal parallel-tool-call guidance — short prompt block applied to
+        # all models that tells the model to batch independent tool calls
+        # (reads, searches, web fetches, read-only commands) into one turn
+        # instead of one call per turn.  The runtime already runs independent
+        # calls concurrently, so this just steers the model to produce the
+        # batch — cutting round-trips and the resent-context cost that
+        # compounds over a long conversation.  Costs ~70 tokens in the cached
+        # system prompt.  Set False to disable globally.
+        "parallel_tool_call_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

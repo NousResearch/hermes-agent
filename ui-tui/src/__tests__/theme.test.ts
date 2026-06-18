@@ -53,6 +53,8 @@ describe('DEFAULT_THEME', () => {
 
     expect(DEFAULT_THEME.color.primary).toBe('#FFD700')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
+    expect(DEFAULT_THEME.color.statusBg).toBe('#1a1a2e')
+    expect(DEFAULT_THEME.color.completionBg).toBe('#1a1a2e')
   })
 })
 

@@ -10,7 +10,7 @@ const buildUiState = (): UiState => ({
   bgTasks: new Set(),
   busy: false,
   busyInputMode: 'queue',
-  compact: false,
+  compact: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,

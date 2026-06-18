@@ -65,6 +65,7 @@ describe('applyDisplay', () => {
 
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
+    expect(s.compact).toBe(true)
     expect(s.inlineDiffs).toBe(true)
     expect(s.showCost).toBe(false)
     expect(s.showReasoning).toBe(false)

@@ -204,7 +204,7 @@ export const applyDisplay = (
 
   patchUiState({
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
-    compact: !!d.tui_compact,
+    compact: d.tui_compact ?? true,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),

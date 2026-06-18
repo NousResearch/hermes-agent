@@ -12,6 +12,10 @@ describe('shouldShowResponseSeparator', () => {
     expect(shouldShowResponseSeparator({ role: 'assistant', text: '   ', thinking: 'plan' }, true)).toBe(false)
   })
 
+  it('suppresses separators in compact mode', () => {
+    expect(shouldShowResponseSeparator({ role: 'assistant', text: 'final', thinking: 'plan' }, true, true)).toBe(false)
+  })
+
   it('does not add response separators to non-assistant transcript rows', () => {
     expect(shouldShowResponseSeparator({ role: 'user', text: 'prompt' }, true)).toBe(false)
     expect(shouldShowResponseSeparator({ role: 'system', text: 'note' }, true)).toBe(false)

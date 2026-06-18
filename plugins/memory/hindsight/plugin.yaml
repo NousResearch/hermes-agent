@@ -2,6 +2,10 @@ name: hindsight
 version: 1.0.0
 description: "Hindsight — long-term memory with knowledge graph, entity resolution, and multi-strategy retrieval."
 pip_dependencies:
+  # Cloud / local_external need only the lightweight client. local_embedded also
+  # requires `hindsight-all` (it provides the top-level `hindsight` module); the
+  # setup wizard installs it on demand. It is deliberately kept out of the static
+  # deps so cloud-only users don't pull the heavy embedded runtime. See #7718.
   - "hindsight-client>=0.4.22"
 requires_env: []
 hooks:

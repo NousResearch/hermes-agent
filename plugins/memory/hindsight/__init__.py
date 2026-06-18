@@ -100,6 +100,42 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+# The embedded runtime lives in the `hindsight-all` package (it provides the
+# top-level `hindsight` module). A "No module named 'hindsight...'" probe failure
+# means that package is missing — distinct from intentional graceful-degradation
+# cases (e.g. NumPy CPU-baseline errors). See #7718.
+_EMBEDDED_INSTALL_HINT = (
+    " Install the embedded runtime: `uv pip install hindsight-all` "
+    "(or `pip install hindsight-all`)."
+)
+_warned_missing_embedded_runtime = False
+
+
+def _missing_embedded_runtime(reason: str | None) -> bool:
+    """True when *reason* indicates the `hindsight-all` package is absent."""
+    return bool(reason) and "no module named 'hindsight" in reason.lower()
+
+
+def _embedded_runtime_hint(reason: str | None) -> str:
+    """Actionable install hint for a missing `hindsight-all`, else empty string."""
+    return _EMBEDDED_INSTALL_HINT if _missing_embedded_runtime(reason) else ""
+
+
+def _warn_missing_embedded_runtime_once(reason: str | None) -> None:
+    """Emit a one-time actionable warning when local_embedded is configured but
+    `hindsight-all` is missing, so the provider isn't dropped silently (#7718)."""
+    global _warned_missing_embedded_runtime
+    if _warned_missing_embedded_runtime or not _missing_embedded_runtime(reason):
+        return
+    _warned_missing_embedded_runtime = True
+    logger.warning(
+        "Hindsight is configured for local_embedded mode but its runtime is not "
+        "installed (%s). Long-term memory is disabled.%s",
+        reason,
+        _EMBEDDED_INSTALL_HINT,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Hindsight API capability probe — mirrors hindsight-integrations/openclaw.
 # ---------------------------------------------------------------------------
@@ -661,7 +697,9 @@ class HindsightMemoryProvider(MemoryProvider):
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
             if mode in {"local", "local_embedded"}:
-                available, _ = _check_local_runtime()
+                available, reason = _check_local_runtime()
+                if not available:
+                    _warn_missing_embedded_runtime_once(reason)
                 return available
             if mode == "local_external":
                 return True
@@ -957,6 +995,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     raise RuntimeError(
                         "Hindsight local runtime is unavailable"
                         + (f": {reason}" if reason else "")
+                        + _embedded_runtime_hint(reason)
                     )
                 try:
                     from tools.lazy_deps import ensure as _lazy_ensure
@@ -965,7 +1004,19 @@ class HindsightMemoryProvider(MemoryProvider):
                     pass
                 except Exception as _e:
                     raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
+                try:
+                    from hindsight import HindsightEmbedded
+                except ImportError as exc:
+                    # `local_embedded` needs the `hindsight-all` package (top-level
+                    # `hindsight` module); `hindsight-client` alone is not enough. Turn
+                    # the cryptic "No module named 'hindsight'" into an actionable
+                    # error so memory isn't silently disabled (#7718).
+                    raise ImportError(
+                        "Hindsight local_embedded mode requires the 'hindsight-all' "
+                        "package (it provides the top-level 'hindsight' module). "
+                        "Install it: `uv pip install hindsight-all` "
+                        "(or `pip install hindsight-all`)."
+                    ) from exc
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
@@ -1203,13 +1254,20 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
+            logger.warning(
+                "Hindsight config uses the legacy mode 'local'; treating it as "
+                "'local_embedded'. Update your config's \"mode\" to \"local_embedded\" "
+                "to silence this warning."
+            )
             self._mode = "local_embedded"
         if self._mode == "local_embedded":
             available, reason = _check_local_runtime()
             if not available:
                 logger.warning(
-                    "Hindsight local mode disabled because its runtime could not be imported: %s",
+                    "Hindsight local mode disabled because its runtime could not be "
+                    "imported: %s.%s",
                     reason,
+                    _embedded_runtime_hint(reason),
                 )
                 self._mode = "disabled"
                 return

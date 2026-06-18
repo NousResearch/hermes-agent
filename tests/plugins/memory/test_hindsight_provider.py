@@ -1653,6 +1653,197 @@ class TestAvailability:
         p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
         assert p._mode == "disabled"
 
+    def test_initialize_warns_actionably_when_hindsight_all_missing(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Issue #7718: a missing hindsight-all in local_embedded must name the
+        package and an install command, not just 'No module named hindsight'."""
+        import logging
+
+        config = {"mode": "local_embedded"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        def _raise(_name):
+            raise ModuleNotFoundError("No module named 'hindsight'")
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module", _raise
+        )
+
+        p = HindsightMemoryProvider()
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            p.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+
+        assert p._mode == "disabled"
+        msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("hindsight-all" in m for m in msgs), msgs
+        assert any("install" in m.lower() for m in msgs), msgs
+
+    def test_initialize_warns_on_legacy_local_mode_migration(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Issue #7718: legacy 'mode: local' is silently remapped to
+        'local_embedded' — warn so users can update their config."""
+        import logging
+
+        config = {"mode": "local"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        # Runtime available so init proceeds past the disable branch.
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime", lambda: (True, "")
+        )
+
+        p = HindsightMemoryProvider()
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            p.initialize(session_id="s", hermes_home=str(tmp_path), platform="cli")
+
+        assert p._mode == "local_embedded"
+        msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("legacy" in m.lower() and "local_embedded" in m for m in msgs), msgs
+
+    def test_get_client_raises_actionable_error_when_hindsight_all_missing(
+        self, monkeypatch
+    ):
+        """Issue #7718: if the embedded import fails at client creation, the
+        error must name hindsight-all and an install command."""
+        import builtins
+        import tools.lazy_deps as _ld
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime", lambda: (True, "")
+        )
+        # Neutralize lazy-deps so the test never attempts a real install.
+        monkeypatch.setattr(_ld, "ensure", lambda *a, **k: None)
+
+        orig_import = builtins.__import__
+
+        def blocked(name, *a, **k):
+            if name == "hindsight":
+                raise ModuleNotFoundError("No module named 'hindsight'")
+            return orig_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", blocked)
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"profile": "hermes", "llm_provider": "openai", "llm_model": "gpt-4o-mini"}
+        p._client = None
+
+        with pytest.raises(ImportError, match="hindsight-all"):
+            p._get_client()
+
+    def test_is_available_warns_actionably_when_hindsight_all_missing(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Issue #7718 (Codex): the primary startup path drops the provider via
+        is_available() before initialize() runs, so is_available() itself must
+        surface the actionable hindsight-all hint instead of failing silently."""
+        import logging
+        import plugins.memory.hindsight as hs
+
+        config = {"mode": "local_embedded"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime",
+            lambda: (False, "No module named 'hindsight'"),
+        )
+        # Reset the one-time warn guard so the assertion is deterministic.
+        monkeypatch.setattr(hs, "_warned_missing_embedded_runtime", False, raising=False)
+
+        p = HindsightMemoryProvider()
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            assert p.is_available() is False
+        msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("hindsight-all" in m and "install" in m.lower() for m in msgs), msgs
+
+    def test_is_available_silent_for_non_hindsight_runtime_failure(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Intentional graceful-degradation cases (e.g. NumPy CPU baseline) stay
+        quiet — only the missing hindsight-all case gets the install nudge."""
+        import logging
+        import plugins.memory.hindsight as hs
+
+        config = {"mode": "local_embedded"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime",
+            lambda: (False, "NumPy was built with baseline optimizations: (x86_64-v2)"),
+        )
+        monkeypatch.setattr(hs, "_warned_missing_embedded_runtime", False, raising=False)
+
+        p = HindsightMemoryProvider()
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            assert p.is_available() is False
+        msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert not any("hindsight-all" in m for m in msgs), msgs
+
+    def test_get_client_raises_actionable_error_on_missing_runtime(self, monkeypatch):
+        """Issue #7718 (Codex): the real production path hits _check_local_runtime()
+        failing, which raises before the import guard — that error must also name
+        hindsight-all, not just 'Hindsight local runtime is unavailable'."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime",
+            lambda: (False, "No module named 'hindsight'"),
+        )
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"profile": "hermes"}
+        p._client = None
+        with pytest.raises(RuntimeError, match="hindsight-all"):
+            p._get_client()
+
+    def test_is_available_warns_only_once_per_process(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The missing-hindsight-all nudge fires once per process, not on every
+        is_available() probe (#7718)."""
+        import logging
+        import plugins.memory.hindsight as hs
+
+        config = {"mode": "local_embedded"}
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime",
+            lambda: (False, "No module named 'hindsight'"),
+        )
+        monkeypatch.setattr(hs, "_warned_missing_embedded_runtime", False, raising=False)
+
+        p = HindsightMemoryProvider()
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
+            assert p.is_available() is False
+            assert p.is_available() is False
+        warns = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "hindsight-all" in r.getMessage()
+        ]
+        assert len(warns) == 1, [r.getMessage() for r in warns]
+
 
 class TestSharedEventLoopLifecycle:
     """Regression tests for #11923 — Hindsight leaking aiohttp ClientSession /

@@ -5,7 +5,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 ## Requirements
 
 - **Cloud:** API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io)
-- **Local Embedded:** API key for a supported LLM provider (OpenAI, Anthropic, Gemini, Groq, OpenRouter, MiniMax, Ollama, or any OpenAI-compatible endpoint). Embeddings and reranking run locally — no additional API keys needed.
+- **Local Embedded:** API key for a supported LLM provider (OpenAI, Anthropic, Gemini, Groq, OpenRouter, MiniMax, Ollama, or any OpenAI-compatible endpoint). Embeddings and reranking run locally — no additional API keys needed. Also requires the `hindsight-all` package (the setup wizard installs it; if you configure `local_embedded` by hand, run `uv pip install hindsight-all`).
 - **Local External:** A running Hindsight instance (Docker or self-hosted) reachable over HTTP.
 
 ## Setup
@@ -34,6 +34,8 @@ Supports any OpenAI-compatible LLM endpoint (llama.cpp, vLLM, LM Studio, etc.) �
 
 Daemon startup logs: `~/.hermes/logs/hindsight-embed.log`
 Daemon runtime logs: `~/.hindsight/profiles/<profile>.log`
+
+**Missing `hindsight-all`?** If you configured `local_embedded` by hand — or upgraded from the legacy `"mode": "local"` — without running `hermes memory setup`, the embedded runtime package may be absent. You'll see a one-time warning like `Hindsight is configured for local_embedded mode but its runtime is not installed (No module named 'hindsight'). Long-term memory is disabled.` and memory will be off for the session. Fix: `uv pip install hindsight-all` (or `pip install hindsight-all`), then restart.
 
 To open the Hindsight web UI (local embedded mode only):
 ```bash

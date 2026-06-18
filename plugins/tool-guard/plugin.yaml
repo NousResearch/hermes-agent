@@ -1,0 +1,54 @@
+name: tool-guard
+version: 1.0.0
+description: >
+  Intercepts delegate_task calls to guarded tools (e.g. Claude Code, Codex).
+  When a guarded tool is unavailable due to connectivity/proxy errors, blocks
+  the call with a clear error message instead of allowing silent substitution.
+  Also monitors post_tool_call results to track tool failures over time.
+author: user
+kind: standalone
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+
+# ── Plugin configuration ──────────────────────────────────────────────
+# Edit the `config` section below, or create ~/.hermes/tool-guard-config.yaml
+# with the same keys. The external file takes precedence.
+#
+# guarded_tools:
+#   Tools whose names (in delegate_task goal/context) trigger monitoring.
+#   Matches are case-insensitive substrings.
+#
+# failure_patterns:
+#   Regex patterns in tool result text that indicate connectivity failures.
+#
+# cooldown_seconds:
+#   How long (seconds) a failure stays in effect. During this window any
+#   delegate_task mentioning the failed tool is blocked.
+#
+# max_consecutive_failures:
+#   Number of consecutive failures before blocking kicks in (default: 1 = immediate).
+config:
+  guarded_tools:
+    - claude-code
+    - claude code
+    - codex
+  failure_patterns:
+    - connection refused
+    - connect refused
+    - proxy error
+    - ERR_PROXY
+    - tunnel.*fail
+    - ECONNREFUSED
+    - ETIMEDOUT
+    - socket hang up
+    - 502 Bad Gateway
+    - 503 Service Unavailable
+    - 504 Gateway Timeout
+    - Could not connect
+    - unable to connect
+    - "No API key found"
+    - "provider.*unavailable"
+    - "rate limit"
+  cooldown_seconds: 300
+  max_consecutive_failures: 1

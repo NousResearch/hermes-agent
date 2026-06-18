@@ -1,0 +1,6 @@
+name: code-modification-guard
+version: "1.0.0"
+description: "Blocks delegate_task when the goal contains code modification intent. Forces agent to use codex exec instead."
+author: mosqlee
+hooks:
+  - pre_tool_call

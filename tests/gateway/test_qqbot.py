@@ -2220,3 +2220,66 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+class TestIsAuthorizedInteractionForSession:
+    """Authorize approval/update button clicks by session_key + operator.
+
+    Regression: gateway normalizes every platform private (C2C) chat to
+    chat_type "dm" in the session key, but the QQ authorizer only matched
+    "c2c", so every private-chat approval button click was rejected as
+    unauthorized and the gated command timed out as BLOCKED.
+    """
+
+    def _adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def _event(self, operator, group_openid="", guild_id=""):
+        return SimpleNamespace(
+            operator_openid=operator,
+            group_openid=group_openid,
+            guild_id=guild_id,
+        )
+
+    def test_dm_private_owner_can_approve(self):
+        a = self._adapter()
+        ev = self._event(operator="USER_A")
+        assert a._is_authorized_interaction_for_session(
+            ev, "agent:main:qqbot:dm:USER_A") is True
+
+    def test_c2c_alias_still_accepted(self):
+        a = self._adapter()
+        ev = self._event(operator="USER_A")
+        assert a._is_authorized_interaction_for_session(
+            ev, "agent:main:qqbot:c2c:USER_A") is True
+
+    def test_dm_wrong_operator_rejected(self):
+        a = self._adapter()
+        ev = self._event(operator="USER_B")
+        assert a._is_authorized_interaction_for_session(
+            ev, "agent:main:qqbot:dm:USER_A") is False
+
+    def test_group_member_match(self):
+        a = self._adapter()
+        ev = self._event(operator="MEM_A", group_openid="GRP")
+        assert a._is_authorized_interaction_for_session(
+            ev, "agent:main:qqbot:group:GRP:MEM_A") is True
+
+    def test_non_qqbot_platform_rejected(self):
+        a = self._adapter()
+        ev = self._event(operator="USER_A")
+        assert a._is_authorized_interaction_for_session(
+            ev, "agent:main:telegram:dm:USER_A") is False
+
+    def test_garbage_key_rejected(self):
+        a = self._adapter()
+        ev = self._event(operator="USER_A")
+        assert a._is_authorized_interaction_for_session(
+            ev, "not-a-real-session-key") is False
+
+    def test_empty_operator_rejected(self):
+        a = self._adapter()
+        ev = self._event(operator="")
+        assert a._is_authorized_interaction_for_session(
+            ev, "agent:main:qqbot:dm:USER_A") is False

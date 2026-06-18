@@ -767,6 +767,15 @@ function Test-Node {
     if (Get-Command node -ErrorAction SilentlyContinue) {
         $version = node --version
         if (Test-NodeVersionOk $version) {
+            # Ensure the directory containing node.exe is on PATH so that npm
+            # lifecycle scripts (which spawn child processes like "node install.js")
+            # can resolve node even when the parent npm.cmd was found through a
+            # different PATH entry (e.g. a .cmd shim).  Mirrors the explicit
+            # $env:Path prepend used for Hermes-managed Node below.
+            $nodeExeDir = Split-Path (Get-Command node).Source -Parent
+            if ($env:Path -notlike "*$nodeExeDir*") {
+                $env:Path = "$nodeExeDir;$env:Path"
+            }
             Write-Success "Node.js $version found"
             $script:HasNode = $true
             return $true

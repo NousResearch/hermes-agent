@@ -2083,8 +2083,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True
 
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
+            except BaseException as e:
+                # Catch BaseException (not just Exception) so that SystemExit
+                # from a misbehaving provider SDK or agent retry path does
+                # not escape the job execution and potentially crash the
+                # gateway.  A single failed cron job must never tear down
+                # the gateway — log and mark as failed instead.
+                logger.error("Error processing job %s: %s", job['id'], e, exc_info=True)
                 mark_job_run(job["id"], False, str(e))
                 return False
 
@@ -2184,6 +2189,16 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             _remaining = [len(_all_futures)]
 
             def _on_done(_f: concurrent.futures.Future) -> None:
+                # Log exceptions from completed futures so cron job failures
+                # are visible instead of silently swallowed in async mode.
+                # Without this, an unhandled error inside _process_job (e.g.
+                # SystemExit from a provider SDK) would disappear silently.
+                if _f.exception() is not None:
+                    logger.error(
+                        "Cron job execution error (async): %s",
+                        _f.exception(),
+                        exc_info=_f.exception(),
+                    )
                 _remaining[0] -= 1
                 if _remaining[0] <= 0:
                     _sweep_mcp_orphans()

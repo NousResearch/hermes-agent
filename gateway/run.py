@@ -16492,8 +16492,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        except BaseException as e:
+            # Catch BaseException (not just Exception) so that SystemExit
+            # raised by a misbehaving provider SDK or agent retry path
+            # cannot tear down the gateway process.  A single failed cron
+            # LLM call must never kill the gateway — it serves all
+            # connected platforms (Feishu, Telegram, Discord, …).
+            logger.error("Cron tick error (non-fatal): %s", e, exc_info=True)
 
         tick_count += 1
 

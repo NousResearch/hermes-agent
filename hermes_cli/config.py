@@ -223,7 +223,10 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # save_config() + migrate_config() write via atomic_yaml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
+# merged_value) — the managed-file signature is folded in so editing the
+# managed-scope config.yaml invalidates the cache (see managed_scope).
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any]]] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -5595,17 +5598,44 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         try:
             st = config_path.stat()
-            cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+            user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
         except FileNotFoundError:
-            cache_key = None
+            user_sig = None
+
+        # Managed scope: fold the managed config file's (mtime, size) into the
+        # cache signature so editing /etc/hermes/config.yaml invalidates the
+        # cached merged result. (0, 0) means "no managed config file".
+        from hermes_cli import managed_scope
+
+        managed_dir = managed_scope.get_managed_dir()
+        managed_cfg_path = (managed_dir / "config.yaml") if managed_dir else None
+        try:
+            mst = managed_cfg_path.stat() if managed_cfg_path else None
+            managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
+        except OSError:
+            managed_sig = (0, 0)
+
+        # Combined cache signature: user file + managed file. None only when the
+        # user config is absent AND no managed file exists (nothing to cache on).
+        if user_sig is not None:
+            cache_sig: Optional[Tuple[int, int, int, int]] = (
+                user_sig[0],
+                user_sig[1],
+                managed_sig[0],
+                managed_sig[1],
+            )
+        elif managed_sig != (0, 0):
+            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
+        else:
+            cache_sig = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_key is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
+        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+            return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if cache_key is not None:
+        if user_sig is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
@@ -5623,14 +5653,24 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
+        # Managed scope wins at the leaf. Applied AFTER user expansion so a user
+        # ${VAR} cannot shadow a managed literal: managed values are expanded only
+        # against the process environment, never against user-config-defined refs.
+        # This deliberately inverts the usual env-over-config precedence for the
+        # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
+        managed_config = managed_scope.load_managed_config()
+        if managed_config:
+            managed_expanded = _expand_env_vars(managed_config)
+            expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
-        if cache_key is not None:
+        if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
             # (deepcopy=True) callers can mutate freely without affecting the
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
-            # callers all see the same stable cached object.
+            # callers all see the same stable cached object. The cached tuple is
+            # (user_mtime, user_size, managed_mtime, managed_size, value).
             cached_copy = copy.deepcopy(expanded)
-            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.

@@ -1927,6 +1927,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "command_preview": cmd_preview,
                 }
             return result
         except Exception as exc:
@@ -2002,22 +2003,28 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
+    def _build_resolved_approval_card(*, choice: str, user_name: str, command_preview: str = "") -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        elements = [
+            {
+                "tag": "markdown",
+                "content": f"{icon} **{label}** by {user_name}",
+            },
+        ]
+        if command_preview:
+            elements.insert(1, {
+                "tag": "markdown",
+                "content": f"**命令内容：**\n```\n{command_preview}\n```",
+            })
         return {
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "elements": elements,
         }
 
     @staticmethod
@@ -2636,7 +2643,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if CallBackCard is not None:
             card = CallBackCard()
             card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            cmd_preview = state.get("command_preview", "")
+            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name, command_preview=cmd_preview)
             response.card = card
         return response
 

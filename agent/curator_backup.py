@@ -536,6 +536,52 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
 
 
+def _safe_extractall_fallback(tf: tarfile.TarFile, dest: Path) -> None:
+    """Manually extract a tar archive, rejecting unsafe members.
+
+    Used on Python < 3.12 where ``TarFile.extractall`` does not accept the
+    ``filter='data'`` safety filter. The archive may only contain regular files
+    and directories; symlinks, hardlinks, devices, fifos, and any path that
+    escapes ``dest`` (including via ``..`` or absolute names) are rejected.
+    """
+    dest_root = dest.resolve()
+    for member in tf.getmembers():
+        name = member.name
+        if not name:
+            raise tarfile.TarError("refusing to extract member with empty name")
+        if name.startswith("/") or ".." in Path(name).parts:
+            raise tarfile.TarError(
+                f"refusing to extract unsafe path: {name!r}"
+            )
+        if member.issym() or member.islnk():
+            raise tarfile.TarError(
+                f"refusing to extract link member: {name!r}"
+            )
+        if not (member.isfile() or member.isdir()):
+            raise tarfile.TarError(
+                f"refusing to extract special member: {name!r}"
+            )
+
+        target = (dest_root / name).resolve()
+        try:
+            target.relative_to(dest_root)
+        except ValueError:
+            raise tarfile.TarError(
+                f"refusing to extract escaped path: {name!r}"
+            )
+
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        extracted = tf.extractfile(member)
+        if extracted is None:
+            raise tarfile.TarError(f"cannot read member: {name!r}")
+        with extracted, open(target, "wb") as dst:
+            shutil.copyfileobj(extracted, dst)
+
+
 def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
     """Restore ``~/.hermes/skills/`` from a snapshot.
 
@@ -619,19 +665,14 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     try:
         with tarfile.open(archive, "r:gz") as tf:
             # Python 3.12+ supports filter='data' for safer extraction.
-            # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
-            for member in tf.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(
-                        f"refusing to extract unsafe path: {name!r}"
-                    )
+            # Fall back to a manual safe extraction for older interpreters
+            # (the project still supports Python 3.11) which also rejects
+            # symlinks, hardlinks, device files, and any path escape.
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
             except TypeError:
                 # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+                _safe_extractall_fallback(tf, skills)
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back
         for orig, dest in moved:

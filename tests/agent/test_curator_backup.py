@@ -259,6 +259,53 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
 
 
+def test_rollback_rejects_symlink_tarball(backup_env):
+    """Tarballs containing symlinks must be refused: a symlink member can
+    point outside the extraction directory and let a crafted snapshot read
+    or overwrite arbitrary files on rollback."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        info = tarfile.TarInfo(name="evil-link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tf.addfile(info)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert "link" in msg.lower() or "unsafe" in msg.lower() or "refus" in msg.lower()
+
+
+def test_rollback_rejects_special_file_tarball(backup_env):
+    """Tarballs containing device files, fifos, or other special members
+    must be refused — only regular files and directories are valid skill
+    contents."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        info = tarfile.TarInfo(name="evil-device")
+        info.type = tarfile.BLKTYPE
+        tf.addfile(info)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert "special" in msg.lower() or "unsafe" in msg.lower() or "refus" in msg.lower()
+
+
 # ---------------------------------------------------------------------------
 # Integration with run_curator_review
 # ---------------------------------------------------------------------------

@@ -448,6 +448,29 @@ try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
+            # Allow user plugins to override runtime fields for hardcoded
+            # api_key providers — respects "last writer wins" semantics
+            # from providers/__init__.py so user plugins under
+            # $HERMES_HOME/plugins/model-providers/<name>/ can override
+            # the bundled profile's inference_base_url without editing
+            # core code.
+            _existing = PROVIDER_REGISTRY[_pp.name]
+            if _existing.auth_type == "api_key":
+                if _pp.base_url:
+                    _existing.inference_base_url = _pp.base_url
+                _api_vars = tuple(
+                    v for v in _pp.env_vars
+                    if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+                )
+                _url_var = next(
+                    (v for v in _pp.env_vars
+                     if v.endswith("_BASE_URL") or v.endswith("_URL")),
+                    None,
+                )
+                if _api_vars:
+                    _existing.api_key_env_vars = _api_vars
+                if _url_var:
+                    _existing.base_url_env_var = _url_var
             continue
         if _pp.auth_type != "api_key" or not _pp.env_vars:
             continue

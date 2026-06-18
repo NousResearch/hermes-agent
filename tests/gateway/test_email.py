@@ -123,6 +123,14 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
 
+    def test_extract_recipient_addresses(self):
+        from gateway.platforms.email import _extract_recipient_addresses
+        result = _extract_recipient_addresses([
+            "Alice <Alice@Example.COM>, bob@example.com",
+            "alice@example.com",
+        ])
+        self.assertEqual(result, ["alice@example.com", "bob@example.com"])
+
     def test_strip_html_basic(self):
         from gateway.platforms.email import _strip_html
         html = "<p>Hello <b>world</b></p>"
@@ -613,6 +621,35 @@ class TestThreadContext(unittest.TestCase):
         self.assertIsNotNone(ctx)
         self.assertEqual(ctx["subject"], "Project question")
         self.assertEqual(ctx["message_id"], "<original@test.com>")
+        self.assertEqual(ctx["cc"], [])
+
+    def test_thread_context_stores_cc_recipients(self):
+        """Thread context should preserve CC recipients for replies."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        async def noop_handle(event):
+            pass
+
+        adapter.handle_message = noop_handle
+
+        msg_data = {
+            "uid": b"11",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+            "in_reply_to": "",
+            "cc": ["teammate@test.com", "hermes@test.com"],
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        ctx = adapter._thread_context.get("user@test.com")
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx["cc"], ["teammate@test.com", "hermes@test.com"])
 
     def test_reply_uses_re_prefix(self):
         """Reply subject should have Re: prefix."""
@@ -634,6 +671,29 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
+
+    def test_reply_preserves_cc_and_excludes_self(self):
+        """Replies should CC original CC recipients, excluding the agent and primary recipient."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+            "cc": [
+                "teammate@test.com",
+                "hermes@test.com",
+                "user@test.com",
+                "teammate@test.com",
+            ],
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Here is the answer.", None)
+
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Cc"], "teammate@test.com")
 
     def test_reply_does_not_double_re(self):
         """If subject already has Re:, don't add another."""
@@ -762,6 +822,36 @@ class TestSendMethods(unittest.TestCase):
                     for p in parts
                 )
                 self.assertTrue(has_attachment)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_document_preserves_cc(self):
+        """Attachment replies should apply the same CC threading headers."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+            "cc": ["teammate@test.com", "hermes@test.com"],
+        }
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Test document content")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                result = asyncio.run(
+                    adapter.send_document("user@test.com", tmp_path, "Here is the file")
+                )
+
+                self.assertTrue(result.success)
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["Cc"], "teammate@test.com")
         finally:
             os.unlink(tmp_path)
 

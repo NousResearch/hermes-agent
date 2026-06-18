@@ -12,7 +12,7 @@
  *   GET  /api/ard/catalog  — get catalog (authenticated)
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { Search, Zap, Globe, Upload, Loader2, Tag, ChevronDown } from "lucide-react";
 import { fetchJSON } from "../lib/api";
 

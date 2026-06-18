@@ -33,6 +33,7 @@ from agent.prompt_builder import (
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
@@ -40,6 +41,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -82,6 +84,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
 
+    # Resolve the model's context window once so context-file caps can scale
+    # to it (dynamic cap — see prompt_builder._dynamic_context_file_max_chars).
+    # None falls back to the historical flat default. This value is stable for
+    # the life of the conversation, so it does not threaten prompt caching.
+    _ctx_len: Optional[int] = None
+    _cc = getattr(agent, "context_compressor", None)
+    if _cc is not None:
+        _cc_len = getattr(_cc, "context_length", None)
+        if isinstance(_cc_len, int) and _cc_len > 0:
+            _ctx_len = _cc_len
+
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -90,7 +103,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md()
+        _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -110,6 +123,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Universal parallel-tool-call guidance.  Tells the model to batch
+    # independent tool calls into one assistant turn rather than emitting one
+    # call per turn — the runtime already runs independent calls concurrently
+    # (read-only tools always; non-overlapping path-scoped file ops), so the
+    # only thing missing was steering the model to produce the batch.  Cuts
+    # round-trips and the resent-context cost that compounds over a long
+    # conversation.  Gated by config.yaml ``agent.parallel_tool_call_guidance``
+    # (default True) and only injected when tools are actually loaded.
+    if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
@@ -333,7 +357,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # dir — the user's real cwd there, but the install dir for the gateway
         # daemon, which is why the gateway sets TERMINAL_CWD.
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded)
+            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+            context_length=_ctx_len)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
@@ -400,7 +425,14 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     warm across turns.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+
+    # Surface context-file truncation warnings through the normal agent status
+    # channel so gateway/CLI users see them in chat instead of only in logs.
+    for warning in drain_truncation_warnings():
+        agent._emit_status(warning)
+
+    return joined
 
 
 def invalidate_system_prompt(agent: Any) -> None:

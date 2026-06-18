@@ -904,6 +904,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
     ready = session.get("agent_ready")
     if ready is None:
         return
+    # A lazy watch session spectating an in-flight child must stay lazy so the
+    # subagent live-mirror keeps flowing. Incidental RPCs (session.info, model
+    # metadata, etc.) resolve through _sess(), which would otherwise upgrade it
+    # to a full agent mid-stream and silently kill the mirror (the mirror bails
+    # once agent is set). Once the child completes, the guard lifts and the next
+    # prompt/RPC builds the agent normally so the user can talk to the session.
+    if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        return
     lock = session.setdefault("agent_build_lock", threading.Lock())
     with lock:
         if ready.is_set() or session.get("agent_build_started"):
@@ -1007,6 +1015,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
             _emit("session.info", sid, info)
+            # If MCP discovery is still in flight (a server slower than the
+            # bounded wait_for_mcp_discovery join in _make_agent), the agent
+            # was built without those tools. Catch up once they land — see
+            # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
+            _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
             current["agent_error"] = str(e)
             _emit("error", sid, {"message": f"agent init failed: {e}"})
@@ -1205,6 +1218,27 @@ def _ensure_session_db_row(session: dict) -> None:
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
+    # The composer override may carry the RESOLVED provider "custom" for a named
+    # ``providers:`` / ``custom_providers:`` entry. Persisting bare "custom" here
+    # (the very first DB write for a fresh desktop session, before the agent is
+    # built) is the origin of the recurring "No LLM provider configured" rows:
+    # on the next resume bare "custom" routes to OpenRouter with no key. Recover
+    # the durable ``custom:<name>`` identity from the override's base_url, else
+    # the configured provider, so a routable identity is persisted from the
+    # start (matches _runtime_model_config's normalization).
+    if str(model_config.get("provider") or "").strip().lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            healed = canonical_custom_identity(
+                base_url=model_config.get("base_url") or None
+            )
+            if healed:
+                model_config["provider"] = healed
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed (db row)", exc_info=True
+            )
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
     if tier := session.get("create_service_tier_override"):
@@ -1566,6 +1600,28 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
 
+    # Heal a bare ``"custom"`` provider stored by an older build (or any leak
+    # site that bypassed _runtime_model_config's normalization). Bare custom is
+    # the resolved billing class, not a routable identity — restoring it as the
+    # session's provider override routes the resume to the OpenRouter default
+    # URL with no api_key, surfacing as "No LLM provider configured". Recover
+    # the durable ``custom:<name>`` menu key from the stored base_url, falling
+    # back to the configured provider when the row has no base_url (the
+    # recurring Desktop/TUI regression vector). If neither names a real entry,
+    # drop the bare provider entirely so resume falls back to the configured
+    # default rather than the broken OpenRouter route.
+    if provider.strip().lower() == "custom":
+        healed = None
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            healed = canonical_custom_identity(base_url=base_url or None)
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed", exc_info=True
+            )
+        provider = healed or ("" if not base_url else provider)
+
     if model:
         # Use the same dict-shaped override that live /model switches use so a
         # DB-restored session can preserve custom endpoint metadata across both
@@ -1600,21 +1656,27 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     if model:
         config["model"] = model
     if provider:
-        if provider == "custom" and base_url:
+        if provider.strip().lower() == "custom":
             # ``agent.provider`` is the RESOLVED provider, and for any named
             # ``providers:`` / ``custom_providers:`` entry that is the literal
             # string "custom" — persisting it loses the entry identity, so a
             # later resume/rebuild cannot re-resolve the entry's credentials
             # (the api_key is deliberately never persisted; see
             # _stored_session_runtime_overrides). Recover the canonical
-            # ``custom:<name>`` menu key from the endpoint URL so
-            # resolve_runtime_provider() can find the entry again.
+            # ``custom:<name>`` menu key from the endpoint URL when present,
+            # else from the configured provider — this second fallback is the
+            # fix for sessions built WITHOUT a base_url on the override (the
+            # recurring Desktop/TUI "No LLM provider configured" regression:
+            # bare "custom" with no base_url was persisted verbatim and routed
+            # to OpenRouter with no key on the next resume).
             try:
                 from hermes_cli.runtime_provider import (
-                    find_custom_provider_identity,
+                    canonical_custom_identity,
                 )
 
-                provider = find_custom_provider_identity(base_url) or provider
+                provider = (
+                    canonical_custom_identity(base_url=base_url) or provider
+                )
             except Exception:
                 logger.debug(
                     "custom provider identity lookup failed", exc_info=True
@@ -2867,7 +2929,14 @@ def _on_tool_progress(
         if preview and event_type == "subagent.tool":
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)
-        _emit(event_type, sid, payload)
+        # subagent.text is the child's per-token reply, relayed solely to feed a
+        # watch window's live mirror. It is meaningless on the parent session
+        # (which shows the child via the spawn tree, not its reply body), so
+        # skip the parent emit — sending hundreds of ignored token frames there
+        # is wasted traffic and a trap for any future parent-side subagent
+        # catch-all. The mirror keys off the child sid and is unaffected.
+        if event_type != "subagent.text":
+            _emit(event_type, sid, payload)
         _mirror_subagent_to_child(event_type, payload)
 
 
@@ -2927,11 +2996,15 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         if event_type == "subagent.thinking":
             if text := str(payload.get("text") or ""):
                 _emit("reasoning.delta", csid, {"text": text})
-        elif event_type in {"subagent.start", "subagent.progress"}:
-            # Mirror branch-level progress lines so a just-opened child window
-            # shows immediate activity instead of waiting for the next tool or
-            # completion event. This matches the TUI /agents "live branch log"
-            # feel that users expect.
+        elif event_type == "subagent.text":
+            # The child's streamed reply text — the actual "agent talking".
+            # Relayed token-by-token from the child's run_conversation
+            # stream_callback, so the watch window streams the reply live.
+            if text := str(payload.get("text") or ""):
+                _emit("message.delta", csid, {"text": text})
+        elif event_type == "subagent.start":
+            # One-time header line (the child's goal) so a freshly opened window
+            # shows immediate context before the first reply token streams.
             if text := str(payload.get("text") or ""):
                 _emit("message.delta", csid, {"text": f"{text}\n"})
         elif event_type == "subagent.tool":
@@ -3386,6 +3459,87 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
+def _schedule_mcp_late_refresh(sid: str, agent) -> None:
+    """Refresh a session's tool snapshot when MCP discovery lands late.
+
+    The agent snapshots ``agent.tools`` once at build time and never re-reads
+    the registry (run_agent/agent_init). ``_make_agent`` briefly joins the
+    background MCP discovery thread (``wait_for_mcp_discovery``, ~0.75s) so
+    already-spawning servers land in that snapshot — but a server that takes
+    longer than the bound to connect (common for an HTTP MCP server on first
+    connect) lands *after* the agent is built. Its tools are then absent from
+    both the agent and the banner for the whole session, even though the
+    classic CLI shows them (the CLI re-derives ``get_tool_definitions`` at
+    banner render time, which re-waits, so it picks them up).
+
+    This schedules an off-critical-path daemon that waits for discovery to
+    finish, then rebuilds the snapshot and re-emits ``session.info`` so both
+    the agent's callable tools and the banner count catch up — the same
+    rebuild ``/reload-mcp`` performs, but automatic.
+
+    Cache safety: the rebuild only runs while the session is still pre-first-
+    turn (no API call made yet → nothing cached to invalidate). If the user
+    has already sent a message, we leave the snapshot frozen rather than
+    invalidate the prompt cache mid-conversation — those late tools then
+    require an explicit ``/reload-mcp`` (which gates on user consent), exactly
+    as today. No-op when discovery already finished before the agent build.
+    """
+    try:
+        from tui_gateway.entry import mcp_discovery_in_flight, join_mcp_discovery
+    except Exception:
+        return
+    if not mcp_discovery_in_flight():
+        return
+
+    def _wait_then_refresh() -> None:
+        # Bounded but generous — a server still not connected after this is
+        # genuinely slow/dead; the user can /reload-mcp once it recovers.
+        if not join_mcp_discovery(timeout=30.0):
+            return
+        with _sessions_lock:
+            session = _sessions.get(sid)
+            # Session may have been closed/reset while we waited.
+            if session is None or session.get("agent") is not agent:
+                return
+            # Cache safety: never rebuild the tool list once the conversation
+            # has started — that would invalidate the cached prompt prefix.
+            if (
+                int(getattr(agent, "_user_turn_count", 0) or 0) > 0
+                or int(getattr(agent, "_api_call_count", 0) or 0) > 0
+            ):
+                return
+            try:
+                from model_tools import get_tool_definitions
+
+                new_defs = get_tool_definitions(
+                    enabled_toolsets=_load_enabled_toolsets(),
+                    quiet_mode=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Late MCP refresh: get_tool_definitions failed for %s: %s",
+                    sid,
+                    exc,
+                )
+                return
+            # No change (discovery added nothing new) → don't churn the client.
+            if len(new_defs or []) == len(getattr(agent, "tools", []) or []):
+                return
+            agent.tools = new_defs
+            agent.valid_tool_names = (
+                {t["function"]["name"] for t in new_defs} if new_defs else set()
+            )
+            info = _session_info(agent, session)
+        # Emit outside the lock — write_json must not block under _sessions_lock.
+        _emit("session.info", sid, info)
+
+    threading.Thread(
+        target=_wait_then_refresh,
+        name=f"tui-mcp-late-refresh-{sid}",
+        daemon=True,
+    ).start()
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -3445,25 +3599,27 @@ def _make_agent(
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
         resolve_kwargs = {}
-        if (
-            override_base_url
-            and str(requested_provider or "").strip().lower() == "custom"
-        ):
+        if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
             # (see _runtime_model_config) stored the resolved provider
             # "custom", which _get_named_custom_provider cannot match back to
             # a named ``providers:`` / ``custom_providers:`` entry — the
-            # rebuild then either raised auth_unavailable or silently
-            # resolved placeholder credentials against the patched-back
-            # base_url. Recover the entry identity from the persisted
-            # base_url; failing that, hand the base_url to the direct-alias
-            # branch so pool/env credentials can still be resolved for it.
-            from hermes_cli.runtime_provider import find_custom_provider_identity
+            # rebuild then either raised auth_unavailable, silently resolved
+            # placeholder credentials against the patched-back base_url, or
+            # (when no base_url was stored) routed to the OpenRouter default
+            # with no key, surfacing as "No LLM provider configured". Recover
+            # the entry identity from the persisted base_url, falling back to
+            # the configured provider when the override carries no base_url
+            # (the recurring Desktop/TUI regression vector).
+            from hermes_cli.runtime_provider import canonical_custom_identity
 
-            recovered = find_custom_provider_identity(override_base_url)
+            recovered = canonical_custom_identity(base_url=override_base_url or None)
             if recovered:
                 requested_provider = recovered
-            resolve_kwargs["explicit_base_url"] = override_base_url
+            if override_base_url:
+                # Failing identity recovery, still hand the base_url to the
+                # direct-alias branch so pool/env credentials resolve for it.
+                resolve_kwargs["explicit_base_url"] = override_base_url
         runtime = resolve_runtime_provider(
             requested=requested_provider,
             target_model=model or None,
@@ -3624,6 +3780,7 @@ def _init_session(
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
+    _schedule_mcp_late_refresh(sid, agent)
 
 
 def _new_session_key() -> str:
@@ -4226,6 +4383,19 @@ def _(rid, params: dict) -> dict:
         found = db.get_session_by_title(target)
         if found:
             target = found["id"]
+        elif is_truthy_value(params.get("lazy", False)) and _child_run_active(target):
+            # Race: a watch window opened on a freshly-spawned subagent. The
+            # child relays `subagent.start` (which carries child_session_id and
+            # triggers the window) BEFORE its first run_conversation() flushes
+            # the DB row via _ensure_db_session, so db.get_session(target) is
+            # momentarily empty. On slower hosts (notably WSL2, where SQLite +
+            # process scheduling widen the gap) the window's resume consistently
+            # lands inside this window and used to hard-fail "session not found"
+            # — the frontend then 404'd on the REST messages fallback and the
+            # window spun forever. The child is provably live (_child_run_active),
+            # so proceed into the lazy branch with empty history; the live mirror
+            # streams the whole turn anyway and the row exists by upgrade time.
+            found = {}
         else:
             return _err(rid, 4007, "session not found")
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
@@ -4769,7 +4939,6 @@ def _(rid, params: dict) -> dict:
             session["pending_title"] = None
             return _ok(rid, {"pending": False, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
-        # Queue only when the session row truly does not exist yet.
         existing_row = db.get_session(key)
         if existing_row:
             session["pending_title"] = None
@@ -4780,6 +4949,23 @@ def _(rid, params: dict) -> dict:
                     "title": (existing_row.get("title") or title),
                 },
             )
+        # No row yet (the DB write is deferred to the first prompt so empty
+        # drafts don't litter the sidebar). An explicit /title is clear user
+        # intent, not an abandoned draft — so persist the row NOW and set the
+        # title, mirroring the messaging gateway's _handle_title_command. The
+        # old behavior only queued pending_title and relied on the post-turn
+        # apply block; if that turn never landed under this session_key the
+        # title was silently lost and the sidebar fell back to the message
+        # preview. Creating the row up front removes that race entirely. The
+        # min-messages sidebar filter keeps a titled 0-message row hidden, so
+        # a /title'd-but-never-used draft still doesn't clutter the list.
+        _ensure_session_db_row(session)
+        with _session_db(session) as scoped_db:
+            if scoped_db is not None and scoped_db.set_session_title(key, title):
+                session["pending_title"] = None
+                return _ok(rid, {"pending": False, "title": title})
+        # Row creation didn't take (DB unavailable, or a concurrent writer) —
+        # fall back to queuing so the post-turn apply block can still recover.
         session["pending_title"] = title
         return _ok(rid, {"pending": True, "title": title})
     except ValueError as e:

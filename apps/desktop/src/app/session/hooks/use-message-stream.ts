@@ -1102,8 +1102,13 @@ export function useMessageStream({
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else if (isActiveEvent) {
+        } else {
+          // Toast globally, not just when the failing thread is focused: a
+          // turn-ending error (e.g. out of funds) blocks every thread, so the
+          // inline error alone is too easy to miss. The stable id collapses the
+          // same error from multiple blocked threads into one toast.
           notify({
+            id: `gateway-error:${errorMessage}`,
             kind: 'error',
             title: 'Hermes error',
             message: errorMessage

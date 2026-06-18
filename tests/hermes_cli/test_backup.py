@@ -543,6 +543,126 @@ class TestImport:
         # traversal file should NOT exist outside hermes home
         assert not (tmp_path / "etc" / "passwd").exists()
 
+    def test_preserves_live_gateway_state(self, tmp_path, monkeypatch):
+        """Import must not overwrite the target's gateway_state.json.
+
+        The backup carries the *source* machine's gateway run/desired state.
+        Restoring it onto a hosted container drives the boot reconciler off
+        stale/foreign state and leaves the gateway stuck "starting",
+        disconnecting it from the Nous portal (NS-508). The live file wins.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # The target (e.g. hosted container) already has its own live state.
+        live_state = '{"gateway_state": "running", "desired_state": "running"}'
+        (hermes_home / "gateway_state.json").write_text(live_state)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            # A backup from a laptop where the gateway was stopped.
+            "gateway_state.json": '{"gateway_state": "stopped", "desired_state": "stopped"}',
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        # config.yaml is restored normally...
+        assert (hermes_home / "config.yaml").read_text() == "model: test\n"
+        # ...but the live gateway_state.json is untouched.
+        assert (hermes_home / "gateway_state.json").read_text() == live_state
+
+    def test_does_not_seed_gateway_state_when_absent(self, tmp_path, monkeypatch):
+        """A backup's gateway_state.json is dropped, not written, when the
+        target has none — a foreign state must never seed the reconciler."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "gateway_state.json": '{"gateway_state": "stopped"}',
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        assert (hermes_home / "config.yaml").exists()
+        assert not (hermes_home / "gateway_state.json").exists()
+
+    def test_preserves_per_profile_gateway_state(self, tmp_path, monkeypatch):
+        """The skip is matched by basename, so a named profile's
+        gateway_state.json (profiles/<name>/gateway_state.json) is preserved
+        the same way the root profile's is."""
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "profiles" / "coder").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        live_state = '{"gateway_state": "running"}'
+        (hermes_home / "profiles" / "coder" / "gateway_state.json").write_text(live_state)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "profiles/coder/config.yaml": "model: anthropic\n",
+            "profiles/coder/gateway_state.json": '{"gateway_state": "stopped"}',
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        # Profile config is restored, but its live gateway state is preserved.
+        assert (hermes_home / "profiles" / "coder" / "config.yaml").read_text() == "model: anthropic\n"
+        assert (
+            hermes_home / "profiles" / "coder" / "gateway_state.json"
+        ).read_text() == live_state
+
+    def test_preserves_runtime_pid_and_process_files(self, tmp_path, monkeypatch):
+        """gateway.pid / cron.pid / gateway.lock / processes.json from a backup
+        reference the source machine's process namespace and must never be
+        written over the target's."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # Live runtime files belonging to the target's own processes.
+        (hermes_home / "gateway.pid").write_text("4242")
+        (hermes_home / "processes.json").write_text('{"live": true}')
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "gateway.pid": "9999",
+            "cron.pid": "8888",
+            "gateway.lock": "7777",
+            "processes.json": '{"stale": true}',
+        })
+
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        run_import(args)
+
+        # Live runtime files are untouched; the backup's foreign ones never land.
+        assert (hermes_home / "gateway.pid").read_text() == "4242"
+        assert (hermes_home / "processes.json").read_text() == '{"live": true}'
+        # cron.pid / gateway.lock had no live copy and were not seeded.
+        assert not (hermes_home / "cron.pid").exists()
+        assert not (hermes_home / "gateway.lock").exists()
+
     def test_confirmation_prompt_abort(self, tmp_path, monkeypatch):
         """Import aborts when user says no to confirmation."""
         hermes_home = tmp_path / ".hermes"
@@ -1606,16 +1726,21 @@ class TestRunPreUpdateBackup:
         backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
         assert len(backups) == 1
 
-    def test_default_disabled_is_silent(self, hermes_home, capsys):
-        """With the default-off config and no --backup flag, the hook is silent
-        and creates no backup.  This is the common case for every update."""
+    def test_default_enabled_creates_backup(self, hermes_home, capsys):
+        """With the new safe default (``pre_update_backup: true``), every
+        ``hermes update`` creates a backup before any destructive step
+        runs — the cost is a few minutes of zip time vs. the alternative
+        of silent total data loss of ``~/.hermes/`` observed in #48200
+        when an update step computes a wrong path and the user had no
+        safety net.
+        """
         from hermes_cli.main import _run_pre_update_backup
         _run_pre_update_backup(Namespace(no_backup=False, backup=False))
         out = capsys.readouterr().out
-        assert out == ""
-        assert not (hermes_home / "backups").exists() or not list(
-            (hermes_home / "backups").glob("pre-update-*.zip")
-        )
+        assert "Creating pre-update backup" in out
+        assert "Saved:" in out
+        backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
+        assert len(backups) == 1
 
     def test_no_backup_flag_skips(self, hermes_home, capsys):
         from hermes_cli.main import _run_pre_update_backup

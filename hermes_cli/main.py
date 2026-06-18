@@ -5110,6 +5110,113 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
+# Last-resort Electron mirror after GitHub download fails (#47266). Only used
+# when the user hasn't pinned ELECTRON_MIRROR.
+_ELECTRON_FALLBACK_MIRROR = "https://npmmirror.com/mirrors/electron/"
+
+
+def _electron_dir(project_root: Path) -> Path:
+    """Return the Electron package directory the desktop workspace installs.
+
+    npm may keep workspace-only dev dependencies under
+    ``apps/desktop/node_modules`` instead of hoisting them to the repo root.
+    Which layout you get depends on the npm version and what else is installed,
+    so a build path that assumes one or the other breaks intermittently across
+    machines. ``apps/desktop/package.json`` points electron-builder's
+    ``electronDist`` at ``node_modules/electron/dist`` relative to the desktop
+    project, so prefer the workspace-local package and fall back to the root
+    hoist when that's where npm landed it.
+    """
+    desktop_local = project_root / "apps" / "desktop" / "node_modules" / "electron"
+    if desktop_local.exists():
+        return desktop_local
+    return project_root / "node_modules" / "electron"
+
+
+def _electron_dist_binary(project_root: Path) -> Path:
+    """Return the path to the Electron main binary inside the installed package.
+
+    electron-builder reads the binary from ``build.electronDist`` since #38673,
+    so this is the exact file whose absence makes a pack fail with "The
+    specified electronDist does not exist". The basename differs per OS (the
+    platform Electron is named for the host the build runs on).
+    """
+    dist = _electron_dir(project_root) / "dist"
+    if sys.platform == "darwin":
+        return dist / "Electron.app" / "Contents" / "MacOS" / "Electron"
+    if sys.platform == "win32":
+        return dist / "electron.exe"
+    return dist / "electron"
+
+
+def _electron_dist_ok(project_root: Path) -> bool:
+    """True when ``node_modules/electron/dist`` holds a usable Electron binary.
+
+    A directory that exists but is missing the binary (a partial extraction from
+    a corrupt cached zip, or an interrupted postinstall) counts as NOT ok, since
+    that is exactly the shape that makes electron-builder throw on the pinned
+    electronDist.
+    """
+    try:
+        return _electron_dist_binary(project_root).exists()
+    except OSError:
+        return False
+
+
+def _electron_pkg_staged_missing_dist(project_root: Path) -> bool:
+    """electron staged (package.json + install.js) but dist missing — blocked postinstall."""
+    electron_dir = _electron_dir(project_root)
+    return (
+        (electron_dir / "package.json").is_file()
+        and (electron_dir / "install.js").is_file()
+        and not _electron_dist_ok(project_root)
+    )
+
+
+def _redownload_electron_dist(
+    project_root: Path,
+    env: dict,
+    *,
+    mirror: Optional[str] = None,
+) -> bool:
+    """Best-effort: run electron's install.js to populate dist/ (optional mirror)."""
+    if _electron_dist_ok(project_root):
+        return True
+
+    electron_dir = _electron_dir(project_root)
+    installer = electron_dir / "install.js"
+    if not installer.is_file():
+        return False
+    node = shutil.which("node")
+    if not node:
+        return False
+
+    dist_dir = electron_dir / "dist"
+    shutil.rmtree(dist_dir, ignore_errors=True)
+    try:
+        (electron_dir / "path.txt").unlink()
+    except OSError:
+        pass
+
+    dl_env = dict(env)
+    if mirror:
+        dl_env["ELECTRON_MIRROR"] = mirror
+    try:
+        subprocess.run([node, str(installer)], cwd=str(electron_dir), env=dl_env, check=False)
+    except OSError:
+        return False
+    return _electron_dist_ok(project_root)
+
+
+def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
+    """Canonical download, then fallback mirror unless the user pinned one."""
+    if _redownload_electron_dist(project_root, env):
+        return True
+    if env.get("ELECTRON_MIRROR"):
+        return False
+    return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
+
+
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     """Terminate any running desktop app executing from this build's ``release``
     dir so a rebuild can replace its (otherwise locked) executable.
@@ -5303,8 +5410,8 @@ def cmd_gui(args: argparse.Namespace):
                 print("  Pre-build first:  cd apps/desktop && npm run build")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
-            if not (PROJECT_ROOT / "node_modules" / "electron" / "package.json").exists():
-                print("✗ --skip-build --source requires existing workspace dependencies.")
+            if not (_electron_dir(PROJECT_ROOT) / "package.json").exists():
+                print("✗ --skip-build --source requires existing desktop workspace dependencies.")
                 print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
                 print("  Or drop --skip-build to install dependencies and build automatically.")
                 sys.exit(1)
@@ -5332,9 +5439,18 @@ def cmd_gui(args: argparse.Namespace):
             nixos_env = _nixos_build_env()
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
-                print("✗ Desktop dependency install failed")
-                print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
-                sys.exit(install_result.returncode or 1)
+                if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
+                    print("✗ Desktop dependency install failed")
+                    print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
+                    sys.exit(install_result.returncode or 1)
+                repaired = _try_redownload_electron_dist(PROJECT_ROOT, env)
+                if repaired:
+                    print("  ⚠ Dependency install failed with a missing Electron dist; "
+                          "repopulated it and continuing.")
+                else:
+                    print("  ⚠ Dependency install failed with a missing Electron dist; "
+                          "continuing to the build so electron-builder can attempt "
+                          "the Electron fetch itself.")
 
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
@@ -5350,22 +5466,16 @@ def cmd_gui(args: argparse.Namespace):
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
-                # A corrupt cached Electron zip makes `pack` fail with an ENOENT
-                # on the final `electron` -> `Hermes` rename: unpack-electron
-                # extracted a partial tree (missing the 193 MB binary) from the
-                # bad zip. We do NOT try to prove the zip is corrupt ourselves —
-                # stdlib zipfile silently tolerates the prepended/concatenated
-                # junk that is the most common corruption (a partial download
-                # resumed into the same file), so a `testzip()` gate would pass
-                # and never self-heal. Instead, on any packaged-build failure we
-                # purge the version's cached zip + the half-written unpacked dir
-                # and retry once: @electron/get re-downloads with its own SHASUM
-                # verification, which is the real source of truth. If the
-                # failure was something else, the clean re-download is harmless
-                # and the retry fails the same way.
-                purged = _purge_electron_build_cache(desktop_dir)
-                if purged:
-                    print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")
+                # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
+                # stdlib zipfile won't catch the common concat-junk case, so purge
+                # and retry once; @electron/get SHASUM is the real gate.
+                purged: list[Path] = []
+                restored = False
+                if not _electron_dist_ok(PROJECT_ROOT):
+                    purged = _purge_electron_build_cache(desktop_dir)
+                    restored = _redownload_electron_dist(PROJECT_ROOT, env)
+                if restored:
+                    print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
                     for p in purged:
                         print(f"    - {p}")
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
@@ -5373,20 +5483,14 @@ def cmd_gui(args: argparse.Namespace):
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
-                # Still failing and the user hasn't pinned a mirror: GitHub's
-                # Electron release host is likely blocked/throttled (the repeating
-                # "retrying" download log). Retry once via npmmirror.com — the
-                # de-facto Electron community mirror (Alibaba). @electron/get
-                # SHASUM-checks the download, but the SHASUMS come from the same
-                # mirror, so that guards against a corrupt/partial download, NOT
-                # a compromised mirror: reaching for it is an explicit trust
-                # trade-off we only make AFTER the canonical GitHub download has
-                # failed, and we never override a user-pinned ELECTRON_MIRROR.
                 print("  ⚠ Desktop build still failing; the Electron download from "
-                      "GitHub looks blocked. Retrying once via a public mirror "
+                      "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
+                mirror = _ELECTRON_FALLBACK_MIRROR
                 mirror_env = dict(env)
-                mirror_env["ELECTRON_MIRROR"] = "https://npmmirror.com/mirrors/electron/"
+                mirror_env["ELECTRON_MIRROR"] = mirror
+                if not _electron_dist_ok(PROJECT_ROOT):
+                    _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
@@ -5969,6 +6073,10 @@ def _update_via_zip(args):
             )
         if result.get("user_modified"):
             print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+            print(
+                "    → see them: hermes skills list-modified  "
+                "(diff/reset to resume updates)"
+            )
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
         if not result["copied"] and not result.get("updated"):
@@ -8010,7 +8118,13 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    enabled = updates_cfg.get("pre_update_backup", False)
+    # The default config ships with ``pre_update_backup: true`` (see
+    # ``hermes_cli/config.py``). Fall back to true if the key is missing
+    # (e.g. a user has an older custom config without the field). The
+    # ``False`` default from before #48200 caused silent data loss when
+    # an update step computed a wrong path — the cost of a few minutes
+    # of zip time per update is negligible compared to the alternative.
+    enabled = updates_cfg.get("pre_update_backup", True)
     keep = updates_cfg.get("backup_keep", 5)
 
     if not enabled and not force_backup:
@@ -8957,6 +9071,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("user_modified"):
                 print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+                print(
+                    "    → see them: hermes skills list-modified  "
+                    "(diff/reset to resume updates)"
+                )
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
             if not result["copied"] and not result.get("updated"):
@@ -10903,6 +11021,13 @@ def cmd_dashboard_register(args):
     _impl(args)
 
 
+def cmd_gateway_enroll(args):
+    """Enroll a self-hosted gateway with a relay connector."""
+    from hermes_cli.gateway_enroll import cmd_gateway_enroll as _impl
+
+    _impl(args)
+
+
 def cmd_completion(args, parser=None):
     """Print shell completion script."""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
@@ -11595,7 +11720,9 @@ def main():
     # =========================================================================
     # gateway + proxy commands  (parsers built in hermes_cli/subcommands/gateway.py)
     # =========================================================================
-    build_gateway_parser(subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy)
+    build_gateway_parser(
+        subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
+    )
 
     # =========================================================================
     # lsp command

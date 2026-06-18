@@ -67,6 +67,7 @@ AUTHOR_MAP = {
     "joe.rinaldijohnson@shopify.com": "joerj123",
     "adalsteinnhelgason@Aalsteinns-MacBook-Pro-3.local": "AIalliAI",
     "adalsteinnhelgason@users.noreply.github.com": "AIalliAI",
+    "iamlukethedev@users.noreply.github.com": "iamlukethedev",
     "zhang.hz6666@gmail.com": "HaozheZhang6",
     "barronlroth@gmail.com": "barronlroth",
     "ondrej.drapalik@gmail.com": "OndrejDrapalik",

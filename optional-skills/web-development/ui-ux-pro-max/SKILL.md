@@ -5,6 +5,8 @@ version: 1.0.0
 author: Jason Colapietro
 license: MIT
 platforms: [linux, macos, windows]
+prerequisites:
+  commands: [python3]
 metadata:
   hermes:
     tags: [ui, ux, design, frontend, react, nextjs, vue, svelte, tailwind, accessibility, color, typography]

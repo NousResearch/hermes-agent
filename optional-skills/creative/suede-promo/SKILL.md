@@ -6,7 +6,12 @@ author: Jason Colapietro
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
+  env_vars: [SUEDE_WALLET_KEY]
   commands: [uv]
+required_environment_variables:
+  - name: SUEDE_WALLET_KEY
+    prompt: Base mainnet wallet private key with USDC balance
+    help: "Base mainnet wallet holding USDC for Suede pay-per-call services. Never hardcode this key; keep it in an environment variable or secrets manager."
 metadata:
   hermes:
     tags: [music, promotion, ai-music, stem-separation, mastering, lyrics, creator, content, web3, usdc]
@@ -45,6 +50,18 @@ No pip install needed — use `uv run --with suede-ai` to inject the dependency 
 export SUEDE_WALLET_KEY="0x..."   # Base mainnet wallet with USDC balance
 ```
 
+On Windows, run the bash examples in Hermes' bundled Git Bash. In PowerShell, set the key with:
+
+```powershell
+$env:SUEDE_WALLET_KEY = "0x..."
+```
+
+Use the live app host explicitly. `suede-ai` 0.3.0 defaults to a legacy `.xyz` host, and `httpx` does not follow that manifest redirect by default:
+
+```python
+BASE_URL = "https://app.suedeai.ai"
+```
+
 Check your available endpoints and pricing:
 
 ```bash
@@ -52,7 +69,9 @@ uv run --with suede-ai python3 - <<'EOF'
 from suede_ai import SuedeClient
 import os
 
-with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
+BASE_URL = "https://app.suedeai.ai"
+
+with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"], base_url=BASE_URL) as suede:
     print(suede.manifest())   # free — lists all 22 endpoints with prices
 EOF
 ```
@@ -61,34 +80,34 @@ EOF
 
 ## Track 1: Suede Services (AI-Direct)
 
-All calls settle pay-per-use in USDC on Base. Prices shown per call.
+All calls settle pay-per-use in USDC on Base. Prices below are USDC per call. Treat `manifest()` as the source of truth before spending.
 
 ### Quick reference
 
-| Method | What it does | Price |
-|--------|-------------|-------|
-| `create_music(prompt, duration_seconds)` | Generate an original track | $0.20 |
-| `agent_generate(prompt, duration_seconds)` | Agent-mode music generation | $0.20 |
-| `agent_video(prompt, duration_seconds)` | AI music video | $1.50 |
-| `extend(source_clip_id)` | Extend an existing track | $0.40 |
-| `cover(source_clip_id)` | Cover version of a track | $0.40 |
-| `voice_cover(audio_url)` | Voice cover / vocal swap | $0.40 |
-| `continue_track(audio_url)` | Continue from a clip | $0.40 |
-| `stems_pro(audio_url)` | 4-stem split (drums, bass, melody, vocals) | $0.40 |
-| `stems_basic(audio_url)` | 2-stem split (vocals + instrumental) | $0.20 |
-| `vox(audio_url)` | Vocal isolation / acapella | $0.20 |
-| `midi(audio_url)` | Audio → MIDI transcription | $0.10 |
-| `wav_master(audio_url)` | Loudness + EQ mastering | $0.10 |
-| `lyric_sync(audio_url)` | Lyrics synchronized to audio | $0.10 |
-| `lyrics(prompt)` | Generate lyrics from a prompt | $0.04 |
-| `style_coach(tags)` | Expand style tags into a richer prompt brief | $0.02 |
-| `rights_lookup(assetHash)` | On-chain rights/provenance check | $0.005 |
-| `analyze(audio_url)` | Audio analysis (BPM, key, energy, danceability) | $0.003 |
-| `prompt_analyze(prompt)` | Extract genre, mood, instrumentation from a prompt | $0.003 |
-| `chain_chat(question, assetHash)` | Plain-language Q&A about on-chain rights/royalties | $0.02 |
-| `rig_analyze(audio_url)` | Infer guitar signal chain from audio (pedal order, drive, FX) | $0.10 |
-| `rig_oracle(goal, genre, budgetUsd)` | Recommend a full guitar rig for a target tone | $0.10 |
-| `rig_roast(pedals, amp, guitar)` | Roast a gear list for laughs | $0.05 |
+| Method | What it does | USDC/call |
+|--------|-------------|-----------|
+| `create_music(prompt, duration_seconds=30, style=None)` | Generate an original track | 0.20 |
+| `agent_generate(prompt, duration_seconds=30, style=None)` | Agent-mode music generation | 0.20 |
+| `agent_video(prompt, duration_seconds=8, aspect_ratio=None, resolution=None)` | AI music video | 1.50 |
+| `extend(source_clip_id=None, audio_url=None, prompt=None, title=None, tags=None, continue_at_seconds=None)` | Extend an existing track | 0.40 |
+| `cover(source_clip_id=None, audio_url=None, prompt=None, title=None, tags=None, style=None)` | Cover version of a track | 0.40 |
+| `voice_cover(audio_url, voice_id=None, pitch_shift=None)` | Voice cover / vocal swap | 0.40 |
+| `continue_track(audio_url, prompt=None, continue_at_seconds=None, duration_seconds=None)` | Continue from a clip | 0.40 |
+| `stems_pro(audio_url)` | 4-stem split (drums, bass, melody, vocals) | 0.40 |
+| `stems_basic(audio_url)` | 2-stem split (vocals + instrumental) | 0.20 |
+| `vox(audio_url)` | Vocal isolation / acapella | 0.20 |
+| `midi(audio_url)` | Audio to MIDI transcription | 0.10 |
+| `wav_master(audio_url)` | Loudness + EQ mastering | 0.10 |
+| `lyric_sync(audio_url, lyrics=None)` | Lyrics synchronized to audio | 0.10 |
+| `lyrics(prompt, style=None)` | Generate lyrics from a prompt | 0.04 |
+| `style_coach(tags, target_count=None)` | Expand style tags into a richer prompt brief | 0.02 |
+| `rights_lookup(asset_hash)` | On-chain rights/provenance check | 0.005 |
+| `analyze(audio_url)` | Audio analysis (BPM, key, energy, danceability) | 0.003 |
+| `prompt_analyze(prompt)` | Extract genre, mood, instrumentation from a prompt | 0.003 |
+| `chain_chat(question, asset_hash)` | Plain-language Q&A about on-chain rights/royalties | 0.02 |
+| `rig_analyze(audio_url)` | Infer guitar signal chain from audio (pedal order, drive, FX) | 0.10 |
+| `rig_oracle(goal, genre=None, budget_usd=None)` | Recommend a full guitar rig for a target tone | 0.10 |
+| `rig_roast(goal, gear=None)` | Roast a gear list for laughs | 0.05 |
 
 ### Usage pattern
 
@@ -97,7 +116,9 @@ uv run --with suede-ai python3 - <<'EOF'
 from suede_ai import SuedeClient
 import os
 
-with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
+BASE_URL = "https://app.suedeai.ai"
+
+with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"], base_url=BASE_URL) as suede:
 
     # Generate a track
     track = suede.create_music(prompt="lo-fi hip hop, rainy day, 90 BPM", duration_seconds=30)
@@ -110,7 +131,7 @@ with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
 
     # Write and sync lyrics
     lyrics = suede.lyrics(prompt="lo-fi hip hop, rainy day, introspective")
-    synced = suede.lyric_sync(audio_url=track["assetUrl"])
+    synced = suede.lyric_sync(audio_url=track["assetUrl"], lyrics=lyrics.get("lyrics"))
 
     # Master the final mix
     master = suede.wav_master(audio_url=track["assetUrl"])
@@ -120,13 +141,13 @@ EOF
 
 ### Direct endpoint access
 
-For inspecting raw responses or calling future endpoints not yet wrapped as named methods:
+For inspecting raw responses or calling endpoints by path:
 
 ```bash
 uv run --with suede-ai python3 -c "
 from suede_ai import SuedeClient; import os
-with SuedeClient(wallet_private_key=os.environ['SUEDE_WALLET_KEY']) as suede:
-    print(suede.request('POST', '/v1/voice-effects', json={'audio_url': 'https://...', 'effect': 'reverb'}))
+with SuedeClient(wallet_private_key=os.environ['SUEDE_WALLET_KEY'], base_url='https://app.suedeai.ai') as suede:
+    print(suede.request('POST', '/v1/style-coach', json={'tags': 'lofi, rainy'}))
 "
 ```
 
@@ -190,8 +211,10 @@ uv run --with suede-ai python3 - <<'EOF'
 from suede_ai import SuedeClient
 import os
 
+BASE_URL = "https://app.suedeai.ai"
+
 # Step 1: Generate the track (Suede service)
-with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
+with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"], base_url=BASE_URL) as suede:
     track = suede.create_music(prompt="upbeat indie pop, summer, 120 BPM", duration_seconds=90)
     lyrics = suede.lyrics(prompt="upbeat indie pop, summer, optimistic")
     master = suede.wav_master(audio_url=track["assetUrl"])
@@ -210,7 +233,9 @@ uv run --with suede-ai python3 - <<'EOF'
 from suede_ai import SuedeClient
 import hashlib, os
 
-with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
+BASE_URL = "https://app.suedeai.ai"
+
+with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"], base_url=BASE_URL) as suede:
     asset_hash = "0x" + hashlib.sha256(open("track.wav", "rb").read()).hexdigest()
     rights = suede.rights_lookup(asset_hash)
     print(rights)   # ownership, license type, attestation timestamp
@@ -224,8 +249,10 @@ uv run --with suede-ai python3 - <<'EOF'
 from suede_ai import SuedeClient
 import os
 
-with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"]) as suede:
-    analysis = suede.analyze(audio_url="track.wav")   # BPM, key, energy, genre signals
+BASE_URL = "https://app.suedeai.ai"
+
+with SuedeClient(wallet_private_key=os.environ["SUEDE_WALLET_KEY"], base_url=BASE_URL) as suede:
+    analysis = suede.analyze(audio_url="https://cdn.example.com/track.wav")   # BPM, key, energy, genre signals
     coach = suede.style_coach(tags="lo-fi, indie, rainy")   # expand tags into a prompt brief
     print(coach)   # use output to write the contest creative direction
 EOF
@@ -253,7 +280,9 @@ If a call fails with a payment error, check that the wallet has sufficient USDC 
 ## Pitfalls
 
 - Never commit `SUEDE_WALLET_KEY` to source control — use `.env` + `python-dotenv` or a secrets manager.
-- `agent_video()` at $1.50 is the most expensive call — confirm the prompt is ready before invoking.
+- Bash heredocs in this document assume Hermes' terminal/Git Bash. In native PowerShell, put the Python block in a temporary `.py` file and run `uv run --with suede-ai python temp.py`.
+- Pass `base_url="https://app.suedeai.ai"` until the SDK default points at the live `.ai` host without a redirect.
+- `agent_video()` at 1.50 USDC is the most expensive call — confirm the prompt is ready before invoking.
 - `rights_lookup` takes a hex-encoded SHA-256 hash of the raw audio bytes, not a file path.
 - Creator jobs require a human review cycle — set realistic timelines (24–72 hours minimum).
 - `manifest()` is free and always returns current pricing — call it first if you're unsure what's available.

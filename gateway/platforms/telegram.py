@@ -16,6 +16,7 @@ import os
 import tempfile
 import html as _html
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -459,6 +460,16 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # PTB normally advances offsets for us, but webhook retries, shutdown
+        # ACK failures, or direct process_update tests can replay the same
+        # update object. Keep a small in-memory LRU so duplicated Telegram
+        # updates do not spawn duplicate agent turns or duplicate button actions.
+        self._seen_update_ids: "OrderedDict[int, None]" = OrderedDict()
+        try:
+            seen_limit = int(os.getenv("HERMES_TELEGRAM_SEEN_UPDATE_ID_LIMIT", "2048") or "2048")
+        except (TypeError, ValueError):
+            seen_limit = 2048
+        self._seen_update_id_limit = max(100, seen_limit)
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
@@ -2095,6 +2106,10 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app.add_handler(TelegramMessageHandler(
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
+            ))
+            self._app.add_handler(TelegramMessageHandler(
+                filters.ALL,
+                self._handle_unsupported_message
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
@@ -3877,6 +3892,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
         """Handle inline keyboard button clicks."""
+        if not self._claim_update_for_processing(update, "callback_query"):
+            return
         query = update.callback_query
         if not query or not query.data:
             return
@@ -5897,6 +5914,68 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    def _claim_update_for_processing(self, update: Any, handler_name: str) -> bool:
+        """Return True exactly once for each well-formed Telegram update id.
+
+        Telegram's update_id is the only stable id that covers text, media,
+        commands, callback queries, and webhook/polling delivery. Dedupe at the
+        adapter edge so retry/replay scenarios cannot produce duplicate agent
+        turns, duplicate sends, or repeated approval-button actions.
+        """
+        if update is None:
+            logger.warning("[Telegram] Ignoring malformed update in %s: update is None", handler_name)
+            return False
+
+        raw_update_id = getattr(update, "update_id", None)
+        if raw_update_id is None:
+            # Real python-telegram-bot Update objects always have update_id,
+            # but many focused unit tests pass tiny SimpleNamespace stand-ins.
+            # Process without dedupe rather than breaking those call sites; the
+            # concrete handler still validates whether a message/callback exists.
+            logger.warning(
+                "[Telegram] Processing update without update_id in %s; dedupe unavailable",
+                handler_name,
+            )
+            return True
+
+        if not isinstance(raw_update_id, (int, str)):
+            # MagicMock stand-ins manufacture attributes on demand, including
+            # update_id. Treat non-scalar ids as absent rather than converting
+            # every mock to int(1) and accidentally deduping unrelated updates.
+            logger.warning(
+                "[Telegram] Processing update with non-scalar update_id in %s; dedupe unavailable: %r",
+                handler_name,
+                raw_update_id,
+            )
+            return True
+
+        try:
+            update_id = int(raw_update_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[Telegram] Ignoring malformed update in %s: invalid update_id=%r",
+                handler_name,
+                raw_update_id,
+            )
+            return False
+
+        seen = getattr(self, "_seen_update_ids", None)
+        if seen is None:
+            seen = OrderedDict()
+            self._seen_update_ids = seen
+
+        if update_id in seen:
+            # Refresh recency so high-volume chats keep the active duplicate key.
+            seen.move_to_end(update_id)
+            logger.info("[Telegram] Ignoring duplicate update_id=%s in %s", update_id, handler_name)
+            return False
+
+        seen[update_id] = None
+        limit = getattr(self, "_seen_update_id_limit", 2048) or 2048
+        while len(seen) > max(100, int(limit)):
+            seen.popitem(last=False)
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -5904,6 +5983,8 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        if not self._claim_update_for_processing(update, "text"):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5911,7 +5992,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
-        await self._ensure_forum_commands(update.message)
+        await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
@@ -5921,6 +6002,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        if not self._claim_update_for_processing(update, "command"):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -5936,6 +6019,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
+        if not self._claim_update_for_processing(update, "location"):
+            return
         msg = self._effective_update_message(update)
         if not msg:
             return
@@ -5973,6 +6058,72 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
+
+    def _unsupported_message_label(self, message: Any) -> Optional[str]:
+        """Return a concise label for Telegram payloads we intentionally skip."""
+        payload_attrs = (
+            ("contact", "contact card"),
+            ("poll", "poll"),
+            ("dice", "dice roll"),
+            ("game", "game"),
+            ("animation", "animation"),
+            ("video_note", "video note"),
+            ("invoice", "invoice"),
+            ("successful_payment", "payment receipt"),
+            ("passport_data", "passport data"),
+        )
+        for attr, label in payload_attrs:
+            if getattr(message, attr, None):
+                return label
+        return None
+
+    async def _handle_unsupported_message(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+        """Handle unsupported but delivered Telegram message payloads gracefully."""
+        if not self._claim_update_for_processing(update, "unsupported"):
+            return
+
+        msg = getattr(update, "message", None) or getattr(update, "effective_message", None)
+        if not msg:
+            logger.warning(
+                "[Telegram] Ignoring malformed update without message: update_id=%s",
+                getattr(update, "update_id", None),
+            )
+            return
+        if not self._should_process_message(msg):
+            return
+
+        label = self._unsupported_message_label(msg)
+        if not label:
+            # Status/service messages (chat member changes, topic edits, pins,
+            # etc.) should not produce noisy bot replies.
+            logger.info(
+                "[Telegram] Ignoring unsupported service update: update_id=%s message_id=%s",
+                getattr(update, "update_id", None),
+                getattr(msg, "message_id", None),
+            )
+            return
+
+        chat = getattr(msg, "chat", None)
+        chat_id = getattr(msg, "chat_id", None) or getattr(chat, "id", None)
+        thread_id = getattr(msg, "message_thread_id", None)
+        logger.info(
+            "[Telegram] Unsupported message type %s in chat %s (message_id=%s)",
+            label,
+            chat_id,
+            getattr(msg, "message_id", None),
+        )
+        if chat_id is None:
+            return
+
+        metadata: Dict[str, Any] = {"notify": True}
+        if thread_id is not None:
+            metadata["thread_id"] = str(thread_id)
+        await self.send(
+            str(chat_id),
+            f"I can't process that Telegram {label} yet. Please send text, a supported file, an image, audio, video, voice, sticker, location, or venue.",
+            reply_to=str(getattr(msg, "message_id", "")) if getattr(msg, "message_id", None) is not None else None,
+            metadata=metadata,
+        )
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Telegram client-side splits)
@@ -6119,6 +6270,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        if not self._claim_update_for_processing(update, "media"):
+            return
         if not update.message:
             return
         if not self._should_process_message(update.message):
@@ -6602,11 +6755,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
-        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].strip("<>'\"").lower()
         chat_type = "dm"
-        if telegram_chat_type in {"group", "supergroup"}:
+        if telegram_chat_type in {"group", "supergroup"} or "supergroup" in telegram_chat_type:
             chat_type = "group"
-        elif telegram_chat_type == "channel":
+        elif telegram_chat_type == "channel" or "channel" in telegram_chat_type:
             chat_type = "channel"
 
         # Resolve Telegram topic name and skill binding.

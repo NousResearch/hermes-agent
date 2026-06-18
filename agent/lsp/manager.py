@@ -205,6 +205,7 @@ class LSPService:
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
         install_strategy = lsp_cfg.get("install_strategy", "auto")
+        idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
         binary_overrides: Dict[str, List[str]] = {}
@@ -235,6 +236,7 @@ class LSPService:
             env_overrides=env_overrides,
             init_overrides=init_overrides,
             disabled_servers=disabled,
+            idle_timeout=idle_timeout,
         )
 
     # ------------------------------------------------------------------
@@ -244,6 +246,40 @@ class LSPService:
     def is_active(self) -> bool:
         """Return True iff this service should be consulted at all."""
         return self._enabled
+
+    def reap_idle_clients(self, *, now: Optional[float] = None) -> int:
+        """Shutdown language-server clients idle beyond ``idle_timeout``.
+
+        Long-running Hermes gateway/TUI processes can touch many git
+        workspaces over days.  Without an explicit idle sweep, each touched
+        TypeScript/Python/etc. workspace keeps its language-server subprocess
+        and file descriptors open until process exit.  On macOS that slowly
+        walks the gateway toward EMFILE / "too many open files".
+        """
+        if not self._enabled:
+            return 0
+        ts = time.time() if now is None else now
+        idle_keys: List[Tuple[str, str]] = []
+        with self._state_lock:
+            for key, client in list(self._clients.items()):
+                last_used = self._last_used.get(key, 0)
+                if ts - last_used > self._idle_timeout:
+                    idle_keys.append(key)
+            clients = [self._clients.pop(key) for key in idle_keys if key in self._clients]
+            for key in idle_keys:
+                self._last_used.pop(key, None)
+        for client in clients:
+            try:
+                self._loop.run(client.shutdown(), timeout=2.0)
+            except Exception:
+                # Unit tests and shutdown paths may have already stopped the
+                # background loop.  Fall back to a one-off loop so the client
+                # still gets a chance to close stdio pipes and child processes.
+                try:
+                    asyncio.run(client.shutdown())
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("idle LSP client shutdown error: %s", e)
+        return len(clients)
 
     def enabled_for(self, file_path: str) -> bool:
         """Return True iff LSP should run for this specific file.
@@ -381,6 +417,10 @@ class LSPService:
             eventlog.log_diagnostics(server_id, file_path, len(diags))
         else:
             eventlog.log_clean(server_id, file_path)
+        try:
+            self.reap_idle_clients()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("idle LSP reap failed: %s", e)
         return diags
 
     def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:

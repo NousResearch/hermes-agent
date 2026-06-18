@@ -196,6 +196,50 @@ class TestSessionLifecycle:
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
 
+    def test_billing_fields_updated_on_provider_switch(self, db):
+        """billing_provider/billing_base_url/billing_mode are unconditionally
+        updated, not write-once via COALESCE (#48248)."""
+        db.create_session(session_id='s1', source='telegram')
+        # First call sets billing fields.
+        db.update_token_counts('s1', input_tokens=10, output_tokens=5,
+                               billing_provider='ollama',
+                               billing_base_url='http://localhost:11434',
+                               billing_mode='local')
+        session = db.get_session('s1')
+        assert session['billing_provider'] == 'ollama'
+        assert session['billing_base_url'] == 'http://localhost:11434'
+        assert session['billing_mode'] == 'local'
+
+        # Simulate /model switch — new provider should overwrite.
+        db.update_token_counts('s1', input_tokens=10, output_tokens=5,
+                               billing_provider='openai',
+                               billing_base_url='https://api.openai.com/v1',
+                               billing_mode='api_key')
+        session = db.get_session('s1')
+        assert session['billing_provider'] == 'openai'
+        assert session['billing_base_url'] == 'https://api.openai.com/v1'
+        assert session['billing_mode'] == 'api_key'
+
+    def test_billing_fields_updated_on_provider_switch_absolute(self, db):
+        """Same as above but with absolute=True (gateway path)."""
+        db.create_session(session_id='s1', source='gateway')
+        db.update_token_counts('s1', input_tokens=100, output_tokens=50,
+                               billing_provider='ollama',
+                               billing_base_url='http://localhost:11434',
+                               billing_mode='local', absolute=True)
+        assert db.get_session('s1')['billing_provider'] == 'ollama'
+
+        # Mid-session switch.
+        db.update_token_counts('s1', input_tokens=200, output_tokens=100,
+                               billing_provider='openai',
+                               billing_base_url='https://api.openai.com/v1',
+                               billing_mode='api_key', absolute=True)
+        session = db.get_session('s1')
+        assert session['billing_provider'] == 'openai'
+        assert session['billing_base_url'] == 'https://api.openai.com/v1'
+        assert session['billing_mode'] == 'api_key'
+
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")

@@ -1544,6 +1544,10 @@ class SessionDB:
         When *absolute* is True, values are **set directly** — use this when
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
+
+        ``billing_provider``, ``billing_base_url``, and ``billing_mode`` are
+        always written unconditionally (no COALESCE) so that a mid-session
+        ``/model`` switch is reflected in the session row on the next API call.
         """
         # Ensure the session row exists so the UPDATE doesn't silently affect
         # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
@@ -1565,9 +1569,9 @@ class SessionDB:
                    cost_status = COALESCE(?, cost_status),
                    cost_source = COALESCE(?, cost_source),
                    pricing_version = COALESCE(?, pricing_version),
-                   billing_provider = COALESCE(billing_provider, ?),
-                   billing_base_url = COALESCE(billing_base_url, ?),
-                   billing_mode = COALESCE(billing_mode, ?),
+                   billing_provider = ?,
+                   billing_base_url = ?,
+                   billing_mode = ?,
                    model = COALESCE(model, ?),
                    api_call_count = ?
                    WHERE id = ?"""
@@ -1586,9 +1590,9 @@ class SessionDB:
                    cost_status = COALESCE(?, cost_status),
                    cost_source = COALESCE(?, cost_source),
                    pricing_version = COALESCE(?, pricing_version),
-                   billing_provider = COALESCE(billing_provider, ?),
-                   billing_base_url = COALESCE(billing_base_url, ?),
-                   billing_mode = COALESCE(billing_mode, ?),
+                   billing_provider = ?,
+                   billing_base_url = ?,
+                   billing_mode = ?,
                    model = COALESCE(model, ?),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""

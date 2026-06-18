@@ -1,0 +1,261 @@
+name: PR Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  history:
+    name: history
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Reject PRs with no common ancestor on main
+        run: |
+          if ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
+            echo "::error::This PR has no common ancestor with main. Rebase the changes onto current main before merging."
+            exit 1
+          fi
+          echo "Common ancestor with main: $BASE"
+
+  contributor:
+    name: contributor attribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Check for unmapped contributor emails
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE"..."$HEAD" -- '*.py' '**/*.py' '.github/workflows/pr-gate.yml' '.github/workflows/contributor-check.yml' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No Python files changed, skipping attribution check."
+            exit 0
+          fi
+
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
+          if [ -z "$NEW_EMAILS" ]; then
+            echo "No new commits to check."
+            exit 0
+          fi
+
+          MISSING=""
+          while IFS= read -r email; do
+            case "$email" in
+              *teknium*|*noreply@github.com*|*dependabot*|*github-actions*|*anthropic.com*|*cursor.com*)
+                continue ;;
+            esac
+            if echo "$email" | grep -qP '\+.*@users\.noreply\.github\.com'; then
+              continue
+            fi
+            if ! grep -qF "\"${email}\"" scripts/release.py 2>/dev/null; then
+              AUTHOR=$(git log --author="$email" --format='%an' -1)
+              MISSING="${MISSING}\n  ${email} (${AUTHOR})"
+            fi
+          done <<< "$NEW_EMAILS"
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::New contributor email(s) are missing from scripts/release.py AUTHOR_MAP."
+            echo -e "$MISSING"
+            exit 1
+          fi
+          echo "All contributor emails are mapped in AUTHOR_MAP."
+
+  supply-chain:
+    name: supply chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Scan PR for critical supply-chain risks
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+          FINDINGS=""
+
+          PTH_FILES=$(git diff --name-only "$BASE"..."$HEAD" | grep '\.pth$' || true)
+          if [ -n "$PTH_FILES" ]; then
+            FINDINGS="${FINDINGS}\nCRITICAL: .pth file added or modified:\n${PTH_FILES}\n"
+          fi
+
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          if [ -n "$B64_EXEC_HITS" ]; then
+            FINDINGS="${FINDINGS}\nCRITICAL: base64 decode + exec/eval combo:\n${B64_EXEC_HITS}\n"
+          fi
+
+          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
+          if [ -n "$PROC_HITS" ]; then
+            FINDINGS="${FINDINGS}\nCRITICAL: subprocess with encoded/obfuscated command:\n${PROC_HITS}\n"
+          fi
+
+          SETUP_HITS=$(git diff --name-only "$BASE"..."$HEAD" | grep -E '^(setup\.py|setup\.cfg|sitecustomize\.py|usercustomize\.py|__init__\.pth)$' || true)
+          if [ -n "$SETUP_HITS" ]; then
+            FINDINGS="${FINDINGS}\nCRITICAL: install-hook file added or modified:\n${SETUP_HITS}\n"
+          fi
+
+          if [ -n "$FINDINGS" ]; then
+            echo "::error::Critical supply-chain risk patterns detected."
+            echo -e "$FINDINGS"
+            exit 1
+          fi
+          echo "No critical supply-chain patterns detected."
+
+      - name: Check PyPI dependency upper bounds
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          ADDED=$(git diff "$BASE"..."$HEAD" -- pyproject.toml | grep '^+' | grep -v '^+++' || true)
+          if [ -z "$ADDED" ]; then
+            echo "No pyproject.toml additions, skipping dependency bounds check."
+            exit 0
+          fi
+          UNBOUNDED=$(echo "$ADDED" | grep -oE '"[a-zA-Z0-9_-]+(\[[^\]]*\])?>=[ 0-9.]+"' | grep -v ',<' || true)
+          if [ -n "$UNBOUNDED" ]; then
+            echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling."
+            echo "$UNBOUNDED"
+            exit 1
+          fi
+          echo "No unbounded added PyPI dependency specs found."
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Install ruff and ty
+        run: |
+          uv tool install ruff
+          uv tool install ty
+      - name: ruff check
+        run: ruff check .
+      - name: ty check advisory
+        run: ty check --output-format gitlab --exit-zero > ty.json
+
+  windows-footguns:
+    name: Windows footguns
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - name: Run footgun checker
+        run: python scripts/check-windows-footguns.py --all
+
+  uv-lock:
+    name: uv lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Verify uv.lock is up-to-date
+        run: uv lock --check
+
+  tests:
+    name: tests (${{ matrix.slice }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Restore duration cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+      - name: Run test slice
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          source .venv/bin/activate
+          python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6
+
+  pr-gate:
+    name: PR Gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - history
+      - contributor
+      - supply-chain
+      - lint
+      - windows-footguns
+      - uv-lock
+      - tests
+    steps:
+      - name: Summarize gate result
+        run: |
+          cat > results.json <<'JSON'
+          ${{ toJSON(needs) }}
+          JSON
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          needs = json.loads(Path('results.json').read_text(encoding='utf-8'))
+          failed = []
+          for name, data in sorted(needs.items()):
+              result = data.get('result')
+              print(f"{name}: {result}")
+              if result not in {'success', 'skipped'}:
+                  failed.append(f"{name}={result}")
+          if failed:
+              raise SystemExit('PR Gate failed: ' + ', '.join(failed))
+          print('PR Gate passed.')
+          PY

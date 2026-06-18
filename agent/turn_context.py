@@ -302,6 +302,26 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
+    # Persist the inbound user turn to ``state.db`` on receipt, BEFORE
+    # any model call (#45110). The crash-resilience ``_persist_session``
+    # call later in the prologue runs the full ``_flush_messages_to_session_db``
+    # which already covers the user message via identity tracking, but
+    # relying on it alone means a stall, a streaming client disconnect,
+    # or a mid-generation process crash can leave the prompt unrecorded.
+    # The targeted ``_persist_inbound_user_message`` call writes ONLY the
+    # user message directly to SQLite, so the prompt survives even if
+    # the first assistant response never completes.
+    try:
+        agent._persist_inbound_user_message(user_msg)
+    except Exception:
+        # Belt-and-suspenders — the method already swallows and logs at
+        # debug, but never let an audit log bug break the agent loop.
+        logger.debug(
+            "_persist_inbound_user_message raised; relying on "
+            "crash-resilience _persist_session call",
+            exc_info=True,
+        )
+
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
         agent._safe_print(

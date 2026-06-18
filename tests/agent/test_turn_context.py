@@ -71,6 +71,9 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
+        # No session DB by default — tests that exercise SQLite persistence
+        # attach one via ``_FakeAgentWithDB``.
+        self._session_db = None
         # Records _cached_system_prompt at the moment _ensure_db_session()
         # is called (regression guard for #45499 turn-setup ordering).
         self._ensure_db_prompt_at_call = "<unset>"
@@ -99,6 +102,14 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
+
+    # Inbound user-message persist (#45110) — called by build_turn_context
+    # immediately after the user message is appended. The FakeAgent has no
+    # real session_db, so this is a no-op that mirrors the production
+    # guard (``if not self._session_db: return``). Tests that exercise
+    # this method attach a real (in-memory) SessionDB via ``_FakeAgentWithDB``.
+    def _persist_inbound_user_message(self, *_a, **_k):
+        self._inbound_persist_calls = getattr(self, "_inbound_persist_calls", 0) + 1
 
 
 @pytest.fixture(autouse=True)
@@ -285,3 +296,164 @@ def test_between_turns_refresh_no_churn_when_unchanged():
 
     assert agent.tools is same  # not replaced → no churn
 
+# =============================================================================
+# Inbound user-message persistence (#45110)
+# =============================================================================
+# The user message must land in state.db on receipt, before any model call,
+# so a stall, a streaming client disconnect, or a mid-generation process
+# crash does not lose the prompt. The targeted
+# ``agent._persist_inbound_user_message`` call in the prologue writes ONLY
+# the user message directly to SQLite, independent of the full
+# ``_persist_session`` crash-resilience call that runs the rest of the
+# flush. These tests pin both halves of the contract.
+
+
+class _InMemorySessionDB:
+    """Minimal in-memory stand-in for ``hermes_state.SessionDB``.
+
+    Records the call args so the test can assert the user message reached
+    SQLite (via ``append_message``) on receipt, without spinning up a real
+    SQLite file.
+    """
+
+    def __init__(self):
+        self.rows = []
+        self._session_created = False
+        self._append_message_calls = []
+
+    def ensure_session(self, *a, **kw):
+        self._session_created = True
+
+    def append_message(self, **kwargs):
+        self._append_message_calls.append(kwargs)
+        self.rows.append(kwargs)
+        return len(self.rows)
+
+    # The agent's prologue also calls these for the full _persist_session
+    # path; we ignore them here.
+    def list_messages(self, *_a, **_k):
+        return list(self.rows)
+
+
+def _FakeAgentWithDB(db):
+    """Builds a _FakeAgent that routes ``_ensure_db_session`` and the
+    session_db calls to the in-memory stub.
+
+    The inbound user-message persist method is bound to the real
+    ``AIAgent._persist_inbound_user_message`` so the test exercises
+    production SQLite-write behaviour (via the in-memory stub), not the
+    FakeAgent's counter-only stub. The other prologue methods (the
+    ``_persist_session`` crash-resilience call etc.) stay stubbed — only
+    the new method is wired up because it's the one we're regression-
+    testing.
+    """
+    from run_agent import AIAgent
+    agent = _FakeAgent()
+    agent._session_db = db
+    agent._ensure_db_session = db.ensure_session
+    # Bind the real implementation so ``_persist_inbound_user_message``
+    # actually hits the in-memory stub via ``self._session_db``.
+    agent._persist_inbound_user_message = lambda user_msg, _impl=AIAgent._persist_inbound_user_message: _impl(agent, user_msg)
+    return agent
+
+
+def test_persist_inbound_user_message_writes_user_row_on_receipt():
+    """#45110: build_turn_context must persist the user message to
+    state.db on receipt, before the first model call.
+
+    A stall, a streaming client disconnect, or a mid-generation process
+    crash can prevent the assistant response from completing. Without
+    this persist, the user prompt vanishes from the session history as
+    if it were never asked.
+    """
+    db = _InMemorySessionDB()
+    agent = _FakeAgentWithDB(db)
+    _build(agent, user_message="hello world")
+
+    # At least one append_message call fired with role=user and the
+    # exact content. The targeted inbound call is the FIRST one (the
+    # crash-resilience ``_persist_session`` call would also append, but
+    # the targeted call is the "guarantee" path).
+    user_calls = [
+        c for c in db._append_message_calls
+        if c.get("role") == "user" and c.get("content") == "hello world"
+    ]
+    assert len(user_calls) >= 1, (
+        f"user message never persisted on receipt — calls: "
+        f"{db._append_message_calls!r}"
+    )
+    # First user-role call has role=user (sanity).
+    assert db._append_message_calls[0]["role"] == "user"
+    assert db._session_created is True
+
+
+def test_persist_inbound_user_message_handles_no_db():
+    """No ``_session_db`` configured → silently skip (test stubs,
+    ephemeral flows). Mirrors the same guard in
+    ``_flush_messages_to_session_db``.
+    """
+    agent = _FakeAgent()
+    assert agent._session_db is None  # _FakeAgent default
+    # Should not raise.
+    _build(agent, user_message="hello")
+
+
+def test_persist_inbound_user_message_persists_only_user_not_assistant():
+    """The targeted inbound call must NOT persist assistant messages,
+    tool results, or other non-user content. Only the inbound user
+    turn. The full _persist_session call later in the prologue handles
+    everything else.
+    """
+    db = _InMemorySessionDB()
+    agent = _FakeAgentWithDB(db)
+    _build(agent, user_message="hello")
+
+    # All calls from the targeted inbound path are role=user. The
+    # crash-resilience _persist_session call may also fire, but at
+    # build_turn_context time there are no assistant messages yet
+    # (we haven't called any model). So every append_message call in
+    # the in-memory stub is a user-role call.
+    for c in db._append_message_calls:
+        assert c.get("role") == "user", (
+            f"non-user role leaked into inbound persist call: {c!r}"
+        )
+
+
+def test_persist_inbound_user_message_skips_non_user_dicts():
+    """Defensive guard: only dicts with role=user are persisted. A
+    stray tool-result or assistant message accidentally passed in is
+    ignored.
+    """
+    db = _InMemorySessionDB()
+    agent = _FakeAgentWithDB(db)
+    # Build normally (so session row exists), then call directly with
+    # a non-user dict.
+    _build(agent, user_message="hello")
+    db._append_message_calls.clear()
+    agent._persist_inbound_user_message({"role": "assistant", "content": "x"})
+    agent._persist_inbound_user_message({"role": "tool", "content": "y"})
+    agent._persist_inbound_user_message("not a dict")
+    agent._persist_inbound_user_message(None)
+    assert db._append_message_calls == []
+
+
+def test_persist_inbound_user_message_strips_multimodal_to_text_summary():
+    """Multimodal user content (list of content parts with text +
+    image blocks) is persisted as a text-only summary — base64 images
+    bloat the session DB and aren't useful for cross-session replay.
+    Mirrors the same logic in ``_flush_messages_to_session_db``.
+    """
+    db = _InMemorySessionDB()
+    agent = _FakeAgentWithDB(db)
+    _build(agent)
+    db._append_message_calls.clear()
+    multimodal = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what is in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+        ],
+    }
+    agent._persist_inbound_user_message(multimodal)
+    assert len(db._append_message_calls) == 1
+    assert db._append_message_calls[0]["content"] == "what is in this image?\n[screenshot]"

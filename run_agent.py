@@ -1583,7 +1583,7 @@ class AIAgent:
         """Persist any un-flushed messages to the SQLite session store.
 
         Uses per-session message identity tracking so repeated calls (from
-        multiple exit paths) only write truly new messages — preventing the
+        multiple turn-exit paths) only write truly new messages — preventing the
         duplicate-write bug (#860) without relying on positional slices that
         can drift after message-sequence repair.
         """
@@ -1672,6 +1672,82 @@ class AIAgent:
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
+
+    def _persist_inbound_user_message(self, user_msg: Dict[str, Any]) -> None:
+        """Persist the inbound user turn to ``state.db`` on receipt.
+
+        Called from ``agent/turn_context.py`` immediately after the user
+        message is appended to the live ``messages`` list, BEFORE the first
+        model call. This guarantees the prompt survives even if the first
+        assistant response never completes — a stall, a client disconnect
+        on a streaming gateway turn, or a process crash mid-generation
+        (#45110). Without this, ``_persist_session`` only runs on
+        successful turn-exit paths and the prompt vanishes from the
+        session's history as if it were never asked.
+
+        Idempotency: the same ``user_msg`` dict is passed in, and
+        ``append_message`` rows are keyed on the autoincrement primary key,
+        so a second call writes a second row. The caller is responsible for
+        only calling this once per user turn (which ``build_turn_context``
+        does by construction — the function is the single entry point for
+        a turn's user message).
+
+        Skips silently if ``_session_db`` is not configured (test stubs,
+        ephemeral flows) — mirrors the same guard in
+        ``_flush_messages_to_session_db``.
+        """
+        if not self._session_db:
+            return
+        if not isinstance(user_msg, dict) or user_msg.get("role") != "user":
+            return
+        try:
+            self._ensure_db_session()
+        except Exception:
+            logger.debug(
+                "ensure_session failed during inbound user-message persist",
+                exc_info=True,
+            )
+            return
+        content = user_msg.get("content")
+        # Persist multimodal user content as its text summary only — base64
+        # images would bloat the session DB and aren't useful for cross-session
+        # replay.
+        if isinstance(content, list):
+            _txt = []
+            for p in content:
+                if isinstance(p, dict) and p.get("type") == "text":
+                    _txt.append(str(p.get("text", "")))
+                elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
+                    _txt.append("[screenshot]")
+            content = "\n".join(_txt) if _txt else None
+        try:
+            self._session_db.append_message(
+                session_id=self.session_id,
+                role="user",
+                content=content,
+                tool_name=None,
+                tool_calls=None,
+                tool_call_id=user_msg.get("tool_call_id"),
+                finish_reason=None,
+                reasoning=None,
+                reasoning_content=None,
+                reasoning_details=None,
+                codex_reasoning_items=None,
+                codex_message_items=None,
+                timestamp=user_msg.get("timestamp"),
+            )
+        except Exception as exc:
+            # Log at debug rather than warning — the existing crash-resilience
+            # ``_persist_session`` call later in the prologue is the
+            # production-grade safety net. This call is the "guarantee the
+            # prompt lands even if everything else dies" path; if it
+            # silently fails, the user still gets the prompt via the
+            # crash-resilience call. Don't double-log at warning level.
+            logger.debug(
+                "Direct inbound user-message persist failed; "
+                "crash-resilience call will retry: %s",
+                exc,
+            )
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """

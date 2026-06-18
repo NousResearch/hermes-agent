@@ -702,7 +702,7 @@ class HindsightMemoryProvider(MemoryProvider):
         from hermes_cli.config import save_config
         from hermes_cli.secret_prompt import masked_secret_prompt
 
-        from hermes_cli.memory_setup import _curses_select
+        from hermes_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup
 
         print("\n  Configuring Hindsight memory:\n")
 
@@ -719,7 +719,10 @@ class HindsightMemoryProvider(MemoryProvider):
         ]
         existing_mode = existing_config.get("mode")
         mode_default_idx = mode_values.index(existing_mode) if existing_mode in mode_values else 0
-        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx)
+        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx, cancel_returns=_CANCELLED)
+        if mode_idx == _CANCELLED:
+            _print_cancelled_setup()
+            return
         mode = mode_values[mode_idx]
 
         provider_config: dict = dict(existing_config)
@@ -736,6 +739,27 @@ class HindsightMemoryProvider(MemoryProvider):
             deps_to_install = [cloud_dep]
         else:
             deps_to_install = [cloud_dep]
+
+        llm_provider = ""
+        if mode == "local_embedded":
+            providers_list = list(_PROVIDER_DEFAULT_MODELS.keys())
+            llm_items = [
+                (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
+                for p in providers_list
+            ]
+            existing_llm_provider = provider_config.get("llm_provider")
+            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
+            llm_idx = _curses_select(
+                "  Select LLM provider",
+                llm_items,
+                default=llm_default_idx,
+                cancel_returns=_CANCELLED,
+            )
+            if llm_idx == _CANCELLED:
+                _print_cancelled_setup()
+                return
+            llm_provider = providers_list[llm_idx]
+            provider_config["llm_provider"] = llm_provider
 
         print("\n  Checking dependencies...")
         uv_path = shutil.which("uv")
@@ -785,18 +809,6 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_writes["HINDSIGHT_API_KEY"] = api_key
 
         else:  # local_embedded
-            providers_list = list(_PROVIDER_DEFAULT_MODELS.keys())
-            llm_items = [
-                (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
-                for p in providers_list
-            ]
-            existing_llm_provider = provider_config.get("llm_provider")
-            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
-            llm_idx = _curses_select("  Select LLM provider", llm_items, default=llm_default_idx)
-            llm_provider = providers_list[llm_idx]
-
-            provider_config["llm_provider"] = llm_provider
-
             if llm_provider == "openai_compatible":
                 existing_base_url = provider_config.get("llm_base_url", "")
                 prompt = "  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1)"

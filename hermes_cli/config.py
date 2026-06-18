@@ -1098,6 +1098,21 @@ DEFAULT_CONFIG = {
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
     },
 
+    "session_search": {
+        "semantic": {
+            # Opt-in: keyword FTS remains the default. Semantic/hybrid tool
+            # calls use this OpenAI-compatible embedding profile when enabled.
+            "enabled": False,
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model": "text-embedding-3-small",
+            "timeout": 30,
+            "batch_size": 32,
+            "backfill_limit": 200,
+            "min_score": 0.0,
+        },
+    },
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)

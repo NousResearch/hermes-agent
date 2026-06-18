@@ -16,9 +16,11 @@ Key design decisions:
 
 import json
 import logging
+import math
 import random
 import re
 import sqlite3
+import struct
 import threading
 import time
 from pathlib import Path
@@ -581,12 +583,33 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS message_embeddings (
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    indexed_at REAL NOT NULL,
+    PRIMARY KEY (message_id, provider, model)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_message_embeddings_provider_model
+ON message_embeddings(provider, model);
+
+CREATE TRIGGER IF NOT EXISTS message_embeddings_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM message_embeddings WHERE message_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS message_embeddings_invalidate AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
+    DELETE FROM message_embeddings WHERE message_id = old.id;
+END;
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -3609,6 +3632,249 @@ class SessionDB:
             key=lambda item: (score(item[1]), item[0]),
         )
         return [row for _, row in ranked[:limit]]
+
+    @staticmethod
+    def _embedding_content_hash(text: str) -> str:
+        import hashlib
+        return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+    @staticmethod
+    def _pack_embedding(vector: List[float]) -> bytes:
+        return struct.pack(f"{len(vector)}f", *[float(v) for v in vector])
+
+    @staticmethod
+    def _unpack_embedding(blob: bytes, dimensions: int) -> Tuple[float, ...]:
+        if not blob or dimensions <= 0:
+            return ()
+        try:
+            return struct.unpack(f"{dimensions}f", blob)
+        except struct.error:
+            return ()
+
+    @staticmethod
+    def _semantic_search_text(row: sqlite3.Row) -> str:
+        parts: List[str] = []
+        content = SessionDB._decode_content(row["content"])
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    txt = part.get("text")
+                    if txt:
+                        parts.append(str(txt))
+        elif content is not None:
+            parts.append(str(content))
+        if row["tool_name"]:
+            parts.append(str(row["tool_name"]))
+        if row["tool_calls"]:
+            parts.append(str(row["tool_calls"]))
+        return " ".join(p for p in parts if p).strip()
+
+    @staticmethod
+    def _cosine_similarity(left: Tuple[float, ...], right: List[float]) -> float:
+        if not left or not right or len(left) != len(right):
+            return 0.0
+        dot = 0.0
+        left_norm = 0.0
+        right_norm = 0.0
+        for a, b in zip(left, right):
+            fa = float(a)
+            fb = float(b)
+            dot += fa * fb
+            left_norm += fa * fa
+            right_norm += fb * fb
+        if left_norm <= 0.0 or right_norm <= 0.0:
+            return 0.0
+        return dot / (math.sqrt(left_norm) * math.sqrt(right_norm))
+
+    def semantic_index_stats(
+        self,
+        provider: str,
+        model: str,
+        role_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+    ) -> Dict[str, int]:
+        """Return indexed/pending counts for a semantic embedding profile."""
+        where = ["m.active = 1", "length(COALESCE(m.content, '')) > 0"]
+        params: List[Any] = []
+        if role_filter:
+            where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            params.extend(role_filter)
+        if exclude_sources:
+            where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            params.extend(exclude_sources)
+        where_sql = " AND ".join(where)
+        with self._lock:
+            total = self._conn.execute(
+                f"SELECT COUNT(*) FROM messages m JOIN sessions s ON s.id = m.session_id "
+                f"WHERE {where_sql}",
+                params,
+            ).fetchone()[0]
+            indexed = self._conn.execute(
+                f"SELECT COUNT(*) FROM messages m "
+                f"JOIN sessions s ON s.id = m.session_id "
+                f"JOIN message_embeddings e ON e.message_id = m.id "
+                f"WHERE {where_sql} AND e.provider = ? AND e.model = ?",
+                [*params, provider, model],
+            ).fetchone()[0]
+        return {"total": int(total), "indexed": int(indexed), "pending": max(0, int(total) - int(indexed))}
+
+    def messages_needing_semantic_index(
+        self,
+        provider: str,
+        model: str,
+        role_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Return message text rows whose current content lacks an embedding."""
+        where = ["m.active = 1", "length(COALESCE(m.content, '')) > 0"]
+        params: List[Any] = []
+        if role_filter:
+            where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            params.extend(role_filter)
+        if exclude_sources:
+            where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            params.extend(exclude_sources)
+        where_sql = " AND ".join(where)
+        try:
+            limit = int(limit or 0)
+        except (TypeError, ValueError):
+            limit = 200
+        limit = max(0, min(limit, 1000))
+        if limit == 0:
+            return []
+
+        sql = f"""
+            SELECT m.id, m.session_id, m.role, m.content, m.tool_name, m.tool_calls, e.content_hash
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            LEFT JOIN message_embeddings e
+              ON e.message_id = m.id AND e.provider = ? AND e.model = ?
+            WHERE {where_sql}
+            ORDER BY m.id ASC
+            LIMIT ?
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, [provider, model, *params, limit * 4]).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            text = self._semantic_search_text(row)
+            if not text:
+                continue
+            digest = self._embedding_content_hash(text)
+            if row["content_hash"] == digest:
+                continue
+            out.append({
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "role": row["role"],
+                "text": text,
+                "content_hash": digest,
+            })
+            if len(out) >= limit:
+                break
+        return out
+
+    def upsert_message_embedding(
+        self,
+        message_id: int,
+        provider: str,
+        model: str,
+        content_hash: str,
+        vector: List[float],
+    ) -> None:
+        """Store or replace one message embedding."""
+        if not vector:
+            return
+        packed = self._pack_embedding(vector)
+        dimensions = len(vector)
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO message_embeddings
+                   (message_id, provider, model, content_hash, dimensions, vector, indexed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(message_id, provider, model) DO UPDATE SET
+                       provider = excluded.provider,
+                       model = excluded.model,
+                       content_hash = excluded.content_hash,
+                       dimensions = excluded.dimensions,
+                       vector = excluded.vector,
+                       indexed_at = excluded.indexed_at""",
+                (message_id, provider, model, content_hash, dimensions, packed, time.time()),
+            )
+
+        self._execute_write(_do)
+
+    def search_message_embeddings(
+        self,
+        query_vector: List[float],
+        provider: str,
+        model: str,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+        sort: str = None,
+        min_score: float = 0.0,
+    ) -> List[Dict[str, Any]]:
+        """Semantic search over indexed message embeddings."""
+        if not query_vector:
+            return []
+        where = ["e.provider = ?", "e.model = ?", "m.active = 1"]
+        params: List[Any] = [provider, model]
+        if source_filter is not None:
+            where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+            params.extend(source_filter)
+        if exclude_sources is not None:
+            where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            params.extend(exclude_sources)
+        if role_filter:
+            where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            params.extend(role_filter)
+        sql = f"""
+            SELECT
+                m.id, m.session_id, m.role, m.content, m.timestamp, m.tool_name, m.tool_calls,
+                s.source, s.model, s.started_at AS session_started,
+                e.vector, e.dimensions
+            FROM message_embeddings e
+            JOIN messages m ON m.id = e.message_id
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(where)}
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        matches: List[Dict[str, Any]] = []
+        for row in rows:
+            vector = self._unpack_embedding(row["vector"], int(row["dimensions"]))
+            score = self._cosine_similarity(vector, query_vector)
+            if score < min_score:
+                continue
+            content = self._semantic_search_text(row)
+            snippet = content[:220] + ("..." if len(content) > 220 else "")
+            matches.append({
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "role": row["role"],
+                "snippet": snippet,
+                "timestamp": row["timestamp"],
+                "tool_name": row["tool_name"],
+                "source": row["source"],
+                "model": row["model"],
+                "session_started": row["session_started"],
+                "semantic_score": score,
+            })
+
+        sort_norm = sort.strip().lower() if isinstance(sort, str) else None
+        if sort_norm == "newest":
+            matches.sort(key=lambda r: (r.get("timestamp") or 0, r["semantic_score"]), reverse=True)
+        elif sort_norm == "oldest":
+            matches.sort(key=lambda r: (r.get("timestamp") or 0, -r["semantic_score"]))
+        else:
+            matches.sort(key=lambda r: r["semantic_score"], reverse=True)
+        return matches[offset:offset + limit]
 
     def search_sessions(
         self,

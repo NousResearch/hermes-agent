@@ -154,7 +154,7 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Three shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), browse (no args). | — |
+| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. Keyword mode is FTS5-backed and remains the default; optional `search_mode="semantic"` / `"hybrid"` uses the configured embedding index and falls back to keyword with a warning when unavailable. Three shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), browse (no args). | Optional for semantic: `OPENAI_API_KEY` |
 
 ## `skills` toolset
 
@@ -266,5 +266,3 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
-

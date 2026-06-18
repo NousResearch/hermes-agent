@@ -53,6 +53,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Local semantic index dry-run/stage/query
+    "semantic_index",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -220,6 +222,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "semantic_index": {
+        "description": "Dry-run, stage, query, and inspect the local LanceDB semantic index",
+        "tools": ["semantic_index"],
         "includes": []
     },
     

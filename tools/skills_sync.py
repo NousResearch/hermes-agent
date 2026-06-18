@@ -3,22 +3,35 @@
 Skills Sync -- Manifest-based seeding and updating of bundled skills.
 
 Copies bundled skills from the repo's skills/ directory into ~/.hermes/skills/
-and uses a manifest to track which skills have been synced and their origin hash.
+and uses a manifest to track which skills have been synced.
 
-Manifest format (v2): each line is "skill_name:origin_hash" where origin_hash
-is the MD5 of the bundled skill at the time it was last synced to the user dir.
-Old v1 manifests (plain names without hashes) are auto-migrated.
+Two install modes:
+  - **copy** (default): ``shutil.copytree()`` — current behaviour, best for
+    Docker / read-only / portable environments.
+  - **symlink** (``link=True``): ``os.symlink()`` — single copy, zero
+    maintenance on updates; git pull of the Hermes Agent repo automatically
+    refreshes all symlinked skills.
 
-Update logic:
-  - NEW skills (not in manifest): copied to user dir, origin hash recorded.
-  - EXISTING skills (in manifest, present in user dir):
-      * If user copy matches origin hash: user hasn't modified it → safe to
-        update from bundled if bundled changed. New origin hash recorded.
-      * If user copy differs from origin hash: user customized it → SKIP.
-  - DELETED by user (in manifest, absent from user dir): respected, not re-added.
-  - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
+The manifest at ~/.hermes/skills/.bundled_manifest tracks install mode per skill:
 
-The manifest lives at ~/.hermes/skills/.bundled_manifest.
+  v3 format:  name:mode[:origin_hash]
+    mode = symlink | copy
+
+    Examples:
+      my-skill:symlink:                    # symlink — no hash needed
+      my-skill:copy:abc123def456           # copy — origin hash tracked
+
+  v2 (backward):  name:origin_hash         # treated as ``copy``
+  v1 (backward):  name                      # treated as ``copy``
+
+Update logic (symlink mode):
+  - Symlink intact, target git clean  → nothing to do (git pull auto-updates)
+  - Symlink intact, target git dirty  → promote to copy: cp → restore git
+  - Symlink broken                     → rebuild symlink or fallback copy
+
+Update logic (copy mode, unchanged):
+  - If user copy matches origin hash      → safe to update from bundled
+  - If user copy differs from origin hash → user customized → SKIP
 """
 
 import hashlib
@@ -26,6 +39,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
@@ -49,6 +63,28 @@ MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 # avoid importing the CLI layer into this low-level sync module).
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
+# ── Install mode sentinels ──────────────────────────────────────────────
+# Used in the manifest dict internally: a hash value starting with "@"
+# signals "symlink mode".  Real hex hashes never start with "@", so this
+# is unambiguous and compatible with all existing callers that just iterate
+# manifest keys or check ``name in manifest``.
+SYMLINK_SENTINEL = "@symlink"  # stored as manifest[name] by _read_manifest
+
+
+
+def _get_install_mode(manifest_entry: str) -> str:
+    """Return ``"symlink"`` or ``"copy"`` for a manifest entry.
+
+    ``manifest_entry`` is the value stored by ``_read_manifest()``:
+    ``"@symlink"`` → symlink mode, anything else (hash or empty) → copy.
+    """
+    return "symlink" if manifest_entry == SYMLINK_SENTINEL else "copy"
+
+
+def _is_install_mode_symlink(manifest_entry: str) -> bool:
+    """Convenience: True if the manifest value indicates symlink mode."""
+    return manifest_entry == SYMLINK_SENTINEL
+
 
 def _get_bundled_dir() -> Path:
     """Locate the bundled skills/ directory.
@@ -65,12 +101,48 @@ def _get_optional_dir() -> Path:
     return get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
 
 
+def _is_in_git_repo(path: Path) -> bool:
+    """Check if *path* sits inside a git working tree."""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=path, capture_output=True, text=True, timeout=5,
+        )
+        return r.returncode == 0 and r.stdout.strip() != ""
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def _git_is_dirty(path: Path) -> bool:
+    """Return True if the git repo at *path* has uncommitted changes.
+
+    Only meaningful when *path* is inside a git repo (call ``_is_in_git_repo``
+    first).  Checks tracked AND untracked files — both can block ``git pull``.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=path, capture_output=True, text=True, timeout=5,
+        )
+        return bool(r.stdout.strip())
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
 def _read_manifest() -> Dict[str, str]:
     """
-    Read the manifest as a dict of {skill_name: origin_hash}.
+    Read the manifest as a dict of {skill_name: entry}.
 
-    Handles both v1 (plain names) and v2 (name:hash) formats.
-    v1 entries get an empty hash string which triggers migration on next sync.
+    Entry values:
+      ``"@symlink"``  → installed as a symlink (v3 format)
+      ``"<hex>"``      → installed as a copy with origin hash (v2/v3 format)
+      ``""``           → v1 migration (no hash recorded)
+
+    Manifest file format (auto-detected):
+      v3: ``name:symlink:``          → entry = ``"@symlink"``
+      v3: ``name:copy:<hash>``       → entry = ``"<hash>"``
+      v2: ``name:<hash>``            → entry = ``"<hash>"``
+      v1: ``name``                   → entry = ``""``
     """
     if not MANIFEST_FILE.exists():
         return {}
@@ -80,8 +152,20 @@ def _read_manifest() -> Dict[str, str]:
             line = line.strip()
             if not line:
                 continue
-            if ":" in line:
-                # v2 format: name:hash
+            if line.count(":") >= 2:
+                # v3 format: name:mode[:hash]
+                name, mode, hash_val = line.split(":", 2)
+                name = name.strip()
+                if mode.strip() == "symlink":
+                    result[name] = SYMLINK_SENTINEL
+                elif mode.strip() == "copy":
+                    result[name] = hash_val.strip()
+                else:
+                    # Unknown mode — treat as v2 fallback
+                    n, _, h = line.partition(":")
+                    result[n.strip()] = h.strip()
+            elif ":" in line:
+                # v2 format: name:hash — treated as copy
                 name, _, hash_val = line.partition(":")
                 result[name.strip()] = hash_val.strip()
             else:
@@ -119,15 +203,30 @@ def _read_suppressed_names() -> set:
 
 
 def _write_manifest(entries: Dict[str, str]):
-    """Write the manifest file atomically in v2 format (name:hash).
+    """Write the manifest file atomically in v3 format (name:mode:hash).
 
     Uses a temp file + os.replace() to avoid corruption if the process
     crashes or is interrupted mid-write.
+
+    v3 formats written:
+      ``name:symlink:``         → symlink mode
+      ``name:copy:<hash>``      → copy mode with origin hash
+      ``name:<hash>``           → fallback for v1/v2 entries (backward compat)
     """
     import tempfile
 
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
+
+    lines = []
+    for name, entry in sorted(entries.items()):
+        if entry == SYMLINK_SENTINEL:
+            lines.append(f"{name}:symlink:")
+        elif ":" in entry or not entry:
+            # v1/v2 fallback: name:hash or just name (empty hash)
+            lines.append(f"{name}:{entry}")
+        else:
+            lines.append(f"{name}:copy:{entry}")
+    data = "\n".join(lines) + "\n"
 
     try:
         fd, tmp_path = tempfile.mkstemp(
@@ -451,9 +550,15 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     return backfilled
 
 
-def sync_skills(quiet: bool = False) -> dict:
+def sync_skills(quiet: bool = False, link: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
+
+    Args:
+        quiet: Suppress console output.
+        link: When True, install new skills as symlinks instead of copies.
+              Existing symlink skills are updated in-place (no-op on git pull).
+              Existing copy skills keep current behaviour.
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
@@ -538,7 +643,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     # user_hash != origin_hash read as "user-modified" on every
                     # subsequent sync, permanently blocking bundled updates.
                     skipped += 1
-                    if _dir_hash(dest) == bundled_hash:
+                    if not dest.is_symlink() and _dir_hash(dest) == bundled_hash:
                         manifest[skill_name] = bundled_hash
                     elif not quiet:
                         print(
@@ -547,7 +652,16 @@ def sync_skills(quiet: bool = False) -> dict:
                             f"was kept. Run `hermes skills reset {skill_name}` "
                             f"to replace it with the bundled version."
                         )
+                elif link:
+                    # ── Symlink install ──
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    os.symlink(skill_src, dest)
+                    manifest[skill_name] = SYMLINK_SENTINEL
+                    copied.append(skill_name)
+                    if not quiet:
+                        print(f"  + {skill_name} → symlink")
                 else:
+                    # ── Copy install (default) ──
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copytree(skill_src, dest)
                     copied.append(skill_name)
@@ -556,8 +670,73 @@ def sync_skills(quiet: bool = False) -> dict:
                         print(f"  + {skill_name}")
             except (OSError, IOError) as e:
                 if not quiet:
-                    print(f"  ! Failed to copy {skill_name}: {e}")
+                    print(f"  ! Failed to install {skill_name}: {e}")
                 # Do NOT add to manifest — next sync should retry
+
+        elif dest.is_symlink() and _is_install_mode_symlink(manifest.get(skill_name, "")):
+            # ── Existing symlink skill ──
+            if not dest.exists():
+                # Symlink broken — target moved / deleted
+                try:
+                    dest.unlink()
+                    if link:
+                        os.symlink(skill_src, dest)
+                        if not quiet:
+                            print(f"  ↻ {skill_name} (symlink recreated)")
+                    else:
+                        shutil.copytree(skill_src, dest)
+                        manifest[skill_name] = bundled_hash
+                        if not quiet:
+                            print(f"  ↻ {skill_name} (broken symlink → copy)")
+                except (OSError, IOError) as e:
+                    if not quiet:
+                        print(f"  ! Failed to repair {skill_name}: {e}")
+            elif _is_in_git_repo(skill_src) and _git_is_dirty(skill_src):
+                # Target has uncommitted git changes — promote to copy so
+                # the user's edits survive and git pull won't be blocked.
+                try:
+                    # Remove symlink, copy the user's modified bundled dir
+                    dest.unlink()
+                    shutil.copytree(skill_src, dest)
+                    # Restore bundled dir in git repo:
+                    # 1. Restore tracked files (undo user modifications)
+                    subprocess.run(
+                        ["git", "checkout", "--", "."],
+                        cwd=skill_src, capture_output=True, timeout=10,
+                    )
+                    # 2. Remove untracked files the user may have added
+                    subprocess.run(
+                        ["git", "clean", "-fd"],
+                        cwd=skill_src, capture_output=True, timeout=10,
+                    )
+                    manifest[skill_name] = _dir_hash(dest)
+                    user_modified.append(skill_name)
+                    if not quiet:
+                        print(
+                            f"  ~ {skill_name} (user-modified, "
+                            f"promoted from symlink to copy)"
+                        )
+                except (OSError, IOError, subprocess.SubprocessError) as e:
+                    if not quiet:
+                        print(f"  ! Failed to promote {skill_name}: {e}")
+            elif not _is_in_git_repo(skill_src):
+                # Symlink target is outside a git repo (e.g. external path)
+                # — cannot determine if user-modified. Fall back to copy mode.
+                try:
+                    dest.unlink()
+                    shutil.copytree(skill_src, dest)
+                    manifest[skill_name] = _dir_hash(dest)
+                    if not quiet:
+                        print(
+                            f"  ↑ {skill_name} (external target, "
+                            f"promoted from symlink to copy)"
+                        )
+                except (OSError, IOError) as e:
+                    if not quiet:
+                        print(f"  ! Failed to promote {skill_name}: {e}")
+            else:
+                # Symlink intact, target git clean — nothing to do
+                skipped += 1
 
         elif dest.exists():
             # ── Existing skill — in manifest AND on disk ──
@@ -1103,8 +1282,18 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
 
 
 if __name__ == "__main__":
+    import sys
+    link = "--link" in sys.argv
+    if link:
+        sys.argv.remove("--link")
+
     print("Syncing bundled skills into ~/.hermes/skills/ ...")
-    result = sync_skills(quiet=False)
+    if link:
+        print("  (link mode: installing as symlinks)\n")
+    else:
+        print()
+
+    result = sync_skills(quiet=False, link=link)
     parts = [
         f"{len(result['copied'])} new",
         f"{len(result['updated'])} updated",

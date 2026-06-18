@@ -164,7 +164,13 @@ def check_compression_model_feasibility(agent: Any) -> None:
             )
 
         threshold = agent.context_compressor.threshold_tokens
-        if aux_context < threshold:
+        # Guard against an unresolved aux context (get_model_context_length can
+        # yield 0/None): the floor check above is itself gated on `aux_context`
+        # being truthy, so a falsy value reaches here un-vetted. Without this
+        # guard, `0 < threshold` would silently set the session threshold to 0
+        # (breaking compression for the whole session) and `None < threshold`
+        # would raise TypeError during AIAgent.__init__.
+        if aux_context and aux_context < threshold:
             # Auto-correct: lower the live session threshold so
             # compression actually works this session.  The hard floor
             # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,

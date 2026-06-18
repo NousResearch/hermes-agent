@@ -306,7 +306,12 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 }
 
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  // Timestamps from the session DB are epoch seconds (~1.78e9 in 2026).
+  // JavaScript's Date() interprets numbers < 1e12 as milliseconds, so
+  // epoch seconds would produce a date in Jan 1970 instead of 2026.
+  // Normalize by multiplying by 1000 only when the value is clearly in seconds.
+  const ms = timestamp < 1e12 ? timestamp * 1000 : timestamp
+  return ARTIFACT_TIME_FMT.format(new Date(ms))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {

@@ -323,6 +323,179 @@ def check_certificates() -> None:
         check_warn("SSL certificate check skipped", str(e))
 
 
+def _pe_subsystem(path: str) -> int | None:
+    """Return the Windows PE subsystem value for a .exe file.
+
+    Returns 2 for IMAGE_SUBSYSTEM_WINDOWS_GUI (pythonw.exe),
+    3 for IMAGE_SUBSYSTEM_WINDOWS_CUI (python.exe),
+    or None if the file is not a valid PE executable.
+    """
+    import struct
+    try:
+        with open(path, "rb") as f:
+            dos = f.read(64)
+            if len(dos) < 64 or dos[:2] != b"MZ":
+                return None
+            e_lfanew = struct.unpack_from("<I", dos, 0x3C)[0]
+            f.seek(e_lfanew)
+            if f.read(4) != b"PE\x00\x00":
+                return None
+            # Skip COFF header (20 bytes) + first 68 bytes of Optional Header
+            # Subsystem is at OptionalHeader offset 68 (same for PE32 and PE32+)
+            f.seek(e_lfanew + 24 + 68)
+            return struct.unpack("<H", f.read(2))[0]
+    except (OSError, struct.error):
+        return None
+
+
+def _check_windows_python_stubs(
+    issues: list[str], manual_issues: list[str]
+) -> None:
+    """Detect the Windows App Execution Alias trap on Windows.
+
+    Windows ships 0-byte ``python.exe`` / ``python3.exe`` stubs in
+    ``%LOCALAPPDATA%\\Microsoft\\WindowsApps``.  These are App Execution
+    Aliases — not real binaries — but they appear first on PATH and
+    mask the real Python installation.  Hermes watchdog and cron
+    scripts that rely on PATH-resolution ``python`` accidentally pick
+    up the fake stub, which can't run anything.
+
+    This check compares the PATH-resolved ``python`` / ``pythonw``
+    against the venv's real binaries and flags the mismatch.
+    """
+    import os as _os
+
+    windowsapps = (
+        Path(_os.environ.get("LOCALAPPDATA", ""))
+        / "Microsoft"
+        / "WindowsApps"
+    )
+
+    # ── 1. Detect 0-byte stubs in WindowsApps ──────────────────────
+    stub_paths: list[str] = []
+    for name in ("python.exe", "python3.exe"):
+        stub = windowsapps / name
+        try:
+            if stub.exists() and stub.stat().st_size == 0:
+                stub_paths.append(str(stub))
+        except OSError:
+            pass
+
+    if stub_paths:
+        names = ", ".join(Path(p).name for p in stub_paths)
+        check_warn(
+            f"0-byte stubs in WindowsApps: {names}",
+            "(App Execution Aliases mask real Python)",
+        )
+        check_info(
+            "These stubs appear first on PATH and can break subprocess "
+            "spawns that rely on plain 'python' resolution."
+        )
+        manual_issues.append(
+            "Disable Python App Execution Aliases in "
+            "Windows Settings → Apps → App execution aliases"
+        )
+    else:
+        check_ok("No 0-byte Python stubs in WindowsApps")
+
+    # ── 2. Check what 'python' resolves to on PATH ─────────────────
+    resolved_python = _safe_which("python")
+    resolved_pythonw = _safe_which("pythonw")
+
+    if resolved_python and str(windowsapps) in resolved_python:
+        check_fail(
+            f"'python' resolves to WindowsApps stub: {resolved_python}",
+            "(0-byte file — cannot run scripts)",
+        )
+        # Find the real python.exe
+        venv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+        if not venv_python.exists():
+            venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
+        if venv_python.exists():
+            check_info(
+                f"Real Python is at: {venv_python} — "
+                "use explicit path or fix PATH ordering"
+            )
+        manual_issues.append(
+            "Re-order PATH so venv/Scripts precedes WindowsApps, "
+            "or disable App Execution Aliases"
+        )
+    elif resolved_python:
+        check_ok(f"'python' resolves to: {resolved_python}")
+
+    # ── 3. Verify venv pythonw.exe has GUI subsystem ───────────────
+    venv_pythonw = None
+    for candidate in (
+        PROJECT_ROOT / ".venv" / "Scripts" / "pythonw.exe",
+        PROJECT_ROOT / "venv" / "Scripts" / "pythonw.exe",
+    ):
+        if candidate.exists():
+            venv_pythonw = candidate
+            break
+    # Fallback: check alongside the current Python interpreter (covers
+    # git-clone development setups where PROJECT_ROOT ≠ install root).
+    if venv_pythonw is None:
+        sibling = Path(sys.executable).with_name("pythonw.exe")
+        if sibling.exists() and sibling != Path(sys.executable):
+            venv_pythonw = sibling
+
+    if venv_pythonw is not None:
+        subsystem = _pe_subsystem(str(venv_pythonw))
+        if subsystem == 2:
+            # Show relative path when possible, absolute otherwise
+            try:
+                _display = str(venv_pythonw.relative_to(PROJECT_ROOT))
+            except ValueError:
+                _display = str(venv_pythonw)
+            check_ok(
+                f"venv pythonw.exe: GUI subsystem ✓ ({_display})"
+            )
+        elif subsystem == 3:
+            check_warn(
+                "venv pythonw.exe has CUI (Console) subsystem",
+                "(should be GUI — may flash console windows)",
+            )
+            issues.append(
+                "Reinstall Python via uv to get a proper GUI-subsystem "
+                "pythonw.exe"
+            )
+        else:
+            check_warn(
+                "venv pythonw.exe is not a valid PE file",
+                "(reinstall Python via uv)",
+            )
+            issues.append(
+                "Reinstall Python via uv: uv python install 3.11"
+            )
+    else:
+        check_warn(
+            "venv pythonw.exe not found",
+            "(gateway/cron scripts may not start silently)",
+        )
+        issues.append(
+            "Reinstall Hermes venv: "
+            "cd ~/AppData/Local/hermes/hermes-agent && uv venv"
+        )
+
+    # ── 4. Check pythonw resolution ────────────────────────────────
+    if resolved_pythonw:
+        resolved_subsystem = _pe_subsystem(resolved_pythonw)
+        if resolved_subsystem == 2:
+            check_ok(f"'pythonw' resolves to GUI binary: {resolved_pythonw}")
+        elif resolved_subsystem is None:
+            check_fail(
+                f"'pythonw' resolves to a 0-byte stub: {resolved_pythonw}",
+                "(this will flash console windows on subprocess spawn)",
+            )
+            manual_issues.append(
+                "Remove or disable the WindowsApps pythonw.exe stub"
+            )
+        else:
+            check_warn(
+                f"'pythonw' has unexpected subsystem: {resolved_pythonw}"
+            )
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout.
 
@@ -1348,6 +1521,10 @@ def run_doctor(args):
                         manual_issues.append(f"Add {_cmd_link_display} to your PATH")
                 else:
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
+
+    if sys.platform == "win32":
+        _section("Windows Python Environment")
+        _check_windows_python_stubs(issues, manual_issues)
 
     _section("External Tools")
     # Git

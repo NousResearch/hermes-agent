@@ -328,6 +328,7 @@ class TestCheckWebApiKey:
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools.check_web_api_key() is True
+        assert web_tools.check_web_api_key() is False
 
 
 # ---------------------------------------------------------------------------

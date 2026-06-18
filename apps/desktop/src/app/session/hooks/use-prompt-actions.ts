@@ -58,6 +58,7 @@ import { clearSessionTodos } from '@/store/todos'
 
 import type {
   ClientSessionState,
+  BrowserManageResponse,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -317,7 +318,7 @@ interface PromptActionsOptions {
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
   refreshSessions: () => Promise<void>
-  requestGateway: GatewayRequest
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -1203,6 +1204,336 @@ export function usePromptActions({
             const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
 
             renderSlashOutput(renderCommandsCatalog(catalog, copy))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+      }
+
+      // Picker commands open a desktop overlay; a typed arg is resolved by that
+      // picker so the command never dead-ends or falls through to the backend.
+      const openPicker = async (pickerId: DesktopPickerId, ctx: SlashActionCtx): Promise<void> => {
+        if (pickerId === 'model') {
+          if (!ctx.arg.trim()) {
+            setModelPickerOpen(true)
+
+            return
+          }
+
+          // Power users can still type `/model <name>` — run it on the backend.
+          await runExec(ctx)
+
+          return
+        }
+
+        // session picker — /resume, /sessions, /switch
+        const query = ctx.arg.trim()
+
+        if (!query) {
+          setSessionPickerOpen(true)
+
+          return
+        }
+
+        const sessions = $sessions.get()
+        const lower = query.toLowerCase()
+
+        const match =
+          sessions.find(session => session.id === query) ||
+          sessions.find(session => sessionTitle(session).toLowerCase().includes(lower)) ||
+          sessions.find(session => (session.preview ?? '').toLowerCase().includes(lower))
+
+        if (!match) {
+          if (isSessionIdCandidate(query)) {
+            await resumeStoredSession(query)
+
+            return
+          }
+
+          notify({ kind: 'error', message: copy.resumeFailed })
+
+          return
+        }
+
+        await resumeStoredSession(match.id)
+      }
+
+      // The whole dispatcher: resolve the command's desktop surface, then act on
+      // its kind. No per-command ladder — behavior lives in the registry.
+      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
+        const command = commandText.trim()
+        const { name, arg } = parseSlashCommand(command)
+
+        if (!name) {
+          const sessionId = await ensureSessionId(sessionHint)
+
+          if (sessionId) {
+            appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
+          }
+
+          return
+        }
+
+        const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
+        const surface = resolveDesktopCommand(`/${name}`)?.surface
+
+        switch (surface?.kind) {
+          case 'unavailable': {
+            const resolved = await withSlashOutput(ctx)
+            resolved?.render(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+            return
+          }
+
+          case 'picker':
+            return openPicker(surface.picker, ctx)
+
+          case 'action':
+            return actionHandlers[surface.action](ctx)
+
+          default:
+            // exec spec, or an unknown skill / quick command the backend owns.
+            return runExec(ctx)
+        }
+      }
+
+      // One handler per `action` command. Adding a desktop-native command is a
+      // registry row in desktop-slash-commands.ts plus an entry here — never a
+      // new branch in a dispatch ladder.
+      const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
+        new: async () => {
+          startFreshSessionDraft()
+        },
+        branch: async () => {
+          await branchCurrentSession()
+        },
+        // /yolo maps to the status-bar YOLO control — a per-session approval
+        // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
+        // it locally; the session-create path applies it on the first message.
+        yolo: async ({ sessionHint }) => {
+          const sid = sessionHint || activeSessionIdRef.current
+          const next = !$yoloActive.get()
+
+          if (!sid) {
+            setYoloActive(next)
+            notify({ kind: 'success', message: next ? copy.yoloArmed : copy.yoloOff })
+
+            return
+          }
+
+          try {
+            const active = await setSessionYolo(requestGateway, sid, next)
+            appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
+          } catch {
+            notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
+          }
+        },
+        // /handoff hands this session to a messaging platform. The platform is
+        // completed inline in the slash popover (backend _handoff_completions),
+        // so there is no overlay: `/handoff <platform>` runs the desktop's own
+        // handoff RPC. cli_only on the backend, so it must not reach slash.exec.
+        handoff: async ({ arg, command, recordInput, sessionHint }) => {
+          const platform = arg.trim()
+
+          if (!platform) {
+            notify({ kind: 'success', message: copy.handoff.pickPlatform })
+
+            return
+          }
+
+          const sid = sessionHint || activeSessionIdRef.current
+
+          if (!sid) {
+            notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+
+            return
+          }
+
+          const result = await handoffSession(platform, { sessionId: sid })
+
+          if (!result.ok && result.error) {
+            appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, result.error) : result.error)
+          }
+        },
+        // /profile selects which profile new chats open in — no app relaunch.
+        // A profile is per-session now, so an existing thread can't change its
+        // profile mid-stream; `/profile <name>` points the next new chat (and
+        // the current empty draft) at that profile's backend.
+        profile: async ({ arg }) => {
+          const target = arg.trim()
+          const current = normalizeProfileKey($activeGatewayProfile.get())
+
+          if (!target) {
+            notify({ kind: 'success', message: copy.profileStatus(current) })
+
+            return
+          }
+
+          try {
+            const { profiles } = await getProfiles()
+            const match = profiles.find(profile => profile.name === target)
+
+            if (!match) {
+              notify({
+                kind: 'error',
+                title: copy.unknownProfile,
+                message: copy.noProfileNamed(target, profiles.map(profile => profile.name).join(', '))
+              })
+
+              return
+            }
+
+            const key = normalizeProfileKey(match.name)
+
+            $newChatProfile.set(key)
+            await ensureGatewayProfile(key)
+            notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
+          } catch (err) {
+            notifyError(err, copy.setProfileFailed)
+          }
+        },
+        skin: async ({ arg, command, recordInput, sessionHint }) => {
+          const sid = sessionHint || activeSessionIdRef.current
+          const message = handleSkinCommand(arg)
+
+          // No session to print into yet — surface it as a toast instead of
+          // spinning up a backend session just to change the theme.
+          if (!sid) {
+            notify({ kind: 'success', message })
+
+            return
+          }
+
+          appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, message) : message)
+        },
+        // /title <name> renames via the gateway's session.title RPC — the same
+        // path the TUI uses, NOT REST renameSession (which 404s on runtime ids)
+        // nor the slash worker (whose DB write can silently fail). Bare /title
+        // shows the current title, which the worker owns, so delegate to exec.
+        title: async ctx => {
+          if (!ctx.arg) {
+            await runExec(ctx)
+
+            return
+          }
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+          const { arg } = ctx
+
+          try {
+            const result = await requestGateway<SessionTitleResponse>('session.title', {
+              session_id: sessionId,
+              title: arg
+            })
+
+            const finalTitle = (result?.title || arg).trim()
+            const queued = result?.pending === true
+
+            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+            await refreshSessions().catch(() => undefined)
+            renderSlashOutput(
+              finalTitle
+                ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`
+                : 'Session title cleared.'
+            )
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
+        help: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          try {
+            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
+
+            renderSlashOutput(renderCommandsCatalog(catalog, copy))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
+        // /browser connect|disconnect|status manages the live CDP connection on
+        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
+        // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
+        // meaningful when that process runs on this machine, so it's gated to
+        // local connections. A remote gateway would act on the wrong host.
+        browser: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if ($connection.get()?.mode === 'remote') {
+            renderSlashOutput(
+              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
+            )
+
+            return
+          }
+
+          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
+          const cmdAction = rawAction.toLowerCase()
+
+          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+            renderSlashOutput(
+              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+            )
+
+            return
+          }
+
+          const url = cmdAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
+
+          if (url) {
+            renderSlashOutput(`checking Chromium-family browser remote debugging at ${url}...`)
+          }
+
+          try {
+            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
+              action: cmdAction,
+              session_id: sessionId,
+              ...(url && { url })
+            })
+
+            // Without a streamed session subscription, the gateway bundles its
+            // progress lines into `messages` — flush them inline.
+            result?.messages?.forEach(message => renderSlashOutput(message))
+
+            if (cmdAction === 'status') {
+              renderSlashOutput(
+                result?.connected
+                  ? `browser connected: ${result.url || '(url unavailable)'}`
+                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+              )
+
+              return
+            }
+
+            if (cmdAction === 'disconnect') {
+              renderSlashOutput('browser disconnected')
+
+              return
+            }
+
+            if (result?.connected) {
+              renderSlashOutput('Browser connected to live Chromium-family browser via CDP')
+              renderSlashOutput(`Endpoint: ${result.url || '(url unavailable)'}`)
+              renderSlashOutput('next browser tool call will use this CDP endpoint')
+            }
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }

@@ -397,6 +397,38 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
+_DEFAULT_MAX_ASYNC_CHILDREN = 3
+
+
+def _get_max_async_children() -> int:
+    """Read delegation.max_async_children from config (floor 1, no ceiling).
+
+    Caps how many background (``background=true``) subagents can run at once.
+    When at capacity, a new async dispatch is REJECTED (not queued) so a
+    runaway model can't pile up unbounded background work. Separate from
+    max_concurrent_children, which bounds a single synchronous batch.
+    """
+    cfg = _load_config()
+    val = cfg.get("max_async_children")
+    if val is not None:
+        try:
+            return max(1, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_async_children=%r is not a valid integer; "
+                "using default %d",
+                val, _DEFAULT_MAX_ASYNC_CHILDREN,
+            )
+            return _DEFAULT_MAX_ASYNC_CHILDREN
+    env_val = os.getenv("DELEGATION_MAX_ASYNC_CHILDREN")
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except (TypeError, ValueError):
+            return _DEFAULT_MAX_ASYNC_CHILDREN
+    return _DEFAULT_MAX_ASYNC_CHILDREN
+
+
 def _get_child_timeout() -> Optional[float]:
     """Read delegation.child_timeout_seconds from config.
 
@@ -833,6 +865,15 @@ def _build_child_progress_callback(
 
         if event_type == "subagent.complete":
             _relay("subagent.complete", preview=preview, **kwargs)
+            return
+
+        if event_type == "subagent.text":
+            # Streamed assistant reply text from the child. Relay verbatim so a
+            # gateway watch window can mirror the child "talking" as it streams.
+            # No spinner echo — the CLI shows the child via the tree, and the
+            # CLI/TUI progress handlers ignore non-tool event types, so this is
+            # inert there; only a gateway watch window consumes it.
+            _relay("subagent.text", preview=preview)
             return
 
         # Normalise legacy strings, new-style "delegate.*" strings, and
@@ -1594,11 +1635,23 @@ def _run_single_child(
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
 
+        def _relay_child_text(delta: str) -> None:
+            # Forward the child's streamed reply text up the progress relay so
+            # gateway watch windows mirror it live (subagent.text → message.delta).
+            # Inert under CLI/TUI: their progress handlers ignore non-tool events.
+            if not delta or not child_progress_cb:
+                return
+            try:
+                child_progress_cb("subagent.text", preview=delta)
+            except Exception as e:
+                logger.debug("Child text relay failed: %s", e)
+
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             return child.run_conversation(
                 user_message=goal,
                 task_id=child_task_id,
+                stream_callback=_relay_child_text,
             )
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
@@ -2018,6 +2071,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2048,6 +2102,19 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+
+    # Async (background) delegation is single-task only in v1. A batch carries
+    # fan-out semantics (N handles, partial completion) that double the state
+    # model — reject early with a clear message rather than silently running
+    # the batch synchronously.
+    background = is_truthy_value(background, default=False) if background is not None else False
+    if background and tasks and isinstance(tasks, list) and len(tasks) > 1:
+        return tool_error(
+            "background=true is single-task only. Dispatch one background "
+            "subagent per delegate_task call (each returns its own handle and "
+            "re-enters the conversation independently), or run the batch "
+            "synchronously with background=false."
+        )
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2186,6 +2253,90 @@ def delegate_task(
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
+
+        # ----- Async / background dispatch -----
+        # When background=true, hand the already-built child to the async
+        # delegation registry and return a handle immediately. The child runs
+        # on a daemon executor; its result re-enters the conversation as a
+        # fresh turn via process_registry.completion_queue (see
+        # tools/async_delegation.py). Batch async is intentionally NOT
+        # supported in v1 — the rejection is handled before we get here.
+        if background:
+            from tools.async_delegation import dispatch_async_delegation
+            from tools.approval import get_current_session_key
+
+            # Capture the gateway routing key on THIS (parent) thread — the
+            # daemon worker won't carry the session contextvar.
+            _session_key = get_current_session_key(default="")
+
+            # Detach the child from the parent's interrupt-propagation list.
+            # _build_child_agent registered it there (correct for sync
+            # children, which block the parent's turn), but a BACKGROUND
+            # child must survive parent-turn interrupts (Ctrl+C, mid-turn
+            # steering), cache evicts (release_clients), and session close
+            # (/new) — otherwise the detached subagent dies with whatever
+            # the parent was doing when it was dispatched. Its lifecycle is
+            # owned by the async-delegation registry (interrupt_fn below),
+            # and _run_single_child's finally block closes its resources
+            # when it finishes.
+            if hasattr(parent_agent, "_active_children"):
+                try:
+                    _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+                    if _ac_lock:
+                        with _ac_lock:
+                            parent_agent._active_children.remove(child)
+                    else:
+                        parent_agent._active_children.remove(child)
+                except ValueError:
+                    pass
+
+            def _async_runner(_child=child, _goal=_t["goal"]):
+                return _run_single_child(0, _goal, _child, parent_agent)
+
+            def _async_interrupt(_child=child):
+                try:
+                    if hasattr(_child, "interrupt"):
+                        _child.interrupt("Async delegation cancelled")
+                    elif hasattr(_child, "_interrupt_requested"):
+                        _child._interrupt_requested = True
+                except Exception:
+                    pass
+
+            dispatch = dispatch_async_delegation(
+                goal=_t["goal"],
+                context=_t.get("context"),
+                toolsets=_t.get("toolsets") or toolsets,
+                role=_normalize_role(_t.get("role") or top_role),
+                model=creds["model"],
+                session_key=_session_key,
+                runner=_async_runner,
+                interrupt_fn=_async_interrupt,
+                max_async_children=_get_max_async_children(),
+            )
+
+            if dispatch.get("status") == "dispatched":
+                return json.dumps(
+                    {
+                        "status": "dispatched",
+                        "delegation_id": dispatch["delegation_id"],
+                        "goal": _t["goal"],
+                        "mode": "background",
+                        "note": (
+                            "Subagent is running in the background. You and the "
+                            "user can keep working; the full task source and "
+                            "result will re-enter the conversation as a new "
+                            "message when it finishes. Do not wait or poll — "
+                            "just continue."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            # Rejected (at capacity or schedule failure) — surface as a tool
+            # error so the model can fall back to synchronous delegation.
+            return tool_error(
+                dispatch.get("error", "Async delegation could not be scheduled.")
+            )
+
         result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
@@ -2904,6 +3055,24 @@ DELEGATE_TASK_SCHEMA = {
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Run the subagent asynchronously in the BACKGROUND "
+                    "instead of blocking this turn. When true, delegate_task "
+                    "returns immediately with a delegation_id; you and the "
+                    "user keep working while the subagent runs, and its full "
+                    "result re-enters the conversation as a new message when "
+                    "it finishes (similar to terminal background=true + "
+                    "notify_on_complete). The re-injected message includes the "
+                    "original goal/context so you can act on it even after "
+                    "moving on. Single-task only — cannot be combined with the "
+                    "'tasks' batch array. Use for long-running independent work "
+                    "the user shouldn't have to wait on (research, builds, "
+                    "multi-step investigations). Do NOT poll or wait after "
+                    "dispatching — just continue; the result will come to you."
+                ),
+            },
             "acp_command": {
                 "type": "string",
                 "description": (
@@ -2948,6 +3117,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        background=args.get("background"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

@@ -186,7 +186,7 @@ class TestStreamingConfig:
         )
         assert restored.edit_interval == 0.8
         assert restored.buffer_threshold == 24
-        assert restored.fresh_final_after_seconds == 60.0
+        assert restored.fresh_final_after_seconds == 0.0
 
 
 class TestGatewayConfigRoundtrip:
@@ -832,7 +832,7 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
 
-    def test_load_config_default_includes_telegram_rich_messages(self, tmp_path, monkeypatch):
+    def test_load_config_default_enables_telegram_rich_messages(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
 

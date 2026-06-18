@@ -52,6 +52,17 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
   })
 
+  it('treats /browser as an executable action command (local-gateway connect)', () => {
+    // /browser used to be terminal-only; it now resolves to a desktop action
+    // handler that routes browser.manage RPC when the gateway is local.
+    expect(isDesktopSlashCommand('/browser')).toBe(true)
+    expect(isDesktopSlashSuggestion('/browser')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/browser')).toBeNull()
+    expect(resolveDesktopCommand('/browser')?.surface).toEqual({ kind: 'action', action: 'browser' })
+    // Bare /browser expands to its sub-action options in the popover.
+    expect(resolveDesktopCommand('/browser')?.args).toBe(true)
+  })
+
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
@@ -173,9 +184,6 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
-    // /compress must stay an action (session.compress RPC): the exec path's
-    // slash worker times out on large sessions (#44456).
-    expect(resolveDesktopCommand('/compress')?.surface).toEqual({ kind: 'action', action: 'compress' })
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()

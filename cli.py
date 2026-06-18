@@ -978,6 +978,11 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     except Exception:
         pass
     try:
+        from tools.async_delegation import interrupt_all as _interrupt_async_delegations
+        _interrupt_async_delegations(reason="CLI shutdown")
+    except Exception:
+        pass
+    try:
         _cleanup_all_browsers()
     except Exception:
         pass
@@ -5783,14 +5788,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not self._session_db:
             return []
         try:
-            sessions = self._session_db.list_sessions_rich(
+            from hermes_cli.session_listing import query_session_listing
+
+            return query_session_listing(
+                self._session_db,
                 source="cli",
-                exclude_sources=["tool"],
+                current_session_id=self.session_id,
+                include_all_sources=False,
+                include_unnamed=True,
                 limit=limit,
+                exclude_sources=["tool"],
             )
         except Exception:
             return []
-        return [s for s in sessions if s.get("id") != self.session_id]
 
     def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
         """Render recent sessions inline from the active chat TUI.
@@ -12021,6 +12031,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Create the input area with multiline (Alt+Enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+        from prompt_toolkit.completion import ThreadedCompleter
 
 
         _completer = SlashCommandCompleter(
@@ -12036,7 +12047,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_running)),
             history=FileHistory(str(self._history_file)),
-            completer=_completer,
+            # complete_while_typing fires the completer on every keystroke. The
+            # completer does blocking work — fuzzy @-file indexing shells out to
+            # rg/fd (up to a 2s timeout) and path completion hits os.listdir/stat
+            # — so running it inline would stall the render loop on each key (very
+            # noticeable on WSL2/slow filesystems). ThreadedCompleter moves it off
+            # the UI event loop, keeping typing responsive.
+            completer=ThreadedCompleter(_completer),
             complete_while_typing=True,
             auto_suggest=SlashCommandAutoSuggest(
                 history_suggest=AutoSuggestFromHistory(),

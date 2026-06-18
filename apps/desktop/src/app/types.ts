@@ -46,14 +46,10 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-export interface SessionCompressResponse {
-  removed?: number
-  summary?: {
-    headline?: string
-    noop?: boolean
-    note?: null | string
-    token_line?: string
-  }
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+  messages?: string[]
 }
 
 export interface SessionSteerResponse {

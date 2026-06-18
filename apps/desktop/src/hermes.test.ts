@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteSession, getSessionMessages, listAllProfileSessions, listSessions, setSessionArchived } from './hermes'
+import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,

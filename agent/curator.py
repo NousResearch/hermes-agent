@@ -57,6 +57,11 @@ DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
+# Consolidation (the LLM umbrella-building fork) is OFF by default. The
+# deterministic inactivity prune (apply_automatic_transitions) still runs
+# whenever the curator is enabled; only the opinionated, aux-model-cost
+# consolidation pass is opt-in.
+DEFAULT_CONSOLIDATE = False
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +185,22 @@ def get_prune_builtins() -> bool:
     """
     cfg = _load_config()
     return bool(cfg.get("prune_builtins", True))
+
+
+def get_consolidate() -> bool:
+    """Whether the curator runs its LLM consolidation (umbrella-building) pass.
+
+    OFF by default. When off, a curator run does ONLY the deterministic
+    inactivity prune (mark stale / archive long-unused skills) and skips the
+    forked aux-model review entirely — no consolidation, no umbrella-building,
+    no aux-model cost. Set ``curator.consolidate: true`` to opt back into the
+    LLM pass that merges overlapping skills into class-level umbrellas.
+
+    The explicit ``hermes curator run --consolidate`` flag overrides this for
+    a single invocation regardless of the config value.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
 
 
 # ---------------------------------------------------------------------------
@@ -1408,25 +1429,38 @@ def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None,
     synchronous: bool = False,
     dry_run: bool = False,
+    consolidate: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Execute a single curator review pass.
 
     Steps:
       1. Apply automatic state transitions (pure, no LLM).
-      2. If there are agent-created skills, spawn a forked AIAgent that runs
-         the LLM review prompt against the current candidate list.
+      2. If consolidation is enabled AND there are agent-created skills, spawn
+         a forked AIAgent that runs the LLM review prompt against the current
+         candidate list.
       3. Update .curator_state with last_run_at and a one-line summary.
       4. Invoke *on_summary* with a user-visible description.
 
     If *synchronous* is True, the LLM review runs in the calling thread; the
     default is to spawn a daemon thread so the caller returns immediately.
 
+    *consolidate* gates the LLM umbrella-building pass. ``None`` (the default)
+    reads ``curator.consolidate`` from config (OFF by default). Passing
+    ``True``/``False`` overrides the config for this invocation — used by the
+    ``hermes curator run --consolidate`` flag. When consolidation is off, only
+    the deterministic inactivity prune runs and the forked aux-model review is
+    skipped entirely (no aux-model cost).
+
     If *dry_run* is True, the automatic stale/archive transitions are SKIPPED
     and the LLM review pass is instructed to produce a report only — no
     skill_manage mutations, no terminal archive moves. The REPORT.md still
     gets written and ``state.last_report_path`` still records it so users
-    can read what the curator WOULD have done.
+    can read what the curator WOULD have done. A dry-run also honors
+    *consolidate*: when consolidation is off, the preview only reports the
+    deterministic prune candidates.
     """
+    if consolidate is None:
+        consolidate = get_consolidate()
     start = datetime.now(timezone.utc)
     if dry_run:
         # Count candidates without mutating state.
@@ -1488,6 +1522,53 @@ def run_curator_review(
         except Exception:
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
+
+        # Consolidation gate. When off (the default), the curator does ONLY the
+        # deterministic inactivity prune above — no forked aux-model review, no
+        # umbrella-building, no aux-model cost. Record the run, write a report
+        # reflecting the prune-only outcome, and return without spawning a fork.
+        if not consolidate:
+            final_summary = (
+                f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
+            )
+            llm_meta = {
+                "final": "",
+                "summary": "skipped (consolidation off)",
+                "model": "",
+                "provider": "",
+                "tool_calls": [],
+                "error": None,
+            }
+            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            state2 = load_state()
+            state2["last_run_duration_seconds"] = elapsed
+            state2["last_run_summary"] = final_summary
+            try:
+                after_report = skill_usage.agent_created_report()
+            except Exception:
+                after_report = []
+            try:
+                report_path = _write_run_report(
+                    started_at=start,
+                    elapsed_seconds=elapsed,
+                    auto_counts=counts,
+                    auto_summary=auto_summary,
+                    before_report=before_report,
+                    before_names=before_names,
+                    after_report=after_report,
+                    llm_meta=llm_meta,
+                )
+                if report_path is not None:
+                    state2["last_report_path"] = str(report_path)
+            except Exception as e:
+                logger.debug("Curator report write failed: %s", e, exc_info=True)
+            save_state(state2)
+            if on_summary:
+                try:
+                    on_summary(f"curator: {final_summary}")
+                except Exception:
+                    pass
+            return
 
         llm_meta: Dict[str, Any] = {}
         try:

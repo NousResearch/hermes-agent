@@ -54,8 +54,10 @@ hermes gateway start
 1. **Device login** (RFC 8628, `client_id=photon-cli`) — opens
    `https://app.photon.codes/` for approval and stores the bearer token.
 2. **Find or create** the `Hermes Agent` project on the Photon dashboard.
-3. **Enable Spectrum**, read the project's `spectrumProjectId`, rotate the
-   project secret, and persist both.
+3. **Provision the project secret** — mint a fresh project secret (the
+   dashboard reveals it only once) and persist it to `~/.hermes/.env` so the
+   sidecar can authenticate `spectrum-ts`. Spectrum is always on, so there's no
+   separate enable step.
 4. **Register your phone number** as a Spectrum user (idempotent — skipped if
    a user with that number already exists).
 5. **Print the assigned iMessage line** — the number you text to reach your
@@ -75,7 +77,7 @@ Runtime SDK credentials live in `~/.hermes/.env` (the same place every other
 channel keeps its token), and the adapter reads them from the environment:
 
 ```bash
-PHOTON_PROJECT_ID=<spectrumProjectId>   # the SDK's projectId
+PHOTON_PROJECT_ID=<projectId>   # the SDK's projectId (same as the dashboard project id)
 PHOTON_PROJECT_SECRET=<projectSecret>
 ```
 
@@ -89,8 +91,8 @@ Management metadata lives in `~/.hermes/auth.json` under `credential_pool`:
     ],
     "photon_project": [
       {
-        "dashboard_project_id": "<dashboard id>",
-        "spectrum_project_id": "<spectrumProjectId>",
+        "dashboard_project_id": "<project id>",
+        "spectrum_project_id": "<project id>",
         "project_secret": "<projectSecret>",
         "name": "Hermes Agent"
       }
@@ -99,9 +101,9 @@ Management metadata lives in `~/.hermes/auth.json` under `credential_pool`:
 }
 ```
 
-> **Note on ids.** A Photon project has two identifiers: the dashboard `id`
-> (used for management API calls) and the `spectrumProjectId` (what the SDK
-> authenticates with). `PHOTON_PROJECT_ID` is the **spectrum** id.
+> **Note on ids.** A Photon project's dashboard id and its Spectrum project id
+> are the same value, exposed as `PHOTON_PROJECT_ID`. The `dashboard_project_id`
+> and `spectrum_project_id` keys in `auth.json` both hold that id.
 
 ## Configuration knobs
 
@@ -129,10 +131,13 @@ All env vars are documented in `plugin.yaml`. The most important:
   the bytes (`content.read()`) and base64-inlines them on the NDJSON event; the
   adapter caches them to the shared media cache and populates `media_urls` /
   `media_types`, so the agent sees the real image/file or can transcribe the
-  voice note — parity with the BlueBubbles iMessage channel. Media larger than
-  `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or any byte read that
-  fails, falls back to a text marker (`[Photon attachment received: …]` or
-  `[Photon voice received: …]`) so the agent still knows something arrived.
+  voice note — parity with the BlueBubbles iMessage channel. Mixed iMessage
+  bubbles that contain both text and attachments are normalized as a grouped
+  payload so the user's typed text is preserved alongside the cached media.
+  Media larger than `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or
+  any byte read that fails, falls back to a text marker (`[Photon attachment
+  received: …]` or `[Photon voice received: …]`) so the agent still knows
+  something arrived.
 - **Outbound attachments are supported.** Images, voice notes, video, and
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`

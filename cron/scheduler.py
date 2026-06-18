@@ -19,7 +19,6 @@ import shutil
 import subprocess
 import sys
 import threading
-from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -191,11 +190,10 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
 def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent single-thread sequential pool.
 
-    A single worker guarantees env-mutating jobs never overlap each
-    other, even across ticks: a job queued by a newer tick waits for the
-    previous tick's sequential jobs to finish rather than corrupting their
-    os.environ state.  Exclusion against the PARALLEL pool is not
-    this pool's job — that is _env_gate, acquired inside the worker.
+    A single worker guarantees env-mutating jobs never overlap, even
+    across ticks: a job queued by a newer tick waits for the previous tick's
+    sequential jobs to finish rather than corrupting their os.environ
+    state.
     """
     global _sequential_pool
     if _sequential_pool is None:
@@ -294,34 +292,6 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
-
-
-def _gateway_scheduler_owner_active() -> bool:
-    """Return True when a gateway process owns the scheduler for this profile.
-
-    The gateway runtime lock is per-HERMES_HOME (i.e. per profile), held for
-    the live gateway's lifetime and released by the OS if that process dies, so
-    a stale lock never lingers. When it is held, the launchd/systemd-managed
-    gateway is the authoritative scheduler owner for the profile.
-
-    This is the ownership signal the ``.tick.lock`` does not provide: the tick
-    lock only gives at-most-once execution, but says nothing about *which*
-    process runs the job. On macOS that distinction is part of the security
-    model — TCC / Full Disk Access provenance depends on the executing process
-    ancestry — so a non-authoritative ticker (e.g. a Desktop dashboard backend)
-    must defer to the gateway rather than run jobs from the wrong ancestry.
-    """
-    try:
-        from gateway.status import is_gateway_runtime_lock_active
-        return is_gateway_runtime_lock_active()
-    except Exception:
-        # If the ownership signal is unavailable, fail open: behave as before
-        # (no owner detected) rather than blocking the only available ticker.
-        logger.debug(
-            "gateway scheduler-owner check failed; assuming no owner",
-            exc_info=True,
-        )
-        return False
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1637,11 +1607,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
-    # tick() runs jobs that mutate process-global runtime state (workdir
-    # jobs) under the exclusive side of _env_gate: serialized among
-    # themselves by the single-thread sequential pool AND excluded from
-    # overlapping any parallel-pool job that reads this state mid-run. That
-    # makes mutating os.environ["TERMINAL_CWD"] here safe. For workdir-less
+    # tick() serializes workdir-jobs outside the parallel pool, so mutating
+    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
     # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
     _job_workdir = (job.get("workdir") or "").strip() or None
@@ -2223,13 +2190,10 @@ def tick(
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: jobs with a per-job workdir mutate process-global
-        # runtime state inside run_job (os.environ["TERMINAL_CWD"]). They MUST
-        # run one at a time (single-thread pool) AND must not overlap parallel
-        # jobs, which read that same state mid-run (_get_hermes_home() for
-        # .env/config/script resolution, TERMINAL_CWD in terminal/file tools)
-        # — _env_gate enforces the cross-pool exclusion. Jobs without a
-        # workdir stay parallel-safe.
+        # Partition due jobs: those with a per-job workdir mutate
+        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
+        # so they MUST run sequentially to avoid corrupting each other.  Jobs
+        # without a workdir leave env untouched and stay parallel-safe.
         sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
         parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
 

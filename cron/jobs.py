@@ -5,6 +5,7 @@ Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
+import contextlib
 import copy
 import json
 import logging
@@ -14,6 +15,19 @@ import threading
 import os
 import re
 import uuid
+
+# Cross-process advisory file locking for jobs.json critical sections.
+# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent,
+# in which case _jobs_lock() degrades to in-process locking only (the old
+# behaviour) rather than failing.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -41,9 +55,78 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
-_jobs_file_lock = threading.Lock()
+_jobs_file_lock = threading.RLock()
+_jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+def _jobs_lock_file() -> Path:
+    """Return the advisory lock path for the current cron directory."""
+    return CRON_DIR / ".jobs.lock"
+
+
+@contextlib.contextmanager
+def _jobs_lock():
+    """Serialize a load_jobs→modify→save_jobs critical section.
+
+    Combines the in-process threading lock (cheap mutual exclusion between
+    the gateway's parallel tick threads) with a cross-process advisory file
+    lock on ``<cron dir>/.jobs.lock`` (mutual exclusion between the gateway process
+    and standalone ``hermes`` CLI invocations, which previously shared no lock
+    at all — a `cron pause` could be silently clobbered by a concurrent
+    gateway write, leaving a "paused" job still firing).
+
+    The flock is blocking, but every critical section that uses it is short
+    (field updates only — no agent execution), so contention resolves in
+    milliseconds. If neither fcntl nor msvcrt is available the manager still
+    provides in-process locking, matching the historical behaviour.
+
+    Nested calls in the same thread reuse the held lock so legacy callers that
+    invoke save_jobs() inside a broader mutation section don't deadlock or try
+    to reacquire the advisory file lock.
+    """
+    depth = getattr(_jobs_lock_state, "depth", 0)
+    if depth:
+        _jobs_lock_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            _jobs_lock_state.depth -= 1
+        return
+
+    with _jobs_file_lock:
+        _jobs_lock_state.depth = 1
+        lock_fd = None
+        try:
+            try:
+                ensure_dirs()
+                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
+                lock_fd.seek(0)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+            except (OSError, IOError) as e:
+                # Never let a locking failure take down cron writes — fall back to
+                # in-process-only protection (still held via _jobs_file_lock).
+                logger.warning("jobs.json cross-process lock unavailable (%s); "
+                               "proceeding with in-process lock only", e)
+            try:
+                yield
+            finally:
+                if lock_fd is not None:
+                    try:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+                    except (OSError, IOError):
+                        pass
+                    finally:
+                        lock_fd.close()
+        finally:
+            _jobs_lock_state.depth = 0
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -468,8 +551,8 @@ def load_jobs() -> List[Dict[str, Any]]:
     )
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage. Caller must hold _jobs_lock()."""
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
@@ -485,6 +568,12 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+
+
+def save_jobs(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage."""
+    with _jobs_lock():
+        _save_jobs_unlocked(jobs)
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
@@ -670,10 +759,7 @@ def create_job(
         "workdir": normalized_workdir,
     }
 
-    # Same lock as mark_job_run/advance_next_run: an unlocked
-    # load→append→save here can race a scheduler-thread save and lose
-    # either the new job or a just-advanced next_run_at.
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         jobs.append(job)
         save_jobs(jobs)
@@ -747,16 +833,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
         )
 
-    # Same lock as mark_job_run/advance_next_run so a CRUD update cannot
-    # race a scheduler-thread save and lose either side's changes.
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] != job_id:
                 continue
 
-            # Validate / normalize workdir if present in updates.  Empty string or
-            # None both mean "clear the field" (restore old behaviour).
+            # Validate / normalize workdir if present in updates.  Empty string
+            # or None both mean "clear the field" (restore old behaviour).
             if "workdir" in updates:
                 _wd = updates["workdir"]
                 if _wd in {None, "", False}:
@@ -793,7 +877,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             jobs[i] = updated
             save_jobs(jobs)
             return _normalize_job_record(jobs[i])
-        return None
+    return None
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -854,7 +938,7 @@ def remove_job(job_id: str) -> bool:
     if not job:
         return False
     canonical_id = job["id"]
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         original_len = len(jobs)
         jobs = [j for j in jobs if j["id"] != canonical_id]
@@ -864,13 +948,11 @@ def remove_job(job_id: str) -> bool:
             # half-applying the removal.
             job_output_dir = _job_output_dir(canonical_id)
             save_jobs(jobs)
-        else:
-            return False
-    # Clean up output directory (outside the lock — rmtree can be slow)
-    # to prevent orphaned dirs accumulating
-    if job_output_dir.exists():
-        shutil.rmtree(job_output_dir)
-    return True
+            # Clean up output directory to prevent orphaned dirs accumulating
+            if job_output_dir.exists():
+                shutil.rmtree(job_output_dir)
+            return True
+    return False
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
@@ -884,7 +966,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
     """
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
@@ -967,7 +1049,7 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         for job in jobs:
             if job["id"] == job_id:
@@ -992,12 +1074,12 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     the job is fast-forwarded to the next future run instead of firing
     immediately.  This prevents a burst of missed jobs on gateway restart.
     """
-    with _jobs_file_lock:
+    with _jobs_lock():
         return _get_due_jobs_locked()
 
 
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
-    """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
+    """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
@@ -1186,7 +1268,7 @@ def rewrite_skill_refs(
     if not consolidated and not pruned_set:
         return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
 
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         rewrites: List[Dict[str, Any]] = []
         changed = False

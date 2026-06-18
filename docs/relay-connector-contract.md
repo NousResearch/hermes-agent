@@ -61,10 +61,34 @@ live platform adapter's capability methods.
 ## 3. Inbound: `MessageEvent` envelope
 
 The connector normalizes each platform wire event into a `MessageEvent`
-(`gateway/platforms/base.py`) and delivers it to the gateway's inbound handler.
-The gateway keys the session via `build_session_key()` from the embedded
-`SessionSource` — so populating the right discriminators is the single
-highest-correctness responsibility of the connector.
+(`gateway/platforms/base.py`) and delivers it to the gateway. **Inbound is
+delivered over a signed HTTP POST, not the outbound `/relay` WebSocket** (see
+the transport note below). The gateway keys the session via `build_session_key()`
+from the embedded `SessionSource` — so populating the right discriminators is
+the single highest-correctness responsibility of the connector.
+
+### Inbound transport (signed HTTP POST, not the outbound WS)
+
+The gateway dials **out** to the connector's `/relay` WebSocket for the
+handshake + outbound actions (§4) + its own `/stop` egress (§5). Inbound,
+however, is delivered the other way: the connector **POSTs** the normalized
+event to the gateway's inbound endpoint (`HttpGatewayDelivery` on the connector;
+`gateway/relay/inbound_receiver.py` on the gateway). The reason is
+multi-instance: the connector instance that owns a platform's socket (and thus
+produces inbound events) is generally **not** the instance a given gateway
+dialed its outbound WS into, so inbound must target a tenant **endpoint** (which
+may load-balance across gateway instances) rather than ride one gateway's
+outbound socket. Each delivery is HMAC-signed with the per-tenant **delivery
+key** (§6.1); the gateway verifies the signature over the exact raw bytes before
+accepting the event. Two POST targets:
+
+- `POST {gatewayEndpoint}`            → `{"type":"message", "event": <MessageEvent>}`
+- `POST {gatewayEndpoint}/interrupt`  → `{"type":"interrupt", "session_key", "reason"?}` (§5)
+
+> An earlier draft of this contract delivered inbound over the WS `inbound`
+> frame. That only works single-instance and predates the multi-instance
+> socket-ownership + channel-auth model; the signed-HTTP path above is the
+> shipped design.
 
 ### SessionSource fields (the wire surface)
 
@@ -151,14 +175,16 @@ gateway holds zero capability material). Source of truth:
 ## 5. Interrupt (`/stop`) routing
 
 - **Gateway → connector:** `send_interrupt(session_key, reason?)` egresses a
-  mid-turn `/stop`. The connector MUST forward it down the socket owned by the
+  mid-turn `/stop` over the outbound WS. The connector MUST forward it to the
   gateway instance running that `session_key` (the routing invariant).
-- **Connector → gateway:** an inbound interrupt for a `session_key` is bridged
-  by the adapter's `on_interrupt(session_key, chat_id)` into the existing
-  per-session interrupt mechanism, cancelling exactly that turn (siblings
-  untouched).
+- **Connector → gateway:** an inbound interrupt for a `session_key` is delivered
+  as a **signed HTTP POST** to `{gatewayEndpoint}/interrupt` (§3 transport note),
+  and bridged by the adapter's `on_interrupt(session_key, chat_id)` into the
+  existing per-session interrupt mechanism, cancelling exactly that turn
+  (siblings untouched).
 
-The interrupt rides the same per-turn bidirectional socket as inbound/outbound.
+The gateway→connector `/stop` rides the outbound WS; the connector→gateway
+interrupt rides the same signed-HTTP inbound path as a normalized event.
 
 ---
 
@@ -200,6 +226,27 @@ sanitized event and the gateway trusts it. This also unifies the passthrough and
 relay planes — both are "verify at the edge → emit a normalized event," differing
 only in transport. See `docs/capability-trust-boundary.md` (connector repo:
 `gateway-gateway`) for the full A2 rationale and the connector-side vault.
+
+### 6.1 Channel authentication (the connector⇄gateway link itself)
+
+A2 makes the connector the sole holder of platform secrets while the gateway may
+be **customer-managed and internet-exposed**, so the connector⇄gateway channel
+is itself authenticated. The gateway holds two enrollment-issued credentials
+(`hermes gateway enroll` → connector `/relay/enroll`): a **per-gateway secret**
+and a **per-tenant delivery key**. Both are HMAC-SHA256 schemes with a
+multi-secret rotation verify list (gateway side: `gateway/relay/auth.py`;
+connector side: `src/core/relayAuthToken.ts` + `src/core/deliverySigning.ts`).
+
+| Leg | Credential | Mechanism |
+|-----|-----------|-----------|
+| Gateway → connector WS upgrade | per-gateway secret | An `Authorization` bearer header on the `/relay` upgrade. The token is `base64url(payload:exp:sig)` where `payload = gatewayId` and `sig = HMAC(payload:exp, secret)`. Connector verifies and rejects the upgrade (**close 4401**) on mismatch/absence/revocation. The authenticated tenant comes from the connector's store, never the `hello` frame. |
+| Connector → gateway inbound POST | per-tenant delivery key | Two headers: `x-relay-timestamp` (unix seconds) and `x-relay-signature` (hex `HMAC(ts.rawBody, deliveryKey)`). Gateway verifies over the **exact raw bytes** within a ±300s replay window before accepting the event; rejects **401** otherwise. |
+
+This is the **channel** authenticator — distinct from platform crypto, which the
+relay path still sheds entirely (§6). The gateway holds zero platform secrets;
+these two keys authenticate only the connector link. Full threat model +
+enrollment/rotation/kill-switch design: `docs/connector-gateway-auth-design.md`
+(connector repo).
 
 ---
 

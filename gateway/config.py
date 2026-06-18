@@ -236,6 +236,31 @@ class Platform(Enum):
 # Used to distinguish real platforms from arbitrary strings.
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
+# Platforms whose adapters fall back to a *_REQUIRE_MENTION env var when
+# ``require_mention`` is absent from PlatformConfig.extra.  When that env var
+# is already set, the shared-key YAML bridge must not copy the YAML value into
+# extra — otherwise config.yaml defaults (require_mention: true) shadow an
+# explicit .env override (MATRIX_REQUIRE_MENTION=false, etc.).  Regression for
+# #48493.
+_REQUIRE_MENTION_ENV_BY_PLATFORM: dict[Platform, str] = {
+    Platform.MATRIX: "MATRIX_REQUIRE_MENTION",
+    Platform.SLACK: "SLACK_REQUIRE_MENTION",
+    Platform.TELEGRAM: "TELEGRAM_REQUIRE_MENTION",
+    Platform.WHATSAPP: "WHATSAPP_REQUIRE_MENTION",
+    Platform.SIGNAL: "SIGNAL_REQUIRE_MENTION",
+    Platform.DINGTALK: "DINGTALK_REQUIRE_MENTION",
+    Platform.BLUEBUBBLES: "BLUEBUBBLES_REQUIRE_MENTION",
+    Platform.FEISHU: "FEISHU_REQUIRE_MENTION",
+}
+
+
+def _yaml_require_mention_bridges_to_extra(plat: Platform) -> bool:
+    """Return whether YAML ``require_mention`` may be copied into extra."""
+    env_key = _REQUIRE_MENTION_ENV_BY_PLATFORM.get(plat)
+    if env_key and os.getenv(env_key) is not None:
+        return False
+    return True
+
 
 @dataclass
 class HomeChannel:
@@ -949,7 +974,7 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
-                if "require_mention" in platform_cfg:
+                if "require_mention" in platform_cfg and _yaml_require_mention_bridges_to_extra(plat):
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]

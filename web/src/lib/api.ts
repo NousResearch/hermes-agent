@@ -411,12 +411,21 @@ export const api = {
     fetchJSON<ManagedFileReadResponse>(
       `/api/files/read?path=${encodeURIComponent(path)}`,
     ),
-  uploadFile: (path: string, dataUrl: string, overwrite = true) =>
-    fetchJSON<ManagedFileWriteResponse>("/api/files/upload", {
+  uploadFile: (path: string, file: File, overwrite = true) => {
+    // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
+    // the browser adds the multipart boundary automatically. Sending the file
+    // as base64 JSON (the old path) inflated the body ~33%, buffered the whole
+    // file in memory, and 502'd on large backup archives behind the proxy
+    // (NS-501).
+    const form = new FormData();
+    form.append("path", path);
+    form.append("overwrite", String(overwrite));
+    form.append("file", file, file.name);
+    return fetchJSON<ManagedFileWriteResponse>("/api/files/upload-stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, data_url: dataUrl, overwrite }),
-    }),
+      body: form,
+    });
+  },
   createDirectory: (path: string) =>
     fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
       method: "POST",

@@ -316,6 +316,7 @@ export interface SessionUndoResponse {
 
 export interface SessionUsageResponse {
   active_subagents?: number
+  account_lines?: string[]
   cache_read?: number
   cache_write?: number
   calls?: number

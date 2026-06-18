@@ -6159,6 +6159,29 @@ def _(rid, params: dict) -> dict:
             usage["credits_lines"] = credits
     except Exception:
         pass
+
+    # Provider account limits (openai-codex / anthropic / openrouter / zai …) —
+    # the same block the CLI and gateway /usage render. Resolved from the
+    # resident agent's provider/base_url/api_key, so it appears whenever a live
+    # agent backs the session. Fail-open: omitted on any error or when no agent
+    # is resident.
+    try:
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        if agent is not None:
+            _provider = getattr(agent, "provider", None)
+            if _provider:
+                _snapshot = fetch_account_usage(
+                    _provider,
+                    base_url=getattr(agent, "base_url", None),
+                    api_key=getattr(agent, "api_key", None),
+                )
+                if _snapshot:
+                    _account_lines = render_account_usage_lines(_snapshot)
+                    if _account_lines:
+                        usage["account_lines"] = _account_lines
+    except Exception:
+        pass
     return _ok(rid, usage)
 
 

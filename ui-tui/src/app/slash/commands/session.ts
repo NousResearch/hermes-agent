@@ -584,6 +584,13 @@ export const sessionCommands: SlashCommand[] = [
         // present, before the token panel.
         const creditsLines = r?.credits_lines ?? []
 
+        // Provider account limits (openai-codex / anthropic / openrouter / zai …) —
+        // the same block the CLI and gateway /usage render. Also agent-resolved,
+        // so it can appear before the first API call (e.g. a configured GLM key).
+        const accountLines = r?.account_lines ?? []
+        if (accountLines.length) {
+          ctx.transcript.panel('Account limits', [{ text: accountLines.join('\n') }])
+        }
         if (creditsLines.length) {
           ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
         }

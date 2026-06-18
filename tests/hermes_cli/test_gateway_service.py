@@ -118,6 +118,35 @@ class TestSystemdServiceRefresh:
             ("wait", False, None),
         ]
 
+    def test_systemd_restart_from_gateway_child_requests_async_self_restart(
+        self, monkeypatch, capsys
+    ):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_sync_hermes_home_from_systemd_unit", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=True: 4321)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: calls.append(("self", pid)) or True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, drain_timeout: calls.append(("wait", pid, drain_timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: calls.append(("systemctl", args)),
+        )
+
+        gateway_cli.systemd_restart()
+
+        assert calls == [("self", 4321)]
+        assert "Service restart requested" in capsys.readouterr().out
+
     def test_systemd_stop_marks_running_gateway_as_planned_stop(self, monkeypatch):
         calls = []
         markers = []

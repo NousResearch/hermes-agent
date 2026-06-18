@@ -3096,6 +3096,16 @@ def systemd_restart(system: bool = False):
         svc = get_service_name()
         drain_timeout = _get_restart_drain_timeout()
 
+        # When `hermes gateway restart` is invoked from a gateway-handled
+        # terminal tool call, the service PID is an ancestor of this CLI
+        # process. Waiting synchronously for that ancestor to exit deadlocks:
+        # the gateway is draining this very agent while this command is
+        # waiting for the gateway to finish draining. Hand the restart request
+        # to the gateway and return so the active agent can finish normally.
+        if _request_gateway_self_restart(pid):
+            print("✓ Service restart requested")
+            return
+
         print(f"⏳ {scope_label} service restarting gracefully (PID {pid})...")
         if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
             # The gateway exits with code 75 for a planned service restart.

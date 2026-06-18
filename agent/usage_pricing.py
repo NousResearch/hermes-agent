@@ -870,10 +870,10 @@ def has_known_pricing(
 
 def format_duration_compact(seconds: float) -> str:
     if seconds < 60:
-        return f"{seconds:.0f}s"
+        return f"{int(seconds)}s"
     minutes = seconds / 60
     if minutes < 60:
-        return f"{minutes:.0f}m"
+        return f"{int(minutes)}m"
     hours = minutes / 60
     if hours < 24:
         remaining_min = int(minutes % 60)

@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RUN = REPO_ROOT / "docker" / "s6-rc.d" / "dashboard" / "run"
 MAIN_WRAPPER = REPO_ROOT / "docker" / "main-wrapper.sh"
+STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"
 
 
 def test_main_wrapper_preserves_docker_workdir() -> None:
@@ -77,3 +78,14 @@ def test_dashboard_run_does_not_derive_insecure_from_bind_host() -> None:
         assert truthy in text, (
             f"HERMES_DASHBOARD_INSECURE should accept truthy value {truthy!r}"
         )
+
+
+def test_stage2_hook_repairs_profiles_and_cron_ownership_on_every_boot() -> None:
+    """profiles/ and cron/ must both be reclaimed after root-context writes."""
+    text = STAGE2_HOOK.read_text(encoding="utf-8")
+
+    assert 'if [ -d "$HERMES_HOME/profiles" ]; then' in text
+    assert 'chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true' in text
+
+    assert 'if [ -d "$HERMES_HOME/cron" ]; then' in text
+    assert 'chown -R hermes:hermes "$HERMES_HOME/cron" 2>/dev/null || true' in text

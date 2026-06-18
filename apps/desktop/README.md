@@ -34,7 +34,7 @@ It builds and launches the GUI against your existing install — same config, ke
 
 ### Prebuilt installers
 
-Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/desktop).
+Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/).
 
 ---
 
@@ -93,7 +93,7 @@ Run before opening a PR (lint may surface pre-existing warnings but must exit cl
 
 ```bash
 npm run fix
-npm run type-check
+npm run typecheck
 npm run lint
 npm run test:desktop:all
 ```

@@ -23,7 +23,7 @@ def build_dashboard_parser(
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
     )
     dashboard_parser.add_argument(
-        "--port", type=int, default=9119, help="Port (default 9119)"
+        "--port", type=int, default=9119, help="Port (default 9119, 0 for auto-assign by OS)"
     )
     dashboard_parser.add_argument(
         "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
@@ -44,6 +44,26 @@ def build_dashboard_parser(
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
             "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
+    )
+    dashboard_parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help=(
+            "When launched from a named profile (e.g. `worker dashboard`), run "
+            "a dedicated dashboard server scoped to that profile instead of "
+            "routing to the machine dashboard. Default behavior is unified: "
+            "profile launches attach to (or start) ONE machine-level dashboard "
+            "and preselect the profile in the UI's profile switcher."
+        ),
+    )
+    # Internal flag set by the unified-launch re-exec (cmd_dashboard) to
+    # preselect the launching profile in the SPA switcher. Hidden from
+    # --help: users get this behavior automatically via `<profile> dashboard`.
+    dashboard_parser.add_argument(
+        "--open-profile",
+        dest="open_profile",
+        default="",
+        help=argparse.SUPPRESS,
     )
     # Lifecycle flags — mutually exclusive with each other and with the
     # start-a-server flags above (if both are passed, --stop / --status win

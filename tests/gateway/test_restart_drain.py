@@ -197,8 +197,10 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     runner, _adapter = make_restart_runner()
     popen_calls = []
 
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
 
     def fake_popen(cmd, **kwargs):
@@ -215,6 +217,72 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]
     assert kwargs["start_new_session"] is True
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    # The watcher must NOT inherit the gateway marker, or the CLI's
+    # self-restart loop guard refuses to run `hermes gateway restart`.
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+
+
+def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    pth_extra = tmp_path / "pywin32_system32"
+    site_packages.mkdir(parents=True)
+    pth_extra.mkdir()
+    (site_packages / "pywin32.pth").write_text(str(pth_extra), encoding="utf-8")
+    project_root = str(gateway_run.Path(gateway_run.__file__).resolve().parent.parent)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+    monkeypatch.setenv("PYTHONPATH", "already-there")
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert gateway_run.sys.path[:2] == [project_root, str(site_packages)]
+    assert str(pth_extra) in gateway_run.sys.path
+    assert gateway_run.os.environ["VIRTUAL_ENV"] == str(venv_dir.resolve())
+    pythonpath = gateway_run.os.environ["PYTHONPATH"].split(gateway_run.os.pathsep)
+    assert pythonpath[:3] == [project_root, str(site_packages), "already-there"]
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {},
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[-3:] == ["hermes", "gateway", "restart"]
+    assert kwargs["env"].get("_HERMES_GATEWAY") is None
+    assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
+    assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
 

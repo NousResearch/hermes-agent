@@ -75,6 +75,33 @@ def agent():
         return a
 
 
+def test_persist_user_message_override_rewrites_text_turns(agent):
+    messages = [{"role": "user", "content": "API-only synthetic prefix\nhello"}]
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = "hello"
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert messages == [{"role": "user", "content": "hello"}]
+
+
+def test_persist_user_message_override_preserves_multimodal_turns(agent):
+    multimodal_content = [
+        {"type": "text", "text": "What color is this?"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        },
+    ]
+    messages = [{"role": "user", "content": multimodal_content}]
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = "What color is this? [Image attachment]"
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert messages == [{"role": "user", "content": multimodal_content}]
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""
@@ -4660,6 +4687,47 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
 
+    def test_content_filter_refusal_surfaced_not_retried(self, agent):
+        """A model refusal must be surfaced immediately, NOT laundered into
+        the empty-response retry loop and reported as "rate limited" / "no
+        content after retries".
+
+        Regression: running a Claude refusal through an OpenAI-compatible
+        portal (Nous Portal fronting Anthropic) returns ``message.refusal``
+        with empty content. The transport now promotes that to a
+        ``content_filter`` finish reason and the loop surfaces it as a terminal
+        ``content_policy_blocked`` result instead of retrying a deterministic
+        refusal three times.
+        """
+        self._setup_agent(agent)
+        refusal_resp = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None, reasoning=None,
+                    reasoning_content=None, refusal="I won't help with that.",
+                ),
+                finish_reason="stop",
+            )],
+            model="test/model",
+            usage=None,
+            id="resp_1",
+        )
+        agent.client.chat.completions.create.return_value = refusal_resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("please do something disallowed")
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "content_policy_blocked" in result.get("error", "")
+        # The model's refusal text is surfaced to the user, not swallowed.
+        assert "I won't help with that." in (result.get("final_response") or "")
+        # Crucial regression guard: a deterministic refusal is NOT retried —
+        # exactly one API call, no empty-response retry loop.
+        assert agent.client.chat.completions.create.call_count == 1
+
     def test_api_error_returns_gracefully_after_retries(self, agent):
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
@@ -5062,6 +5130,41 @@ class TestMaxTokensParam:
         agent.base_url = "https://api.githubcopilot.com/chat/completions"
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
+
+    # ── Model-name fallback for non-openai.com endpoints serving newer families ──
+
+    def test_returns_max_completion_tokens_for_gpt5_on_custom_endpoint(self, agent):
+        """Custom OpenAI-compatible endpoint serving gpt-5.x must also use
+        max_completion_tokens — otherwise the server 400s on max_tokens."""
+        agent.base_url = "https://my-gateway.example.com/v1"
+        agent.model = "gpt-5.4"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_gpt4o_on_openrouter(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "openai/gpt-4o-mini"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_o1_on_custom_endpoint(self, agent):
+        agent.base_url = "https://custom.example.com/v1"
+        agent.model = "o1-preview"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_tokens_for_classic_gpt4_on_openrouter(self, agent):
+        """Classic gpt-4 (non-omni) still uses max_tokens. Don't over-match."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "openai/gpt-4-turbo"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_tokens": 4096}
+
+    def test_returns_max_tokens_for_llama_on_local(self, agent):
+        agent.base_url = "http://localhost:11434/v1"
+        agent.model = "llama3"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_tokens": 4096}
 
 
 class TestGpt5ApiModeRouting:

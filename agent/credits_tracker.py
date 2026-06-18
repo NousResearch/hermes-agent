@@ -194,16 +194,70 @@ class AgentNotice:
     id: Optional[str] = None
 
 
+# ── is_free_tier_model (local-data-only free-model check) ────────────────────
+
+
+def is_free_tier_model(model: str, base_url: str = "") -> bool:
+    """Return True when *model* is a Nous free-tier model, using ONLY local data.
+
+    Two signals, both zero-network:
+
+    1. The ``:free`` suffix — the canonical Nous free SKU marker (e.g.
+       ``nvidia/nemotron-3-ultra:free``). Free by construction on the API side
+       (spend is forced to 0 for ``:free`` ids).
+    2. A peek into the in-process pricing cache in ``hermes_cli.models``
+       (populated when the model picker fetched ``/v1/models`` pricing for
+       *base_url*). PEEK ONLY — a cache miss never triggers a fetch. This is
+       CLI/TUI-session best-effort: gateway sessions never run the picker's
+       pricing fetch, so suppression there rests entirely on the ``:free``
+       suffix (which all Nous free SKUs carry).
+
+    Fail-open to False (the depleted notice still shows) on any error: wrongly
+    showing the warning is recoverable noise; wrongly hiding it on a paid model
+    would mask a real billing block.
+    """
+    if not model:
+        return False
+    if model.endswith(":free"):
+        return True
+    if not base_url:
+        return False
+    try:
+        from hermes_cli.models import _is_model_free, _pricing_cache
+
+        # Mirror get_pricing_for_provider's key normalization: the agent's
+        # Nous base_url is /v1-suffixed (https://inference-api.nousresearch.com/v1)
+        # but the picker keys _pricing_cache on the pre-/v1 root.
+        key = base_url.rstrip("/")
+        if key.endswith("/v1"):
+            key = key[:-3].rstrip("/")
+        pricing = _pricing_cache.get(key)
+        if not pricing:
+            return False
+        return _is_model_free(model, pricing)
+    except Exception:
+        return False
+
+
 # ── evaluate_credits_notices (pure reconciliation function) ──────────────────
 
 
 def evaluate_credits_notices(
     state: CreditsState,
     latch: dict,
+    *,
+    model_is_free: bool = False,
 ) -> tuple[list[AgentNotice], list[str]]:
     """Reconcile credits notices against the latch. Mutates ``latch`` IN PLACE.
 
     latch = {"active": set[str], "seen_below_90": bool, "usage_band": Optional[int]}.
+
+    ``model_is_free``: True when the session's active model is a Nous free-tier
+    model (see :func:`is_free_tier_model`). Suppresses the ``credits.depleted``
+    notice — a depleted account on a free model can keep inferencing, so the
+    error banner is noise (and confuses free-tier users who never had credits).
+    Suppression does NOT emit the "restored" success notice; that fires only on
+    a genuine ``paid_access`` flip back to True.
 
     Returns ``(to_show: list[AgentNotice], to_clear: list[str])``.
     Caller emits to_clear FIRST, then to_show.
@@ -232,6 +286,16 @@ def evaluate_credits_notices(
         for band in CREDITS_USAGE_BANDS:  # ascending → last match wins = highest
             if uf >= band[0]:
                 current_band = band
+    # Top-up suppression: when the account holds purchased (top-up) credits,
+    # the subscription-cap gauge is the wrong denominator — warning "90% used"
+    # at a user sitting on $50 of top-up is noise (and it previously stuck
+    # PERMANENTLY alongside grant_spent at >=100%). Suppress the usage band
+    # entirely; the cap-reached case is covered by the grant_spent info notice
+    # below, which already names the remaining top-up balance. A top-up landing
+    # mid-session flips current_band → None and the clear path below removes
+    # any showing band line.
+    if state.purchased_micros > 0:
+        current_band = None
     grant_cond = (
         state.denominator_kind == "subscription_cap"
         and uf is not None
@@ -284,10 +348,14 @@ def evaluate_credits_notices(
         active.discard("credits.grant_spent")
 
     # ── depleted ─────────────────────────────────────────────────────────────
-    if depleted_cond and "credits.depleted" not in active:
+    # Suppressed while the active model is free: inference still works there,
+    # so the error banner would just alarm users (free-tier users especially,
+    # who never had paid credits to "lose").
+    show_depleted = depleted_cond and not model_is_free
+    if show_depleted and "credits.depleted" not in active:
         to_show.append(
             AgentNotice(
-                text="✕ Credit access paused · run /usage for balance",
+                text="✕ Credit access paused · run /credits to top up",
                 level="error",
                 kind=CREDITS_NOTICE_KIND,
                 key="credits.depleted",
@@ -295,20 +363,23 @@ def evaluate_credits_notices(
             )
         )
         active.add("credits.depleted")
-    elif "credits.depleted" in active and not depleted_cond:
+    elif "credits.depleted" in active and not show_depleted:
         to_clear.append("credits.depleted")
         active.discard("credits.depleted")
-        # Recovery: also emit the success notice
-        to_show.append(
-            AgentNotice(
-                text="✓ Credit access restored",
-                level="success",
-                kind="ttl",
-                ttl_ms=CREDITS_RESTORED_TTL_MS,
-                key="credits.restored",
-                id="credits.restored",
+        if not depleted_cond:
+            # Genuine recovery (paid_access flipped back True): also emit the
+            # success notice. A clear caused by switching to a free model while
+            # still depleted must NOT claim access was restored.
+            to_show.append(
+                AgentNotice(
+                    text="✓ Credit access restored",
+                    level="success",
+                    kind="ttl",
+                    ttl_ms=CREDITS_RESTORED_TTL_MS,
+                    key="credits.restored",
+                    id="credits.restored",
+                )
             )
-        )
 
     return (to_show, to_clear)
 

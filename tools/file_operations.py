@@ -30,7 +30,7 @@ import re
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
 
@@ -241,21 +241,67 @@ class SearchResult:
     counts: Dict[str, int] = field(default_factory=dict)
     total_count: int = 0
     truncated: bool = False
+    limit_reason: Optional[str] = None
     error: Optional[str] = None
     
-    def to_dict(self) -> dict:
-        result = {"total_count": self.total_count}
+    # Densify content-mode matches into a path-grouped text block above this
+    # many matches. Below it, the verbose array is already compact enough that
+    # the path-grouping header costs more than it saves.
+    _DENSIFY_MIN_MATCHES: ClassVar[int] = 5
+
+    def _densify_matches(self) -> Optional[str]:
+        """Render content-mode matches as a compact, path-grouped text block.
+
+        The verbose form repeats the ``{"path","line","content"}`` keys and the
+        full path string for every match. This groups consecutive matches by
+        path (path printed once, then ``  <line>: <content>`` rows), which is
+        lossless — every path, line number, and content byte is preserved — and
+        readable by the model without any decode step.
+
+        Returns ``None`` when densification is not worthwhile (too few matches),
+        so the caller falls back to the verbose array.
+        """
+        if len(self.matches) < self._DENSIFY_MIN_MATCHES:
+            return None
+        # ripgrep emits matches path-ordered (all hits in a file are
+        # consecutive), so grouping on path change collapses each file to a
+        # single header without reordering results.
+        lines: list[str] = []
+        current_path: Optional[str] = None
+        for m in self.matches:
+            if m.path != current_path:
+                lines.append(m.path)
+                current_path = m.path
+            # rstrip trailing whitespace only; leading indentation in code is
+            # meaningful and preserved verbatim after the "<line>: " prefix.
+            lines.append(f"  {m.line_number}: {m.content.rstrip()}")
+        return "\n".join(lines)
+
+    def to_dict(self, densify: bool = False) -> dict:
+        result: dict[str, object] = {"total_count": self.total_count}
         if self.matches:
-            result["matches"] = [
-                {"path": m.path, "line": m.line_number, "content": m.content}
-                for m in self.matches
-            ]
+            dense = self._densify_matches() if densify else None
+            if dense is not None:
+                # Self-describing: the format key tells the model how to read
+                # the block so it never has to guess the shape.
+                result["matches_format"] = (
+                    "path-grouped: each file path on its own line, followed by "
+                    "indented '<line>: <content>' rows for matches in that file"
+                )
+                result["matches_text"] = dense
+            else:
+                result["matches"] = [
+                    {"path": m.path, "line": m.line_number, "content": m.content}
+                    for m in self.matches
+                ]
         if self.files:
             result["files"] = self.files
         if self.counts:
             result["counts"] = self.counts
         if self.truncated:
             result["truncated"] = True
+        if self.limit_reason:
+            result["limit_reason"] = self.limit_reason
         if self.error:
             result["error"] = self.error
         return result
@@ -283,6 +329,16 @@ class ExecuteResult:
     """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
+
+
+_SEARCH_TIMEOUT_MARKER_RE = re.compile(r"\n?\[Command timed out after \d+s\]\s*$")
+
+
+def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]:
+    """Return stdout cleaned for parsing and a limit reason for search timeouts."""
+    if result.exit_code == 124:
+        return _SEARCH_TIMEOUT_MARKER_RE.sub("", result.stdout), "search_timeout"
+    return result.stdout, None
 
 
 def _split_tool_diagnostics(output: str) -> tuple[str, str]:
@@ -1967,15 +2023,17 @@ class ShellFileOperations(FileOperations):
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
 
-        if not result.stdout.strip():
+        if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
+            stdout, limit_reason = _search_stdout_and_limit(result)
 
         files = []
-        for line in result.stdout.strip().split('\n'):
+        for line in stdout.strip().split('\n'):
             if not line:
                 continue
             parts = line.split(' ', 1)
@@ -2003,7 +2061,9 @@ class ShellFileOperations(FileOperations):
 
         return SearchResult(
             files=files,
-            total_count=len(files)
+            total_count=len(files),
+            truncated=bool(limit_reason),
+            limit_reason=limit_reason,
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
@@ -2029,9 +2089,10 @@ class ShellFileOperations(FileOperations):
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
-        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        stdout, limit_reason = _search_stdout_and_limit(result)
+        all_files = [f for f in stdout.strip().split('\n') if f]
 
-        if not all_files:
+        if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
@@ -2039,14 +2100,16 @@ class ShellFileOperations(FileOperations):
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            stdout, limit_reason = _search_stdout_and_limit(result)
+            all_files = [f for f in stdout.strip().split('\n') if f]
 
         page = all_files[offset:offset + limit]
 
         return SearchResult(
             files=page,
             total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit,
+            truncated=len(all_files) >= fetch_limit or bool(limit_reason),
+            limit_reason=limit_reason,
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
@@ -2102,12 +2165,13 @@ class ShellFileOperations(FileOperations):
         # introduce false errors on a successful-but-truncated search.
         cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
 
         # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
         # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
         # are interleaved with match output. Split them out: diagnostics must
         # not be parsed as matches, and on a hard error they ARE the message.
-        diagnostics, payload = _split_tool_diagnostics(result.stdout)
+        diagnostics, payload = _split_tool_diagnostics(stdout)
 
         # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
         # even on partial errors (e.g. one unreadable file in a tree that
@@ -2124,7 +2188,12 @@ class ShellFileOperations(FileOperations):
             all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
-            return SearchResult(files=page, total_count=total)
+            return SearchResult(
+                files=page,
+                total_count=total,
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         elif output_mode == "count":
             counts = {}
@@ -2136,7 +2205,12 @@ class ShellFileOperations(FileOperations):
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
-            return SearchResult(counts=counts, total_count=sum(counts.values()))
+            return SearchResult(
+                counts=counts,
+                total_count=sum(counts.values()),
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         else:
             # Parse content matches and context lines.
@@ -2177,7 +2251,8 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit
+                truncated=total > offset + limit or bool(limit_reason),
+                limit_reason=limit_reason,
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
@@ -2218,12 +2293,13 @@ class ShellFileOperations(FileOperations):
         # pipefail does not turn truncated results into false errors.
         cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
 
         # _exec merges stderr into stdout, so grep's diagnostic lines
         # ("grep: <file>: <error>") are interleaved with matches. Split them
         # out so they're never parsed as matches and so a hard error has a
         # clean message.
-        diagnostics, payload = _split_tool_diagnostics(result.stdout)
+        diagnostics, payload = _split_tool_diagnostics(stdout)
 
         # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
         # returns 2 on partial errors (e.g. an unreadable file) even when
@@ -2238,7 +2314,12 @@ class ShellFileOperations(FileOperations):
             all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
-            return SearchResult(files=page, total_count=total)
+            return SearchResult(
+                files=page,
+                total_count=total,
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         elif output_mode == "count":
             counts = {}
@@ -2250,7 +2331,12 @@ class ShellFileOperations(FileOperations):
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
-            return SearchResult(counts=counts, total_count=sum(counts.values()))
+            return SearchResult(
+                counts=counts,
+                total_count=sum(counts.values()),
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         else:
             # grep match lines:   "file:lineno:content" (colon)
@@ -2288,5 +2374,6 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit
+                truncated=total > offset + limit or bool(limit_reason),
+                limit_reason=limit_reason,
             )

@@ -29,8 +29,9 @@ def test_groups_reference_real_canonical_slugs():
     """Every group member must be an actual provider slug. Guards typos and
     stale group entries after a provider is renamed/removed."""
     canonical = {p.slug for p in CANONICAL_PROVIDERS}
-    for gid, (label, members) in PROVIDER_GROUPS.items():
+    for gid, (label, desc, members) in PROVIDER_GROUPS.items():
         assert label, f"group {gid} has empty label"
+        assert desc, f"group {gid} has empty description"
         assert len(members) >= 1
         for m in members:
             assert m in canonical, f"group {gid} member {m!r} is not a canonical slug"
@@ -39,14 +40,14 @@ def test_groups_reference_real_canonical_slugs():
 def test_member_slugs_are_unique_across_groups():
     """A slug may belong to at most one group."""
     seen = {}
-    for gid, (_label, members) in PROVIDER_GROUPS.items():
+    for gid, (_label, _desc, members) in PROVIDER_GROUPS.items():
         for m in members:
             assert m not in seen, f"{m!r} in both {seen[m]!r} and {gid!r}"
             seen[m] = gid
 
 
 def test_reverse_index_matches_groups():
-    for gid, (_label, members) in PROVIDER_GROUPS.items():
+    for gid, (_label, _desc, members) in PROVIDER_GROUPS.items():
         for m in members:
             assert provider_group_for_slug(m) == gid
     assert provider_group_for_slug("openrouter") == ""
@@ -66,6 +67,9 @@ def test_multi_member_group_folds_to_one_row():
     assert row["kind"] == "group"
     assert row["group_id"] == "minimax"
     assert row["members"] == ["minimax", "minimax-oauth", "minimax-cn"]
+    # group rows carry the short top-level description from PROVIDER_GROUPS
+    assert row["description"] == PROVIDER_GROUPS["minimax"][1]
+    assert row["description"]
 
 
 def test_group_appears_at_first_member_position():

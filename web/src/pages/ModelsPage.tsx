@@ -26,7 +26,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -95,11 +95,17 @@ function TokenBar({
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
-  const segments = [
-    { value: cacheRead, color: "bg-blue-400/60", dotColor: "bg-blue-400", label: "Cache Read" },
-    { value: reasoning, color: "bg-purple-400/60", dotColor: "bg-purple-400", label: "Reasoning" },
-    { value: input, color: "bg-[#ffe6cb]/70", dotColor: "bg-[#ffe6cb]", label: "Input" },
-    { value: output, color: "bg-emerald-500/70", dotColor: "bg-emerald-500", label: "Output" },
+  // Segments carry a CSS color value (hex or `var(--token)`) rather than
+  // a Tailwind class so the input/output series can pick up the active
+  // theme's `--series-*-token` vars — see `themes/types.ts`
+  // `ThemeSeriesColors`. The /60–/70 fade on the bar is applied via
+  // color-mix on the same value so themes don't need to ship two
+  // separate hex literals.
+  const segments: Array<{ color: string; label: string; value: number }> = [
+    { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
+    { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
+    { value: input, color: "var(--series-input-token)", label: "Input" },
+    { value: output, color: "var(--series-output-token)", label: "Output" },
   ].filter((s) => s.value > 0);
 
   return (
@@ -109,8 +115,11 @@ function TokenBar({
         {segments.map((s, i) => (
           <div
             key={i}
-            className={`${s.color} relative flex items-center transition-all duration-300`}
-            style={{ width: `${(s.value / total) * 100}%` }}
+            className="relative flex items-center transition-all duration-300"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${s.color} 70%, transparent)`,
+              width: `${(s.value / total) * 100}%`,
+            }}
           >
             {/* Stepped fill pattern overlay */}
             <div
@@ -128,7 +137,10 @@ function TokenBar({
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-text-secondary">
         {segments.map((s, i) => (
           <span key={i} className="flex items-center gap-1">
-            <span className={`inline-block h-1.5 w-1.5 rounded-full ${s.dotColor}`} />
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: s.color }}
+            />
             {s.label} {formatTokens(s.value)}
           </span>
         ))}
@@ -152,7 +164,7 @@ function CapabilityBadges({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {capabilities.supports_tools && (
-        <span className="inline-flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+        <span className="inline-flex items-center gap-1 bg-success/10 px-1.5 py-0.5 text-xs font-medium text-success">
           <Wrench className="h-2.5 w-2.5" /> Tools
         </span>
       )}
@@ -197,10 +209,16 @@ function UseAsMenu({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    message: string;
+    scope: "main" | "auxiliary";
+    task: string;
+  } | null>(null);
 
   const assign = async (
     scope: "main" | "auxiliary",
     task: string,
+    confirmExpensiveModel = false,
   ) => {
     if (!provider || !model) {
       setError("Missing provider/model");
@@ -209,7 +227,23 @@ function UseAsMenu({
     setBusy(true);
     setError(null);
     try {
-      await api.setModelAssignment({ scope, provider, model, task });
+      const result = await api.setModelAssignment({
+        confirm_expensive_model: confirmExpensiveModel,
+        scope,
+        provider,
+        model,
+        task,
+      });
+      if (result.confirm_required) {
+        setPendingConfirm({
+          scope,
+          task,
+          message:
+            result.confirm_message ||
+            "This model has unusually high known pricing.",
+        });
+        return;
+      }
       onAssigned();
       setOpen(false);
     } catch (e) {
@@ -298,6 +332,22 @@ function UseAsMenu({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={!!pendingConfirm}
+        title="Expensive Model Warning"
+        description={pendingConfirm?.message}
+        destructive
+        confirmLabel="Switch anyway"
+        cancelLabel="Cancel"
+        loading={busy}
+        onCancel={() => setPendingConfirm(null)}
+        onConfirm={() => {
+          const pending = pendingConfirm;
+          if (!pending) return;
+          setPendingConfirm(null);
+          void assign(pending.scope, pending.task, true);
+        }}
+      />
     </div>
   );
 }
@@ -607,14 +657,16 @@ function AuxiliaryTasksModal({
               AUX_TASKS.find((t) => t.key === picker.task)?.label ??
               picker.task
             }`}
-            onApply={async ({ provider, model }) => {
-              await api.setModelAssignment({
+            onApply={async ({ provider, model, confirmExpensiveModel }) => {
+              const result = await api.setModelAssignment({
+                confirm_expensive_model: confirmExpensiveModel,
                 scope: "auxiliary",
                 task: picker.task,
                 provider,
                 model,
               });
-              onSaved();
+              if (!result.confirm_required) onSaved();
+              return result;
             }}
             onClose={() => setPicker(null)}
           />
@@ -654,14 +706,23 @@ function ModelSettingsPanel({
     task,
     provider,
     model,
+    confirmExpensiveModel,
   }: {
+    confirmExpensiveModel?: boolean;
     scope: "main" | "auxiliary";
     task: string;
     provider: string;
     model: string;
   }) => {
-    await api.setModelAssignment({ scope, task, provider, model });
-    onSaved();
+    const result = await api.setModelAssignment({
+      confirm_expensive_model: confirmExpensiveModel,
+      scope,
+      task,
+      provider,
+      model,
+    });
+    if (!result.confirm_required) onSaved();
+    return result;
   };
 
   // Count how many aux tasks have overrides
@@ -737,14 +798,15 @@ function ModelSettingsPanel({
             loader={api.getModelOptions}
             alwaysGlobal
             title="Set Main Model"
-            onApply={async ({ provider, model }) => {
-              await applyAssignment({
+            onApply={({ provider, model, confirmExpensiveModel }) =>
+              applyAssignment({
+                confirmExpensiveModel,
                 scope: "main",
                 task: "",
                 provider,
                 model,
-              });
-            }}
+              })
+            }
             onClose={() => setPicker(null)}
           />
         )}
@@ -808,23 +870,38 @@ export default function ModelsPage() {
       .finally(() => setLoading(false));
   }, [days]);
 
-  const onAssigned = useCallback(() => {
-    // Reload aux state after any assignment change.
+  const refreshAux = useCallback(() => {
     api
       .getAuxiliaryModels()
       .then(setAux)
       .catch(() => {});
-    setSaveKey((k) => k + 1);
   }, []);
 
+  const onAssigned = useCallback(() => {
+    // Reload aux state after any assignment change.
+    refreshAux();
+    setSaveKey((k) => k + 1);
+  }, [refreshAux]);
+
   useLayoutEffect(() => {
-    const periodLabel =
-      PERIODS.find((p) => p.days === days)?.label ?? `${days}d`;
+    // Period selector + refresh both live in afterTitle so the controls
+    // sit immediately next to the page title instead of being pinned to
+    // the far-right `end` slot. The active period is conveyed by the
+    // filled (non-outlined) button — no redundant period badge.
     setAfterTitle(
-      <span className="flex items-center gap-1.5">
-        <Badge tone="secondary" className="text-xs">
-          {periodLabel}
-        </Badge>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {PERIODS.map((p) => (
+          <Button
+            key={p.label}
+            type="button"
+            size="sm"
+            outlined={days !== p.days}
+            onClick={() => setDays(p.days)}
+            className="uppercase"
+          >
+            {p.label}
+          </Button>
+        ))}
         <Button
           type="button"
           ghost
@@ -836,26 +913,9 @@ export default function ModelsPage() {
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
-      </span>,
-    );
-    setEnd(
-      <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {PERIODS.map((p) => (
-            <Button
-              key={p.label}
-              type="button"
-              size="sm"
-              outlined={days !== p.days}
-              onClick={() => setDays(p.days)}
-              className="uppercase"
-            >
-              {p.label}
-            </Button>
-          ))}
-        </div>
       </div>,
     );
+    setEnd(null);
     return () => {
       setAfterTitle(null);
       setEnd(null);
@@ -865,6 +925,24 @@ export default function ModelsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Model assignments can change outside this page (config editor, chat
+  // /model --global, CLI), so refetch them when the page regains focus.
+  useEffect(() => {
+    let last = 0;
+    const onFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - last < 1000) return;
+      last = Date.now();
+      refreshAux();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [refreshAux]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">

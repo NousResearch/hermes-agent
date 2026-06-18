@@ -113,6 +113,15 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
 
+    def test_custom_base_url_strips_trailing_v1(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://proxy.example.com/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
@@ -1213,6 +1222,73 @@ class TestBuildAnthropicKwargs:
         assert _supports_fast_mode("claude-haiku-4-5") is False
         assert _supports_fast_mode("") is False
 
+    def test_fable_class_models_route_as_adaptive_thinking(self):
+        """Invariant: unknown/new Claude models default to the modern (4.7+)
+        contract — adaptive thinking, xhigh-capable, sampling-params-forbidden —
+        without any per-model code change. Named models (claude-fable-5) and
+        hypothetical future ones must all classify modern; only the explicit
+        legacy list stays on the manual path.
+        """
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+            _get_anthropic_max_output,
+        )
+        # New / unknown Claude models → modern contract by default.
+        for m in (
+            "claude-fable-5",
+            "anthropic/claude-fable-5",
+            "claude-saga-2",            # hypothetical future named model
+            "anthropic/claude-opus-9",  # hypothetical future numbered model
+        ):
+            assert _supports_adaptive_thinking(m) is True, m
+            assert _supports_xhigh_effort(m) is True, m
+            assert _forbids_sampling_params(m) is True, m
+        # 1M-context reasoning model → highest output ceiling.
+        assert _get_anthropic_max_output("anthropic/claude-fable-5") == 128_000
+
+    def test_legacy_claude_stays_on_manual_thinking(self):
+        """Older Claude families keep the legacy manual-thinking contract."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _forbids_sampling_params,
+        )
+        for m in (
+            "claude-3-5-sonnet",
+            "claude-3-7-sonnet",
+            "anthropic/claude-opus-4.5",
+            "anthropic/claude-sonnet-4.5",
+            "claude-haiku-4-5",
+        ):
+            assert _supports_adaptive_thinking(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
+
+    def test_claude_46_is_adaptive_but_not_xhigh_or_no_sampling(self):
+        """4.6 is adaptive, but predates xhigh and still accepts sampling."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+        )
+        for m in ("claude-opus-4.6", "claude-sonnet-4-6"):
+            assert _supports_adaptive_thinking(m) is True, m
+            assert _supports_xhigh_effort(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
+
+    def test_non_claude_anthropic_models_use_manual_path(self):
+        """Non-Claude Anthropic-Messages models (minimax, qwen3, kimi) must not
+        be misclassified as adaptive by the default-to-modern rule."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+        )
+        for m in ("minimax-m2", "qwen3-max", "moonshotai/kimi-k2.5", "glm-4.6"):
+            assert _supports_adaptive_thinking(m) is False, m
+            assert _supports_xhigh_effort(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
+
     def test_fast_mode_omitted_for_unsupported_model(self):
         """fast_mode=True on Opus 4.7 must NOT inject speed=fast (API 400s)."""
         kwargs = build_anthropic_kwargs(
@@ -1826,6 +1902,79 @@ class TestThinkingBlockSignatureManagement:
         ]
         assert len(last_thinking) == 1
         assert last_thinking[0]["signature"] == "sig_3"
+
+    def test_orphan_stripped_tool_use_demotes_dead_signed_thinking(self):
+        """Regression: extended-thinking + interrupted parallel tool batch.
+
+        An assistant turn with a signed thinking block fires several parallel
+        tool_use blocks, but the batch is interrupted before every tool_result
+        comes back. On replay, the orphaned tool_use is stripped — which mutates
+        the turn and invalidates the thinking-block signature (it was computed
+        against the original, un-stripped content). Anthropic then rejects the
+        turn with HTTP 400 "thinking blocks in the latest assistant message
+        cannot be modified", a non-retryable error that crash-loops the gateway.
+
+        The signed thinking block on the mutated latest turn must be demoted to
+        a plain text block so the turn replays cleanly.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_kept", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_orphan", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Plan: call A and B.", "signature": "sig_dead"},
+                ],
+            },
+            # Only one of the two parallel tool_use blocks got a result back.
+            {"role": "tool", "tool_call_id": "tc_kept", "content": "result A"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        blocks = assistant["content"]
+
+        # No signed thinking block survives — the signature is dead.
+        assert not any(
+            isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+            for b in blocks
+        )
+        # The reasoning text is preserved as a text block (not silently lost).
+        text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+        assert "Plan: call A and B." in text_contents
+        # The orphaned tool_use is gone; the answered one survives.
+        tool_use_ids = [b.get("id") for b in blocks if b.get("type") == "tool_use"]
+        assert tool_use_ids == ["tc_kept"]
+        # Internal bookkeeping flag must never leak into the API payload.
+        assert "_thinking_signature_invalidated" not in assistant
+
+    def test_signed_thinking_preserved_when_no_tool_use_stripped(self):
+        """Control: an intact latest turn keeps its signed thinking verbatim.
+
+        This guards against the orphan-strip fix over-firing — when no tool_use
+        is removed, the signature is still valid and must be replayed as-is.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {"type": "thinking", "thinking": "Valid plan.", "signature": "sig_live"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result A"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        thinking = [b for b in assistant["content"] if b.get("type") == "thinking"]
+        assert len(thinking) == 1
+        assert thinking[0]["signature"] == "sig_live"
+        assert "_thinking_signature_invalidated" not in assistant
 
 
 # ---------------------------------------------------------------------------

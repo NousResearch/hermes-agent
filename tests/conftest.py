@@ -182,6 +182,8 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
+    "HERMES_CRON_SESSION",
+    "_HERMES_GATEWAY",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
     "HERMES_INFERENCE_MODEL",
@@ -728,6 +730,41 @@ def _live_system_guard(request, monkeypatch):
                 "targeting hermes/python could hit the live gateway. "
                 "Mark with @pytest.mark.live_system_guard_bypass if "
                 "intentional."
+            )
+        # Block any subprocess that would run `hermes update` (or the
+        # equivalent `python -m hermes_cli.main update`).  These commands
+        # run `git fetch origin + git pull` against the REAL checkout,
+        # overwriting files like pyproject.toml mid-test-run and corrupting
+        # every subsequent subprocess that reads them.  The corruption is
+        # especially insidious because the spawned process uses setsid/
+        # start_new_session=True, making it invisible to pytest's process
+        # tree (PPid=1) and nearly impossible to trace without explicit
+        # inotify/SHA watchdogs.  Any test that legitimately needs to exercise
+        # the update-spawn path must mock subprocess.Popen explicitly.
+        cmd_str = _cmd_to_string(cmd)
+        low = cmd_str.lower()
+        if "update" in low and (
+            # hermes update / hermes update --gateway / setsid bash -c ... hermes update
+            ("hermes" in low and "update" in low.split())
+            or
+            # python -m hermes_cli.main update --gateway
+            ("hermes_cli" in low and "update" in low.split())
+            or
+            # venv/bin/hermes update  (absolute path variant used in tests)
+            (".venv/bin/hermes" in low and "update" in low)
+        ):
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"subprocess.{name}({cmd!r}) — this command would run "
+                "`hermes update` against the real checkout, fetching "
+                "from origin and overwriting repo files (e.g. "
+                "pyproject.toml) mid-test-run. This corrupts every "
+                "subsequent subprocess in the same runner. "
+                "Mock subprocess.Popen (and subprocess.run if used) "
+                "in the test instead, or mark with "
+                "@pytest.mark.live_system_guard_bypass if genuinely "
+                "needed (e.g. an integration test testing the update "
+                "flow against a dedicated throwaway repo)."
             )
 
     def _wrap_subprocess(name, real):

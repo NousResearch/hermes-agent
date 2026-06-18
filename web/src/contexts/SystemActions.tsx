@@ -71,10 +71,26 @@ export function SystemActionsProvider({
       try {
         if (action === "restart") {
           await api.restartGateway();
+          setActiveAction(action);
         } else {
-          await api.updateHermes();
+          const resp = await api.updateHermes();
+          // Some installs cannot apply updates from inside the dashboard. The
+          // endpoint returns a structured {ok:false, message, update_command}
+          // envelope instead of spawning the action; surface that guidance
+          // rather than polling a synthetic failed action.
+          if (!resp.ok) {
+            const cmd = resp.update_command ? `  ${resp.update_command}` : "";
+            setToast({
+              type: "success",
+              message:
+                (resp.message ??
+                  "Updates don't apply from this dashboard.") +
+                cmd,
+            });
+            return;
+          }
+          setActiveAction(action);
         }
-        setActiveAction(action);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         setToast({

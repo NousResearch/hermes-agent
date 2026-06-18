@@ -5,6 +5,7 @@ configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
 
+import json
 import logging
 import os
 import re
@@ -176,6 +177,7 @@ def reap_orphan_containers(
         listing = subprocess.run(
             [docker, "ps", "-a", *filters, "--format", "{{.ID}}"],
             capture_output=True, text=True, timeout=15, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker ps failed: %s", e)
@@ -209,6 +211,7 @@ def reap_orphan_containers(
             result = subprocess.run(
                 [docker, "rm", "-f", cid],
                 capture_output=True, text=True, timeout=30,
+                stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0:
                 removed += 1
@@ -238,6 +241,7 @@ def _container_finished_at(docker_exe: str, container_id: str):
         result = subprocess.run(
             [docker_exe, "inspect", "--format", "{{.State.FinishedAt}}", container_id],
             capture_output=True, text=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker inspect %s failed: %s", container_id[:12], e)
@@ -329,8 +333,14 @@ _BASE_SECURITY_ARGS = [
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
+
+# /run is split out from _BASE_SECURITY_ARGS because s6-overlay images need it
+# mounted ``exec``: s6 stage0 later runs ``exec /run/s6/basedir/bin/init``, which
+# fails with "Permission denied" (exit 126) on a ``noexec`` mount. For all other
+# images we keep the hardened ``noexec`` default.
+_RUN_TMPFS_NOEXEC = "--tmpfs", "/run:rw,noexec,nosuid,size=64m"
+_RUN_TMPFS_EXEC = "--tmpfs", "/run:rw,exec,nosuid,size=64m"
 
 # Extra caps needed when the container starts as root and an init/entrypoint
 # must drop privileges (via `s6-setuidgid`, `gosu`, `su`, or similar).
@@ -342,11 +352,64 @@ _PRIVDROP_CAP_ARGS = [
 ]
 
 
-def _build_security_args(run_as_host_user: bool) -> list[str]:
-    """Return the security/cap/tmpfs args tailored to the privilege mode."""
+def _build_security_args(run_as_host_user: bool, run_exec: bool = False) -> list[str]:
+    """Return the security/cap/tmpfs args tailored to the privilege mode.
+
+    ``run_exec`` mounts ``/run`` with ``exec`` instead of the hardened
+    ``noexec`` default. This is required for s6-overlay images whose ``/init``
+    entrypoint execs ``/run/s6/basedir/bin/init`` during startup; see
+    ``_image_uses_init_entrypoint``.
+    """
+    run_tmpfs = list(_RUN_TMPFS_EXEC if run_exec else _RUN_TMPFS_NOEXEC)
+    args = list(_BASE_SECURITY_ARGS) + run_tmpfs
     if run_as_host_user:
-        return list(_BASE_SECURITY_ARGS)
-    return list(_BASE_SECURITY_ARGS) + list(_PRIVDROP_CAP_ARGS)
+        return args
+    return args + list(_PRIVDROP_CAP_ARGS)
+
+
+def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
+    """Return True if ``image``'s entrypoint is the s6-overlay ``/init``.
+
+    Such images (e.g. anything built on ``s6-overlay``, including
+    ``hermes-agent:latest``) already provide their own PID-1 init and execute
+    ``/run/s6/basedir/bin/init`` during stage0 startup. They are incompatible
+    with Docker's ``--init`` (two competing PID-1 inits) and with a ``noexec``
+    ``/run`` mount. Detection is best-effort: on any inspection failure we
+    return False and keep the hardened defaults.
+    """
+    try:
+        result = subprocess.run(
+            [docker_exe, "image", "inspect", image,
+             "--format", "{{json .Config.Entrypoint}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("Docker: could not inspect entrypoint for %s: %s", image, e)
+        return False
+    if result.returncode != 0:
+        # Image may not be pulled yet; the run will pull it. Defaults are safe
+        # for non-s6 images, so don't block on this.
+        logger.debug(
+            "Docker: image inspect for %s returned %d (stderr=%s)",
+            image, result.returncode, result.stderr.strip(),
+        )
+        return False
+    raw = (result.stdout or "").strip()
+    if not raw or raw == "null":
+        return False
+    try:
+        entrypoint = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(entrypoint, str):
+        entrypoint = [entrypoint]
+    if not isinstance(entrypoint, list) or not entrypoint:
+        return False
+    first = str(entrypoint[0]).strip()
+    return first in ("/init", "/package/admin/s6-overlay/command/init")
 
 
 def _resolve_host_user_spec() -> Optional[str]:
@@ -394,6 +457,7 @@ def _ensure_docker_available() -> None:
             capture_output=True,
             text=True,
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         logger.error(
@@ -478,6 +542,10 @@ class DockerEnvironment(BaseEnvironment):
         self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
+        self._image: str = ""
+        self._container_name: str = ""
+        self._image_uses_s6_init: bool = False
+        self._all_run_args: list[str] = []
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -672,7 +740,28 @@ class DockerEnvironment(BaseEnvironment):
                 )
                 # Fall back to the full cap set — without --user, an image's
                 # init may still need s6-setuidgid/gosu/su to drop privileges.
-        security_args = _build_security_args(run_as_host_user and bool(user_args))
+
+        # Resolve the docker executable once so it works even when
+        # /usr/local/bin is not in PATH (common on macOS gateway/service).
+        self._docker_exe = find_docker() or "docker"
+
+        # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1
+        # and exec /run/s6/basedir/bin/init during startup. For those images we
+        # must (a) skip Docker's --init (two competing PID-1 inits) and (b) mount
+        # /run with exec instead of noexec, or s6 stage0 dies with exit 126
+        # "Permission denied". Detected once here; defaults are kept on any
+        # inspection failure. See issue #34628.
+        image_uses_s6_init = _image_uses_init_entrypoint(self._docker_exe, image)
+        if image_uses_s6_init:
+            logger.info(
+                "Docker: image %s uses /init (s6-overlay) as entrypoint — "
+                "skipping --init and mounting /run with exec.",
+                image,
+            )
+        security_args = _build_security_args(
+            run_as_host_user and bool(user_args),
+            run_exec=image_uses_s6_init,
+        )
 
         logger.info(f"Docker volume_args: {volume_args}")
         # User-supplied extra docker run flags (docker_extra_args in config.yaml).
@@ -695,10 +784,6 @@ class DockerEnvironment(BaseEnvironment):
         )
         logger.info(f"Docker run_args: {all_run_args}")
 
-        # Resolve the docker executable once so it works even when
-        # /usr/local/bin is not in PATH (common on macOS gateway/service).
-        self._docker_exe = find_docker() or "docker"
-
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
         # Labels make hermes-created containers identifiable to:
@@ -715,6 +800,12 @@ class DockerEnvironment(BaseEnvironment):
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
         ]
+        # Save args for container recreation on "No such container" recovery.
+        self._image = image
+        self._container_name = container_name
+        self._image_uses_s6_init = image_uses_s6_init
+        self._all_run_args = all_run_args
+
         self._labels = {
             "hermes-agent": "1",
             "hermes-task-id": task_label,
@@ -747,6 +838,7 @@ class DockerEnvironment(BaseEnvironment):
                             text=True,
                             timeout=30,
                             check=True,
+                            stdin=subprocess.DEVNULL,
                         )
                     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                         logger.warning(
@@ -763,9 +855,13 @@ class DockerEnvironment(BaseEnvironment):
                     reused = True
 
         if not reused:
+            # tini/catatonit as PID 1 reaps zombie children — but s6-overlay
+            # images already provide their own /init PID 1, so adding --init
+            # there creates two competing inits and breaks startup (#34628).
+            init_args = [] if image_uses_s6_init else ["--init"]
             run_cmd = [
                 self._docker_exe, "run", "-d",
-                "--init",           # tini/catatonit as PID 1 — reaps zombie children
+                *init_args,
                 "--name", container_name,
                 *label_args,
                 "-w", cwd,
@@ -774,13 +870,33 @@ class DockerEnvironment(BaseEnvironment):
                 "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
             ]
             logger.debug(f"Starting container: {' '.join(run_cmd)}")
-            result = subprocess.run(
-                run_cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,  # image pull may take a while
-                check=True,
-            )
+            try:
+                result = subprocess.run(
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,  # image pull may take a while
+                    check=True,
+                    stdin=subprocess.DEVNULL,
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                # Docker may create the container object before `docker run`
+                # fails to start it (e.g. exit code 125 when the daemon isn't
+                # ready, or a timeout mid-pull). That orphan is left in
+                # "Created" state — which the exited-only orphan reaper
+                # (reap_orphan_containers, status=exited) never catches, so it
+                # leaks permanently. Remove it by its known name before
+                # re-raising. See #7439.
+                logger.warning(
+                    "docker run failed for %s, cleaning up orphaned container: %s",
+                    container_name, e,
+                )
+                subprocess.run(
+                    [self._docker_exe, "rm", "-f", container_name],
+                    capture_output=True, timeout=10,
+                    stdin=subprocess.DEVNULL,
+                )
+                raise
             self._container_id = result.stdout.strip()
             logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
@@ -814,9 +930,9 @@ class DockerEnvironment(BaseEnvironment):
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)
-            if value is None:
+            if not value:
                 value = hermes_env.get(key)
-            if value is not None:
+            if value:
                 exec_env[key] = value
 
         args = []
@@ -847,6 +963,119 @@ class DockerEnvironment(BaseEnvironment):
 
         return _popen_bash(cmd, stdin_data)
 
+    # ------------------------------------------------------------------
+    # "No such container" recovery (issue #36266)
+    # ------------------------------------------------------------------
+
+    _NO_CONTAINER_PATTERNS = (
+        "No such container",
+        "is not running",
+        "no such container",
+    )
+
+    def _is_container_gone(self, output: str) -> bool:
+        """Return True if the output indicates the container no longer exists."""
+        return any(p in output for p in self._NO_CONTAINER_PATTERNS)
+
+    def _recreate_container(self) -> bool:
+        """Recreate the container after it was removed out-of-band.
+
+        Tries label-based reuse first; if no existing container is found,
+        starts a fresh one with the same image and run-args.  Returns True
+        on success, False if recreation fails (caller should surface the
+        original error).
+        """
+        old_id = (self._container_id or "")[:12]
+        logger.warning(
+            "Container %s appears to be gone — attempting recovery", old_id,
+        )
+        self._container_id = None
+
+        # 1. Try label-based reuse (another process may have recreated it).
+        task_label = self._labels.get("hermes-task-id", "")
+        profile_label = self._labels.get("hermes-profile", "")
+        existing = self._find_reusable_container(task_label, profile_label)
+        if existing is not None:
+            cid, state = existing
+            if state == "running":
+                self._container_id = cid
+                logger.info("Recovery: reusing running container %s", cid[:12])
+            else:
+                try:
+                    subprocess.run(
+                        [self._docker_exe, "start", cid],
+                        capture_output=True, text=True, timeout=30, check=True,
+                        stdin=subprocess.DEVNULL,
+                    )
+                    self._container_id = cid
+                    logger.info("Recovery: restarted container %s", cid[:12])
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                    logger.warning("Recovery: failed to start container %s: %s", cid[:12], e)
+
+        # 2. No reusable container — create a fresh one.
+        if not self._container_id:
+            if not self._image:
+                logger.error("Recovery: no saved image name, cannot recreate container")
+                return False
+            try:
+                import uuid as _uuid
+                new_name = f"hermes-{_uuid.uuid4().hex[:8]}"
+                init_args = [] if self._image_uses_s6_init else ["--init"]
+                label_args = []
+                for k, v in self._labels.items():
+                    label_args.extend(["--label", f"{k}={v}"])
+                run_cmd = [
+                    self._docker_exe, "run", "-d",
+                    *init_args,
+                    "--name", new_name,
+                    *label_args,
+                    "-w", self.cwd,
+                    *self._all_run_args,
+                    self._image,
+                    "sleep", "infinity",
+                ]
+                result = subprocess.run(
+                    run_cmd, capture_output=True, text=True, timeout=120, check=True,
+                    stdin=subprocess.DEVNULL,
+                )
+                self._container_id = result.stdout.strip()
+                self._container_name = new_name
+                logger.info(
+                    "Recovery: created fresh container %s (%s)",
+                    new_name, self._container_id[:12],
+                )
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+                logger.error("Recovery: failed to create new container: %s", e)
+                return False
+
+        # 3. Re-initialize session snapshot in the (re)created container.
+        try:
+            self._snapshot_ready = False
+            self.init_session()
+        except Exception as e:
+            logger.error("Recovery: init_session failed in new container: %s", e)
+            return False
+
+        logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
+        return True
+
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        """Execute a command, auto-recovering from dead containers.
+
+        If the container was removed out-of-band (idle reaper, docker prune,
+        OOM kill, daemon restart), detect the error and recreate the container
+        transparently before retrying once.
+        """
+        result = super().execute(command, cwd, **kwargs)
+        if (
+            result.get("returncode", 0) != 0
+            and self._is_container_gone(result.get("output", ""))
+            and self._persist_across_processes
+        ):
+            if self._recreate_container():
+                result = super().execute(command, cwd, **kwargs)
+        return result
+
     @staticmethod
     def _storage_opt_supported() -> bool:
         """Check if Docker's storage driver supports --storage-opt size=.
@@ -862,6 +1091,7 @@ class DockerEnvironment(BaseEnvironment):
             result = subprocess.run(
                 [docker, "info", "--format", "{{.Driver}}"],
                 capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
             )
             driver = result.stdout.strip().lower()
             if driver != "overlay2":
@@ -872,13 +1102,15 @@ class DockerEnvironment(BaseEnvironment):
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
                 capture_output=True, text=True, timeout=15,
+                stdin=subprocess.DEVNULL,
             )
             if probe.returncode == 0:
                 # Clean up the created container
                 container_id = probe.stdout.strip()
                 if container_id:
                     subprocess.run([docker, "rm", container_id],
-                                   capture_output=True, timeout=5)
+                                   capture_output=True, timeout=5,
+                                   stdin=subprocess.DEVNULL)
                 _storage_opt_ok = True
             else:
                 _storage_opt_ok = False
@@ -913,6 +1145,7 @@ class DockerEnvironment(BaseEnvironment):
                 text=True,
                 timeout=10,
                 check=False,
+                stdin=subprocess.DEVNULL,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.debug("docker ps probe failed: %s — will start a fresh container", e)
@@ -1029,6 +1262,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [docker_exe, "stop", "-t", "10", container_id],
                         capture_output=True, timeout=30,
+                        stdin=subprocess.DEVNULL,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker stop %s timed out / failed: %s", log_id, e)
@@ -1037,6 +1271,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [docker_exe, "rm", "-f", container_id],
                         capture_output=True, timeout=30,
+                        stdin=subprocess.DEVNULL,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker rm -f %s failed: %s", log_id, e)

@@ -33,10 +33,10 @@ import pytest
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
-# 1×1 PNG (transparent) — minimal bytes that decode cleanly.
+# 8×8 PNG (transparent) — minimal provider-acceptable bytes that decode cleanly.
 _PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
-    "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADUlEQVR4nG"
+    "NgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
 )
 
 # 1×1 JPEG — used to verify mime detection works for either stream type.
@@ -238,6 +238,39 @@ class TestCaptureResponseRoutedToAuxVision:
             cu_tool._capture_response(cap)
 
         # File must be unlinked after _capture_response returns.
+        assert observed_path["path"]
+        assert not os.path.exists(observed_path["path"])
+
+    def test_aux_route_creates_missing_cache_dir(self, tmp_path):
+        from tools.computer_use import tool as cu_tool
+
+        cache_dir = tmp_path / "missing" / "cache_vision"
+        cap = _make_capture(mode="som")
+        observed_path = {}
+
+        def _fake_get(*_args, **_kw):
+            return cache_dir
+
+        def _fake_run_async(_coro):
+            return _stub_aux_analysis("description goes here")
+
+        def _fake_vat(image_path, _prompt):
+            observed_path["path"] = image_path
+            assert os.path.exists(image_path)
+            return "<coro>"
+
+        fake_vat = MagicMock(side_effect=_fake_vat)
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=True), \
+             patch("hermes_constants.get_hermes_dir", _fake_get), \
+             patch("model_tools._run_async", side_effect=_fake_run_async), \
+             patch("tools.vision_tools.vision_analyze_tool",
+                   new_callable=lambda: fake_vat):
+            resp = cu_tool._capture_response(cap)
+
+        assert isinstance(resp, str)
+        assert cache_dir.is_dir()
         assert observed_path["path"]
         assert not os.path.exists(observed_path["path"])
 

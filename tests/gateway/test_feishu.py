@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 import unittest
+from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict
@@ -647,6 +648,7 @@ class TestAdapterBehavior(unittest.TestCase):
                 "p2p_chat_entered",
                 "message_recalled",
                 "customized:drive.notice.comment_add_v1",
+                "customized:vc.bot.meeting_invited_v1",
                 "build",
             ],
         )
@@ -4603,7 +4605,7 @@ class TestFeishuFetchMessageText(unittest.TestCase):
         adapter._bot_open_id = "ou_bot"
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
-        adapter._message_text_cache = {}
+        adapter._message_text_cache = OrderedDict()
         adapter._client = Mock()
         adapter._build_get_message_request = Mock(return_value=object())
         return adapter

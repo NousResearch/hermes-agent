@@ -36,6 +36,10 @@ def _run_handle_function_call(
     if invoke_hook is not _UNSET:
         # Patch the symbol actually imported inside handle_function_call.
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+        # Supplying a custom invoke_hook means the test expects hooks to
+        # fire — make has_hook agree so the has_hook gate doesn't skip the
+        # post_tool_call / transform_tool_result emit paths.
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
 
     return model_tools.handle_function_call(
         tool_name,

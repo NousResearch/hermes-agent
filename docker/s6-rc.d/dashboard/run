@@ -47,6 +47,9 @@ case "${HERMES_DASHBOARD_INSECURE:-}" in
     1|true|TRUE|True|yes|YES|Yes) insecure="--insecure" ;;
 esac
 
+# Skip the drop when already non-root.
+# shellcheck disable=SC2086  # word-splitting of $insecure is intentional
+[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open $insecure
 # shellcheck disable=SC2086  # word-splitting of $insecure is intentional
 exec s6-setuidgid hermes hermes dashboard \
     --host "$dash_host" --port "$dash_port" --no-open $insecure

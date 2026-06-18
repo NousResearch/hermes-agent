@@ -56,6 +56,30 @@ def _get_git_commit(project_root: Path) -> str:
     return "(unknown)"
 
 
+def _get_git_commit_date(project_root: Path) -> str:
+    """Return the date the HEAD commit was authored (YYYY-MM-DD), or ''.
+
+    Resolves live via ``git log`` on source installs.  The published Docker
+    image excludes ``.git``, so this returns '' there — the dump line simply
+    drops the date suffix in that case (the baked SHA still identifies the
+    build).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cd", "--date=short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(project_root),
+        )
+        if result.returncode == 0:
+            value = result.stdout.strip()
+            if value:
+                return value
+    except Exception:
+        pass
+
+    return ""
+
+
 def _redact(value: str) -> str:
     """Redact all but first 4 and last 4 chars.
 
@@ -231,12 +255,12 @@ def run_dump(args):
     hermes_home = get_hermes_home()
 
     try:
-        from hermes_cli import __version__, __release_date__
+        from hermes_cli import __version__
     except ImportError:
         __version__ = "(unknown)"
-        __release_date__ = ""
 
     commit = _get_git_commit(project_root)
+    commit_date = _get_git_commit_date(project_root)
 
     try:
         config = load_config()
@@ -252,9 +276,24 @@ def run_dump(args):
     except Exception:
         profile = "(default)"
 
-    # Terminal backend
+    # Terminal backend — report the EFFECTIVE backend, not just config.yaml.
+    # ``terminal.backend`` in config.yaml is bridged to the TERMINAL_ENV env var,
+    # but a TERMINAL_ENV set directly in .env / the shell overrides config and is
+    # what terminal_tool actually uses (tools/terminal_tool.py reads TERMINAL_ENV).
+    # Reporting only the config value hides that override and sends users chasing
+    # the wrong cause when the agent runs in a docker/podman sandbox even though
+    # config says "local" (and vice-versa). run_dump() has already loaded .env,
+    # so os.environ reflects the real override here.
     terminal_cfg = config.get("terminal", {})
-    backend = terminal_cfg.get("backend", "local")
+    config_backend = terminal_cfg.get("backend", "local")
+    env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if env_backend and env_backend != str(config_backend).strip().lower():
+        backend = (
+            f"{env_backend}  (TERMINAL_ENV overrides config.yaml "
+            f"terminal.backend={config_backend})"
+        )
+    else:
+        backend = config_backend
 
     # OpenAI SDK version
     try:
@@ -268,10 +307,14 @@ def run_dump(args):
 
     lines = []
     lines.append("--- hermes dump ---")
+    # Identify the build by commit + the date that commit was made, resolved
+    # live via git.  __release_date__ (the package release date) is
+    # intentionally NOT shown here — it reads like a wall-clock timestamp and
+    # confuses support triage.  The commit date is the real "as-of" date.
     ver_str = f"{__version__}"
-    if __release_date__:
-        ver_str += f" ({__release_date__})"
     ver_str += f" [{commit}]"
+    if commit_date:
+        ver_str += f" ({commit_date})"
     lines.append(f"version:          {ver_str}")
     lines.append(f"os:               {os_info}")
     lines.append(f"python:           {sys.version.split()[0]}")
@@ -318,6 +361,17 @@ def run_dump(args):
             display = _redact(val)
         else:
             display = "set" if val else "not set"
+        # A credential added via `hermes auth add openrouter` lives in the
+        # credential pool, not as an env var — surface it so the dump doesn't
+        # misleadingly read "not set" while `hermes auth list` shows it (#42130).
+        if not val and label == "openrouter":
+            try:
+                from agent.credential_pool import load_pool as _load_pool
+
+                if _load_pool("openrouter").has_credentials():
+                    display = "set (auth pool)"
+            except Exception:
+                pass
         lines.append(f"  {label:<20} {display}")
 
     # Features summary

@@ -902,6 +902,7 @@ class ProcessRegistry:
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
+                "completed_at": time.time(),
                 "output": output_tail,
             })
 
@@ -1622,12 +1623,20 @@ def format_process_notification(evt: dict) -> "str | None":
     Handles completion events (notify_on_complete), watch pattern matches,
     and watch disabled events from the unified completion_queue.
     """
+    if not isinstance(evt, dict) or not evt:
+        return None
+
     evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
+    _sid = str(evt.get("session_id") or "").strip()
+    _cmd = str(evt.get("command") or "").strip()
+
+    if evt_type in {"watch_overflow_tripped", "watch_overflow_released"}:
+        msg = str(evt.get("message") or "").strip()
+        return f"[IMPORTANT: {msg}]" if msg else None
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        msg = str(evt.get("message") or "").strip()
+        return f"[IMPORTANT: {msg}]" if msg else None
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
@@ -1646,6 +1655,12 @@ def format_process_notification(evt: dict) -> "str | None":
 
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
+
+    if evt_type != "completion":
+        return None
+
+    if not (_sid or _cmd or "exit_code" in evt or evt.get("output")):
+        return None
 
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")

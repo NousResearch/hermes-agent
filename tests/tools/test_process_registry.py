@@ -1086,8 +1086,38 @@ def test_format_watch_disabled_event():
 def test_format_returns_none_for_empty_event():
     evt = {}
     result = format_process_notification(evt)
-    assert result is not None
-    assert "unknown" in result
+    assert result is None
+
+
+def test_format_returns_none_for_unknown_event_type():
+    evt = {"type": "unknown_event", "message": "do not inject me"}
+    result = format_process_notification(evt)
+    assert result is None
+
+
+def test_format_watch_overflow_tripped_event():
+    evt = {
+        "type": "watch_overflow_tripped",
+        "session_id": "",
+        "session_key": "",
+        "command": "",
+        "message": "Watch-pattern overflow: suppressing further watch_match events.",
+    }
+    result = format_process_notification(evt)
+    assert result == "[IMPORTANT: Watch-pattern overflow: suppressing further watch_match events.]"
+
+
+def test_format_watch_overflow_released_event():
+    evt = {
+        "type": "watch_overflow_released",
+        "session_id": "",
+        "session_key": "",
+        "command": "",
+        "suppressed": 3,
+        "message": "Watch-pattern notifications resumed. 3 match event(s) were suppressed.",
+    }
+    result = format_process_notification(evt)
+    assert result == "[IMPORTANT: Watch-pattern notifications resumed. 3 match event(s) were suppressed.]"
 
 
 def test_drain_notifications_returns_pending_events():

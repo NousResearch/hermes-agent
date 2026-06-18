@@ -91,8 +91,10 @@ class TestCompletionQueue:
         s.exited = True
         s.exit_code = 0
         registry._running[s.id] = s
+        before = time.time()
         with patch.object(registry, "_write_checkpoint"):
             registry._move_to_finished(s)
+        after = time.time()
 
         assert not registry.completion_queue.empty()
         completion = registry.completion_queue.get_nowait()
@@ -101,6 +103,7 @@ class TestCompletionQueue:
         assert completion["exit_code"] == 0
         assert completion["completion_reason"] == "exited"
         assert completion["termination_source"] == ""
+        assert before <= completion["completed_at"] <= after
         assert "build succeeded" in completion["output"]
 
     def test_move_to_finished_nonzero_exit(self, registry):

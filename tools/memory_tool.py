@@ -24,6 +24,7 @@ Design:
 """
 
 import json
+import hashlib
 import logging
 import os
 import tempfile
@@ -212,11 +213,20 @@ class MemoryStore:
 
         Uses a separate .lock file so the memory file itself can still be
         atomically replaced via os.replace().
+
+        CAVEAT: fcntl.flock is unreliable over NFS (silently succeeds on
+        some Linux NFS implementations, fails on others). HERMES_HOME on a
+        networked filesystem is unsupported for concurrent multi-host writes;
+        single-host or local-disk deployments are fine.
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
         if fcntl is None and msvcrt is None:
+            logger.warning(
+                "memory: no file-locking primitive (fcntl/msvcrt) available; "
+                "concurrent writes are NOT serialized on this platform."
+            )
             yield
             return
 
@@ -338,11 +348,18 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
+                    "headroom_chars": max(0, limit - current),
                 }
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            # M3: write-then-commit — write the candidate list to disk first;
+            # only update in-memory state on success.  new_entries was already
+            # computed above (line ~329) for the budget check; reuse it so we
+            # never mutate the live list before the disk write is confirmed.
+            try:
+                self._write_file(self._path_for(target), new_entries)
+            except RuntimeError as e:
+                return {"success": False, "error": str(e)}
+            self._set_entries(target, new_entries)
 
         return self._success_response(target, "Entry added.")
 
@@ -403,11 +420,17 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
+                    "headroom_chars": max(0, limit - current),
                 }
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            # M3: write-then-commit — test_entries is the candidate list (already
+            # built above for the budget check with the replacement applied at idx).
+            # Write it to disk first; only commit to in-memory state on success.
+            try:
+                self._write_file(self._path_for(target), test_entries)
+            except RuntimeError as e:
+                return {"success": False, "error": str(e)}
+            self._set_entries(target, test_entries)
 
         return self._success_response(target, "Entry replaced.")
 
@@ -441,11 +464,45 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+            # M3: write-then-commit — build a candidate list without the removed
+            # entry (copy, not in-place pop), write to disk first, commit only on success.
+            candidate = entries[:idx] + entries[idx + 1:]
+            try:
+                self._write_file(self._path_for(target), candidate)
+            except RuntimeError as e:
+                return {"success": False, "error": str(e)}
+            self._set_entries(target, candidate)
 
         return self._success_response(target, "Entry removed.")
+
+    def read(self, target: str) -> Dict[str, Any]:
+        """Return the live state of the target store.
+
+        Re-reads from disk under file lock so the agent sees writes from
+        other sessions that happened mid-session.  The lock is necessary:
+        ``_reload_target`` may write a ``.bak.<ts>`` snapshot if external
+        drift is detected.
+
+        When external drift is detected, the response includes a ``"drift"``
+        field (True) and a ``"drift_backup"`` path, consistent with the
+        add/replace/remove contract.  Repeated reads of the same drifted
+        file produce a new ``.bak.<ts>`` each time (epoch-second keyed);
+        the caller is expected to resolve the drift before further reads.
+
+        This is the recovery path for the load-time BLOCKED placeholder:
+        when a poisoned entry is masked in the system prompt, the agent
+        can use read() to see the original text and decide whether to
+        remove it. Do NOT remove this action without also fixing the
+        BLOCKED placeholder's remediation hint.
+        """
+        with self._file_lock(self._path_for(target)):
+            bak = self._reload_target(target)  # pick up any external drift
+
+        resp = self._success_response(target)
+        if bak:
+            resp["drift"] = True
+            resp["drift_backup"] = bak
+        return resp
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -566,8 +623,10 @@ class MemoryStore:
         # Drift confirmed — snapshot the file so the operator can recover
         # whatever the external writer added, then return the .bak path so
         # the caller can refuse the mutation.
-        ts = int(time.time())
-        bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
+        # Content-hash key prevents .bak spam on repeated reads of the same
+        # drifted content (epoch-second keying created a new file per second).
+        content_hash = hashlib.sha256(raw.encode()).hexdigest()[:16]
+        bak_path = path.with_suffix(path.suffix + f".bak.{content_hash}")
         try:
             bak_path.write_text(raw, encoding="utf-8")
         except (OSError, IOError):
@@ -706,8 +765,11 @@ def memory_tool(
     elif action == "remove":
         result = store.remove(target, old_text)
 
+    elif action == "read":
+        result = store.read(target)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -759,7 +821,7 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), read (inspect current entries and usage).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -767,7 +829,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "read"],
                 "description": "The action to perform."
             },
             "target": {
@@ -781,7 +843,12 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove."
+                "description": (
+                    "Short unique substring identifying the entry to replace or remove. "
+                    "Caveat: replace/remove match on a single substring — if old_text "
+                    "appears in multiple distinct entries, the operation is refused with "
+                    "an ambiguity error. Use enough context to make the match unique."
+                )
             },
         },
         "required": ["action", "target"],

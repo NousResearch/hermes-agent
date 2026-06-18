@@ -48,13 +48,12 @@ from urllib.request import url2pathname
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
-_DEFAULT_ACCOUNT = ""
-_DEFAULT_USER = ""
 _DEFAULT_AGENT = "hermes"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
@@ -828,10 +827,10 @@ def _ovcli_data_from_connection_values(values: dict) -> dict:
 
 def _write_ovcli_config(path: Path, values: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Pre-create with 0600 so secrets are never briefly world-readable.
-    _precreate_secret_file(path)
-    path.write_text(json.dumps(_ovcli_data_from_connection_values(values), indent=2) + "\n", encoding="utf-8")
-    _restrict_secret_file_permissions(path)
+    # atomic_json_write creates the temp file with mode 0o600 and os.replace()s
+    # it into place — no half-written config on crash and no chmod-after-write
+    # TOCTOU window for the api_key/root_api_key it carries.
+    atomic_json_write(path, _ovcli_data_from_connection_values(values), mode=0o600)
 
 
 def _validate_openviking_reachability(endpoint: str) -> tuple[bool, str]:

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Skills Sync -- manifest-based seeding and updating of bundled skills. Copies repo skills/ into
-~/.hermes/skills/, tracking each synced skill's origin hash in .bundled_manifest (v2 "name:hash"
-lines; v1 plain names auto-migrate). NEW skills are copied and recorded; EXISTING skills update
-only when bundled changed AND the user copy still matches the origin hash (else user-customized
--> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest once no active or
-archived copy remains (the entry is that copy's only built-in provenance record)."""
+"""Seed and update bundled skills using copies by default or explicit directory symlinks.
+
+Manifest records are v1 ``name``, v2 ``name:hash``, and v3 ``name:mode[:hash]``.
+The manifest tracks each synced skill's origin hash in ``.bundled_manifest``. NEW skills
+are copied and recorded; EXISTING skills update only when bundled changed AND the user
+copy still matches the origin hash (else user-customized -> SKIP); user-DELETED skills
+are not re-added; upstream-REMOVED ones leave the manifest once no active or archived
+copy remains (the entry is that copy's only built-in provenance record). Symlink entries
+remain links while their source checkout is clean; a dirty checkout is never modified by
+this sync operation."""
 
 import hashlib
 import logging
@@ -28,6 +32,19 @@ from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
 from tools.skill_usage import _read_skill_name
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
+)
+from tools.skills_sync_link import (
+    SYMLINK_SENTINEL,
+    can_link_from_source,
+    create_symlink,
+    format_manifest_value,
+    git_is_dirty,
+    is_link_manifest_entry,
+    link_manifest_value,
+    owns_symlink,
+    parse_manifest_value,
+    replace_owned_symlink_with_copy,
+    retarget_owned_symlink,
 )
 from utils import atomic_write_text
 
@@ -111,14 +128,18 @@ def _build_external_skill_index() -> Set[str]:
 
 
 def _read_manifest() -> Dict[str, str]:
-    """``{skill_name: origin_hash}``; v1 plain-name lines get an empty hash (migrates next sync)."""
+    """Read v1/v2/v3 manifest data into ``{skill_name: hash-or-symlink}``."""
     try:
         result = {}
         for line in _manifest_file().read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if not line:
                 continue
-            if ":" in line:
+            if line.count(":") >= 2:
+                # v3 format: name:mode[:payload] (e.g. symlink targets)
+                name, mode, payload = line.split(":", 2)
+                result[name.strip()] = parse_manifest_value(mode, payload)
+            elif ":" in line:
                 # v2 format: name:hash
                 name, _, hash_val = line.partition(":")
                 result[name.strip()] = hash_val.strip()
@@ -157,11 +178,15 @@ def _read_suppressed_names() -> set:
 
 
 def _write_manifest(entries: Dict[str, str]):
-    """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600)."""
+    """Atomically write v3 manifest data, preserving existing file mode/owner."""
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(_manifest_file().parent)
     try:
-        data = "".join(f"{n}:{h}\n" for n, h in sorted(entries.items()))
+        data = "".join(
+            f"{name}:{mode}:{payload}\n"
+            for name, entry in sorted(entries.items())
+            for mode, payload in (format_manifest_value(entry),)
+        )
         atomic_write_text(_manifest_file(), data, tmp_prefix=".bundled_manifest_", preserve_mode=True)
     except Exception as e:
         logger.debug("Failed to write skills manifest %s: %s", _manifest_file(), e, exc_info=True)
@@ -227,7 +252,7 @@ def _recover_renamed_skill(st: "_SyncState", skill_name: str, dest: Path) -> Opt
     RECATEGORIZATION (else it is misread as user-deleted and stranded forever). Only a copy
     byte-identical to the origin hash — proof *we* placed it — moves. Returns rel source path."""
     origin_hash = st.manifest.get(skill_name, "")
-    if not origin_hash:
+    if not origin_hash or is_link_manifest_entry(origin_hash):
         return None
     if st.active_index is None:  # by frontmatter name
         st.active_index = {}
@@ -292,40 +317,106 @@ def _recover_orphan_backup(dest: Path) -> None:
             logger.warning("Could not recover orphaned skill backup %s", orphan, exc_info=True)
 
 
-def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash: str) -> None:
+def _defer_to_external(
+    st: _SyncState, skill_name: str, skill_src: Path, dest: Path, bundled_hash: str,
+) -> None:
     """An external_dirs source provides this skill; a local copy would be a name collision the
     loader refuses. Defer for ALL manifest states; remove a stale local shadow from an earlier
     sync only when byte-identical (a user's own skill differs)."""
     st.shadowed_by_external.append(skill_name)
     st.skipped += 1
     st.say(f"  ⇢ {skill_name} (deferred to external_dirs, not written to local tree)")
-    if dest.exists() and _dir_hash(dest) == bundled_hash:
+    manifest_value = st.manifest.get(skill_name, "")
+    if dest.is_symlink() and is_link_manifest_entry(manifest_value):
+        # Only unlink a target-proven manifest-owned entry. The external source remains untouched.
+        if not owns_symlink(dest, manifest_value, skill_src):
+            st.say(f"  ⚠ {skill_name}: local symlink was retargeted by the user and was kept")
+            return
+        try:
+            dest.unlink()
+        except OSError as error:
+            st.say(f"  ! Failed to remove stale symlink shadow {skill_name}: {error}")
+            return
+        st.say(f"  ✓ removed stale symlink shadow of {skill_name}")
+        st.manifest.pop(skill_name, None)
+    elif dest.exists() and not dest.is_symlink() and _dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)
         st.say(f"  ✓ removed stale shadow of {skill_name}")
         st.manifest.pop(skill_name, None)
 
 
-def _install_new_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: Path, bundled_hash: str) -> None:
+def _install_new_skill(
+    st: _SyncState, skill_name: str, skill_src: Path, dest: Path, bundled_hash: str, *, link: bool,
+) -> None:
     """Handle a skill never offered before (not in manifest)."""
     try:
-        if dest.exists():
+        if dest.exists() or dest.is_symlink():
             # Never overwrite a same-named user skill. Baseline the manifest only when
             # byte-identical: a differing copy's bundled_hash reads as "user-modified" forever.
             st.skipped += 1
-            if _dir_hash(dest) == bundled_hash:
+            if not dest.is_symlink() and _dir_hash(dest) == bundled_hash:
                 st.manifest[skill_name] = bundled_hash
             else:
                 st.say(
                     f"  ⚠ {skill_name}: bundled version shipped but you already have a local skill "
                     f"by this name — yours was kept. Run `hermes skills reset {skill_name}` to "
                     f"replace it with the bundled version.")
+        elif link:
+            st.manifest[skill_name] = create_symlink(skill_src, dest)
+            st.copied.append(skill_name)
+            st.say(f"  + {skill_name} → symlink")
         else:
             _copy_dir(skill_src, dest)
             st.copied.append(skill_name)
             st.manifest[skill_name] = bundled_hash
             st.say(f"  + {skill_name}")
+    except PermissionError:
+        if link:
+            st.say(
+                f"  ! Failed to symlink {skill_name}: permission denied. On Windows this requires "
+                "Administrator privileges or Developer Mode; rerun without --link to use copy mode.")
+        else:
+            st.say(f"  ! Failed to install {skill_name}: permission denied")
     except OSError as e:
-        st.say(f"  ! Failed to copy {skill_name}: {e}")  # not in manifest — next sync retries
+        st.say(f"  ! Failed to install {skill_name}: {e}")  # not in manifest — next sync retries
+
+
+def _sync_existing_symlink(st: _SyncState, skill_name: str, skill_src: Path, dest: Path, bundled_hash: str, *, link: bool) -> None:
+    """Maintain a manifest-owned symlink without altering its source checkout."""
+    manifest_value = st.manifest[skill_name]
+    if not owns_symlink(dest, manifest_value, skill_src):
+        st.skipped += 1
+        st.say(f"  ⚠ {skill_name}: managed symlink was retargeted by the user; kept unchanged")
+        return
+    if not dest.exists():
+        try:
+            if link:
+                st.manifest[skill_name] = retarget_owned_symlink(dest, skill_src, manifest_value)
+                st.say(f"  ↻ {skill_name} (symlink recreated)")
+            else:
+                replace_owned_symlink_with_copy(skill_src, dest, manifest_value, _copy_dir)
+                st.manifest[skill_name] = bundled_hash
+                st.say(f"  ↻ {skill_name} (broken symlink → copy)")
+        except PermissionError:
+            st.say(f"  ! Failed to repair symlink {skill_name}: permission denied (Windows requires Administrator or Developer Mode)")
+        except OSError as error:
+            st.say(f"  ! Failed to repair {skill_name}: {error}")
+        return
+    source_can_link = can_link_from_source(skill_src, _skills_dir())
+    if source_can_link and git_is_dirty(skill_src):
+        st.skipped += 1
+        st.say(f"  - {skill_name} (symlink target has uncommitted changes; skipped)")
+        return
+    if not source_can_link:
+        try:
+            replace_owned_symlink_with_copy(skill_src, dest, manifest_value, _copy_dir)
+            st.manifest[skill_name] = bundled_hash
+            st.say(f"  ↑ {skill_name} (external target, promoted from symlink to copy)")
+        except (OSError, ValueError) as error:
+            st.say(f"  ! Failed to promote {skill_name}: {error}")
+    elif dest.exists():
+        st.manifest[skill_name] = link_manifest_value(skill_src)
+        st.skipped += 1
 
 
 def _replace_skill_dir(skill_src: Path, dest: Path) -> None:
@@ -393,10 +484,8 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]
             logger.debug("Could not copy %s: %s", desc_md, e)
 
 
-def sync_skills(quiet: bool = False) -> dict:
-    """Sync bundled skills into ~/.hermes/skills/ using the manifest; returns the per-category
-    result dict. Opted-out profiles seed ONLY ESSENTIAL_SKILLS (the system prompt always
-    points at ``hermes-agent``)."""
+def sync_skills(quiet: bool = False, link: bool = False) -> dict:
+    """Sync bundled skills, using directory symlinks for new skills when ``link`` is true."""
     essential_only = (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists()
     if essential_only and not quiet:
         print("  (profile opted out of bundled skills via .no-bundled-skills — seeding essential skills only)")
@@ -404,6 +493,9 @@ def sync_skills(quiet: bool = False) -> dict:
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
                 "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": []}
+    use_links = link and can_link_from_source(bundled_dir, _skills_dir())
+    if link and not use_links and not quiet:
+        print("  (link mode requires a persistent Git-backed source outside the active skills tree; using copies)")
     _skills_dir().mkdir(parents=True, exist_ok=True)
     bundled_skills = _discover_bundled_skills(bundled_dir)
     if essential_only:
@@ -420,13 +512,16 @@ def sync_skills(quiet: bool = False) -> dict:
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
         # Recoveries run BEFORE classification so a missing dest isn't misread as user-deleted.
-        _recover_orphan_backup(dest)
-        if not dest.exists() and skill_name in st.manifest and _recover_renamed_skill(st, skill_name, dest):
+        if not dest.is_symlink():
+            _recover_orphan_backup(dest)
+        if not dest.exists() and not dest.is_symlink() and skill_name in st.manifest and _recover_renamed_skill(st, skill_name, dest):
             st.relocated.append(skill_name)
         if skill_name in external_index:
-            _defer_to_external(st, skill_name, dest, bundled_hash)
+            _defer_to_external(st, skill_name, skill_src, dest, bundled_hash)
         elif skill_name not in st.manifest:
-            _install_new_skill(st, skill_name, skill_src, dest, bundled_hash)
+            _install_new_skill(st, skill_name, skill_src, dest, bundled_hash, link=use_links)
+        elif dest.is_symlink() and is_link_manifest_entry(st.manifest.get(skill_name, "")):
+            _sync_existing_symlink(st, skill_name, skill_src, dest, bundled_hash, link=use_links)
         elif dest.exists():
             _update_existing_skill(st, skill_name, skill_src, dest, bundled_hash)
         else:
@@ -481,8 +576,13 @@ def _rmtree_writable(path: Path) -> None:
 
 
 if __name__ == "__main__":
+    link = "--link" in sys.argv
+    if link:
+        sys.argv.remove("--link")
     print("Syncing bundled skills into ~/.hermes/skills/ ...")
-    result = sync_skills(quiet=False)
+    if link:
+        print("  (link mode: installing as symlinks)\n")
+    result = sync_skills(quiet=False, link=link)
     parts = [f"{len(result['copied'])} new", f"{len(result['updated'])} updated", f"{result['skipped']} unchanged"]
     if names := result["user_modified"]:
         shown = ", ".join(names[:5]) + (f", +{len(names) - 5} more" if len(names) > 5 else "")

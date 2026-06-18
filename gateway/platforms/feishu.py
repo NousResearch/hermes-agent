@@ -4091,6 +4091,19 @@ class FeishuAdapter(BasePlatformAdapter):
     # Inbound admission
     # =========================================================================
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """Feishu gates group access at intake via group_policy / group_rules.
+
+        Messages that fail the policy are dropped inside _admit() before
+        reaching the gateway, so a message arriving at _is_user_authorized
+        has already been authorized by the adapter.  Without this flag the
+        gateway falls through to the env-allowlist default-deny, silently
+        breaking config-only group allowlists where FEISHU_ALLOWED_USERS
+        is not set.
+        """
+        return True
+
     def _admit(self, sender: Any, message: Any) -> Optional[RejectReason]:
         sender_ids = _sender_identity(sender)
         self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)

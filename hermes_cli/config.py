@@ -1508,6 +1508,11 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # Classic CLI prompt_toolkit refresh interval (seconds). 0 = disabled
+        # (no background redraw, preserves pre-6724daa2c behavior). Users who
+        # want the idle clock ticking in non-fullscreen mode can set a positive
+        # value (e.g. 1.0). See #48309.
+        "cli_refresh_interval": 0,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
         #   "on"      — generic "💾 Memory updated" line (default)

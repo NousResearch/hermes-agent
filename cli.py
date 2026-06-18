@@ -12822,7 +12822,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # rendering the first post-turn value (usually ``✓ 0s``) forever.
             # A low-rate refresh keeps the clock honest without reintroducing a
             # custom repaint thread or touching conversation state.
-            refresh_interval=1.0,
+            # Off by default (display.cli_refresh_interval=0) to avoid fighting
+            # tmux/Ghostty/cmux viewport restoration in non-fullscreen mode
+            # (see #12927). Users who want the idle clock to tick can set a
+            # positive value in config.yaml (e.g. cli_refresh_interval: 1.0).
+            refresh_interval=float(
+                CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)
+            ),
             # Erase the live bottom chrome (status bar, input box, separator
             # rules) on exit instead of freezing a final copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints

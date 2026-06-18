@@ -47,6 +47,11 @@ export interface OAuthProviderStatus {
 
 export interface OAuthProvider {
   cli_command: string
+  /** Shell command that clears an external provider's credentials, run in the
+   *  embedded terminal. Null when Hermes doesn't know how to remove it. */
+  disconnect_command?: null | string
+  disconnect_hint?: null | string
+  disconnectable?: boolean
   docs_url: string
   flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string
@@ -297,6 +302,14 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  /** Origin platform when this session was handed off from a messaging
+   *  platform (e.g. a Telegram thread continued in the desktop app). The live
+   *  {@link source} becomes local (tui/desktop) after a handoff, so the origin
+   *  is preserved here to surface the platform badge on the row. */
+  handoff_platform?: null | string
+  /** Handoff lifecycle: 'pending' | 'in_progress' | 'completed' | 'failed'. */
+  handoff_state?: null | string
+  handoff_error?: null | string
   /** Owning profile name, set by the cross-profile aggregator
    *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
    *  which the UI treats as the default profile. */
@@ -462,7 +475,7 @@ export interface CronJobUpdates {
 
 export interface ProfileCreatePayload {
   clone_all?: boolean
-  clone_from?: string
+  clone_from?: null | string
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
@@ -630,6 +643,10 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** Optional API key for a custom/local endpoint. Persisted to model.api_key
+   *  (where the runtime reads it) for self-hosted endpoints that require auth.
+   *  Only honored for custom/local providers on the main slot. */
+  api_key?: string
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
   base_url?: string

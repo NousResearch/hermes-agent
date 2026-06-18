@@ -204,8 +204,22 @@ class TestPlatformDefaults:
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk"):
+        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
+
+    def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
+        """Regression guard: ``whatsapp_cloud`` must stay TIER_LOW until the
+        adapter implements edit_message. Without an edit endpoint, raising
+        the tier to MEDIUM would spam separate WhatsApp messages for every
+        tool-progress update, which is the exact failure mode this entry
+        exists to avoid.
+
+        When/if Cloud's edit_message lands, update _PLATFORM_DEFAULTS to
+        TIER_MEDIUM and update this test to assert ``"new"`` accordingly.
+        """
+        from gateway.display_config import resolve_display_setting
+        assert resolve_display_setting({}, "whatsapp_cloud", "tool_progress") == "off"
+        assert resolve_display_setting({}, "whatsapp_cloud", "streaming") is False
 
     def test_minimal_tier_platforms(self):
         """Email, SMS, webhook default to 'off' tool progress."""
@@ -436,3 +450,63 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+class TestToolProgressGrouping:
+    """resolve_display_setting() for the tool_progress_grouping knob."""
+
+    def test_default_is_accumulate(self):
+        """No config anywhere → global default 'accumulate'."""
+        from gateway.display_config import resolve_display_setting
+
+        assert (
+            resolve_display_setting({}, "telegram", "tool_progress_grouping")
+            == "accumulate"
+        )
+
+    def test_global_separate(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_grouping": "separate"}}
+        assert (
+            resolve_display_setting(config, "discord", "tool_progress_grouping")
+            == "separate"
+        )
+
+    def test_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_grouping": "accumulate",
+                "platforms": {"discord": {"tool_progress_grouping": "separate"}},
+            }
+        }
+        assert (
+            resolve_display_setting(config, "discord", "tool_progress_grouping")
+            == "separate"
+        )
+        # Other platforms still get the global value.
+        assert (
+            resolve_display_setting(config, "telegram", "tool_progress_grouping")
+            == "accumulate"
+        )
+
+    def test_invalid_value_falls_back_to_accumulate(self):
+        """_normalise rejects anything outside accumulate|separate."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_grouping": "bogus"}}
+        assert (
+            resolve_display_setting(config, "telegram", "tool_progress_grouping")
+            == "accumulate"
+        )
+
+    def test_case_insensitive(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_grouping": "SEPARATE"}}
+        assert (
+            resolve_display_setting(config, "telegram", "tool_progress_grouping")
+            == "separate"
+        )

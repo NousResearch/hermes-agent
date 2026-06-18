@@ -465,7 +465,7 @@ def test_xai_loopback_login_manual_paste_missing_code_raises(monkeypatch):
 
 
 def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
-    """Loopback timeout should offer the existing manual-paste path."""
+    """Loopback timeout should accept a bare Grok Build code paste."""
     monkeypatch.setattr(
         auth_mod, "_xai_oauth_discovery",
         lambda *_a, **_k: {
@@ -523,7 +523,7 @@ def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
         captured["prompt_calls"] += 1
         return {
             "code": "manual-auth-code",
-            "state": captured["state"],
+            "state": None,
             "error": None,
             "error_description": None,
         }
@@ -556,6 +556,48 @@ def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
     assert captured["prompt_calls"] == 1
     assert creds["tokens"]["access_token"] == "at-timeout"
     assert creds["tokens"]["refresh_token"] == "rt-timeout"
+
+
+def test_xai_wait_for_callback_accepts_ready_stdin_code(monkeypatch):
+    """Users can paste the Grok Build code while Hermes is still waiting."""
+    class _StubServer:
+        shutdown_called = False
+        close_called = False
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+        def server_close(self):
+            self.close_called = True
+
+    class _StubThread:
+        joined = False
+
+        def join(self, timeout=None):
+            self.joined = True
+
+    server = _StubServer()
+    thread = _StubThread()
+    monkeypatch.setattr(
+        auth_mod,
+        "_read_ready_stdin_line",
+        lambda: "ready-grok-build-code\n",
+    )
+
+    out = auth_mod._xai_wait_for_callback(
+        server,
+        thread,
+        {"code": None, "error": None},
+        timeout_seconds=5,
+        manual_paste_redirect_uri="http://127.0.0.1:56121/callback",
+    )
+
+    assert out["code"] == "ready-grok-build-code"
+    assert out["state"] is None
+    assert out["_manual_paste"] is True
+    assert server.shutdown_called is True
+    assert server.close_called is True
+    assert thread.joined is True
 
 
 def test_xai_loopback_login_timeout_noninteractive_reraises(monkeypatch):

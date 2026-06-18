@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import pytest
 from unittest.mock import MagicMock, patch
@@ -265,6 +266,31 @@ class TestOrphanedPipeReconciliation:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+
+    def test_wait_wakes_when_session_moves_to_finished(self, registry):
+        """wait() should not sleep for the old 1s polling tick after exit."""
+        s = _make_session(sid="proc_wait_event", output="done")
+        registry._running[s.id] = s
+
+        def finish_later():
+            time.sleep(0.05)
+            s.exited = True
+            s.exit_code = 0
+            with patch.object(registry, "_write_checkpoint"):
+                registry._move_to_finished(s)
+
+        t = threading.Thread(target=finish_later)
+        t.start()
+        start = time.monotonic()
+        try:
+            result = registry.wait(s.id, timeout=5)
+        finally:
+            t.join(timeout=1)
+        elapsed = time.monotonic() - start
+
+        assert result["status"] == "exited", result
+        assert result["exit_code"] == 0
+        assert elapsed < 0.3, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
 # =========================================================================
@@ -986,10 +1012,39 @@ def test_format_completion_event():
         "output": "done",
     }
     result = format_process_notification(evt)
-    assert "[IMPORTANT: Background process proc_abc completed" in result
+    assert "[IMPORTANT: Background process proc_abc completed normally" in result
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
     assert "Output:\ndone]" in result
+
+
+def test_format_killed_completion_event_names_source_and_signal():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_killed",
+        "command": "sleep 5",
+        "exit_code": -15,
+        "completion_reason": "killed",
+        "termination_source": "process.kill",
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert "proc_killed terminated by process.kill" in result
+    assert "exit code -15, SIGTERM" in result
+
+
+def test_format_external_sigterm_does_not_claim_agent_kill():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_external",
+        "command": "sleep 5",
+        "exit_code": 143,
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert "proc_external exited" in result
+    assert "terminated by" not in result
+    assert "exit code 143, SIGTERM" in result
 
 
 def test_format_watch_match_event():
@@ -1061,7 +1116,7 @@ def test_drain_notifications_returns_pending_events():
         results = process_registry.drain_notifications()
         assert len(results) == 2
         assert results[0][0]["session_id"] == "proc_drain1"
-        assert "proc_drain1 completed" in results[0][1]
+        assert "proc_drain1 completed normally" in results[0][1]
         assert results[1][0]["session_id"] == "proc_drain2"
         assert "watch pattern" in results[1][1]
     finally:

@@ -31,6 +31,16 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_add.add_argument(
         "--api-key", help="API key value (otherwise prompted securely)"
     )
+    auth_add.add_argument(
+        "--env",
+        dest="env_var",
+        metavar="VAR_NAME",
+        help=(
+            "Reference an environment variable instead of a plaintext key. "
+            "The variable is resolved at runtime, keeping your API key out of auth.json. "
+            "Example: --env NVIDIA_API_KEY_2"
+        ),
+    )
     auth_add.add_argument("--portal-url", help="Nous portal base URL")
     auth_add.add_argument("--inference-url", help="Nous inference base URL")
     auth_add.add_argument("--client-id", help="OAuth client id")

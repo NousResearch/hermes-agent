@@ -120,6 +120,7 @@ opencode_go = OpenCodeGoProfile(
     env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1",
     default_aux_model="glm-5",
+    supports_vision_tool_messages=False,  # Xiaomi MiMo rejects list-type tool content (400 "text is not set")
 )
 
 register_provider(opencode_zen)

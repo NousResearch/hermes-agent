@@ -334,6 +334,14 @@ async def test_command_messages_do_not_leave_sentinel():
 async def test_start_command_is_noop_and_does_not_show_help():
     """Telegram /start is a platform ping; it must not dump /help output."""
     runner = _make_runner()
+    # Post-#52aeec4a2, /start is a platform-ping noop ONLY when an active
+    # session already exists; with no session it routes as a normal message
+    # (first-time onboarding). Simulate an existing active session so this test
+    # exercises the noop path (no-session /start is covered by dispatch tests).
+    _active_entry = MagicMock()
+    _active_entry.suspended = False
+    _active_entry.expiry_finalized = False
+    runner.session_store._entries.get.return_value = _active_entry
     event = _make_event(text="/start")
     session_key = build_session_key(event.source)
 

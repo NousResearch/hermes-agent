@@ -410,8 +410,24 @@ def _nous_extra_body() -> dict:
 # ``_nous_extra_body()`` or import ``nous_portal_tags`` directly.
 NOUS_EXTRA_BODY = _nous_extra_body()
 
-# Set at resolve time — True if the auxiliary client points to Nous Portal
+# Set at resolve time — True if the auxiliary client points to Nous Portal.
+# Per-task ContextVar so concurrent subagents don't race this flag (arch-review
+# PRV-F3); the module global is kept in sync as a fallback for external readers.
+import contextvars as _contextvars
+
+_aux_is_nous_var = _contextvars.ContextVar("hermes_auxiliary_is_nous", default=None)
 auxiliary_is_nous: bool = False
+
+
+def _set_auxiliary_is_nous(value):
+    _aux_is_nous_var.set(bool(value))
+    global auxiliary_is_nous
+    auxiliary_is_nous = bool(value)
+
+
+def _get_auxiliary_is_nous():
+    v = _aux_is_nous_var.get()
+    return auxiliary_is_nous if v is None else v
 
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
@@ -1568,8 +1584,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             "Auxiliary Nous: runtime JWT refresh failed; checking stored "
             "auth.json token."
         )
-    global auxiliary_is_nous
-    auxiliary_is_nous = True
+    _set_auxiliary_is_nous(True)
     logger.debug("Auxiliary client: Nous Portal")
 
     # Ask the Portal which model it currently recommends for this task type.
@@ -1676,13 +1691,28 @@ def _read_main_provider() -> str:
     return ""
 
 
-# Process-local override set by AIAgent at session/turn start. Single-threaded
-# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
+# Per-task runtime override set by AIAgent at turn start. Held in a ContextVar
+# so concurrent in-process subagents (delegation worker threads) each see their
+# OWN provider/model/credentials instead of racing a shared module global
+# (arch-review PRV-F1: unlocked globals could leak api_key/base_url across
+# concurrent sessions). The module globals below are kept in sync as a
+# process-wide LAST-RESORT fallback for paths that read before any
+# set_runtime_main() call; reads prefer the ContextVar.
+_runtime_main_var = _contextvars.ContextVar("hermes_runtime_main", default=None)
+
 _RUNTIME_MAIN_PROVIDER: str = ""
 _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
 _RUNTIME_MAIN_API_KEY: str = ""
 _RUNTIME_MAIN_API_MODE: str = ""
+
+
+def _runtime_main_field(field, _global_default):
+    """Read a runtime-main field, ContextVar-first with the global as fallback."""
+    rm = _runtime_main_var.get()
+    if rm is not None:
+        return rm.get(field, "") or ""
+    return _global_default
 
 
 def set_runtime_main(
@@ -1704,17 +1734,28 @@ def set_runtime_main(
     recorded so that ``_resolve_auto`` can construct a valid client in
     Step 1 instead of falling through to the aggregator chain.
     """
+    _p = (provider or "").strip().lower()
+    _m = (model or "").strip()
+    _b = (base_url or "").strip()
+    _k = api_key.strip() if isinstance(api_key, str) else ""
+    _am = (api_mode or "").strip()
+    # ContextVar = per-task source of truth (isolated across concurrent subagents).
+    _runtime_main_var.set(
+        {"provider": _p, "model": _m, "base_url": _b, "api_key": _k, "api_mode": _am}
+    )
+    # Module globals kept in sync as a process-wide fallback (back-compat).
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
-    _RUNTIME_MAIN_MODEL = (model or "").strip()
-    _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
-    _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
-    _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    _RUNTIME_MAIN_PROVIDER = _p
+    _RUNTIME_MAIN_MODEL = _m
+    _RUNTIME_MAIN_BASE_URL = _b
+    _RUNTIME_MAIN_API_KEY = _k
+    _RUNTIME_MAIN_API_MODE = _am
 
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
+    _runtime_main_var.set(None)
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
     _RUNTIME_MAIN_PROVIDER = ""
@@ -2993,8 +3034,8 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
       2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
          chain, only used when the main provider has no working client).
     """
-    global auxiliary_is_nous, _stale_base_url_warned
-    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+    global _stale_base_url_warned
+    _set_auxiliary_is_nous(False)  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     runtime_provider = runtime.get("provider", "")
     runtime_model = str(runtime.get("model") or "")
@@ -3007,12 +3048,15 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # base_url/api_key/api_mode alongside provider/model, so custom:
     # providers get the full credential surface in Step 1 of the
     # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
+    _rm_base = _runtime_main_field("base_url", _RUNTIME_MAIN_BASE_URL)
+    _rm_key = _runtime_main_field("api_key", _RUNTIME_MAIN_API_KEY)
+    _rm_mode = _runtime_main_field("api_mode", _RUNTIME_MAIN_API_MODE)
+    if not runtime_base_url and _rm_base:
+        runtime_base_url = _rm_base
+    if not runtime_api_key and _rm_key:
+        runtime_api_key = _rm_key
+    if not runtime_api_mode and _rm_mode:
+        runtime_api_mode = _rm_mode
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -4137,7 +4181,7 @@ def get_auxiliary_extra_body() -> dict:
     Includes Nous Portal product tags when the auxiliary client is backed
     by Nous Portal. Returns empty dict otherwise.
     """
-    return _nous_extra_body() if auxiliary_is_nous else {}
+    return _nous_extra_body() if _get_auxiliary_is_nous() else {}
 
 
 def auxiliary_max_tokens_param(value: int) -> dict:
@@ -4802,7 +4846,7 @@ def _build_call_kwargs(
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
-    if provider == "nous" or auxiliary_is_nous:
+    if provider == "nous" or _get_auxiliary_is_nous():
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra

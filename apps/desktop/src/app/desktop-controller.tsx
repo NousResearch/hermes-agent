@@ -160,7 +160,18 @@ function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
     return false
   }
 
-  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+  return a.every(
+    (session, i) =>
+      session.id === b[i]?.id &&
+      session.profile === b[i]?.profile &&
+      session.source === b[i]?.source &&
+      session.title === b[i]?.title &&
+      session.last_active === b[i]?.last_active
+  )
+}
+
+export function sessionListProfileForScope(profileScope: string): 'all' | (string & {}) {
+  return profileScope === ALL_PROFILES ? 'all' : profileScope
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:
@@ -197,6 +208,7 @@ export function DesktopController() {
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
   const refreshSessionsRequestRef = useRef(0)
+  const refreshMessagingSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
@@ -216,6 +228,9 @@ export function DesktopController() {
   const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
 
   const routedSessionId = routeSessionId(location.pathname)
+  const routeState = location.state as { sessionProfile?: unknown } | null
+  const routedSessionProfileHint =
+    typeof routeState?.sessionProfile === 'string' ? normalizeProfileKey(routeState.sessionProfile) : null
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
@@ -370,23 +385,40 @@ export function DesktopController() {
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const requestId = refreshMessagingSessionsRequestRef.current + 1
+    refreshMessagingSessionsRequestRef.current = requestId
+    const sessionProfile = sessionListProfileForScope(profileScope)
+
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
+
+      if (refreshMessagingSessionsRequestRef.current !== requestId) {
+        return
+      }
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
+      // Exact per-platform totals are scoped (profile + platform). A fresh seed
+      // fetch changes that scope, so drop any totals learned from a previous
+      // profile/all-profiles platform pager instead of showing e.g. Prime as
+      // "0/181 Telegram" because Default was loaded first.
+      setMessagingPlatformTotals({})
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
       setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
     } catch {
-      // Non-fatal: the messaging sections just stay empty/stale.
+      if (refreshMessagingSessionsRequestRef.current === requestId) {
+        setMessagingSessions([])
+        setMessagingPlatformTotals({})
+        setMessagingTruncated(false)
+      }
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
@@ -394,10 +426,15 @@ export function DesktopController() {
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
+    const sessionProfile = sessionListProfileForScope(profileScope)
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
       source: platform
     })
+
+    if ($profileScope.get() !== profileScope) {
+      return
+    }
 
     const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
 
@@ -408,7 +445,7 @@ export function DesktopController() {
 
     const total = result.total ?? incoming.length
     setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+  }, [profileScope])
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right
@@ -892,6 +929,7 @@ export function DesktopController() {
     freshDraftReady,
     gatewayState,
     locationPathname: location.pathname,
+    profileHint: routedSessionProfileHint,
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,
@@ -933,7 +971,9 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
-      onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onResumeSession={(sessionId, profile) =>
+        navigate(sessionRoute(sessionId), profile ? { state: { sessionProfile: profile } } : undefined)
+      }
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)
           .then(() => refreshCronJobs())

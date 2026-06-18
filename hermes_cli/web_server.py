@@ -1690,6 +1690,7 @@ async def fs_default_cwd():
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
+    profile = _scope_profile_for_isolated_dashboard(profile, allow_all=True)
     requested_profile = (profile or "").strip()
     # Plain /api/status stays the machine-level public liveness probe. The
     # dashboard adds ?profile= when its management switcher targets another
@@ -2771,6 +2772,60 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+def _dashboard_isolated_profile() -> Optional[str]:
+    """Return the profile this dashboard backend is pinned to, if any.
+
+    The normal machine dashboard is intentionally cross-profile. Desktop pool
+    backends and ``hermes dashboard --isolated`` are not: those processes serve
+    exactly one profile and must not let query params enumerate sibling profile
+    state.
+    """
+    raw = getattr(app.state, "isolated_profile", "") or ""
+    if not isinstance(raw, str):
+        raw = str(raw)
+    raw = raw.strip()
+    return raw or None
+
+
+def _scope_profile_for_isolated_dashboard(
+    profile: Optional[str],
+    *,
+    allow_all: bool = False,
+) -> Optional[str]:
+    """Clamp or reject profile query params for an isolated backend.
+
+    ``profile=all`` is a dashboard-sidebar convenience on the machine backend.
+    On an isolated profile backend it means "all sessions for this profile", not
+    "all profiles on disk". Explicit sibling profile names are rejected so
+    direct detail/list endpoints cannot bypass the aggregate clamp.
+    """
+    isolated = _dashboard_isolated_profile()
+    if not isolated:
+        return profile
+
+    requested = (profile or "").strip()
+    if not requested:
+        return profile
+    if allow_all and requested.lower() == "all":
+        return isolated
+
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        requested_canon = profiles_mod.normalize_profile_name(requested)
+        isolated_canon = profiles_mod.normalize_profile_name(isolated)
+        profiles_mod.validate_profile_name(requested_canon)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if requested_canon != isolated_canon:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Dashboard backend is isolated to profile '{isolated_canon}'.",
+        )
+    return requested_canon
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -2804,6 +2859,7 @@ async def get_sessions(
             status_code=400,
             detail="order must be one of: created, recent",
         )
+    profile = _scope_profile_for_isolated_dashboard(profile)
     profile_name: Optional[str] = None
     if profile:
         profile_name, _ = _cron_profile_home(profile)
@@ -2864,7 +2920,7 @@ async def get_profiles_sessions(
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "recent",
-    profile: str = "all",
+    profile: Optional[str] = "all",
     source: str = None,
     exclude_sources: str = None,
 ):
@@ -2885,6 +2941,7 @@ async def get_profiles_sessions(
     from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
 
+    profile = _scope_profile_for_isolated_dashboard(profile, allow_all=True)
     targets: List[Tuple[str, Path]] = []
     if profile and profile != "all":
         name, home = _cron_profile_home(profile)
@@ -4985,6 +5042,7 @@ async def get_messaging_platforms(profile: Optional[str] = None):
     # TARGET profile's channel credentials/state, not the root install's.
     # Inside _profile_scope, load_env()/read_runtime_status()/get_running_pid()
     # all resolve against the requested profile's HERMES_HOME.
+    profile = _scope_profile_for_isolated_dashboard(profile, allow_all=True)
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
         runtime = read_runtime_status()
@@ -5011,8 +5069,9 @@ async def update_messaging_platform(
         )
 
     allowed_env = set(entry["env_vars"])
+    target_profile = _scope_profile_for_isolated_dashboard(body.profile or profile, allow_all=True)
     try:
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(target_profile):
             for key in body.clear_env:
                 if key not in allowed_env:
                     raise HTTPException(
@@ -5050,6 +5109,7 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
             status_code=404, detail=f"Unknown messaging platform: {platform_id}"
         )
 
+    profile = _scope_profile_for_isolated_dashboard(profile, allow_all=True)
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
         payload = _messaging_platform_payload(
@@ -6832,6 +6892,7 @@ def _open_session_db_for_profile(profile: Optional[str]):
     (transcripts, detail) without spawning that profile's backend.
     """
     from hermes_state import SessionDB
+    profile = _scope_profile_for_isolated_dashboard(profile)
     if not profile:
         return SessionDB()
     _name, home = _cron_profile_home(profile)
@@ -9548,6 +9609,7 @@ def _profile_scope(profile: Optional[str]):
     imported the modules before a HERMES_HOME override, or under test
     isolation).
     """
+    profile = _scope_profile_for_isolated_dashboard(profile, allow_all=True)
     requested = (profile or "").strip()
 
     from hermes_constants import (
@@ -9601,6 +9663,7 @@ def _config_profile_scope(profile: Optional[str]):
 
     None/""/"current" means the dashboard's own profile — no override.
     """
+    profile = _scope_profile_for_isolated_dashboard(profile, allow_all=True)
     requested = (profile or "").strip()
     if not requested or requested.lower() == "current":
         yield None
@@ -12143,6 +12206,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
+    isolated_profile: str = "",
 ):
     """Start the web UI server.
 
@@ -12150,6 +12214,10 @@ def start_server(
     URL as ``?profile=<name>`` so the SPA's profile switcher preselects it
     — used when a profile alias (``<profile> dashboard``) routes to the
     machine dashboard.
+
+    ``isolated_profile`` pins this backend to one profile. It is set for
+    desktop-spawned pool backends and ``hermes dashboard --isolated``; normal
+    machine dashboards leave it empty and keep cross-profile management.
     """
     import uvicorn
 
@@ -12158,6 +12226,11 @@ def start_server(
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
     app.state.auth_required = should_require_auth(host, allow_public)
+    isolated_profile = (isolated_profile or "").strip()
+    if isolated_profile:
+        app.state.isolated_profile = isolated_profile
+    elif hasattr(app.state, "isolated_profile"):
+        delattr(app.state, "isolated_profile")
 
     if app.state.auth_required:
         # Phase 3.5: the gate engages on non-loopback binds.  The legacy

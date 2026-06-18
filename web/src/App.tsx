@@ -798,8 +798,9 @@ export default function App() {
  * fetchJSON ?profile= injection) silently targeted the newly selected
  * profile B — the exact stale-target footgun the switcher exists to kill.
  * Keying by profile resets every page's local state so it refetches under
- * the new scope. The persistent ChatPage host below handles its own
- * remount (channel keyed on scopedProfile).
+ * the new scope. The persistent ChatPage host below keeps its own live PTY
+ * channel stable across profile-switcher changes so an in-progress chat is
+ * not torn down by browsing another profile's management pages.
  */
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   const { profile } = useProfileScope();

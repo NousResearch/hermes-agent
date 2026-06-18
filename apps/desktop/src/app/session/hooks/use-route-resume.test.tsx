@@ -14,7 +14,7 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, profileHint?: null | string) => Promise<unknown>
   resumeFailedSessionId?: null | string
   resumeExhaustedSessionId?: null | string
   routedSessionId: null | string
@@ -143,7 +143,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined)
   })
 
   it('resumes when pathname changes to a routed session', () => {
@@ -193,7 +193,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true, undefined)
   })
 
   it('resumes the selected route again when the gateway reconnects', () => {
@@ -261,7 +261,7 @@ describe('useRouteResume', () => {
     )
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
-    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, undefined)
   })
 })
 

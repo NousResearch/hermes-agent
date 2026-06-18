@@ -11,7 +11,8 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  profileHint?: null | string
+  resumeSession: (sessionId: string, focus: boolean, profileHint?: null | string) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -73,6 +74,7 @@ export function useRouteResume({
   freshDraftReady,
   gatewayState,
   locationPathname,
+  profileHint,
   resumeSession,
   resumeFailedSessionId,
   resumeExhaustedSessionId,
@@ -147,7 +149,7 @@ export function useRouteResume({
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). Otherwise keep skipping when already active.
       if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        void resumeSession(routedSessionId, true)
+        void resumeSession(routedSessionId, true, profileHint)
       }
 
       return
@@ -169,6 +171,7 @@ export function useRouteResume({
     freshDraftReady,
     gatewayState,
     locationPathname,
+    profileHint,
     resumeSession,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,

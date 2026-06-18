@@ -193,11 +193,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  // Profile-scoped chat: spawn the PTY under the globally selected
-  // management profile. Changing it remounts the terminal (key below /
-  // effect dep) so the user explicitly starts a fresh scoped session.
+  // Profile-scoped chat: bind each live PTY channel to the management profile
+  // selected when that channel is created. Profile switcher changes should
+  // refetch management pages, not kill an in-progress chat. Resume target
+  // changes still create a fresh identity so resume-in-chat works at runtime.
   const { profile: scopedProfile } = useProfileScope();
-  const channel = useMemo(() => generateChannelId(), [resumeParam, scopedProfile]);
+  const chatIdentity = useMemo(
+    () => ({
+      resume: resumeParam,
+      channel: generateChannelId(),
+      profile: scopedProfile,
+    }),
+    // Intentionally exclude scopedProfile: changing the management switcher
+    // must not tear down the current chat channel. A new resume target is the
+    // explicit signal to create a fresh chat identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resumeParam],
+  );
+  const channel = chatIdentity.channel;
+  const chatProfile = chatIdentity.profile;
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -600,7 +614,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile);
+      const url = buildWsUrl(authParam, resumeParam, channel, chatProfile);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -744,7 +758,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile, reconnectNonce]);
+  }, [channel, resumeParam, chatProfile, reconnectNonce]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -881,7 +895,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} profile={scopedProfile} />
+            <ChatSidebar channel={channel} profile={chatProfile} />
           </div>
         </div>
       </>,
@@ -967,7 +981,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} profile={scopedProfile} />
+              <ChatSidebar channel={channel} profile={chatProfile} />
             </div>
           </div>
         )}

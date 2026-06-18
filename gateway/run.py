@@ -11534,7 +11534,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # route to the correct topic even when reply anchor is unavailable.
             tid = str(thread_id)
             if tid and tid not in {"", "1"}:
-                metadata["direct_messages_topic_id"] = tid
+                metadata["message_thread_id"] = tid
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
         return metadata

@@ -1210,6 +1210,50 @@ class TestTruncateMessage:
                 f"Chunk {i} too long: {len(chunk)} > {max_len}"
             )
 
+    def test_truncate_no_phantom_fences_when_fence_contains_single_backtick(self):
+        """Regression: a COMPLETE fenced block whose body holds an odd number
+        of single backticks must not be miscounted by the inline-span parity
+        guard. The guard counts only unpaired INLINE backticks; counting the
+        fence's own backticks flips parity odd, pushes the split back into the
+        closed fence, and makes the carry-over inject a phantom empty ``` block
+        that was never in the source.
+        """
+        adapter = self._adapter()
+        # Body 'result = `x' has one single backtick; the fence is complete.
+        code_fence = "```\nresult = `x\n```"
+        content = "Some text\n" + code_fence + "\n" + "B" * 50
+        chunks = adapter.truncate_message(content, max_length=44)
+        assert len(chunks) > 1
+        for i, chunk in enumerate(chunks):
+            assert "```\n```" not in chunk, (
+                f"Chunk {i} contains an empty phantom code block: {chunk!r}"
+            )
+        # The complete fence (and its inline backtick) survives verbatim and is
+        # confined to the first chunk; no chunk reopens a fence spuriously.
+        assert "result = `x" in chunks[0]
+
+    def test_truncate_open_fence_still_closes_and_reopens(self):
+        """The phantom-fence fix must NOT regress the carry-over for a genuine
+        mid-fence split: when the split falls inside an OPEN code block, the
+        chunk closes the fence and the next chunk reopens it with the language
+        tag. This holds even when the open fence body contains a single inline
+        backtick.
+        """
+        adapter = self._adapter()
+        msg = "```python\n" + "v = `tick\n" + "y = 2\n" * 80 + "```\nTail"
+        chunks = adapter.truncate_message(msg, max_length=300)
+        assert len(chunks) > 1
+        # Every chunk has balanced triple-backtick fences.
+        for i, chunk in enumerate(chunks):
+            fence_count = chunk.count("```")
+            assert fence_count % 2 == 0, (
+                f"Chunk {i} has unbalanced fences ({fence_count}): {chunk!r}"
+            )
+        # Continuation chunks reopen the code block with the language tag.
+        assert any("```python" in chunk for chunk in chunks[1:]), (
+            "No continuation chunk reopened the open fence with its language tag"
+        )
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

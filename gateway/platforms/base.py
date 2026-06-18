@@ -4880,7 +4880,16 @@ class BasePlatformAdapter(ABC):
             # (like parentheses) inside the broken span would be unescaped,
             # causing MarkdownV2 parse errors on Telegram.
             candidate = remaining[:split_at]
-            backtick_count = candidate.count("`") - candidate.count("\\`")
+            # Only genuinely-unpaired INLINE backticks should affect parity.
+            # Strip COMPLETE triple-backtick fenced regions first: their six
+            # fence backticks (and any single backticks inside the fence body)
+            # are not inline spans, and counting them can flip parity odd,
+            # which would wrongly push split_at back into a closed fence and
+            # make the downstream carry-over emit a phantom empty ``` block
+            # that was never in the source. Open (unterminated) fences are left
+            # intact so a real mid-fence split still closes/reopens correctly.
+            inline_candidate = re.sub(r"```.*?```", "", candidate, flags=re.DOTALL)
+            backtick_count = inline_candidate.count("`") - inline_candidate.count("\\`")
             if backtick_count % 2 == 1:
                 # Find the last unescaped backtick and split before it
                 last_bt = candidate.rfind("`")

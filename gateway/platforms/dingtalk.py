@@ -318,6 +318,9 @@ class DingTalkAdapter(BasePlatformAdapter):
             delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
             logger.info("[%s] Reconnecting in %ds...", self.name, delay)
             await asyncio.sleep(delay)
+            # Clear stale session webhooks from previous connection
+            # (they are bound to the old Stream Mode session and won't work)
+            self._session_webhooks.clear()
             backoff_idx += 1
 
     async def disconnect(self) -> None:
@@ -594,6 +597,25 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
 
+        # DEBUG: Print full message structure for file message debugging
+        logger.debug("[%s] RAW MESSAGE RECEIVED: msg_id=%s", self.name, msg_id)
+        logger.debug("[%s] message_type=%s", self.name, getattr(message, "message_type", "N/A"))
+        logger.debug("[%s] conversation_type=%s", self.name, getattr(message, "conversation_type", "N/A"))
+        
+        # Print all attributes of the message
+        if logger.isEnabledFor(logging.DEBUG):
+            for attr in dir(message):
+                if not attr.startswith('_'):
+                    try:
+                        val = getattr(message, attr)
+                        if not callable(val):
+                            val_str = str(val)
+                            if len(val_str) > 500:
+                                val_str = val_str[:500] + "..."
+                            logger.debug("[%s] message.%s = %s", self.name, attr, val_str)
+                    except Exception:
+                        pass
+
         # Chat context
         conversation_id = getattr(message, "conversation_id", "") or ""
         conversation_type = getattr(message, "conversation_type", "1")
@@ -648,6 +670,21 @@ class DingTalkAdapter(BasePlatformAdapter):
                 session_webhook,
                 session_webhook_expired_time,
             )
+
+        # Fix: If message.content is None, try to get it from to_dict()
+        # (DingTalk SDK sometimes only exposes content via to_dict())
+        if getattr(message, "content", None) is None:
+            try:
+                d = message.to_dict() if hasattr(message, "to_dict") else {}
+                if "content" in d:
+                    message.content = d["content"]
+                    logger.debug(
+                        "[%s] Restored message.content from to_dict(): %s",
+                        self.name,
+                        str(message.content)[:200],
+                    )
+            except Exception as e:
+                logger.debug("[%s] to_dict() failed: %s", self.name, e)
 
         # Resolve media download codes to URLs so vision tools can use them
         await self._resolve_media_codes(message)
@@ -764,7 +801,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 media_types.append("image")
                 msg_type = MessageType.PHOTO
 
-        # Check for rich text with mixed content
+        # Check for RICH TEXT with mixed content (images, files in rich text)
         rich_text = getattr(message, "rich_text_content", None) or getattr(
             message, "rich_text", None
         )
@@ -804,7 +841,32 @@ class DingTalkAdapter(BasePlatformAdapter):
                                 if msg_type == MessageType.TEXT:
                                     msg_type = MessageType.DOCUMENT
 
+        # Check for PLAIN FILE message (not in rich text)
+        # DingTalk file messages have message_type="file" and content with downloadCode
         msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str == "file" and not media_urls:
+            # Try to get downloadCode from message.content
+            content = getattr(message, "content", None)
+            if content:
+                if isinstance(content, dict):
+                    dl_code = (
+                        content.get("downloadCode")
+                        or content.get("download_code")
+                        or content.get("pictureDownloadCode")
+                        or ""
+                    )
+                    if dl_code:
+                        media_urls.append(dl_code)
+                        media_types.append("application/octet-stream")
+                        msg_type = MessageType.DOCUMENT
+                elif hasattr(content, "download_code"):
+                    dl_code = getattr(content, "download_code", None)
+                    if dl_code:
+                        media_urls.append(dl_code)
+                        media_types.append("application/octet-stream")
+                        msg_type = MessageType.DOCUMENT
+
+        # Also check for picture type
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
         elif msg_type_str == "richText":
@@ -1300,7 +1362,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         robot_code = getattr(message, "robot_code", None) or self._client_id
         codes_to_resolve = []
 
-        # Collect codes and references to update
         # 1. Single image content
         img_content = getattr(message, "image_content", None)
         if img_content and getattr(img_content, "download_code", None):
@@ -1315,6 +1376,28 @@ class DingTalkAdapter(BasePlatformAdapter):
                     for key in ("downloadCode", "pictureDownloadCode", "download_code"):
                         if item.get(key):
                             codes_to_resolve.append((item, key))
+
+        # 3. Plain file message (message_type="file")
+        #    downloadCode is in message.content
+        msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str == "file":
+            content = getattr(message, "content", None)
+            if content:
+                content_dict = None
+                if isinstance(content, dict):
+                    content_dict = content
+                elif hasattr(content, "__dict__"):
+                    # It's an object, convert to dict-like access
+                    for key in ("downloadCode", "download_code", "pictureDownloadCode"):
+                        val = getattr(content, key, None)
+                        if val:
+                            codes_to_resolve.append((content, key))
+                            break
+                if content_dict:
+                    for key in ("downloadCode", "download_code", "pictureDownloadCode"):
+                        if content_dict.get(key):
+                            codes_to_resolve.append((content_dict, key))
+                            break
 
         if not codes_to_resolve:
             return
@@ -1333,39 +1416,96 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def _fetch_download_url(
         self, code: str, robot_code: str, token: str, obj, key: str
     ) -> None:
-        """Fetch download URL for a single code using the robot SDK."""
-        if not self._robot_sdk:
+        """Fetch download URL and download file to local cache.
+
+        Uses httpx POST to avoid the broken Robot SDK method that returns HTTP 500.
+        Downloads the file to ~/.hermes/cache/dingtalk_files/ and stores the
+        local path in the object for the agent to use.
+        """
+        if not self._http_client:
             logger.warning(
-                "[%s] Robot SDK not initialized, cannot resolve media code",
+                "[%s] HTTP client not initialized, cannot resolve media code",
                 self.name,
             )
             return
+
         try:
-            request = dingtalk_robot_models.RobotMessageFileDownloadRequest(
-                download_code=code,
-                robot_code=robot_code,
+            # Call DingTalk API directly with httpx (SDK method is broken)
+            resp = await self._http_client.post(
+                "https://api.dingtalk.com/v1.0/robot/messageFiles/download",
+                headers={"x-acs-dingtalk-access-token": token},
+                json={"downloadCode": code, "robotCode": robot_code},
+                timeout=30.0,
             )
-            headers = dingtalk_robot_models.RobotMessageFileDownloadHeaders(
-                x_acs_dingtalk_access_token=token,
-            )
-            runtime = tea_util_models.RuntimeOptions()
-            response = await self._robot_sdk.robot_message_file_download_with_options_async(
-                request, headers, runtime
-            )
-            body = response.body if response else None
-            if body:
-                url = getattr(body, "download_url", None)
-                if url:
-                    if hasattr(obj, key):
-                        setattr(obj, key, url)
-                    elif isinstance(obj, dict):
-                        obj[key] = url
-            else:
+
+            if resp.status_code >= 400:
                 logger.warning(
-                    "[%s] Failed to download media: empty response for code %s",
+                    "[%s] Failed to resolve media code %s: HTTP %d - %s",
                     self.name,
                     code,
+                    resp.status_code,
+                    resp.text[:200],
                 )
+                return
+
+            data = resp.json()
+            download_url = data.get("downloadUrl") or data.get("download_url")
+
+            if not download_url:
+                logger.warning(
+                    "[%s] No download URL in response for code %s: %s",
+                    self.name,
+                    code,
+                    data,
+                )
+                return
+
+            # Download the file to local cache
+            cache_dir = os.path.expanduser("~/.hermes/cache/dingtalk_files")
+            os.makedirs(cache_dir, exist_ok=True)
+
+            # Extract file extension from URL or default to .bin
+            file_ext = ".bin"
+            if "." in download_url.split("/")[-1]:
+                ext_part = download_url.split("/")[-1].split("?")[0]
+                if "." in ext_part:
+                    file_ext = "." + ext_part.split(".")[-1]
+
+            local_filename = f"{code[:16]}_{uuid.uuid4().hex[:8]}{file_ext}"
+            local_path = os.path.join(cache_dir, local_filename)
+
+            # Download file
+            file_resp = await self._http_client.get(download_url, timeout=60.0)
+            if file_resp.status_code >= 400:
+                logger.warning(
+                    "[%s] Failed to download file from %s: HTTP %d",
+                    self.name,
+                    download_url[:80],
+                    file_resp.status_code,
+                )
+                return
+
+            with open(local_path, "wb") as f:
+                f.write(file_resp.content)
+
+            logger.info(
+                "[%s] Downloaded file to %s (code=%s)",
+                self.name,
+                local_path,
+                code[:20],
+            )
+
+            # Store local path in the object for agent to use
+            if hasattr(obj, key):
+                setattr(obj, key, local_path)
+            elif isinstance(obj, dict):
+                obj[key] = local_path
+
+            # Also store in a dict for later reference
+            if not hasattr(self, "_downloaded_files"):
+                self._downloaded_files = {}
+            self._downloaded_files[code] = local_path
+
         except Exception as e:
             logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
 

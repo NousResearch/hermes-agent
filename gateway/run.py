@@ -2559,6 +2559,25 @@ class GatewayRunner:
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
+        # Low-noise chat mode: the user's message was processed above
+        # (queued/steered/interrupted), but we skip the explanatory busy ack.
+        # This prevents operational phrases such as "Interrupting current
+        # task" from leaking into Telegram/Slack when the platform is
+        # configured for important-only notifications.
+        try:
+            _cfg = _load_gateway_config()
+            _display = _cfg.get("display", {}) if isinstance(_cfg, dict) else {}
+            _platform_key = _platform_config_key(event.source.platform)
+            _platform_cfg = ((_display.get("platforms") or {}).get(_platform_key) or {})
+            _notifications = str(
+                _platform_cfg.get("notifications", _display.get("notifications", "all"))
+            ).strip().lower()
+            if _notifications in {"important", "quiet", "silent"}:
+                logger.debug("Busy ack suppressed by display notifications=%s for session %s", _notifications, session_key)
+                return True
+        except Exception:
+            pass
+
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
         # never actually delivered.
@@ -15586,9 +15605,9 @@ class GatewayRunner:
         # Periodic "still working" notifications for long-running tasks.
         # Fires every N seconds so the user knows the agent hasn't died.
         # Config: agent.gateway_notify_interval in config.yaml, or
-        # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
+        # HERMES_AGENT_NOTIFY_INTERVAL env var. Default 300s (5 min).
         # 0 = disable notifications.
-        _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
+        _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 300)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
 
@@ -15598,11 +15617,30 @@ class GatewayRunner:
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
-            while True:
+            try:
+                _cfg = _load_gateway_config()
+                _display = _cfg.get("display", {}) if isinstance(_cfg, dict) else {}
+                _platform_key = _platform_config_key(source.platform)
+                _platform_cfg = ((_display.get("platforms") or {}).get(_platform_key) or {})
+                _notifications = str(
+                    _platform_cfg.get("notifications", _display.get("notifications", "all"))
+                ).strip().lower()
+                if _notifications in {"important", "quiet", "silent"}:
+                    return
+            except Exception:
+                pass
+            while _run_still_current() and not _interrupt_detected.is_set():
                 await asyncio.sleep(_NOTIFY_INTERVAL)
+                if not _run_still_current() or _interrupt_detected.is_set():
+                    return
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
+                try:
+                    if _agent_ref is not None and getattr(_agent_ref, "is_interrupted", False):
+                        return
+                except Exception:
+                    pass
                 _status_detail = ""
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:

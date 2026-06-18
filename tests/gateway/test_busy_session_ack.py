@@ -315,6 +315,32 @@ class TestBusySessionAck:
         assert agent.interrupt.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_important_notifications_suppress_busy_ack_but_still_interrupts(self, monkeypatch):
+        """Important-only chat mode should process input without noisy busy ack text."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"notifications": "important"}}}},
+        )
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="stop and answer this")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("stop and answer this")
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_ack_after_cooldown_expires(self):
         """After 30s cooldown, a new message should send a fresh ack."""
         runner, sentinel = _make_runner()

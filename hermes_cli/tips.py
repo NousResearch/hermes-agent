@@ -450,7 +450,7 @@ TIPS = [
 
     # --- Gateway Behavior Env Vars ---
     'HERMES_GATEWAY_BUSY_ACK_ENABLED=false silences the ⚡/⏳/⏩ ack messages when a user messages a busy agent.',
-    'HERMES_AGENT_NOTIFY_INTERVAL (default 180s) sets how often the gateway pings with progress on long turns.',
+    'HERMES_AGENT_NOTIFY_INTERVAL (default 300s) sets how often the gateway pings with progress on long turns.',
     'HERMES_RESTART_DRAIN_TIMEOUT (default 900s) caps how long /restart waits for in-flight runs before forcing.',
     'HERMES_CHECKPOINT_TIMEOUT (default 30s) caps filesystem checkpoint creation — raise it on huge monorepos.',
 

@@ -65,6 +65,20 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class InterruptingProgressCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.sent_at = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        result = await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        self.sent_at.append((time.monotonic(), content))
+        return result
+
+    def has_pending_interrupt(self, session_key: str) -> bool:
+        return True
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -505,6 +519,26 @@ class SlowActivityAgent:
         }
 
 
+class UnresponsiveInterruptedAgent(SlowActivityAgent):
+    interrupted_at = None
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.is_interrupted = False
+
+    def interrupt(self, pending_text=None):
+        type(self).interrupted_at = time.monotonic()
+        self.is_interrupted = True
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class PreviewedResponseAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -726,6 +760,46 @@ async def test_run_agent_long_running_notice_uses_korean_when_display_language_k
     assert result["final_response"] == "done"
     assert any("작업 중" in text for text in sent_texts)
     assert not any("Still working" in text or "elapsed" in text or "iteration" in text for text in sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_long_running_notice_suppressed_when_notifications_important(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.02")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        SlowActivityAgent,
+        session_id="sess-important-notifications-no-notice",
+        config_data={"display": {"language": "ko", "platforms": {"telegram": {"notifications": "important"}}}},
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert result["final_response"] == "done"
+    assert not any("작업 중" in text or "Still working" in text for text in sent_texts)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_long_running_notice_stops_after_interrupt(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.02")
+    UnresponsiveInterruptedAgent.interrupted_at = None
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        UnresponsiveInterruptedAgent,
+        session_id="sess-stale-notice-after-interrupt",
+        adapter_cls=InterruptingProgressCaptureAdapter,
+        config_data={"display": {"language": "ko"}},
+    )
+
+    assert result["final_response"] == "done"
+    assert UnresponsiveInterruptedAgent.interrupted_at is not None
+    late_notices = [
+        text
+        for sent_at, text in adapter.sent_at
+        if "작업 중" in text and sent_at > UnresponsiveInterruptedAgent.interrupted_at + 0.04
+    ]
+    assert late_notices == []
 
 
 @pytest.mark.asyncio

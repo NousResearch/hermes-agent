@@ -3297,18 +3297,17 @@ def run_conversation(
                     else:
                         agent._persist_session(messages, conversation_history)
                     if classified.reason == FailoverReason.content_policy_blocked:
-                        _summary = agent._summarize_api_error(api_error)
                         _policy_response = (
                             "⚠️  The model provider's safety filter blocked this request "
                             "(not a Hermes/gateway failure).\n\n"
-                            f"Provider message: {_summary}\n\n"
+                            f"Provider message: {_nonretryable_summary}\n\n"
                             f"{_CONTENT_POLICY_RECOVERY_HINT}"
                         )
                         return _content_policy_blocked_result(
                             messages,
                             api_call_count,
                             final_response=_policy_response,
-                            error_detail=_summary,
+                            error_detail=_nonretryable_summary,
                         )
                     return {
                         "final_response": None,

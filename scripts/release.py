@@ -93,6 +93,7 @@ AUTHOR_MAP = {
     "al@randomsnowflake.me": "randomsnowflake",
     "zakame@zakame.net": "zakame",
     "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",
+    "qinhaojie.exe@bytedance.com": "qin-ctx",
     "834740219@qq.com": "ViewWay",
     "matt@vestigial.dev": "m4dni5",
     "harjoth.khara@gmail.com": "harjothkhara",

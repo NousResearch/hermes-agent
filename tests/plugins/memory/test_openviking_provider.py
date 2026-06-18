@@ -369,7 +369,7 @@ def test_post_setup_create_remote_user_profile_can_mirror_to_openviking_store(tm
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
             "OpenViking user API key": "user-secret",
-            "OpenViking agent": "hermes",
+            "Hermes peer ID in OpenViking": "hermes",
             "OpenViking profile name": "VPS",
         }),
     )
@@ -411,7 +411,7 @@ def test_post_setup_create_remote_user_can_keep_hermes_only(tmp_path, monkeypatc
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
             "OpenViking user API key": "user-secret",
-            "OpenViking agent": "agent",
+            "Hermes peer ID in OpenViking": "agent",
         }),
     )
     config = {"memory": {}}
@@ -455,7 +455,7 @@ def test_post_setup_create_openviking_service_validates_after_api_key(tmp_path, 
         _prompt_from_values(
             {
                 "OpenViking API key": "service-secret",
-                "OpenViking agent": "agent",
+                "Hermes peer ID in OpenViking": "agent",
             },
             forbidden={"OpenViking server URL", "OpenViking user API key", "OpenViking root API key"},
         ),
@@ -540,7 +540,7 @@ def test_post_setup_user_key_path_can_route_detected_root_key_to_root_setup(tmp_
             "OpenViking user API key": "root-secret",
             "OpenViking account": "acct",
             "OpenViking user": "alice",
-            "OpenViking agent": "agent",
+            "Hermes peer ID in OpenViking": "agent",
         }
         return values.get(label, default or "")
 
@@ -549,7 +549,7 @@ def test_post_setup_user_key_path_can_route_detected_root_key_to_root_setup(tmp_
 
     OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
 
-    assert prompt_events.count("OpenViking agent") == 1
+    assert prompt_events.count("Hermes peer ID in OpenViking") == 1
     env_text = (hermes_home / ".env").read_text(encoding="utf-8")
     assert "OPENVIKING_API_KEY=root-secret" in env_text
     assert "OPENVIKING_ACCOUNT=acct" in env_text
@@ -580,7 +580,7 @@ def test_post_setup_root_key_path_can_route_detected_user_key_to_user_setup(tmp_
             {
                 "OpenViking server URL": "https://openviking.example",
                 "OpenViking root API key": "user-secret",
-                "OpenViking agent": "agent",
+                "Hermes peer ID in OpenViking": "agent",
             },
             forbidden={"OpenViking user API key", "OpenViking account", "OpenViking user"},
         ),
@@ -616,7 +616,7 @@ def test_manual_root_key_flow_prints_validation_progress(monkeypatch, capsys):
             "OpenViking root API key": "root-secret",
             "OpenViking account": "acct",
             "OpenViking user": "alice",
-            "OpenViking agent": "agent",
+            "Hermes peer ID in OpenViking": "agent",
         }),
         lambda *args, **kwargs: next(choices),
         -1,
@@ -1091,7 +1091,7 @@ def test_post_setup_local_server_down_can_offer_autostart(tmp_path, monkeypatch)
         "_prompt",
         _prompt_from_values({
             "OpenViking server URL": "localhost",
-            "OpenViking agent": "agent",
+            "Hermes peer ID in OpenViking": "agent",
         }),
     )
     config = {"memory": {}}
@@ -1126,7 +1126,7 @@ def test_post_setup_invalid_env_profile_can_create_new_config(tmp_path, monkeypa
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
             "OpenViking user API key": "user-secret",
-            "OpenViking agent": "agent",
+            "Hermes peer ID in OpenViking": "agent",
         }),
     )
     config = {"memory": {}}
@@ -1208,6 +1208,36 @@ def test_tool_search_sends_limit_not_legacy_top_k():
     payload = provider._client.post.call_args.args[1]
     assert payload["limit"] == 7
     assert "top_k" not in payload
+
+
+def test_tool_search_uses_find_for_normal_search():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "result": {"memories": [], "resources": [], "skills": [], "total": 0}
+    }
+
+    provider._tool_search({"query": "simple lookup", "mode": "fast"})
+
+    provider._client.post.assert_called_once_with("/api/v1/search/find", {
+        "query": "simple lookup",
+    })
+
+
+def test_tool_search_uses_session_search_for_deep_search():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._session_id = "session-123"
+    provider._client.post.return_value = {
+        "result": {"memories": [], "resources": [], "skills": [], "total": 0}
+    }
+
+    provider._tool_search({"query": "connect facts", "mode": "deep"})
+
+    provider._client.post.assert_called_once_with("/api/v1/search/search", {
+        "query": "connect facts",
+        "session_id": "session-123",
+    })
 
 
 def test_tool_add_resource_uploads_existing_local_file(tmp_path):
@@ -1457,10 +1487,10 @@ def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path
     assert "files" in captured_kwargs
     assert "json" not in captured_kwargs
     headers = captured_kwargs["headers"]
-    assert headers["X-OpenViking-Account"] == "test-account"
-    assert headers["X-OpenViking-User"] == "test-user"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
     assert headers["X-OpenViking-Actor-Peer"] == "test-agent"
-    assert headers["X-OpenViking-Agent"] == "test-agent"
+    assert "X-OpenViking-Agent" not in headers
     assert headers["X-API-Key"] == "test-key"
     assert "Content-Type" not in headers
 
@@ -1517,16 +1547,17 @@ def test_viking_client_headers_include_bearer_when_api_key_set():
     headers = client._headers()
     assert headers["X-API-Key"] == "test-key"
     assert headers["Authorization"] == "Bearer test-key"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Agent" not in headers
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
 
 
-def test_viking_client_headers_send_tenant_when_default():
-    # account/user set to the literal string "default". OpenViking 0.3.x
-    # requires X-OpenViking-Account and X-OpenViking-User for ROOT API key
-    # requests to tenant-scoped APIs — omitting them causes
-    # INVALID_ARGUMENT errors even when account="default".
+def test_viking_client_headers_send_tenant_in_local_mode():
+    # Local/trusted mode needs explicit tenant identity headers.
     client = _VikingClient(
         "https://example.com",
-        api_key="test-key",
+        api_key="",
         account="default",
         user="default",
         agent="hermes",
@@ -1535,14 +1566,13 @@ def test_viking_client_headers_send_tenant_when_default():
     assert headers["X-OpenViking-Account"] == "default"
     assert headers["X-OpenViking-User"] == "default"
     assert headers["X-OpenViking-Actor-Peer"] == "hermes"
-    assert headers["X-OpenViking-Agent"] == "hermes"
-    assert headers["Authorization"] == "Bearer test-key"
+    assert "X-OpenViking-Agent" not in headers
+    assert "Authorization" not in headers
 
 
 def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default(monkeypatch):
     _clear_openviking_tenant_env(monkeypatch)
-    # Empty account/user strings fall back to "default" via the constructor.
-    # Headers are sent even for the default value — ROOT API keys need them.
+    # Empty account/user strings fall back to "default" in local mode.
     client = _VikingClient(
         "https://example.com",
         api_key="",
@@ -1553,11 +1583,13 @@ def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default(monk
     headers = client._headers()
     assert headers["X-OpenViking-Account"] == "default"
     assert headers["X-OpenViking-User"] == "default"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Agent" not in headers
     assert "Authorization" not in headers
     assert "X-API-Key" not in headers
 
 
-def test_viking_client_headers_sent_with_real_tenant_values():
+def test_viking_client_headers_can_include_tenant_for_trusted_retry():
     client = _VikingClient(
         "https://example.com",
         api_key="test-key",
@@ -1565,9 +1597,54 @@ def test_viking_client_headers_sent_with_real_tenant_values():
         user="real-user",
         agent="hermes",
     )
-    headers = client._headers()
+    headers = client._headers(include_tenant=True)
     assert headers["X-OpenViking-Account"] == "real-account"
     assert headers["X-OpenViking-User"] == "real-user"
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_viking_client_retries_with_tenant_headers_for_trusted_mode(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="usr",
+        agent="hermes",
+    )
+    captured_headers = []
+
+    def capture_get(url, **kwargs):
+        captured_headers.append(kwargs.get("headers") or {})
+        if len(captured_headers) == 1:
+            return SimpleNamespace(
+                status_code=400,
+                text="",
+                json=lambda: {
+                    "status": "error",
+                    "error": {
+                        "code": "INVALID_ARGUMENT",
+                        "message": "Trusted mode requests must include X-OpenViking-Account.",
+                    },
+                },
+                raise_for_status=lambda: None,
+            )
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"ok": True}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "get", capture_get)
+
+    assert client.get("/api/v1/system/status") == {
+        "status": "ok",
+        "result": {"ok": True},
+    }
+    assert "X-OpenViking-Account" not in captured_headers[0]
+    assert "X-OpenViking-User" not in captured_headers[0]
+    assert captured_headers[1]["X-OpenViking-Account"] == "acct"
+    assert captured_headers[1]["X-OpenViking-User"] == "usr"
 
 
 def test_viking_client_health_sends_auth_headers(monkeypatch):
@@ -1590,6 +1667,10 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Agent" not in captured["headers"]
+    assert "X-OpenViking-Account" not in captured["headers"]
+    assert "X-OpenViking-User" not in captured["headers"]
 
 
 def test_viking_client_validate_auth_uses_authenticated_system_status(monkeypatch):
@@ -1620,8 +1701,9 @@ def test_viking_client_validate_auth_uses_authenticated_system_status(monkeypatc
     }
     assert captured["url"] == "https://example.com/api/v1/system/status"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["headers"]["X-OpenViking-Account"] == "acct"
-    assert captured["headers"]["X-OpenViking-User"] == "alice"
+    assert captured["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Account" not in captured["headers"]
+    assert "X-OpenViking-User" not in captured["headers"]
 
 
 def test_viking_client_validate_root_access_uses_admin_accounts(monkeypatch):
@@ -1650,10 +1732,9 @@ def test_viking_client_validate_root_access_uses_admin_accounts(monkeypatch):
     assert client.validate_root_access() == {"status": "ok", "result": []}
     assert captured["url"] == "https://example.com/api/v1/admin/accounts"
     assert captured["headers"]["Authorization"] == "Bearer root-key"
-    # Empty account/user fall back to "default" and the tenant headers are
-    # always sent — ROOT API keys require them (#22414/#21232 contract).
-    assert captured["headers"]["X-OpenViking-Account"] == "default"
-    assert captured["headers"]["X-OpenViking-User"] == "default"
+    assert captured["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Account" not in captured["headers"]
+    assert "X-OpenViking-User" not in captured["headers"]
 
 
 def test_validate_openviking_reachability_uses_health_only(monkeypatch):
@@ -2055,7 +2136,7 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     assert captured_payloads == [{
         "messages": [
             {"role": "user", "parts": [{"type": "text", "text": "u"}]},
-            {"role": "assistant", "parts": [{"type": "text", "text": "a"}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
         ]
     }]
 
@@ -2099,7 +2180,7 @@ def test_sync_turn_retries_batch_write_with_fresh_client():
         {
             "messages": [
                 {"role": "user", "parts": [{"type": "text", "text": "u"}]},
-                {"role": "assistant", "parts": [{"type": "text", "text": "a"}]},
+                {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
             ]
         },
     )]
@@ -2453,7 +2534,7 @@ def test_on_memory_write_uses_content_write_independent_of_session_rotation():
     assert captured_payloads[0]["content"] == "remember this"
     assert captured_payloads[0]["mode"] == "create"
     assert captured_payloads[0]["uri"].startswith(
-        "viking://user/usr/agent/hermes/memories/preferences/mem_"
+        "viking://user/peers/hermes/memories/preferences/mem_"
     )
 
 

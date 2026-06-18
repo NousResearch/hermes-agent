@@ -11,9 +11,9 @@ Config via environment variables (profile-scoped via each profile's .env)
 or a linked OpenViking CLI config:
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Optional tenant account override
-  OPENVIKING_USER      — Optional tenant user override
-  OPENVIKING_AGENT     — Tenant agent (default: hermes)
+  OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (default: default)
+  OPENVIKING_USER      — Tenant user for local/trusted mode (default: default)
+  OPENVIKING_AGENT     — Hermes peer ID in OpenViking (default: hermes)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
 _DEFAULT_AGENT = "hermes"
+_AGENT_PROMPT_LABEL = "Hermes peer ID in OpenViking"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
@@ -200,10 +201,9 @@ class _VikingClient:
                  agent: Optional[str] = None):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        # Empty account/user fall back to "default" and the tenant headers are
-        # always sent — ROOT API keys require them (preserves the merged
-        # contract from #22414/#21232; an empty string must NOT omit the
-        # header). Use `or` (not `is not None`) so "" also falls back.
+        # Account/user are local/trusted-mode tenant identity. API-key requests
+        # omit these headers by default; trusted-mode retry may send them only
+        # after OpenViking explicitly asks for asserted tenant identity.
         self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
         self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
@@ -211,15 +211,18 @@ class _VikingClient:
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
-    def _headers(self) -> dict:
+    def _headers(self, *, include_tenant: bool | None = None) -> dict:
+        if include_tenant is None:
+            include_tenant = not bool(self._api_key)
+
         h = {"Content-Type": "application/json"}
         if self._agent:
             h["X-OpenViking-Actor-Peer"] = self._agent
-            h["X-OpenViking-Agent"] = self._agent
-        if self._account:
-            h["X-OpenViking-Account"] = self._account
-        if self._user:
-            h["X-OpenViking-User"] = self._user
+        if include_tenant:
+            if self._account:
+                h["X-OpenViking-Account"] = self._account
+            if self._user:
+                h["X-OpenViking-User"] = self._user
         if self._api_key:
             h["X-API-Key"] = self._api_key
             h["Authorization"] = "Bearer " + self._api_key
@@ -228,10 +231,32 @@ class _VikingClient:
     def _url(self, path: str) -> str:
         return f"{self._endpoint}{path}"
 
-    def _multipart_headers(self) -> dict:
-        headers = self._headers()
+    def _multipart_headers(self, *, include_tenant: bool | None = None) -> dict:
+        headers = self._headers(include_tenant=include_tenant)
         headers.pop("Content-Type", None)
         return headers
+
+    @staticmethod
+    def _needs_trusted_identity_retry(exc: Exception) -> bool:
+        message = str(exc)
+        return (
+            "Trusted mode requests must include X-OpenViking-Account" in message
+            or "Trusted mode requests must include X-OpenViking-User" in message
+            or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
+        )
+
+    def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:
+        try:
+            headers = self._multipart_headers() if multipart else self._headers()
+            return self._parse_response(send(headers))
+        except Exception as exc:
+            if not self._api_key or not self._needs_trusted_identity_retry(exc):
+                raise
+            headers = (
+                self._multipart_headers(include_tenant=True)
+                if multipart else self._headers(include_tenant=True)
+            )
+            return self._parse_response(send(headers))
 
     def _parse_response(self, resp) -> dict:
         try:
@@ -267,28 +292,33 @@ class _VikingClient:
         return data
 
     def get(self, path: str, **kwargs) -> dict:
-        resp = self._httpx.get(
-            self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
+        return self._send_with_trusted_identity_retry(
+            lambda headers: self._httpx.get(
+                self._url(path), headers=headers, timeout=_TIMEOUT, **kwargs
+            )
         )
-        return self._parse_response(resp)
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
-        resp = self._httpx.post(
-            self._url(path), json=payload or {}, headers=self._headers(),
-            timeout=_TIMEOUT, **kwargs
+        return self._send_with_trusted_identity_retry(
+            lambda headers: self._httpx.post(
+                self._url(path), json=payload or {}, headers=headers,
+                timeout=_TIMEOUT, **kwargs
+            )
         )
-        return self._parse_response(resp)
 
     def upload_temp_file(self, file_path: Path) -> str:
         mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        with file_path.open("rb") as f:
-            resp = self._httpx.post(
-                self._url("/api/v1/resources/temp_upload"),
-                files={"file": (file_path.name, f, mime_type)},
-                headers=self._multipart_headers(),
-                timeout=_TIMEOUT,
-            )
-        data = self._parse_response(resp)
+
+        def _send(headers):
+            with file_path.open("rb") as f:
+                return self._httpx.post(
+                    self._url("/api/v1/resources/temp_upload"),
+                    files={"file": (file_path.name, f, mime_type)},
+                    headers=headers,
+                    timeout=_TIMEOUT,
+                )
+
+        data = self._send_with_trusted_identity_retry(_send, multipart=True)
         result = data.get("result", {})
         temp_file_id = result.get("temp_file_id", "")
         if not temp_file_id:
@@ -1219,7 +1249,7 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
                 return _SETUP_CANCELLED
             if credential_choice == 0:
                 values["agent"] = _clean_config_value(
-                    prompt("OpenViking agent", default=_DEFAULT_AGENT)
+                    prompt(_AGENT_PROMPT_LABEL, default=_DEFAULT_AGENT)
                 ) or _DEFAULT_AGENT
                 _print_validation_progress("Validating OpenViking local dev access...")
                 valid, message, _role = _validate_openviking_setup_values(values)
@@ -1339,7 +1369,7 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
             prefilled_agent = ""
         else:
             values["agent"] = _clean_config_value(
-                prompt("OpenViking agent", default=_DEFAULT_AGENT)
+                prompt(_AGENT_PROMPT_LABEL, default=_DEFAULT_AGENT)
             ) or _DEFAULT_AGENT
         _print_validation_progress("Validating OpenViking API access...")
         valid, message, role = _validate_openviking_setup_values(
@@ -1697,7 +1727,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
             {
                 "key": "agent",
-                "description": "OpenViking agent ID within the account ([hermes], useful in multi-agent mode)",
+                "description": (
+                    "Hermes peer ID in OpenViking, sent as the actor peer and "
+                    "used for peer-scoped memories"
+                ),
                 "default": "hermes",
                 "env_var": "OPENVIKING_AGENT",
             },
@@ -2129,18 +2162,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _text_part(content: str) -> Dict[str, str]:
         return {"type": "text", "text": content}
 
-    @classmethod
-    def _turn_batch_payload(cls, user_content: str, assistant_content: str) -> Dict[str, Any]:
+    def _turn_batch_payload(self, user_content: str, assistant_content: str) -> Dict[str, Any]:
+        assistant_message: Dict[str, Any] = {
+            "role": "assistant",
+            "parts": [self._text_part(assistant_content)],
+        }
+        if self._agent:
+            assistant_message["peer_id"] = self._agent
         return {
             "messages": [
-                {"role": "user", "parts": [cls._text_part(user_content)]},
-                {"role": "assistant", "parts": [cls._text_part(assistant_content)]},
+                {"role": "user", "parts": [self._text_part(user_content)]},
+                assistant_message,
             ]
         }
 
-    @classmethod
     def _post_session_turn(
-        cls,
+        self,
         client: _VikingClient,
         sid: str,
         user_content: str,
@@ -2148,7 +2185,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     ) -> None:
         client.post(
             f"/api/v1/sessions/{sid}/messages/batch",
-            cls._turn_batch_payload(user_content, assistant_content),
+            self._turn_batch_payload(user_content, assistant_content),
         )
 
     def _session_has_pending_tokens(self, sid: str) -> bool:
@@ -2402,9 +2439,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
 
     def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured user/agent/subdir."""
+        """Build a viking:// memory URI under the configured peer namespace."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/{self._user}/agent/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,
@@ -2535,14 +2572,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         payload: Dict[str, Any] = {"query": query}
         mode = args.get("mode", "auto")
-        if mode != "auto":
-            payload["mode"] = mode
         if args.get("scope"):
             payload["target_uri"] = args["scope"]
         if args.get("limit"):
             payload["limit"] = args["limit"]
 
-        resp = self._client.post("/api/v1/search/find", payload)
+        endpoint = "/api/v1/search/search" if mode == "deep" else "/api/v1/search/find"
+        if endpoint == "/api/v1/search/search" and self._session_id:
+            payload["session_id"] = self._session_id
+
+        resp = self._client.post(endpoint, payload)
         result = resp.get("result", {})
 
         # Format results for the model — keep it concise

@@ -31,10 +31,14 @@ All config via environment variables in `.env`:
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
-| `OPENVIKING_API_KEY` | (none) | API key (optional) |
-| `OPENVIKING_ACCOUNT` | (none) | Tenant account override |
-| `OPENVIKING_USER` | (none) | Tenant user override |
-| `OPENVIKING_AGENT` | `hermes` | Tenant agent namespace |
+| `OPENVIKING_API_KEY` | (none) | User/admin API key for authenticated servers |
+| `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
+| `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
+| `OPENVIKING_AGENT` | `hermes` | Hermes peer ID in OpenViking, used for peer-scoped memories |
+
+When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
+identity from the key. In local or trusted deployments without an API key,
+Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 
 ## Tools
 

@@ -11,16 +11,16 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
-import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '../lib/session-source'
+import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
@@ -37,6 +37,7 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
+import { respondToApprovalAction } from '../store/native-notifications'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -51,7 +52,10 @@ import {
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
+  $messages,
   $messagingSessions,
+  $resumeFailedSessionId,
+  $resumeExhaustedSessionId,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
@@ -76,10 +80,13 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '../store/session'
+import { onSessionsChanged } from '../store/session-sync'
+import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -141,7 +148,7 @@ const CRON_POLL_INTERVAL_MS = 30_000
 // self-managed sidebar section (refreshMessagingSessions). Excluding both here
 // keeps "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', ...MESSAGING_SESSION_SOURCE_IDS]
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -195,6 +202,8 @@ export function DesktopController() {
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
+  const resumeFailedSessionId = useStore($resumeFailedSessionId)
+  const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -267,28 +276,53 @@ export function DesktopController() {
     }
   }, [])
 
+  // Notification click: the main process already focused the window; jump to its session.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
+      if (sessionId) {
+        navigate(sessionRoute(sessionId))
+      }
+    })
+
+    return () => unsubscribe?.()
+  }, [navigate])
+
+  // Notification action button (Approve/Reject) — resolve in place, no navigation.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {
+      void respondToApprovalAction(sessionId ?? null, actionId)
+    })
+
+    return () => unsubscribe?.()
+  }, [])
+
   // hermes:// deep links (e.g. a docs "Send to App" button for an automation blueprint).
   // Build the equivalent /blueprint slash command from the payload and drop
   // it into the composer — the user reviews/edits, then sends; the agent (or
   // the shared command handler) creates the job. Signal readiness so a link
   // that arrived during boot is flushed exactly once.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onDeepLink?.((payload) => {
+    const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
       if (!payload || payload.kind !== 'blueprint' || !payload.name) {
         return
       }
+
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
           const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+
           return `${k}=${sval}`
         })
         .join(' ')
+
       const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })
+
     // Tell the main process the renderer is ready to receive deep links.
     void window.hermesDesktop?.signalDeepLinkReady?.()
+
     return () => unsubscribe?.()
   }, [])
 
@@ -436,6 +470,17 @@ export function DesktopController() {
     void refreshSessions()
   }, [refreshSessions])
 
+  // Another window mutated the shared session list (e.g. a chat started in the
+  // pop-out). Re-pull so the sidebar reflects it. Pop-outs have no sidebar, so
+  // only real windows bother.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
+  }, [refreshSessions])
+
   // ALL-profiles view pages one profile at a time: fetch that profile's next
   // page and merge it in place, leaving every other profile's rows untouched.
   const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
@@ -554,14 +599,26 @@ export function DesktopController() {
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
           const latest = await getSessionMessages(storedSessionId, storedProfile)
+          const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
             state => ({
               ...state,
-              messages: preserveLocalAssistantErrors(toChatMessages(latest.messages), state.messages)
+              messages: preserveLocalAssistantErrors(messages, state.messages)
             }),
             storedSessionId
           )
+
+          // Seed the status stack's todo group from history — but only while
+          // the plan is still in flight, so reopening an old chat doesn't pin
+          // its finished todo list above the composer forever.
+          const todos = latestSessionTodos(messages)
+
+          if (todos && todoListActive(todos)) {
+            setSessionTodos(runtimeSessionId, todos)
+          } else {
+            clearSessionTodos(runtimeSessionId)
+          }
 
           return
         } catch {
@@ -582,6 +639,7 @@ export function DesktopController() {
     queryClient,
     refreshHermesConfig,
     refreshSessions,
+    sessionStateByRuntimeIdRef,
     updateSessionState
   })
 
@@ -658,7 +716,9 @@ export function DesktopController() {
     }
 
     lastGatewayProfileRef.current = activeGatewayProfile
-    void refreshCurrentModel()
+    // Force: the new profile has its own default, so reseed even if the composer
+    // already shows the previous profile's model.
+    void refreshCurrentModel(true)
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])
 
@@ -679,6 +739,49 @@ export function DesktopController() {
       return branched
     },
     [branchCurrentSession, refreshSessions]
+  )
+
+  // Clear a failed turn's red error banner from the transcript. Errors are
+  // renderer-local state (never persisted), so dismissing is purely a view +
+  // session-cache edit. A message that errored before emitting any visible
+  // text is a bare error placeholder → drop it entirely; one that streamed
+  // partial output then failed keeps its content and just sheds the error.
+  // Both the per-runtime cache AND the live $messages view must be updated:
+  // `preserveLocalAssistantErrors` re-grafts any still-errored message it
+  // finds in the view onto the next session.info flush, so clearing only the
+  // cache would let the heartbeat resurrect the banner.
+  const dismissError = useCallback(
+    (messageId: string) => {
+      const runtimeSessionId = activeSessionIdRef.current
+
+      if (!runtimeSessionId) {
+        return
+      }
+
+      const clearErrorIn = (messages: ChatMessage[]): ChatMessage[] =>
+        messages.flatMap(message => {
+          if (message.id !== messageId || !message.error) {
+            return [message]
+          }
+
+          if (!chatMessageText(message).trim() && !message.parts.some(part => part.type !== 'text')) {
+            return []
+          }
+
+          return [{ ...message, error: undefined, pending: false }]
+        })
+
+      // View first: the flush below reads $messages as the "current" baseline
+      // for error preservation, so the banner must be gone from it before the
+      // cache update triggers a re-sync.
+      setMessages(clearErrorIn($messages.get()))
+
+      updateSessionState(runtimeSessionId, state => ({
+        ...state,
+        messages: clearErrorIn(state.messages)
+      }))
+    },
+    [activeSessionIdRef, updateSessionState]
   )
 
   const startSessionInWorkspace = useCallback(
@@ -711,6 +814,7 @@ export function DesktopController() {
     editMessage,
     handleThreadMessagesChange,
     reloadFromMessage,
+    restoreToMessage,
     steerPrompt,
     submitText,
     transcribeVoiceAudio
@@ -789,6 +893,8 @@ export function DesktopController() {
     gatewayState,
     locationPathname: location.pathname,
     resumeSession,
+    resumeFailedSessionId,
+    resumeExhaustedSessionId,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
@@ -805,7 +911,6 @@ export function DesktopController() {
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
-    modelMenuContent,
     openAgents,
     freshDraftReady,
     openCommandCenterSection,
@@ -927,6 +1032,7 @@ export function DesktopController() {
     <ChatView
       gateway={gatewayRef.current}
       maxVoiceRecordingSeconds={voiceMaxRecordingSeconds}
+      modelMenuContent={modelMenuContent}
       onAddContextRef={composer.addContextRefAttachment}
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}
@@ -938,6 +1044,7 @@ export function DesktopController() {
           void removeSession(selectedStoredSessionId)
         }
       }}
+      onDismissError={dismissError}
       onEdit={editMessage}
       onPasteClipboardImage={() => void composer.pasteClipboardImage()}
       onPickFiles={() => void composer.pickContextPaths('file')}
@@ -945,6 +1052,8 @@ export function DesktopController() {
       onPickImages={() => void composer.pickImages()}
       onReload={reloadFromMessage}
       onRemoveAttachment={id => void composer.removeAttachment(id)}
+      onRestoreToMessage={restoreToMessage}
+      onRetryResume={sessionId => void resumeSession(sessionId, true)}
       onSteer={steerPrompt}
       onSubmit={submitText}
       onThreadMessagesChange={handleThreadMessagesChange}
@@ -990,8 +1099,8 @@ export function DesktopController() {
       width={FILE_BROWSER_DEFAULT_WIDTH}
     >
       <RightSidebarPane
-        onActivateFile={composer.attachContextFilePath}
-        onActivateFolder={composer.attachContextFolderPath}
+        onActivateFile={path => composer.insertContextPathInlineRef(path)}
+        onActivateFolder={path => composer.insertContextPathInlineRef(path, true)}
         onChangeCwd={changeSessionCwd}
       />
     </Pane>

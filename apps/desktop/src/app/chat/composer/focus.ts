@@ -10,6 +10,7 @@
  * steal focus from the composer effect.
  */
 
+import { RICH_INPUT_SLOT } from './rich-editor'
 import type { InlineRefInput } from './inline-refs'
 
 export type ComposerTarget = 'edit' | 'main'
@@ -122,4 +123,13 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   focus()
   window.requestAnimationFrame(focus)
   window.setTimeout(focus, 0)
+}
+
+/** Drop focus from the main composer input (status-stack chrome, sidebar, etc.). */
+export const blurComposerInput = () => {
+  const el = document.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement | null
+
+  if (el && document.activeElement === el) {
+    el.blur()
+  }
 }

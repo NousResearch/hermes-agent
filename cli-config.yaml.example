@@ -182,6 +182,11 @@ terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
   timeout: 180
+  # HOME policy for tool subprocesses:
+  #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
+  #   real    - force your real OS-user HOME
+  #   profile - force HERMES_HOME/home for strict per-profile CLI config isolation
+  home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
@@ -719,6 +724,7 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default true, set false to force legacy MarkdownV2
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

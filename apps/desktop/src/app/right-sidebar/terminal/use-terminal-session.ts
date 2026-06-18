@@ -7,7 +7,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
+
+import { $terminalInjection } from '../store'
 
 import { makeTerminalReader, setActiveTerminalReader } from './buffer'
 import {
@@ -19,6 +22,17 @@ import {
 } from './selection'
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
+
+// ⌘/Ctrl+L is a global shortcut, so a text selection in the file preview pane
+// lands in this handler with no xterm selection. Label those with the previewed
+// file's name instead of the shell, so the composer ref reads as a file quote
+// rather than a bogus "zsh:N lines".
+function previewSelectionLabel(): string {
+  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const source = target?.path || target?.url || ''
+
+  return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
+}
 
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
 
@@ -257,16 +271,20 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   )
 
   const addSelectionToChat = useCallback(() => {
-    const selectedText = readSelection() || selectionRef.current
+    const termSelection = (termRef.current?.getSelection() || selectionRef.current).trim()
+    const selectedText = termSelection || window.getSelection()?.toString() || ''
     const trimmed = selectedText.trim()
 
     if (!trimmed) {
       return
     }
 
-    const label =
-      selectionLabelRef.current ||
-      (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
+    // Terminal selection → shell-anchored label; anything else came from the
+    // preview pane sharing this global shortcut → label it with the file.
+    const label = termSelection
+      ? selectionLabelRef.current ||
+        (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
+      : previewSelectionLabel() || 'selection'
 
     onAddSelectionToChatRef.current(trimmed, label)
     termRef.current?.clearSelection()
@@ -275,7 +293,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     setSelection('')
     setSelectionStyle(null)
     triggerHaptic('selection')
-  }, [readSelection])
+  }, [])
 
   // Always listen — gating on the React selection state misses selections the
   // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it
@@ -312,13 +330,19 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     const term = new Terminal({
       allowProposedApi: true,
-      allowTransparency: true,
+      // Opaque canvas = WebGL's crisp fast-path. allowTransparency instead bakes
+      // glyphs as grayscale-alpha for compositing over a see-through canvas, which
+      // reads soft on every platform; VS Code keeps it off and our surface
+      // (--ui-bg-chrome) is opaque anyway, so withSurface paints it solid.
+      allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
-      fontWeight: '400',
-      fontWeightBold: '700',
+      // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
+      // (500) as the base, which reads a touch heavy at this size.
+      fontWeight: 'normal',
+      fontWeightBold: 'bold',
       letterSpacing: 0,
       lineHeight: 1.12,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
@@ -601,8 +625,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       startSession()
     }
 
-    // fonts.ready settles only already-requested faces; bold/italic aren't asked
-    // for until styled output paints (past atlas init), so warm them up front.
+    // fonts.ready settles only already-requested faces; the regular (400),
+    // bold (700) and italic aren't asked for until styled output paints (past
+    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
+    // fallback face and the terminal renders thin until a repaint.
     const warm = document.fonts?.load
       ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
       : Promise.resolve()
@@ -650,6 +676,28 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     return () => cancelAnimationFrame(raf)
   }, [activeTheme, themeName])
+
+  // Flush a queued command (e.g. a provider-disconnect) into the live session.
+  // Only active while open; the subscribe fires immediately, so a command set
+  // before this pane mounted runs as soon as the session is ready. Clearing the
+  // atom after writing stops a later remount from replaying a stale command.
+  useEffect(() => {
+    if (status !== 'open') {
+      return
+    }
+
+    return $terminalInjection.subscribe(command => {
+      const id = sessionIdRef.current
+
+      if (!command || !id) {
+        return
+      }
+
+      void window.hermesDesktop?.terminal?.write(id, `${command}\r`)
+      $terminalInjection.set(null)
+      termRef.current?.focus()
+    })
+  }, [status])
 
   return {
     addSelectionToChat,

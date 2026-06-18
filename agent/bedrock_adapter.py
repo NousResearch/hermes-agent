@@ -58,17 +58,34 @@ _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
 
 
+_MIN_BOTO3_VERSION = (1, 34, 59)
+
+
 def _require_boto3():
-    """Import boto3, raising a clear error if not installed."""
+    """Import boto3, raising a clear error if not installed or too old."""
     try:
         import boto3
-        return boto3
     except ImportError:
         raise ImportError(
             "The 'boto3' package is required for the AWS Bedrock provider. "
             "Install it with: pip install boto3\n"
             "Or install Hermes with Bedrock support: pip install -e '.[bedrock]'"
         )
+    # converse() / converse_stream() were added in boto3 1.34.59.
+    # When Hermes is installed editable into system Python, the system boto3
+    # (e.g. Ubuntu 24.04 ships 1.34.46) may take precedence over the venv
+    # version pinned in pyproject.toml.
+    try:
+        version = tuple(int(x) for x in boto3.__version__.split(".")[:3])
+    except (AttributeError, ValueError):
+        return boto3  # can't parse — don't block on version check
+    if version < _MIN_BOTO3_VERSION:
+        raise RuntimeError(
+            f"boto3 {boto3.__version__} does not support converse_stream "
+            f"(minimum 1.34.59 required). Upgrade with: "
+            f"pip install --upgrade boto3"
+        )
+    return boto3
 
 
 def _get_bedrock_runtime_client(region: str):
@@ -935,11 +952,14 @@ def build_converse_kwargs(
     if system_prompt:
         kwargs["system"] = system_prompt
 
-    if temperature is not None:
-        kwargs["inferenceConfig"]["temperature"] = temperature
+    from agent.anthropic_adapter import _forbids_sampling_params
 
-    if top_p is not None:
-        kwargs["inferenceConfig"]["topP"] = top_p
+    if not _forbids_sampling_params(model):
+        if temperature is not None:
+            kwargs["inferenceConfig"]["temperature"] = temperature
+
+        if top_p is not None:
+            kwargs["inferenceConfig"]["topP"] = top_p
 
     if stop_sequences:
         kwargs["inferenceConfig"]["stopSequences"] = stop_sequences

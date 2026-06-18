@@ -824,6 +824,7 @@ class HermesACPAgent(acp.Agent):
 
         try:
             from model_tools import get_tool_definitions
+            from agent.memory_manager import inject_memory_provider_tools
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
@@ -839,6 +840,7 @@ class HermesACPAgent(acp.Agent):
             state.agent.valid_tool_names = {
                 tool["function"]["name"] for tool in state.agent.tools or []
             }
+            inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()
@@ -1779,10 +1781,25 @@ class HermesACPAgent(acp.Agent):
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
             from model_tools import get_tool_definitions
+            from types import SimpleNamespace
+            from agent.memory_manager import inject_memory_provider_tools
+
             toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             )
             tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            tool_view = SimpleNamespace(
+                tools=list(tools or []),
+                valid_tool_names={
+                    tool.get("function", {}).get("name")
+                    for tool in tools or []
+                    if isinstance(tool, dict)
+                },
+                enabled_toolsets=toolsets,
+                _memory_manager=getattr(state.agent, "_memory_manager", None),
+            )
+            inject_memory_provider_tools(tool_view)
+            tools = tool_view.tools
             if not tools:
                 return "No tools available."
             lines = [f"Available tools ({len(tools)}):"]

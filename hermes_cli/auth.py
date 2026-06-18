@@ -103,7 +103,12 @@ XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:acces
 XAI_OAUTH_REDIRECT_HOST = "127.0.0.1"
 XAI_OAUTH_REDIRECT_PORT = 56121
 XAI_OAUTH_REDIRECT_PATH = "/callback"
-XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# xAI/Grok OAuth access tokens are intentionally short-lived (about 6h in
+# current SuperGrok flows). A two-minute refresh window is too narrow for
+# gateway/cron workloads that may only touch the provider every 30 minutes,
+# leaving brief but noisy credential-expiry gaps. Refresh up to one hour
+# early so ordinary runtime calls keep the token warm without user reauth.
+XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 3600
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -616,8 +621,8 @@ ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
     ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 
@@ -1079,8 +1084,13 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
-    auth_file = _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
+    # target_path=None preserves the existing contract (write the active
+    # store at _auth_file_path()). An explicit path lets callers persist a
+    # specific store — e.g. the global-root write-through for rotating xAI
+    # OAuth grants (#43589) — reusing this function's atomic O_EXCL + 0o600
+    # write so the root auth.json gets the same TOCTOU-safe treatment.
+    auth_file = target_path if target_path is not None else _auth_file_path()
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -3524,6 +3534,22 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
+def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+    """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
+    imported = _import_codex_cli_tokens()
+    # Require BOTH tokens before adopting: persisting a payload without a
+    # usable refresh_token would only break the next refresh cycle.
+    if not (
+        imported
+        and str(imported.get("access_token", "") or "").strip()
+        and str(imported.get("refresh_token", "") or "").strip()
+    ):
+        return None
+    logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
+    _save_codex_tokens(imported)
+    return dict(imported)
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -3660,11 +3686,34 @@ def _refresh_codex_auth_tokens(
     
     Saves the new tokens to Hermes auth store automatically.
     """
-    refreshed = refresh_codex_oauth_pure(
-        str(tokens.get("access_token", "") or ""),
-        str(tokens.get("refresh_token", "") or ""),
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        refreshed = refresh_codex_oauth_pure(
+            str(tokens.get("access_token", "") or ""),
+            str(tokens.get("refresh_token", "") or ""),
+            timeout_seconds=timeout_seconds,
+        )
+    except AuthError as exc:
+        # Self-heal cross-store refresh_token rotation. Hermes keeps its OWN
+        # Codex OAuth token (per profile + top-level), separate from the Codex
+        # CLI's ~/.codex/auth.json. OAuth refresh_tokens are single-use, so when
+        # the Codex CLI (or another Hermes process) rotates the shared token,
+        # this frozen copy's refresh_token goes stale and the refresh fails with
+        # a relogin-required error (invalid_grant / refresh_token_reused / 401).
+        # Before surfacing that as a hard 401 to the turn, adopt the canonical
+        # fresh token from ~/.codex/auth.json (the Codex CLI keeps it current) so
+        # idle profiles / desktop sessions recover automatically instead of
+        # 401'ing until a manual re-auth. Transient failures (e.g. 429 quota)
+        # keep relogin_required=False — the stored token is still valid there, so
+        # we never self-heal those and re-raise unchanged.
+        if not getattr(exc, "relogin_required", False):
+            raise
+        imported = _recover_codex_tokens_from_cli(
+            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
+        )
+        if not imported:
+            raise
+        return imported
+
     updated_tokens = dict(tokens)
     updated_tokens["access_token"] = refreshed["access_token"]
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
@@ -3724,9 +3773,25 @@ def resolve_codex_runtime_credentials(
     HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
+    read_error: Optional[AuthError] = None
     try:
         data = _read_codex_tokens()
-    except AuthError:
+    except AuthError as exc:
+        read_error = exc
+        if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
+            "codex_auth_missing_access_token",
+            "codex_auth_missing_refresh_token",
+            "codex_auth_invalid_shape",
+        }:
+            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
+            if imported:
+                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
+            else:
+                data = None
+        else:
+            data = None
+
+    if data is None:
         pool_token = _pool_codex_access_token()
         if pool_token:
             base_url = (
@@ -3741,7 +3806,34 @@ def resolve_codex_runtime_credentials(
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
             }
-        raise
+        pool_rate_limit = _codex_pool_rate_limit_status()
+        if pool_rate_limit:
+            reset_at = pool_rate_limit.get("reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                remaining = int(reset_at - time.time())
+                message = (
+                    f"Codex provider quota exhausted (429); retry after {remaining}s. "
+                    "Credentials are still valid."
+                )
+            else:
+                message = (
+                    "Codex provider quota exhausted (429). Credentials are still valid; "
+                    "retry after the usage limit resets."
+                )
+            raise AuthError(
+                message,
+                provider="openai-codex",
+                code=CODEX_RATE_LIMITED_CODE,
+                relogin_required=False,
+            )
+        if read_error is not None:
+            raise read_error
+        raise AuthError(
+            "No Codex credentials stored. Run `hermes auth` to authenticate.",
+            provider="openai-codex",
+            code="codex_auth_missing",
+            relogin_required=True,
+        )
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
@@ -3778,6 +3870,79 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
+    """Return metadata for a pool-only Codex credential in quota cooldown."""
+    def _parse_reset_at(value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric <= 0:
+                return None
+            return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                numeric = float(raw)
+            except ValueError:
+                numeric = None
+            if numeric is not None:
+                return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+        return None
+
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return None
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return None
+        now = time.time()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                continue
+            if entry.get("last_status") != "exhausted":
+                continue
+            code = entry.get("last_error_code")
+            reason = str(entry.get("last_error_reason") or "").lower()
+            message = str(entry.get("last_error_message") or "").lower()
+            is_rate_limited = (
+                code == 429
+                or "rate_limit" in reason
+                or "usage_limit" in reason
+                or "quota" in reason
+                or "rate limit" in message
+                or "usage limit" in message
+                or "quota" in message
+            )
+            if not is_rate_limited:
+                continue
+            reset_at = _parse_reset_at(entry.get("last_error_reset_at"))
+            if reset_at is not None and reset_at <= now:
+                continue
+            return {
+                "label": entry.get("label"),
+                "last_refresh": entry.get("last_refresh"),
+                "reset_at": reset_at,
+                "reason": entry.get("last_error_reason"),
+                "message": entry.get("last_error_message"),
+            }
+    except Exception:
+        logger.debug("Codex pool rate-limit lookup failed", exc_info=True)
+    return None
 
 
 def _pool_codex_access_token() -> str:
@@ -3824,13 +3989,64 @@ def _pool_codex_access_token() -> str:
 # xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
+def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return usable xAI OAuth state from provider state or credential pool."""
+    state = _load_provider_state(auth_store, "xai-oauth")
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    if isinstance(tokens, dict):
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+        if access_token and refresh_token:
+            return state
+
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get("xai-oauth")
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            access_token = str(entry.get("access_token", "") or "").strip()
+            refresh_token = str(entry.get("refresh_token", "") or "").strip()
+            if not access_token or not refresh_token:
+                continue
+            merged = dict(state or {})
+            merged["tokens"] = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": str(entry.get("token_type") or "Bearer"),
+            }
+            if entry.get("last_refresh"):
+                merged["last_refresh"] = entry.get("last_refresh")
+            merged.setdefault("auth_mode", "oauth_pkce")
+            return merged
+
+    return state if isinstance(state, dict) else None
+
+
+def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    return (
+        isinstance(tokens, dict)
+        and bool(str(tokens.get("access_token", "") or "").strip())
+        and bool(str(tokens.get("refresh_token", "") or "").strip())
+    )
+
+
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     if _lock:
         with _auth_store_lock():
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "xai-oauth")
+    state = _xai_oauth_state_from_store(auth_store)
+    if not _xai_oauth_state_has_usable_tokens(state):
+        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
+        if _xai_oauth_state_has_usable_tokens(global_state):
+            state = global_state
     if not state:
         raise AuthError(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
@@ -3870,6 +4086,62 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _profile_has_own_xai_oauth_state(auth_store: Dict[str, Any]) -> bool:
+    """True when this store has its OWN ``providers.xai-oauth`` block.
+
+    Distinguishes a profile that genuinely shadows the root xAI grant from
+    one that only *reads* root via ``_load_provider_state``'s fallback. Only
+    the latter needs the refresh write-through below.
+    """
+    providers = auth_store.get("providers")
+    return isinstance(providers, dict) and isinstance(providers.get("xai-oauth"), dict)
+
+
+def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
+    """Persist a rotated xAI OAuth ``state`` into the global-root auth.json.
+
+    Best-effort write-through for the multi-profile rotation hazard (#43589):
+    xAI rotates the refresh_token on every refresh, so when a profile session
+    refreshes a grant it resolved from the root fallback, the rotated chain
+    must land back in root. Otherwise root keeps a now-revoked refresh token
+    and every other profile reading the stale root grant dies with
+    ``invalid_grant`` once its access token expires.
+
+    Only updates ``providers.xai-oauth`` in the root store; never touches the
+    profile store (the caller already saved that). Swallows all errors — a
+    failed write-through degrades to the pre-existing behavior (root stale),
+    it must never break the profile's own successful save.
+    """
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        # Classic mode (profile == root); the profile save already hit root.
+        return
+    # Seat belt: under pytest, refuse to write the real user's
+    # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
+    # (mirrors the read-side guard in _load_global_auth_store). Uses the
+    # unmodified HOME env, not Path.home() which fixtures may monkeypatch.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return
+            except Exception:
+                return
+    try:
+        if global_path.exists():
+            global_store = _load_auth_store(global_path)
+        else:
+            global_store = {}
+        if not isinstance(global_store, dict):
+            return
+        _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
+        _save_auth_store(global_store, global_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
+
+
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any],
     *,
@@ -3881,6 +4153,11 @@ def _save_xai_oauth_tokens(
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
+        # A profile that lacks its own xai-oauth block is reading the root
+        # grant through _load_provider_state's fallback. When such a profile
+        # refreshes the (rotating) grant, we must write the rotated chain back
+        # to root too, or root is left holding a revoked refresh token (#43589).
+        write_through_to_root = not _profile_has_own_xai_oauth_state(auth_store)
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
@@ -3891,6 +4168,8 @@ def _save_xai_oauth_tokens(
             state["redirect_uri"] = redirect_uri
         _save_provider_state(auth_store, "xai-oauth", state)
         _save_auth_store(auth_store)
+        if write_through_to_root:
+            _write_through_xai_oauth_to_global_root(state)
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -5577,18 +5856,24 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 # subscription-feature checks) call it many times per render — `hermes tools` → "All Platforms"
 # was firing the refresh ~31× during one menu paint, racking up >13s of HTTP and burning
 # single-use refresh tokens. Cache the snapshot for a few seconds, keyed on the auth.json
-# mtime so that `hermes auth login/logout/add/remove` invalidate naturally on the next call.
+# path + mtime so that profile switches do not share a process memo and
+# `hermes auth login/logout/add/remove` invalidate naturally on the next call.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[Tuple[float, Optional[float], Dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
 
 
-def _auth_file_mtime() -> Optional[float]:
+def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
+    auth_file = _auth_file_path()
     try:
-        return _auth_file_path().stat().st_mtime
-    except FileNotFoundError:
-        return None
+        auth_file_key = str(auth_file.resolve(strict=False))
     except Exception:
-        return None
+        auth_file_key = str(auth_file)
+    try:
+        return auth_file_key, auth_file.stat().st_mtime
+    except FileNotFoundError:
+        return auth_file_key, None
+    except Exception:
+        return auth_file_key, None
 
 
 def invalidate_nous_auth_status_cache() -> None:
@@ -5620,18 +5905,19 @@ def get_nous_auth_status() -> Dict[str, Any]:
     """
     global _nous_auth_status_cache
     now = time.monotonic()
-    mtime = _auth_file_mtime()
+    auth_file_key, mtime = _auth_file_cache_key()
     cached = _nous_auth_status_cache
     if cached is not None:
-        cached_at, cached_mtime, cached_status = cached
+        cached_at, cached_auth_file_key, cached_mtime, cached_status = cached
         if (
-            cached_mtime == mtime
+            cached_auth_file_key == auth_file_key
+            and cached_mtime == mtime
             and (now - cached_at) < _NOUS_AUTH_STATUS_CACHE_TTL
         ):
             return dict(cached_status)
 
     status = _compute_nous_auth_status()
-    _nous_auth_status_cache = (now, mtime, dict(status))
+    _nous_auth_status_cache = (now, auth_file_key, mtime, dict(status))
     return status
 
 
@@ -5714,6 +6000,22 @@ def get_codex_auth_status() -> Dict[str, Any]:
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                         "api_key": api_key,
                     }
+            rate_limit = _codex_pool_rate_limit_status()
+            if rate_limit:
+                return {
+                    "logged_in": True,
+                    "auth_store": str(_auth_file_path()),
+                    "last_refresh": rate_limit.get("last_refresh"),
+                    "auth_mode": "chatgpt",
+                    "source": f"pool:{rate_limit.get('label') or 'unknown'}",
+                    "rate_limited": True,
+                    "error_code": CODEX_RATE_LIMITED_CODE,
+                    "error": (
+                        rate_limit.get("message")
+                        or "Codex provider quota exhausted; retry after the usage limit resets."
+                    ),
+                    "reset_at": rate_limit.get("reset_at"),
+                }
     except Exception:
         pass
 
@@ -6929,23 +7231,61 @@ def _codex_device_code_login() -> Dict[str, Any]:
     issuer = "https://auth.openai.com"
     client_id = CODEX_OAUTH_CLIENT_ID
 
-    # Step 1: Request device code
-    try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-            resp = client.post(
-                f"{issuer}/api/accounts/deviceauth/usercode",
-                json={"client_id": client_id},
-                headers={"Content-Type": "application/json"},
+    # Step 1: Request device code. OpenAI's auth endpoint rate-limits this
+    # request (HTTP 429) when login is attempted too often from the same
+    # IP/account — retry with capped backoff (honoring ``Retry-After``)
+    # before surfacing a clear, actionable message instead of a bare status.
+    resp = None
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+                resp = client.post(
+                    f"{issuer}/api/accounts/deviceauth/usercode",
+                    json={"client_id": client_id},
+                    headers={"Content-Type": "application/json"},
+                )
+        except Exception as exc:
+            raise AuthError(
+                f"Failed to request device code: {exc}",
+                provider="openai-codex", code="device_code_request_failed",
             )
-    except Exception as exc:
+
+        if resp.status_code != 429:
+            break
+
+        if attempt < max_attempts:
+            retry_after = _parse_retry_after_seconds(
+                getattr(resp, "headers", None)
+            )
+            # Exponential backoff (2s, 4s, 8s) capped, preferring the
+            # server-provided Retry-After when present.
+            delay = retry_after if retry_after is not None else 2 ** attempt
+            delay = max(1, min(int(delay), 60))
+            print(
+                "OpenAI is rate-limiting login requests "
+                f"(429); retrying in {delay}s..."
+            )
+            _time.sleep(delay)
+
+    if resp is not None and resp.status_code == 429:
+        retry_after = _parse_retry_after_seconds(getattr(resp, "headers", None))
+        wait_hint = (
+            f" Try again in about {retry_after}s."
+            if retry_after is not None
+            else " Wait a minute and run the login again."
+        )
         raise AuthError(
-            f"Failed to request device code: {exc}",
-            provider="openai-codex", code="device_code_request_failed",
+            "OpenAI is rate-limiting Codex login requests (HTTP 429). "
+            "This is a temporary throttle on OpenAI's side, not a credential "
+            f"problem.{wait_hint}",
+            provider="openai-codex", code=CODEX_RATE_LIMITED_CODE,
         )
 
-    if resp.status_code != 200:
+    if resp is None or resp.status_code != 200:
+        status = resp.status_code if resp is not None else "unknown"
         raise AuthError(
-            f"Device code request returned status {resp.status_code}.",
+            f"Device code request returned status {status}.",
             provider="openai-codex", code="device_code_request_error",
         )
 
@@ -7031,6 +7371,22 @@ def _codex_device_code_login() -> Dict[str, Any]:
         raise AuthError(
             f"Token exchange failed: {exc}",
             provider="openai-codex", code="token_exchange_failed",
+        )
+
+    if token_resp.status_code == 429:
+        retry_after = _parse_retry_after_seconds(
+            getattr(token_resp, "headers", None)
+        )
+        wait_hint = (
+            f" Try again in about {retry_after}s."
+            if retry_after is not None
+            else " Wait a minute and run the login again."
+        )
+        raise AuthError(
+            "OpenAI is rate-limiting Codex login requests (HTTP 429) during "
+            "token exchange. This is a temporary throttle on OpenAI's side, "
+            f"not a credential problem.{wait_hint}",
+            provider="openai-codex", code=CODEX_RATE_LIMITED_CODE,
         )
 
     if token_resp.status_code != 200:

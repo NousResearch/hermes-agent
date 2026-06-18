@@ -565,3 +565,80 @@ class TestApprovalCallbackThreadLocalWiring:
         # would hold a stale reference to a disposed CLI instance.
         assert seen["approval_after"] is None
         assert seen["sudo_after"] is None
+
+
+class TestPersistPromptSummary:
+    """display.persist_prompts — one-line scrollback record of resolved modals."""
+
+    def _resolve_approval(self, cli, answer, command="rm -rf /tmp/scratch"):
+        result = {}
+
+        def _run():
+            result["value"] = cli._approval_callback(command, "danger")
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        cli._approval_state["response_queue"].put(answer)
+        t.join(timeout=2)
+        return result["value"]
+
+    def test_approval_resolution_prints_summary_line(self):
+        cli = _make_cli_stub()
+        printed = []
+        with patch.object(cli_module, "_cprint", printed.append):
+            verdict = self._resolve_approval(cli, "session")
+        assert verdict == "session"
+        summary = "\n".join(printed)
+        assert "Approval" in summary
+        assert "rm -rf /tmp/scratch" in summary
+        assert "allowed for session" in summary
+
+    def test_approval_summary_truncates_long_command(self):
+        cli = _make_cli_stub()
+        printed = []
+        long_cmd = "sudo " + ("x" * 300)
+        with patch.object(cli_module, "_cprint", printed.append):
+            self._resolve_approval(cli, "deny", command=long_cmd)
+        summary = "\n".join(printed)
+        assert "denied" in summary
+        assert "…" in summary
+        # The raw 300-char tail must not be dumped wholesale.
+        assert "x" * 200 not in summary
+
+    def test_persist_prompts_false_suppresses_summary(self):
+        cli = _make_cli_stub()
+        printed = []
+        with patch.dict(cli_module.CLI_CONFIG.get("display", {}), {"persist_prompts": False}), \
+             patch.object(cli_module, "_cprint", printed.append):
+            verdict = self._resolve_approval(cli, "once")
+        assert verdict == "once"
+        assert not any("Approval" in p for p in printed)
+
+    def test_clarify_resolution_prints_summary_line(self):
+        cli = _make_cli_stub()
+        cli._clarify_state = None
+        cli._clarify_freetext = False
+        cli._clarify_deadline = 0
+        printed = []
+        result = {}
+
+        def _run():
+            result["value"] = cli._clarify_callback("Pick a path?", ["A", "B"])
+
+        with patch.object(cli_module, "_cprint", printed.append):
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            deadline = time.time() + 2
+            while cli._clarify_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            cli._clarify_state["response_queue"].put("B")
+            t.join(timeout=2)
+
+        assert result["value"] == "B"
+        summary = "\n".join(printed)
+        assert "Clarify" in summary
+        assert "Pick a path?" in summary
+        assert "B" in summary

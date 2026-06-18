@@ -1171,6 +1171,20 @@ function Install-Repository {
                 # agent-created dirs (e.g. tinker-atropos/) survive too.
                 $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
                 if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
+                    # A previously interrupted update can leave the index with
+                    # unmerged entries. In that state `git stash` aborts with
+                    # "could not write index" and the following `git checkout`
+                    # aborts with "you need to resolve your current index first"
+                    # -- the GUI "git checkout main failed (exit 1)" install
+                    # failure. Clear the conflict markers with `git reset` first:
+                    # working-tree changes are kept (and stashed just below); only
+                    # the index conflict state is dropped. Mirrors the `hermes
+                    # update` path (#4735).
+                    $unmergedOut = git -c windows.appendAtomically=false ls-files --unmerged 2>$null
+                    if (-not [string]::IsNullOrWhiteSpace(($unmergedOut -join "`n"))) {
+                        Write-Info "Clearing unmerged index entries from a previous conflict..."
+                        git -c windows.appendAtomically=false reset -q 2>$null
+                    }
                     $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
                     Write-Info "Local changes detected, stashing before update..."
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
@@ -1417,6 +1431,15 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
+        # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
+        # DLLs by any running hermes process. Windows denies deletion of loaded
+        # DLLs, so kill any hermes.exe tree before removing the venv.
+        if ($env:OS -eq "Windows_NT") {
+            $myPid = $PID
+            Write-Info "Stopping any running hermes processes before recreating venv..."
+            & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
+            Start-Sleep -Milliseconds 800
+        }
         Remove-Item -Recurse -Force "venv"
     }
     
@@ -2138,6 +2161,75 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
+# Last-resort Electron mirror after GitHub download fails (#47266).
+$script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
+
+# Electron package dir — workspace-local nest first, then root hoist.
+function Get-ElectronDir {
+    param([string]$InstallDir)
+    $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
+    if (Test-Path -LiteralPath $desktopLocal) { return $desktopLocal }
+    return (Join-Path $InstallDir 'node_modules\electron')
+}
+
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
+function Test-ElectronDist {
+    param([string]$InstallDir)
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
+    return (Test-Path -LiteralPath $distExe)
+}
+
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
+function Restore-ElectronDist {
+    param([string]$InstallDir, [string]$Mirror)
+    if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
+
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
+    $installer = Join-Path $electronDir 'install.js'
+    if (-not (Test-Path -LiteralPath $installer)) { return $false }
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) { return $false }
+
+    $distDir = Join-Path $electronDir 'dist'
+    if (Test-Path -LiteralPath $distDir) {
+        Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath (Join-Path $electronDir 'path.txt') -Force -ErrorAction SilentlyContinue
+
+    $prevMirror = $env:ELECTRON_MIRROR
+    if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
+    try {
+        # Out-Host so the downloader's progress shows on the console WITHOUT
+        # leaking into this function's return value (PowerShell returns every
+        # object left on the output stream, so a bare pipe here would make the
+        # boolean below ambiguous).
+        & $node.Source $installer 2>&1 | ForEach-Object { "$_" } | Out-Host
+    } catch {
+    } finally {
+        $env:ELECTRON_MIRROR = $prevMirror
+    }
+    return (Test-Path -LiteralPath $distExe)
+}
+
+function Test-ElectronPkgStagedMissingDist {
+    param([string]$InstallDir)
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    return (
+        (Test-Path -LiteralPath (Join-Path $electronDir 'package.json')) -and
+        (Test-Path -LiteralPath (Join-Path $electronDir 'install.js')) -and
+        (-not (Test-ElectronDist -InstallDir $InstallDir))
+    )
+}
+
+function Try-RestoreElectronDist {
+    param([string]$InstallDir)
+    if (Restore-ElectronDist -InstallDir $InstallDir) { return $true }
+    if ($env:ELECTRON_MIRROR) { return $false }
+    return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -2233,10 +2325,16 @@ function Install-Desktop {
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
-            Show-NpmCertHint ($npmOut -join "`n") | Out-Null
-            throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+            if (Test-ElectronPkgStagedMissingDist -InstallDir $InstallDir) {
+                Write-Warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+                Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null
+            } else {
+                Show-NpmCertHint ($npmOut -join "`n") | Out-Null
+                throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+            }
+        } else {
+            Write-Success "Desktop workspace dependencies installed"
         }
-        Write-Success "Desktop workspace dependencies installed"
     } catch {
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Pop-Location
@@ -2279,38 +2377,35 @@ function Install-Desktop {
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
-            # A corrupt cached Electron zip makes `pack` fail with an opaque
-            # ENOENT on the final `electron` -> `Hermes` rename: app-builder's
-            # unpack-electron extracted a partial tree (missing the binary) from
-            # the bad zip, and re-running reuses the poisoned cache forever.
-            # Purge the cached download + any stale unpacked output and retry
-            # once; @electron/get re-downloads with its own SHASUM check. Without
-            # this a corrupt download hard-fails the whole installer.
-            $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-            if ($purged.Count -gt 0) {
-                Write-Warn "Desktop build failed - cleared cached Electron download, retrying once:"
+            $purged = @()
+            $restored = $false
+            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
+                $restored = Restore-ElectronDist -InstallDir $InstallDir
+            }
+            if ($restored) {
+                Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
             }
         }
-        # Still failing and the user hasn't pinned their own mirror: GitHub's
-        # Electron release host is likely blocked/throttled (the repeating
-        # "retrying" log). Retry once via npmmirror.com — the de-facto Electron
-        # community mirror (Alibaba). @electron/get SHASUM-checks the download,
-        # but the SHASUMS come from the same mirror, so that guards against a
-        # corrupt/partial download, NOT a compromised mirror: an explicit trust
-        # trade-off we only make AFTER the canonical GitHub download has failed,
-        # and we never override a user-pinned ELECTRON_MIRROR.
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
-            $prevMirror = $env:ELECTRON_MIRROR
-            $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+            $mirror = $script:DesktopElectronFallbackMirror
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
-            Write-Warn "Retrying once via a public Electron mirror ($($env:ELECTRON_MIRROR)):"
+            Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
             Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-            & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-            $code = $LASTEXITCODE
-            $env:ELECTRON_MIRROR = $prevMirror
+            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
+            }
+            $prevMirror = $env:ELECTRON_MIRROR
+            $env:ELECTRON_MIRROR = $mirror
+            try {
+                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                $code = $LASTEXITCODE
+            } finally {
+                $env:ELECTRON_MIRROR = $prevMirror
+            }
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {

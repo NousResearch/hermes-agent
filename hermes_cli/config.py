@@ -350,52 +350,124 @@ def get_managed_update_command() -> Optional[str]:
     return None
 
 
+def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
+    """Resolve the directory that holds the *running code* (the install tree).
+
+    This is the parent of ``hermes_cli/`` — i.e. the git checkout for source
+    installs, ``/opt/hermes`` inside the published image, the venv's
+    site-packages root for pip installs. It is a property of the running
+    interpreter, NOT of ``$HERMES_HOME``, which is why a code-scoped stamp
+    here is immune to two installs sharing one data directory.
+    """
+    if project_root is not None:
+        return project_root
+    return Path(__file__).parent.parent.resolve()
+
+
 def detect_install_method(project_root: Optional[Path] = None) -> str:
     """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
 
     Resolution order:
-    1. Stamped ``~/.hermes/.install_method`` file (written by installers)
-    2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
-    3. .git directory presence -> 'git'
-    4. Fallback -> 'pip'
+    1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
+       running code) — the authoritative marker.
+    2. Legacy home-scoped stamp ``$HERMES_HOME/.install_method`` — read for
+       backward compatibility, but a ``docker`` value is IGNORED when we are
+       not actually running inside a container (see below).
+    3. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
+    4. .git directory presence -> 'git'
+    5. Fallback -> 'pip'
+
+    Why the stamp is code-scoped, not home-scoped (issue: shared ``~/.hermes``)
+    --------------------------------------------------------------------------
+    The install method describes *the binary that is running*, but
+    ``$HERMES_HOME`` is a shared DATA directory — the Docker docs deliberately
+    bind-mount it (``~/.hermes:/opt/data``) so config/sessions/memory persist
+    and can be shared with a host-side Desktop/CLI install. When a
+    containerised gateway and a host install share one ``$HERMES_HOME``, a
+    home-scoped stamp is a single slot describing two different installs:
+    the container stamps ``docker`` on every boot, the host install then reads
+    ``docker`` and ``hermes update`` refuses to run ("doesn't apply inside the
+    Docker container") even though the host binary is a perfectly updatable
+    git/pip install. Scoping the stamp to the install tree gives each install
+    its own truthful marker.
+
+    Self-healing for already-poisoned homes: a legacy ``docker`` value in the
+    home-scoped stamp is only honoured when we are genuinely in a container.
+    On a host install that read a contaminating ``docker`` stamp, we fall
+    through to managed/.git/pip detection instead — so existing shared-home
+    setups recover without the user touching anything.
 
     Note: running inside a container is NOT treated as "docker" on its own.
-    The two supported install paths both self-identify via the
-    ``.install_method`` stamp (caught by step 1), so neither relies on
-    container detection here:
+    The supported installs self-identify via the code-scoped stamp:
       - the curl installer (scripts/install.sh, the README/website install
-        command) git-clones the repo and stamps ``git``;
-      - the published ``nousresearch/hermes-agent`` image stamps ``docker``
-        at boot via ``docker/stage2-hook.sh``.
-    An unsupported manual install dropped into a container (no stamp) was
-    wrongly classified as the published image by bare container detection,
-    so ``hermes update`` bailed with "doesn't apply inside the Docker
-    container". Without that fallback such installs fall through to the
-    ``.git``/pip checks and behave like any off-path install. See issue #34397.
+        command) git-clones the repo and stamps ``git`` next to the code;
+      - the published ``nousresearch/hermes-agent`` image bakes a ``docker``
+        stamp into ``/opt/hermes`` at build time.
+    An unsupported manual install dropped into a container (no stamp) falls
+    through to the ``.git``/pip checks and behaves like any off-path install.
+    See issue #34397.
     """
-    stamp = get_hermes_home() / ".install_method"
+    root = _install_method_project_root(project_root)
+
+    # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
-        method = stamp.read_text(encoding="utf-8").strip().lower()
+        method = (root / ".install_method").read_text(encoding="utf-8").strip().lower()
         if method:
             return method
     except OSError:
         pass
+
+    # 2. Legacy home-scoped stamp — back-compat. Ignore a ``docker`` value
+    #    when we are not actually containerised: that is the signature of a
+    #    host install whose shared $HERMES_HOME was stamped by a co-located
+    #    container, and honouring it wrongly blocks ``hermes update``.
+    try:
+        method = (
+            (get_hermes_home() / ".install_method")
+            .read_text(encoding="utf-8")
+            .strip()
+            .lower()
+        )
+        if method and not (method == "docker" and not _running_in_container()):
+            return method
+    except OSError:
+        pass
+
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    if project_root is None:
-        project_root = Path(__file__).parent.parent.resolve()
-    if (project_root / ".git").is_dir():
+    if (root / ".git").is_dir():
         return "git"
     return "pip"
 
 
-def stamp_install_method(method: str) -> None:
-    """Write the install method to ~/.hermes/.install_method."""
-    stamp = get_hermes_home() / ".install_method"
+def _running_in_container() -> bool:
+    """Thin wrapper around ``hermes_constants.is_container`` (import-safe)."""
     try:
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(method + "\n", encoding="utf-8")
+        from hermes_constants import is_container
+
+        return is_container()
+    except Exception:
+        return False
+
+
+def stamp_install_method(method: str, project_root: Optional[Path] = None) -> None:
+    """Write the install method next to the running code (code-scoped stamp).
+
+    The stamp lives in the install tree (``<install tree>/.install_method``),
+    not in ``$HERMES_HOME``, so that two installs sharing one data directory
+    do not overwrite each other's marker. See ``detect_install_method`` for
+    the full rationale.
+
+    Best-effort: if the install tree is read-only (e.g. the immutable
+    ``/opt/hermes`` in the published image, which instead bakes the stamp at
+    build time) the write silently no-ops and detection falls back to its
+    other signals.
+    """
+    root = _install_method_project_root(project_root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".install_method").write_text(method + "\n", encoding="utf-8")
     except OSError:
         pass
 
@@ -941,6 +1013,13 @@ DEFAULT_CONFIG = {
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.
         "env_passthrough": [],
+        # HOME handling for host tool subprocesses:
+        #   auto    — host keeps the real OS-user HOME; containers use
+        #             HERMES_HOME/home for persistent state (default)
+        #   real    — force the real OS-user HOME
+        #   profile — force HERMES_HOME/home when it exists (old strict
+        #             per-profile CLI config isolation)
+        "home_mode": "auto",
         # Extra files to source in the login shell when building the
         # per-session environment snapshot.  Use this when tools like nvm,
         # pyenv, asdf, or custom PATH entries are registered by files that
@@ -1096,6 +1175,14 @@ DEFAULT_CONFIG = {
         "delete_orphans": True,
         "min_interval_hours": 24,
     },
+
+    # Hard cap (chars) for a single automatic context file such as SOUL.md,
+    # AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes applies
+    # head/tail truncation. ``null`` (the default) lets the cap scale with the
+    # model's context window (floor 20K, ceiling 500K) so large-context models
+    # rarely truncate a project doc. Set a positive integer to pin a fixed cap
+    # and override the dynamic behavior. Separate from read_file tool limits.
+    "context_file_max_chars": None,
 
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
@@ -1421,6 +1508,12 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # Background self-improvement review notifications surfaced in chat.
+        #   "off"     — no chat notification (the review still runs and writes)
+        #   "on"      — generic "💾 Memory updated" line (default)
+        #   "verbose" — include a compact content preview of what changed
+        # Per-platform overrides via display.platforms.<platform>.memory_notifications.
+        "memory_notifications": "on",
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
@@ -1429,6 +1522,10 @@ DEFAULT_CONFIG = {
         # behaves badly with replayed scrollback.
         "persistent_output": True,
         "persistent_output_max_lines": 200,
+        # Print a one-line summary of resolved modal prompts (approval /
+        # clarify) into scrollback so the question and decision survive the
+        # panel repaint. Set false to keep scrollback untouched.
+        "persist_prompts": True,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         # File-mutation verifier footer.  When true (default), the agent
         # appends a one-line advisory to its final response whenever a
@@ -1438,6 +1535,11 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
+        # Nous credits status-bar notices (usage bands, grant-spent, depleted /
+        # restored).  When false, no credits notices are emitted — balance data
+        # is still captured and /usage keeps working.  Off switch for sub +
+        # top-up users who find the gauge noisy.
+        "credits_notices": True,
         # Turn-completion explainer.  When true (default), the agent appends a
         # one-line explanation to its final response whenever a turn ends
         # abnormally with no usable reply — empty content after retries, a
@@ -1463,6 +1565,12 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # How gateway tool-progress is grouped on platforms that support message
+        # editing: "accumulate" (default) edits one bubble in place; "separate"
+        # sends one message per tool (the pre-v0.9 behavior, noisier). Only
+        # applies where tool_progress is already enabled. Per-platform override
+        # via display.platforms.<platform>.tool_progress_grouping.
+        "tool_progress_grouping": "accumulate",
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
         # that support message deletion (currently Telegram; other platforms
@@ -1751,13 +1859,15 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
-        "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
-                                       # no ceiling). High-reasoning models on large tasks
-                                       # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
-                                       # raise if children time out before producing output.
+        "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
+                                     # = no timeout: children fail only from real errors
+                                     # (API, tools, iteration budget), never a delegation
+                                     # stopwatch. Set a positive number of seconds
+                                     # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
+        "max_async_children": 3,  # max concurrent background (background=true) subagents; new dispatches rejected at capacity
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
         # raise deliberately, each level multiplies API cost.
@@ -1860,6 +1970,14 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Run the LLM consolidation (umbrella-building) pass. OFF by default.
+        # When off, a curator run does ONLY the deterministic inactivity prune
+        # (mark stale / archive long-unused skills) and skips the forked
+        # aux-model review entirely — no umbrella-building, no aux-model cost.
+        # Set to true to opt back into merging overlapping skills into
+        # class-level umbrellas. `hermes curator run --consolidate` overrides
+        # this for a single invocation.
+        "consolidate": False,
         # Also prune (archive) bundled built-in skills after the inactivity
         # period, not just agent-created ones. ON by default. Built-ins are
         # normally restored on every `hermes update`, so pruning them only
@@ -1972,6 +2090,9 @@ DEFAULT_CONFIG = {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
+        "extra": {
+            "rich_messages": True,      # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
+        },
     },
 
     # Mattermost platform settings (gateway mode)
@@ -2241,6 +2362,17 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Inject a human-readable timestamp prefix (e.g.
+        # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
+        # CONTEXT so the agent has temporal awareness of when each message was
+        # sent. Off by default — when off, the model sees clean message text.
+        # Persisted transcripts always stay clean (the timestamp is stored as
+        # message metadata regardless of this toggle), so turning it on later
+        # surfaces send-times for past messages too.
+        "message_timestamps": {
+            "enabled": False,
+        },
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
@@ -2316,7 +2448,7 @@ DEFAULT_CONFIG = {
         # delivered as a fresh message if the preview has been visible at
         # least this many seconds, so the platform timestamp reflects
         # completion time. Telegram only; other platforms ignore it.
-        "fresh_final_after_seconds": 60.0,
+        "fresh_final_after_seconds": 0.0,
     },
 
     # Session storage — controls automatic cleanup of ~/.hermes/state.db.
@@ -2529,7 +2661,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 29,
+    "_config_version": 30,
 }
 
 # =============================================================================
@@ -4117,7 +4249,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates",
+    "sessions", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -4824,6 +4956,61 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+
+    # ── Version 29 → 30: seed curator.consolidate (default false) ──
+    # Consolidation (the LLM umbrella-building fork) is now an opt-in toggle,
+    # OFF by default. The deterministic inactivity prune still runs whenever
+    # the curator is enabled; only the opinionated, aux-model-cost LLM pass is
+    # gated. The runtime deep-merge already supplies the default, but we seed
+    # the key so it's visible/editable in config.yaml. Existing installs that
+    # WANT the old always-consolidate behavior must set it to true explicitly.
+    # Only add the key when a curator section exists and lacks it — never
+    # clobber a value the user already set.
+    if current_ver < 30:
+        config = read_raw_config()
+        raw_curator = config.get("curator")
+        if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
+            raw_curator["consolidate"] = False
+            config["curator"] = raw_curator
+            save_config(config)
+            results["config_added"].append("curator.consolidate=false")
+            if not quiet:
+                print(
+                    "  ✓ Seeded curator.consolidate: false "
+                    "(LLM consolidation is now opt-in; pruning stays on)"
+                )
+
+    # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
+    # Users can hand-edit mcp_servers, and older installs may already contain a
+    # malicious entry. Preserve the stanza for auditability but mark it
+    # disabled so the next startup will not spawn it. (#45620)
+    config = read_raw_config()
+    raw_mcp_servers = config.get("mcp_servers")
+    if isinstance(raw_mcp_servers, dict):
+        try:
+            from hermes_cli.mcp_security import validate_mcp_server_entry as _validate_mcp_server_entry
+        except Exception:
+            _validate_mcp_server_entry = None
+        if _validate_mcp_server_entry:
+            mcp_touched = False
+            for server_name, entry in raw_mcp_servers.items():
+                if not isinstance(entry, dict):
+                    continue
+                issues = _validate_mcp_server_entry(server_name, entry)
+                if not issues:
+                    continue
+                entry["enabled"] = False
+                mcp_touched = True
+                results["warnings"].append(
+                    f"Disabled suspicious MCP server '{server_name}'"
+                )
+                if not quiet:
+                    for issue in issues:
+                        print(f"  ⚠ {issue}")
+                    print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
+            if mcp_touched:
+                config["mcp_servers"] = raw_mcp_servers
+                save_config(config)
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

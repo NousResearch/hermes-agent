@@ -61,6 +61,8 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
+    runner._agent_cache = {}
+    runner._agent_cache_lock = MagicMock()
     runner._show_reasoning = False
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
@@ -172,6 +174,105 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
     result = await runner._handle_message(_make_event("/status"))
 
     assert "**Cumulative API tokens (re-sent each call):** 0" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_live_agent_model_and_context():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 1000,
+        "output_tokens": 250,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "openai/gpt-test",
+    }
+    running_agent = SimpleNamespace(
+        model="openai/gpt-test",
+        provider="openai",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=12_345,
+            context_length=100_000,
+        ),
+        interrupt=MagicMock(),
+    )
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `openai/gpt-test` (openai)" in result
+    assert "**Context:** 12,345 / 100,000 (12%)" in result
+    assert "**Cumulative API tokens (re-sent each call):** 1,250" in result
+    assert "1,250 (cumulative)" not in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_persisted_model_and_context_when_agent_not_running(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=24_000,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 2000,
+        "output_tokens": 500,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "model": "openai/gpt-persisted",
+        "billing_provider": "openai-codex",
+        "billing_base_url": "https://example.invalid/v1",
+    }
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"context_length": 272_000}})
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `openai/gpt-persisted` (openai-codex)" in result
+    assert "**Context:** 24,000 / 272,000 (9%)" in result
+    assert "**Cumulative API tokens (re-sent each call):** 2,500" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_cached_agent_model_and_context():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    cached_agent = SimpleNamespace(
+        model="anthropic/claude-sonnet-test",
+        provider="openrouter",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=10_000,
+            context_length=200_000,
+        ),
+    )
+    runner._agent_cache = {session_entry.session_key: (cached_agent, time.time())}
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `anthropic/claude-sonnet-test` (openrouter)" in result
+    assert "**Context:** 10,000 / 200,000 (5%)" in result
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,7 @@ import {
   terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
+import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -52,9 +53,12 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
+import { clearSessionSubagents } from '@/store/subagents'
+import { clearSessionTodos } from '@/store/todos'
 
 import type {
   ClientSessionState,
+  BrowserManageResponse,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -112,6 +116,40 @@ function isSessionNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
   return /session not found/i.test(message)
+}
+
+// The gateway refuses prompt.submit while a turn is running (4009 "session
+// busy"). It's a transient concurrency guard, never a user-facing error: a
+// submit racing the settle edge (or a rewind interrupting mid-turn) just waits
+// a beat for the turn to wind down, then lands. Bounded so a genuinely stuck
+// turn still surfaces eventually.
+const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
+const SESSION_BUSY_RETRY_INTERVAL_MS = 150
+
+function isSessionBusyError(error: unknown): boolean {
+  return /session busy/i.test(error instanceof Error ? error.message : String(error))
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+// Retry a gateway call across transient "session busy" so it never reaches the
+// user — the turn settles within the deadline and the call lands.
+async function withSessionBusyRetry<T>(call: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + SESSION_BUSY_RETRY_TIMEOUT_MS
+
+  for (;;) {
+    try {
+      return await call()
+    } catch (err) {
+      if (isSessionBusyError(err) && Date.now() < deadline) {
+        await sleep(SESSION_BUSY_RETRY_INTERVAL_MS)
+
+        continue
+      }
+
+      throw err
+    }
+  }
 }
 
 function base64FromDataUrl(dataUrl: string): string {
@@ -523,6 +561,7 @@ export function usePromptActions({
       // Images use their base64 preview so the thumbnail renders inline without
       // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
       let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
+
       const buildContextText = (atts: ComposerAttachment[]): string => {
         const contextRefs = atts
           .map(a => a.refText)
@@ -540,6 +579,7 @@ export function usePromptActions({
       // bounce the drained send. The drain lock serializes them; the user path
       // keeps the guard so a stray Enter mid-turn can't double-submit.
       const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+
       if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
         return false
       }
@@ -652,6 +692,7 @@ export function usePromptActions({
         const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
+
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
         // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
@@ -665,18 +706,19 @@ export function usePromptActions({
         let submitErr: unknown = null
 
         try {
-          await requestGateway('prompt.submit', { session_id: sessionId, text })
+          await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
         } catch (firstErr) {
           if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
               session_id: selectedStoredSessionIdRef.current
             })
+
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
               activeSessionIdRef.current = recoveredId
-              await requestGateway('prompt.submit', { session_id: recoveredId, text })
+              await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
             } else {
               submitErr = firstErr
             }
@@ -695,9 +737,17 @@ export function usePromptActions({
 
         return true
       } catch (err) {
+        releaseBusy()
+
+        // A queued drain that raced a not-yet-settled turn gets a transient
+        // "session busy" (4009). Don't surface an error bubble/toast — the entry
+        // stays queued and the composer's bounded auto-drain retries when idle.
+        if (options?.fromQueue && isSessionBusyError(err)) {
+          return false
+        }
+
         const message = inlineErrorMessage(err, copy.promptFailed)
 
-        releaseBusy()
         updateSessionState(sessionId, state => ({
           ...state,
           messages: [
@@ -1092,6 +1142,81 @@ export function usePromptActions({
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
+        },
+        // /browser connect|disconnect|status manages the live CDP connection on
+        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
+        // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
+        // meaningful when that process runs on this machine, so it's gated to
+        // local connections. A remote gateway would act on the wrong host.
+        browser: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if ($connection.get()?.mode === 'remote') {
+            renderSlashOutput(
+              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
+            )
+
+            return
+          }
+
+          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
+          const cmdAction = rawAction.toLowerCase()
+
+          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+            renderSlashOutput(
+              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+            )
+
+            return
+          }
+
+          const url = cmdAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
+
+          if (url) {
+            renderSlashOutput(`checking Chromium-family browser remote debugging at ${url}...`)
+          }
+
+          try {
+            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
+              action: cmdAction,
+              session_id: sessionId,
+              ...(url && { url })
+            })
+
+            // Without a streamed session subscription, the gateway bundles its
+            // progress lines into `messages` — flush them inline.
+            result?.messages?.forEach(message => renderSlashOutput(message))
+
+            if (cmdAction === 'status') {
+              renderSlashOutput(
+                result?.connected
+                  ? `browser connected: ${result.url || '(url unavailable)'}`
+                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+              )
+
+              return
+            }
+
+            if (cmdAction === 'disconnect') {
+              renderSlashOutput('browser disconnected')
+
+              return
+            }
+
+            if (result?.connected) {
+              renderSlashOutput('Browser connected to live Chromium-family browser via CDP')
+              renderSlashOutput(`Endpoint: ${result.url || '(url unavailable)'}`)
+              renderSlashOutput('next browser tool call will use this CDP endpoint')
+            }
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
         }
       }
 
@@ -1234,12 +1359,13 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
+    const releaseBusy = () => {
+      setMutableRef(busyRef, false)
+      setBusy(false)
+    }
 
     setAwaitingResponse(false)
 
-    // Interrupting keeps whatever was already generated and just
-    // stops — no "[interrupted]" marker. A pending/streaming message with no
-    // body text is dropped entirely so we never leave an empty bubble behind.
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages
         .filter(
@@ -1251,8 +1377,7 @@ export function usePromptActions({
         )
 
     if (!sessionId) {
-      setMutableRef(busyRef, false)
-      setBusy(false)
+      releaseBusy()
       setMessages(finalizeMessages($messages.get()))
 
       return
@@ -1260,13 +1385,12 @@ export function usePromptActions({
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
-
       const messages = finalizeMessages(state.messages, streamId)
 
       return {
         ...state,
         messages,
-        busy: true,
+        busy: false,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
@@ -1274,8 +1398,13 @@ export function usePromptActions({
       }
     })
 
+    clearSessionTodos(sessionId)
+    clearSessionSubagents(sessionId)
+    resetSessionBackground(sessionId)
+
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
+      releaseBusy()
     } catch (err) {
       let stopError = err
 
@@ -1284,11 +1413,13 @@ export function usePromptActions({
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
             session_id: selectedStoredSessionIdRef.current
           })
+
           const recoveredId = resumed?.session_id
 
           if (recoveredId) {
             activeSessionIdRef.current = recoveredId
             await requestGateway('session.interrupt', { session_id: recoveredId })
+            releaseBusy()
 
             return
           }
@@ -1297,8 +1428,7 @@ export function usePromptActions({
         }
       }
 
-      setMutableRef(busyRef, false)
-      setBusy(false)
+      releaseBusy()
       notifyError(stopError, copy.stopFailed)
     }
   }, [
@@ -1421,13 +1551,101 @@ export function usePromptActions({
     [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
   )
 
+  // Cursor-style "restore checkpoint": rewind the conversation to a past user
+  // prompt and run it again from there. Reuses the edit composer's rewind
+  // mechanism — `prompt.submit` with `truncate_before_user_ordinal` drops that
+  // user turn and everything after it from the session history, then the same
+  // text is submitted as a fresh turn. Callers confirm before invoking; errors
+  // are rethrown so the confirmation dialog can surface them inline.
+  // Submit a rewind (truncate-before-ordinal + resubmit). Because edit/restore
+  // can fire while a turn is streaming, interrupt the live turn first — the
+  // cooperative interrupt takes a beat, so the shared busy-retry rides it out.
+  const submitRewindPrompt = useCallback(
+    async (sessionId: string, text: string, truncateOrdinal: number | undefined, wasRunning: boolean) => {
+      if (wasRunning) {
+        try {
+          await requestGateway('session.interrupt', { session_id: sessionId })
+        } catch {
+          // Best-effort — the busy-retry below still gates the submit.
+        }
+      }
+
+      await withSessionBusyRetry(() =>
+        requestGateway('prompt.submit', {
+          session_id: sessionId,
+          text,
+          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+        })
+      )
+    },
+    [requestGateway]
+  )
+
+  const restoreToMessage = useCallback(
+    async (messageId: string) => {
+      const sessionId = activeSessionId || activeSessionIdRef.current
+
+      if (!sessionId) {
+        return
+      }
+
+      const messages = $messages.get()
+      const sourceIndex = messages.findIndex(m => m.id === messageId)
+      const source = messages[sourceIndex]
+
+      if (!source || source.role !== 'user') {
+        return
+      }
+
+      const text = chatMessageText(source).trim()
+
+      if (!text) {
+        return
+      }
+
+      const wasRunning = $busy.get()
+      const truncateBeforeUserOrdinal = visibleUserOrdinal(messages, sourceIndex)
+
+      // The turns we're discarding may have spawned todos and background
+      // processes; they belong to the abandoned timeline, so wipe their status
+      // rows (and kill the live processes) before the fresh run repopulates.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
+
+      clearNotifications()
+      setMutableRef(busyRef, true)
+      setBusy(true)
+      setAwaitingResponse(true)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        busy: true,
+        awaitingResponse: true,
+        pendingBranchGroup: null,
+        sawAssistantPayload: false,
+        interrupted: false,
+        messages: state.messages.slice(0, sourceIndex + 1)
+      }))
+
+      try {
+        await submitRewindPrompt(sessionId, text, truncateBeforeUserOrdinal, wasRunning)
+      } catch (err) {
+        setMutableRef(busyRef, false)
+        setBusy(false)
+        setAwaitingResponse(false)
+        updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
+        throw err
+      }
+    },
+    [activeSessionId, activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState]
+  )
+
   const editMessage = useCallback(
     async (edited: AppendMessage) => {
       const sessionId = activeSessionId || activeSessionIdRef.current
       const sourceId = edited.sourceId || edited.parentId
       const text = appendText(edited)
 
-      if (!sessionId || !sourceId || !text || edited.role !== 'user' || $busy.get()) {
+      if (!sessionId || !sourceId || !text || edited.role !== 'user') {
         return
       }
 
@@ -1439,11 +1657,22 @@ export function usePromptActions({
         return
       }
 
+      // Sending an edit is a revert: rewind to this prompt and re-run with the
+      // new text. It can fire mid-turn, so capture the live state — the submit
+      // helper interrupts first when a turn is running.
+      const wasRunning = $busy.get()
+
       // Failed turn: optimistic user msg never reached the gateway, so truncating
       // by ordinal would 422. Submit as a plain resend instead.
       const nextMessage = messages[sourceIndex + 1]
       const isFailedTurn = nextMessage?.role === 'assistant' && Boolean(nextMessage.error)
       const editedMessage: ChatMessage = { ...source, parts: [textPart(text)] }
+
+      // Editing rewinds the conversation to this prompt — same as restore — so
+      // drop the abandoned timeline's todos/background rows (and kill the live
+      // processes) before the re-run repopulates them.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)
@@ -1459,24 +1688,18 @@ export function usePromptActions({
         messages: [...state.messages.slice(0, sourceIndex), editedMessage]
       }))
 
-      const submit = (truncateOrdinal?: number) =>
-        requestGateway('prompt.submit', {
-          session_id: sessionId,
-          text,
-          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
-        })
-
       const isStaleTargetError = (err: unknown) =>
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
       try {
-        await submit(isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex))
+        await submitRewindPrompt(sessionId, text, isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex), wasRunning)
       } catch (err) {
         let surfaced = err
 
         if (!isFailedTurn && isStaleTargetError(err)) {
           try {
-            await submit()
+            // Already interrupted on the first attempt — submit as a plain resend.
+            await submitRewindPrompt(sessionId, text, undefined, false)
 
             return
           } catch (retryErr) {
@@ -1491,7 +1714,7 @@ export function usePromptActions({
         notifyError(surfaced, copy.editFailed)
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, requestGateway, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]
   )
 
   const handleThreadMessagesChange = useCallback(
@@ -1534,6 +1757,7 @@ export function usePromptActions({
     handleThreadMessagesChange,
     handoffSession,
     reloadFromMessage,
+    restoreToMessage,
     steerPrompt,
     submitText,
     transcribeVoiceAudio

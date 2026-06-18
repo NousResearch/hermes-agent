@@ -109,7 +109,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
-    CommandDef("status", "Show session info", "Session"),
+    CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -214,6 +214,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
+    CommandDef("credits", "Show Nous credit balance and top up", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -1043,6 +1044,18 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # native slot, the alias spelling stays reachable via /hermes reset).
 _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 
+# Canonical commands intentionally NOT given a native Slack slash slot. Slack
+# caps apps at 50 slash commands and the registry is at that ceiling; rather
+# than let the clamp silently drop whichever command sorts last (and break
+# Telegram parity), we explicitly route a few low-frequency commands through
+# ``/hermes <command>`` on Slack only. They remain native on every other
+# surface (CLI, TUI, Telegram, Discord). Keep this list TIGHT and intentional —
+# the telegram-parity test reads it so an entry here is a deliberate
+# "Slack-via-/hermes" decision, not a silent clamp.
+#   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
+#   - debug: the log/report upload surface; reached via /hermes debug on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug"})
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Convert a command name to a valid Slack slash command name.
@@ -1090,6 +1103,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if not slack_name or slack_name in seen:
             return
         if slack_name in _SLACK_RESERVED_COMMANDS:
+            return
+        if slack_name in _SLACK_VIA_HERMES_ONLY:
+            # Intentionally Slack-via-/hermes only (see _SLACK_VIA_HERMES_ONLY).
             return
         if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
             return
@@ -1264,6 +1280,10 @@ class SlashCommandCompleter(Completer):
         current word doesn't look like a path.  A word is path-like when
         it starts with ``./``, ``../``, ``~/``, ``/``, or contains a
         ``/`` separator (e.g. ``src/main.py``).
+
+        Tokens containing a ``://`` scheme separator (e.g. URLs like
+        ``https://example.com/x``) are excluded even though they contain a
+        ``/`` — they are never useful local-path completions.
         """
         if not text:
             return None
@@ -1274,6 +1294,12 @@ class SlashCommandCompleter(Completer):
             i -= 1
         word = text[i + 1:]
         if not word:
+            return None
+        # URLs contain "/" but are not local paths. Treating them as paths fires
+        # os.listdir on every keystroke while typing/pasting a link (e.g. an
+        # https:// URL becomes a listdir of "https:") — pure latency, never a
+        # useful completion. Skip any token with a scheme separator.
+        if "://" in word:
             return None
         # Only trigger path completion for path-like tokens
         if word.startswith(("./", "../", "~/", "/")) or "/" in word:

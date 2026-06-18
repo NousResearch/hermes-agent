@@ -127,6 +127,18 @@ export const zh: Translations = {
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
       unavailable: '语音不可用'
+    },
+    native: {
+      approvalTitle: '需要批准',
+      approveAction: '批准',
+      rejectAction: '拒绝',
+      inputTitle: '需要输入',
+      inputBody: 'Hermes 正在等待你的回应。',
+      turnDoneTitle: 'Hermes 已完成',
+      turnDoneBody: '回复已就绪。',
+      turnErrorTitle: '本轮失败',
+      backgroundDoneTitle: '后台任务已完成',
+      backgroundFailedTitle: '后台任务失败'
     }
   },
 
@@ -173,6 +185,7 @@ export const zh: Translations = {
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
+      'session.newWindow': '在新窗口中新建会话',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
       'session.slot.1': '切换到最近会话 1',
@@ -259,7 +272,45 @@ export const zh: Translations = {
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
-      about: '关于'
+      about: '关于',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
+      enableAll: '启用通知',
+      enableAllDesc: '总开关。关闭后将静音下方所有通知。',
+      focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
+      kinds: {
+        approval: {
+          label: '需要批准',
+          description: '有命令正在等待你批准或拒绝。'
+        },
+        input: {
+          label: '需要输入',
+          description: 'Hermes 提出了问题，或需要密码或密钥。'
+        },
+        turnDone: {
+          label: '回复就绪',
+          description: 'Hermes 在后台时完成了一轮对话。'
+        },
+        turnError: {
+          label: '本轮失败',
+          description: '本轮以错误结束。'
+        },
+        backgroundDone: {
+          label: '后台任务完成',
+          description: '后台终端命令已完成。'
+        }
+      },
+      test: '发送测试通知',
+      testTitle: 'Hermes',
+      testBody: '通知工作正常。',
+      testSent: '测试已发送。如果没有出现，请检查系统通知权限和专注模式／勿扰模式。',
+      testUnsupported: '此系统不支持原生通知。',
+      completionSoundTitle: '完成提示音',
+      completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
+      completionSoundPreview: '预览'
     },
     sections: {
       model: '模型',
@@ -291,6 +342,8 @@ export const zh: Translations = {
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+      translucencyTitle: '窗口透明',
+      translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       product: '产品',
       productDesc: '易读的工具活动与简洁摘要。',
       technical: '技术',
@@ -680,6 +733,10 @@ export const zh: Translations = {
       provider: '提供方',
       model: '模型',
       applying: '应用中...',
+      defaultsLabel: '默认值',
+      reasoning: '推理',
+      reasoningOff: '关闭',
+      defaultsFailed: '保存模型默认值失败',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
@@ -706,6 +763,16 @@ export const zh: Translations = {
       collapse: '收起',
       connectAnother: '连接其他提供方',
       otherProviders: '其他提供方',
+      disconnect: '断开连接',
+      disconnectInTerminal: '断开连接（在终端中运行移除命令）',
+      removeConfirm: provider => `移除 ${provider}？`,
+      removeExternalGeneric: provider => `${provider} 由其自身的 CLI 管理 — 请在那里移除。`,
+      removeKeyManaged: provider => `${provider} 由 API 密钥配置。请从 API Keys 中移除。`,
+      removeTerminalConfirm: (provider, command) => `断开 ${provider}？这将在终端中运行 "${command}" 以清除凭据。`,
+      removeTerminalRunning: provider => `正在终端中断开 ${provider}…`,
+      removedTitle: '账号已移除',
+      removedMessage: provider => `${provider} 已移除。`,
+      failedRemove: provider => `无法移除 ${provider}`,
       noProviderKeys: '没有可用的提供方 API 密钥。',
       loading: '正在加载提供方...'
     },
@@ -833,6 +900,7 @@ export const zh: Translations = {
     back: '返回',
     searchPlaceholder: '搜索会话、视图与操作',
     goTo: '前往',
+    goToSession: '前往会话',
     commandCenter: '命令中心',
     appearance: '外观',
     settings: '设置',
@@ -1018,13 +1086,15 @@ export const zh: Translations = {
     platformIntro: {
       telegram:
         '在 Telegram 中，与 @BotFather 对话，运行 /newbot，复制它给你的令牌。然后从 @userinfobot 获取你的数字用户 ID。',
-      discord: '打开 Discord 开发者门户，创建应用，添加 Bot，然后复制其令牌。用正确的权限范围把机器人邀请到你的服务器。',
+      discord:
+        '打开 Discord 开发者门户，创建应用，添加 Bot，然后复制其令牌。用正确的权限范围把机器人邀请到你的服务器。',
       slack: '创建 Slack 应用，启用 Socket Mode，安装到你的工作区，然后复制 bot 令牌和 app 级令牌。',
       mattermost: '在你的 Mattermost 服务器上，创建机器人账户或个人访问令牌，然后在此粘贴服务器 URL 和令牌。',
       matrix: '用机器人账户登录你的 homeserver，然后复制访问令牌、用户 ID 和 homeserver URL。',
       signal: '在可访问的位置运行 signal-cli REST 桥接，然后把 Hermes 指向该 URL 和已注册的电话号码。',
       whatsapp: '启动 Hermes 自带的 WhatsApp 桥接，首次运行时扫描二维码，然后启用该平台。',
-      bluebubbles: '在装有 iMessage 的 Mac 上运行 BlueBubbles Server，暴露其 API，然后用服务器密码把 Hermes 指向该 URL。',
+      bluebubbles:
+        '在装有 iMessage 的 Mac 上运行 BlueBubbles Server，暴露其 API，然后用服务器密码把 Hermes 指向该 URL。',
       homeassistant: '在 Home Assistant 中打开你的个人资料并创建长期访问令牌。把它连同你的 HA URL 一起粘贴到这里。',
       email: '使用专用邮箱。对于 Gmail/Workspace,创建应用专用密码并使用 imap.gmail.com / smtp.gmail.com。',
       sms: '从 Twilio 控制台获取你的 Account SID 和 Auth Token，以及一个可发送短信的电话号码。',
@@ -1032,7 +1102,8 @@ export const zh: Translations = {
       feishu: '创建飞书 / Lark 应用，配置机器人能力，复制 App ID、App secret 和事件加密密钥。',
       wecom: '在企业微信中添加群机器人，复制其 webhook key 作为 WECOM_BOT_ID。仅可发送——双向请用企业微信 (应用) 选项。',
       wecom_callback: '设置一个企业微信自建应用，暴露其回调 URL，并提供 corp ID、secret、agent ID 和 AES key。',
-      weixin: '登录微信公众平台，复制 AppID 和 Token，并把消息回调 URL 指向 Hermes。',
+      weixin:
+        '运行 `hermes gateway setup`，选择 Weixin，然后使用个人微信账号扫描并确认二维码。Hermes 会通过腾讯 iLink Bot API 连接并保存凭据。',
       qqbot: '在 QQ 开放平台 (q.qq.com) 注册一个应用，复制 App ID 和 Client Secret。',
       api_server:
         '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥，然后把 Open WebUI / LobeChat 等指向 host:port。',
@@ -1087,6 +1158,9 @@ export const zh: Translations = {
     deleting: '删除中…',
     createDesc: '配置档案是相互独立的 Hermes 环境：各自拥有独立的配置、技能和 SOUL.md。',
     nameLabel: '名称',
+    cloneFrom: '克隆来源',
+    cloneFromNone: '无（空白）',
+    cloneFromDesc: '从选中的来源配置档案复制配置、技能和 SOUL.md。',
     cloneFromDefault: '从默认档案克隆',
     cloneFromDefaultDesc: '从你的默认配置档案复制配置、技能和 SOUL.md。',
     invalidName: hint => `名称无效。${hint}`,
@@ -1370,14 +1444,14 @@ export const zh: Translations = {
       '/quit': '退出 hermes'
     },
     hotkeyDescs: {
-      '@': '引用文件、文件夹、URL、git',
-      '/': '斜杠命令面板',
-      '?': '此快速帮助 (删除以关闭)',
-      Enter: '发送 · Shift+Enter 换行',
-      'Cmd/Ctrl+K': '发送下一条排队的回合',
-      'Cmd/Ctrl+L': '重绘',
-      Esc: '关闭弹窗 · 取消运行',
-      '↑ / ↓': '循环弹窗 / 历史'
+      'composer.mention': '引用文件、文件夹、URL、git',
+      'composer.slash': '斜杠命令面板',
+      'composer.help': '此快速帮助 (删除以关闭)',
+      'composer.sendNewline': '发送 · Shift+Enter 换行',
+      'composer.sendQueued': '发送下一条排队的回合',
+      'keybinds.openPanel': '所有键盘快捷键',
+      'composer.cancel': '关闭弹窗 · 取消运行',
+      'composer.history': '循环弹窗 / 历史'
     },
     attachUrlTitle: '附加 URL',
     attachUrlDesc: 'Hermes 将抓取该页面并作为本回合的上下文。',
@@ -1390,10 +1464,12 @@ export const zh: Translations = {
     attachments: count => `${count} 个附件`,
     editingInComposer: '正在输入框中编辑',
     editingQueuedInComposer: '正在输入框中编辑排队回合',
-    editQueued: '编辑排队回合',
-    sendQueuedNext: '下一个发送排队回合',
-    sendQueuedNow: '立即发送排队回合',
-    deleteQueued: '删除排队回合',
+    queueEdit: '编辑',
+    queueSendNext: '下一个',
+    queueSend: '发送',
+    queueDelete: '删除',
+    queueStuckTitle: '排队消息未发送',
+    queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,
@@ -1436,6 +1512,17 @@ export const zh: Translations = {
         text: '请解释这是如何工作的，并指给我关键文件。'
       }
     }
+  },
+
+  statusStack: {
+    agents: '代理',
+    background: count => `${count} 个后台任务`,
+    subagents: count => `${count} 个子代理`,
+    todos: (done, total) => `任务 ${done}/${total}`,
+    running: '运行中',
+    stop: '停止',
+    dismiss: '关闭',
+    exit: code => `退出码 ${code}`
   },
 
   updates: {
@@ -1600,8 +1687,6 @@ export const zh: Translations = {
     unknown: '(未知)',
     search: '筛选提供方和模型...',
     noModels: '未找到模型。',
-    persistGlobalSession: '全局保存 (否则仅当前会话)',
-    persistGlobal: '全局保存',
     addProvider: '添加提供方',
     loadFailed: '无法加载模型',
     noAuthenticatedProviders: '没有已认证的提供方。',
@@ -1818,6 +1903,7 @@ export const zh: Translations = {
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
+      showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
       thinking: '思考中',
       today: time => `今天，${time}`,
@@ -1826,15 +1912,20 @@ export const zh: Translations = {
       refresh: '刷新',
       moreActions: '更多操作',
       branchNewChat: '在新对话中分支',
+      dismissError: '关闭错误',
       readAloudFailed: '朗读失败',
       preparingAudio: '正在准备音频...',
       stopReading: '停止朗读',
       readAloud: '朗读',
       editMessage: '编辑消息',
+      scrollToBottom: '滚动到底部',
       stop: '停止',
-      editableCheckpoint: '可编辑检查点',
       restorePrevious: '恢复上一个检查点',
       restoreCheckpoint: '恢复检查点',
+      restoreFromHere: '恢复检查点 — 从此提示重新运行',
+      restoreTitle: '恢复到此检查点？',
+      restoreBody: '此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。',
+      restoreConfirm: '恢复并重新运行',
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
       sendEdited: '发送编辑后的消息',
@@ -1844,9 +1935,11 @@ export const zh: Translations = {
       gatewayDisconnected: 'Hermes 网关未连接',
       sendFailed: '无法发送审批响应',
       run: '运行',
+      command: '命令',
       moreOptions: '更多审批选项',
       allowSession: '允许本会话',
       alwaysAllowMenu: '始终允许…',
+      jumpToApproval: '需要审批',
       reject: '拒绝',
       alwaysTitle: '始终允许此命令？',
       alwaysDescription: pattern =>
@@ -1860,7 +1953,7 @@ export const zh: Translations = {
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
-      shortcut: '⌘/Ctrl + Enter 发送',
+      shortcutSuffix: ' 发送',
       back: '返回',
       skip: '跳过',
       send: '发送'
@@ -1928,6 +2021,9 @@ export const zh: Translations = {
     regenerateFailed: '重新生成失败',
     editFailed: '编辑失败',
     resumeFailed: '恢复失败',
+    resumeStrandedTitle: '无法加载此会话',
+    resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
+    resumeRetry: '重试',
     nothingToBranch: '没有可分支的内容',
     branchNeedsChat: '分支前请先开始或恢复一个对话。',
     sessionBusy: '会话忙碌中',

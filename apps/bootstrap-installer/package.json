@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@nous-research/ui": "0.16.0",
-    "@tailwindcss/vite": "^4.2.1",
+    "@tailwindcss/vite": "^4.2.4",
     "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
@@ -40,8 +40,8 @@
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^6.0.3",
-    "vite": "^7.3.1"
+    "vite": "^8.0.16"
   }
 }

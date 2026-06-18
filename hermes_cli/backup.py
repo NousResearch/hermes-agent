@@ -39,7 +39,11 @@ _EXCLUDED_DIRS = {
     "__pycache__",      # bytecode caches — regenerated on import
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps if website/ somehow leaks in
+    ".venv",            # plugin/tool virtualenvs are dependency caches; reinstall instead of porting
+    "venv",             # same as .venv for tools that use an unhidden env name
+    ".curator_backups", # generated skill-curation backups; main backup already protects current skills
     "backups",          # prior auto-backups — don't nest backups exponentially
+    "state-snapshots",  # quick rollback snapshots duplicate state.db; do not re-zip them
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
 }

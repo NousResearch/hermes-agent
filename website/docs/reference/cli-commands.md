@@ -766,6 +766,9 @@ The backup uses SQLite's `backup()` API for safe copying, so it works correctly 
 **What's excluded from the zip:**
 
 - `*.db-wal`, `*.db-shm`, `*.db-journal` — SQLite's WAL / shared-memory / journal sidecars. The `*.db` file already got a consistent snapshot via `sqlite3.backup()`; shipping the live sidecars alongside it would let a restore see a half-committed state.
+- `backups/` and `state-snapshots/` — generated rollback archives. Full backups already include the current state, so nesting previous archives causes runaway backup growth.
+- `.venv/`, `venv/`, and `node_modules/` — dependency caches for plugins/tools. Reinstall them on the target machine instead of porting machine-local packages.
+- `.curator_backups/` — generated skill-curator rollback bundles. The current skill tree is already included.
 - `checkpoints/` — per-session trajectory caches. Hash-keyed and regenerated per session; wouldn't port cleanly to another install anyway.
 - The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
 

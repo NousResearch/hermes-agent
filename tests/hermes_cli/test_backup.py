@@ -110,6 +110,25 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_state_snapshots_dir(self):
+        """state-snapshots/ contains rollback artifacts that duplicate state.db.
+        Full backups already include current state.db, so nesting snapshots causes
+        pre-update backups to balloon without improving the current-state restore.
+        """
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("state-snapshots/20260520-173300-pre-update/state.db"))
+        assert _should_exclude(Path("state-snapshots/20260520-173300-pre-update/manifest.json"))
+
+    def test_excludes_dependency_and_generated_backup_dirs(self):
+        """Plugin virtualenvs and curator rollback bundles are generated caches.
+        Keeping them in full backups makes archives large without improving restore
+        of the current Hermes configuration, skills, sessions, or state.
+        """
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("plugins/hindsight/.venv/bin/python"))
+        assert _should_exclude(Path("tools/some-tool/venv/lib/python/site-packages/pkg.py"))
+        assert _should_exclude(Path("skills/.curator_backups/20260518/skill/SKILL.md"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state

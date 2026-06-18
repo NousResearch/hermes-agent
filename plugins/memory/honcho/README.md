@@ -83,6 +83,10 @@ When `dialecticDepthLevels` is not set, each pass uses a proportional level rela
 
 Override with `dialecticDepthLevels`: an explicit array of reasoning level strings per pass.
 
+### Query-Adaptive Reasoning Level
+
+The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1 level at ≥120 chars, +2 at ≥400, clamped at `reasoningLevelCap` (default `"high"`). Disable with `reasoningHeuristic: false` to pin every auto call to `dialecticReasoningLevel`.
+
 ### Three Orthogonal Dialectic Knobs
 
 | Knob | Controls | Type |
@@ -262,6 +266,8 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `dialecticDynamic` | bool | `true` | When `true`, model can override reasoning level per-call via `honcho_reasoning` tool. When `false`, always uses `dialecticReasoningLevel` |
 | `dialecticMaxChars` | int | `600` | Max chars of dialectic result injected into system prompt |
 | `dialecticMaxInputChars` | int | `10000` | Max chars for dialectic query input to `.chat()`. Honcho cloud limit: 10k |
+| `reasoningHeuristic` | bool | `true` | Query-adaptive: auto-scale the auto-injected dialectic's level up by query length (+1 at ≥120 chars, +2 at ≥400), clamped at `reasoningLevelCap`. `false` pins every auto call to `dialecticReasoningLevel` |
+| `reasoningLevelCap` | string | `"high"` | Ceiling for `reasoningHeuristic` scaling: `"minimal"`, `"low"`, `"medium"`, `"high"`, `"max"` |
 
 ### Token Budgets
 
@@ -277,7 +283,6 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `contextCadence` | int | `1` | Minimum turns between base context refreshes (session summary + representation + card) |
 | `dialecticCadence` | int | `1` | Minimum turns between dialectic `.chat()` firings |
 | `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject context on the first user message only, skip from turn 2 onward) |
-| `reasoningLevelCap` | string | — | Hard cap on reasoning level: `"minimal"`, `"low"`, `"medium"`, `"high"` |
 
 ### Observation (Granular)
 

@@ -157,6 +157,163 @@ _MARKDOWN_HINT_RE = re.compile(
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+
+
+def _parse_markdown_tables(content: str):
+    """Parse markdown tables from content, returning list of (pre_text, table_data, post_text).
+
+    Each table_data is a dict with 'headers' (list of str) and 'rows' (list of list of str).
+    """
+    tables = []
+    table_pattern = re.compile(r"((?:^\|.*(?:\n|$))+)", re.MULTILINE)
+    last_end = 0
+    for match in table_pattern.finditer(content):
+        table_text = match.group(1).rstrip("\n")
+        if not re.search(r"\n\|[-|: ]+\|", table_text):
+            continue
+        pre_text = content[last_end:match.start()]
+        # Parse table
+        lines = [l for l in table_text.splitlines() if l.strip()]
+        if len(lines) < 2:
+            continue
+        headers = None
+        rows = []
+        for line in lines:
+            if re.match(r"^\|[\s\-:|]+\|$", line):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if headers is None:
+                headers = cells
+            else:
+                rows.append(cells)
+        if headers and rows:
+            tables.append({
+                "pre_text": pre_text,
+                "headers": headers,
+                "rows": rows,
+            })
+        last_end = match.end()
+    post_text = content[last_end:] if last_end < len(content) else ""
+    return tables, post_text
+
+
+def _build_card_with_tables(pre_text: str, headers: list, rows: list, post_text: str) -> str:
+    """Build a Feishu interactive card JSON with a table component."""
+    columns = []
+    for i, h in enumerate(headers):
+        columns.append({
+            "name": f"col{i}",
+            "display_name": h,
+            "data_type": "text",
+            "width": "auto",
+            "horizontal_align": "left",
+            "vertical_align": "top",
+        })
+
+    table_rows = []
+    for row in rows:
+        row_data = {}
+        for i, cell in enumerate(row):
+            col_name = f"col{i}"
+            if i < len(columns):
+                row_data[col_name] = cell
+            else:
+                row_data[f"col{i}"] = cell
+        table_rows.append(row_data)
+
+    elements = []
+    if pre_text.strip():
+        elements.append({
+            "tag": "markdown",
+            "content": pre_text.strip(),
+        })
+    elements.append({
+        "tag": "table",
+        "page_size": 10,
+        "row_height": "auto",
+        "header_style": {
+            "text_align": "left",
+            "background_style": "grey",
+            "text_color": "default",
+            "bold": True,
+            "lines": 1,
+        },
+        "columns": columns,
+        "rows": table_rows,
+    })
+    if post_text.strip():
+        elements.append({
+            "tag": "markdown",
+            "content": post_text.strip(),
+        })
+
+    card = {
+        "schema": "2.0",
+        "header": {
+            "template": "blue",
+            "title": {"content": "", "tag": "plain_text"},
+        },
+        "body": {"elements": elements},
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _build_outbound_payload_for_tables(content: str) -> tuple[str, str]:
+    """If content contains markdown tables, build an interactive card with table components."""
+    tables, post_text = _parse_markdown_tables(content)
+    if not tables:
+        return None
+    # If there's only one table, use it as the main card
+    if len(tables) == 1:
+        t = tables[0]
+        card_json = _build_card_with_tables(t["pre_text"], t["headers"], t["rows"], post_text)
+        return "interactive", card_json
+    # Multiple tables: build a card with all tables
+    elements = []
+    first_pre = tables[0]["pre_text"].strip()
+    if first_pre:
+        elements.append({"tag": "markdown", "content": first_pre})
+    for t in tables:
+        elements.append({
+            "tag": "table",
+            "page_size": 10,
+            "row_height": "auto",
+            "header_style": {
+                "text_align": "left",
+                "background_style": "grey",
+                "text_color": "default",
+                "bold": True,
+                "lines": 1,
+            },
+            "columns": [
+                {
+                    "name": f"col{i}",
+                    "display_name": h,
+                    "data_type": "text",
+                    "width": "auto",
+                    "horizontal_align": "left",
+                    "vertical_align": "top",
+                }
+                for i, h in enumerate(t["headers"])
+            ],
+            "rows": [
+                {f"col{i}": cell for i, cell in enumerate(row)}
+                for row in t["rows"]
+            ],
+        })
+    if post_text.strip():
+        elements.append({"tag": "markdown", "content": post_text.strip()})
+    card = {
+        "schema": "2.0",
+        "header": {
+            "template": "blue",
+            "title": {"content": "", "tag": "plain_text"},
+        },
+        "body": {"elements": elements},
+    }
+    return "interactive", json.dumps(card, ensure_ascii=False)
+
+
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -4374,12 +4531,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu interactive cards with table components render native tables
+        # with rounded backgrounds, highlighted headers, and proper spacing.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            result = _build_outbound_payload_for_tables(content)
+            if result:
+                return result
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

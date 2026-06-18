@@ -10,6 +10,7 @@ Uses discord.py library for:
 """
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -73,6 +74,15 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
+
+# Context variable to track whether the current request originated from a slash
+# command.  Set by _run_simple_slash and inherited by any asyncio tasks spawned
+# during slash command processing.  send() / send_exec_approval / etc. read
+# this to decide whether to route through interaction.followup (ephemeral) or
+# channel.send (public).
+_slash_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    '_slash_active', default=False
+)
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -677,10 +687,22 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        self._slash_ephemeral: bool = self.config.extra.get(
+            "slash_ephemeral",
+            os.getenv("DISCORD_SLASH_EPHEMERAL", "true").lower() == "true"
+        )
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Ephemeral slash command routing: chat_id → (interaction, timestamp)
+        # Set by _run_simple_slash for admin commands, consumed by send() and
+        # send_model_picker() to route responses via interaction.followup.send(ephemeral=True)
+        # instead of channel.send().  Entries are auto-evicted on consumption or
+        # after SLASH_INTERACTION_TTL seconds (whichever comes first).
+        self._slash_interactions: Dict[str, tuple] = {}
+        self._suppress_agent_response: set = set()  # chat_ids where agent response is suppressed (followup_msg commands)
+        self._SLASH_INTERACTION_TTL = 120  # seconds
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -1596,6 +1618,36 @@ class DiscordAdapter(BasePlatformAdapter):
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
+
+            # Ephemeral routing: use contextvar to determine if this response
+            # is part of a slash-initiated turn.  The context var is inherited
+            # by background tasks spawned during slash command processing.
+            if _slash_active.get():
+                entry = self._slash_interactions.get(str(chat_id))
+            else:
+                entry = None
+            logger.info("[%s] send: chat_id=%s in_slash=%s in_suppress=%s entry_ttl=%.0fs",
+                        self.name, chat_id,
+                        str(chat_id) in self._slash_interactions,
+                        str(chat_id) in self._suppress_agent_response,
+                        time.monotonic() - entry[1] if entry else -1)
+            if entry:
+                _interaction, _stored_at = entry
+                if time.monotonic() - _stored_at < self._SLASH_INTERACTION_TTL:
+                    # Suppress agent response for commands with followup_msg
+                    # (/reset, /new) — only the followup_msg replacement is shown.
+                    if str(chat_id) in self._suppress_agent_response:
+                        logger.info("[%s] Suppressed agent response for chat %s (followup_msg command)", self.name, chat_id)
+                        self._suppress_agent_response.discard(str(chat_id))
+                        return SendResult(success=True, message_id="suppressed")
+                    formatted = self.format_message(content)
+                    msg = await _interaction.followup.send(
+                        content=formatted, ephemeral=self._slash_ephemeral
+                    )
+                    return SendResult(success=True, message_id=str(msg.id))
+                # TTL expired — clean up and fall through to normal channel.send()
+                self._slash_interactions.pop(str(chat_id), None)
+                self._suppress_agent_response.discard(str(chat_id))
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -3324,9 +3376,36 @@ class DiscordAdapter(BasePlatformAdapter):
         if not await self._check_slash_authorization(interaction, command_text):
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=self._slash_ephemeral)
         event = self._build_slash_event(interaction, command_text)
-        await self.handle_message(event)
+        chat_id = str(event.source.chat_id)
+        # Always store the interaction for ephemeral routing of ALL follow-up
+        # messages (agent responses, approval prompts, model pickers, etc.)
+        # so they never leak into the public channel.
+        self._slash_interactions[chat_id] = (interaction, time.monotonic())
+        logger.info("[%s] slash_interaction stored: chat=%s cmd=%s", self.name, chat_id, command_text)
+        # Commands with a followup_msg (like /reset, /new) have their own
+        # concise message that replaces the thinking indicator — suppress the
+        # agent's verbose response (model/provider/context/tip) so only the
+        # followup_msg is shown to the user.
+        if followup_msg:
+            self._suppress_agent_response.add(chat_id)
+            logger.info("[%s] suppress_agent_response ADD: chat=%s", self.name, chat_id)
+        # Set context var so any asyncio tasks spawned during handle_message
+        # (including background tasks) know this is a slash-initiated turn.
+        # The token is reset after handle_message returns; the background task
+        # keeps its inherited copy of the True state.
+        _token = _slash_active.set(True)
+        try:
+            await self.handle_message(event)
+        finally:
+            _slash_active.reset(_token)
+        # Don't eagerly clean up _slash_interactions — the gateway processes
+        # messages in a background task, so the response may arrive later.
+        # The TTL check handles staleness.  Context var _slash_active is
+        # inherited by the background task, so it stays True there.
+        # _suppress_agent_response is a small set at most a few entries,
+        # cleaned up implicitly by the 120s TTL boundary.
         try:
             if followup_msg:
                 await interaction.edit_original_response(content=followup_msg)
@@ -3375,7 +3454,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         @tree.command(name="status", description="Show Hermes session status")
         async def slash_status(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/status", "Status sent~")
+            await self._run_simple_slash(interaction, "/status")
 
         @tree.command(name="sethome", description="Set this chat as the home channel")
         async def slash_sethome(interaction: discord.Interaction):

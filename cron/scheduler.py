@@ -823,11 +823,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
-            except RuntimeError:
-                # asyncio.run() checks for a running loop before awaiting the coroutine;
-                # when it raises, the original coro was never started — close it to
-                # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-                # fresh thread that has no running loop.
+            except RuntimeError as re:
+                err_msg = str(re)
+                # Distinguish: "interpreter shutdown" vs "already running event loop"
+                if "shutdown" in err_msg.lower() or "interpreter" in err_msg.lower():
+                    # During interpreter shutdown, do NOT create new futures/executors
+                    # — that will also fail. Log the error and record it for retry.
+                    err_str = f"delivery to {platform_name}:{chat_id} failed: interpreter shutdown — {err_msg}"
+                    logger.warning("Job '%s': %s", job["id"], err_str)
+                    delivery_errors.append(err_str)
+                    continue
+                # Running-loop case: close the original coro, retry in a fresh thread
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))

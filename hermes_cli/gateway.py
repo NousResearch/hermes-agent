@@ -2418,6 +2418,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
+        restart_timeout = _systemd_timeout_stop_sec(hermes_home=hermes_home)
         profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
@@ -2466,6 +2467,7 @@ WantedBy=multi-user.target
 """
 
     hermes_home = str(get_hermes_home().resolve())
+    restart_timeout = _systemd_timeout_stop_sec()
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -2499,10 +2501,6 @@ WantedBy=default.target
 """
 
 
-def _normalize_service_definition(text: str) -> str:
-    return "\n".join(line.rstrip() for line in text.strip().splitlines())
-
-
 # Directives that older systemd versions silently ignore/strip.  Normalize
 # them out of stale-check comparisons so a unit that differs only by these
 # directives is not perpetually flagged as outdated.
@@ -2524,6 +2522,32 @@ def _strip_optional_systemd_directives(text: str) -> str:
                 continue
         filtered.append(line)
     return "\n".join(filtered)
+
+
+def _normalize_service_definition(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _normalize_systemd_unit_for_comparison(text: str) -> str:
+    """Normalize systemd unit text for staleness checks.
+
+    The generated PATH intentionally captures environment-dependent user-local,
+    Node, and WSL interop directories so background tools keep working under
+    systemd. That payload can differ between the installing shell (often root
+    via sudo) and a later status check by the target user, so ignore only the
+    PATH value while keeping all other unit fields exact.
+    """
+    import re
+
+    normalized = _normalize_service_definition(
+        _strip_optional_systemd_directives(text)
+    )
+    return re.sub(
+        r'^Environment="PATH=.*"$',
+        'Environment="PATH=__HERMES_PATH__"',
+        normalized,
+        flags=re.M,
+    )
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
@@ -2553,16 +2577,9 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
-    # Normalize out directives that older systemd versions silently drop
-    # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
-    # those directives is not perpetually flagged as outdated.
-    norm_installed = _normalize_service_definition(
-        _strip_optional_systemd_directives(installed)
-    )
-    norm_expected = _normalize_service_definition(
-        _strip_optional_systemd_directives(expected)
-    )
-    return norm_installed == norm_expected
+    normalized_installed = _normalize_systemd_unit_for_comparison(installed)
+    normalized_expected = _normalize_systemd_unit_for_comparison(expected)
+    return normalized_installed == normalized_expected
 
 
 def _temp_home_in_service_definition(definition: str) -> str | None:
@@ -2774,9 +2791,52 @@ def _print_system_scope_remediation(action: str) -> None:
     print_info("         hermes gateway start")
 
 
-def _get_restart_drain_timeout() -> float:
+def _read_restart_drain_timeout_from_hermes_home(hermes_home: str | None) -> str | None:
+    """Read agent.restart_drain_timeout from a specific Hermes home, if present."""
+    if not hermes_home:
+        return None
+    config_path = Path(hermes_home).expanduser() / "config.yaml"
+    try:
+        import yaml
+    except ImportError as exc:
+        logger.debug(
+            "Unable to read restart drain timeout from %s: %s", config_path, exc
+        )
+        return None
+
+    try:
+        with config_path.open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.debug(
+            "Unable to read restart drain timeout from %s: %s", config_path, exc
+        )
+        return None
+    except yaml.YAMLError as exc:
+        logger.debug(
+            "Unable to parse restart drain timeout from %s: %s", config_path, exc
+        )
+        return None
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(agent_cfg, dict) or "restart_drain_timeout" not in agent_cfg:
+        return None
+    return str(agent_cfg.get("restart_drain_timeout"))
+
+
+def _get_restart_drain_timeout(hermes_home: str | None = None) -> float:
     """Return the configured gateway restart drain timeout in seconds."""
     raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
+    if not raw and hermes_home is not None:
+        # For system services installed via sudo, ``hermes_home`` points at the
+        # target user's config. If that config is missing or unreadable, fall
+        # back to the built-in default rather than accidentally reading the
+        # installer/root user's config via read_raw_config().
+        raw = (
+            _read_restart_drain_timeout_from_hermes_home(hermes_home)
+            or str(DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
+        )
     if not raw:
         cfg = read_raw_config()
         agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
@@ -2786,6 +2846,17 @@ def _get_restart_drain_timeout() -> float:
             )
         )
     return parse_restart_drain_timeout(raw)
+
+
+def _systemd_timeout_stop_sec(hermes_home: str | None = None) -> int:
+    # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
+    # there's budget left for post-interrupt cleanup (tool subprocess kill,
+    # adapter disconnect, session DB close) before systemd escalates to
+    # SIGKILL on the cgroup — otherwise bash/sleep tool-call children left
+    # by a force-interrupted agent get reaped by systemd instead of us
+    # (#8202). 30s of headroom covers the worst case we've observed.
+    drain_timeout = int(_get_restart_drain_timeout(hermes_home=hermes_home) or 0)
+    return max(60, drain_timeout) + 30
 
 
 def systemd_install(

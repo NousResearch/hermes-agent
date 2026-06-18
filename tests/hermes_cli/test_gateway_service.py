@@ -419,7 +419,7 @@ class TestGeneratedSystemdUnits:
         monkeypatch.setattr(
             gateway_cli,
             "_get_restart_drain_timeout",
-            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+            lambda hermes_home=None: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
         )
         unit = gateway_cli.generate_systemd_unit(system=False)
 
@@ -480,7 +480,7 @@ class TestGeneratedSystemdUnits:
         monkeypatch.setattr(
             gateway_cli,
             "_get_restart_drain_timeout",
-            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+            lambda hermes_home=None: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
         )
         unit = gateway_cli.generate_systemd_unit(system=True)
 
@@ -493,6 +493,74 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
+
+    def test_system_unit_timeout_uses_target_users_config_when_installed_via_sudo(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "alice"
+        hermes_home = home / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n  restart_drain_timeout: 60\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(home)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_hermes_home_for_target_user",
+            lambda home_dir: str(hermes_home),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_wsl_interop_paths", lambda path_entries: [])
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert "Environment=\"HERMES_HOME=" + str(hermes_home) + "\"" in unit
+        assert "TimeoutStopSec=90" in unit
+
+    def test_systemd_current_comparison_ignores_environment_path_drift(self):
+        installed = '[Service]\nEnvironment="PATH=/old/bin:/usr/bin"\nTimeoutStopSec=90\n'
+        expected = '[Service]\nEnvironment="PATH=/new/bin:/usr/bin"\nTimeoutStopSec=90\n'
+
+        assert (
+            gateway_cli._normalize_systemd_unit_for_comparison(installed)
+            == gateway_cli._normalize_systemd_unit_for_comparison(expected)
+        )
+
+    def test_system_unit_timeout_uses_default_when_target_config_missing(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "alice"
+        hermes_home = home / ".hermes"
+        hermes_home.mkdir(parents=True)
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(home)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_hermes_home_for_target_user",
+            lambda home_dir: str(hermes_home),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_wsl_interop_paths", lambda path_entries: [])
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"agent": {"restart_drain_timeout": 999}},
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert self._expected_timeout_stop_sec() in unit
+        assert "TimeoutStopSec=1029" not in unit
 
 
 class TestGatewayStopCleanup:

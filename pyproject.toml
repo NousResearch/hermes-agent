@@ -180,7 +180,7 @@ pty = [
   # any existing `pip install hermes-agent[pty]` invocations resolve cleanly
   # without pulling in extra packages.
 ]
-honcho = ["honcho-ai==2.0.1"]
+honcho = ["honcho-ai==2.1.1"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the

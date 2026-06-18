@@ -328,6 +328,22 @@ class TestPeerLookupHelpers:
         user_peer.context.assert_called_once_with(target=session.user_peer_id)
         ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
+    def test_dialectic_query_targets_user_peer_when_ai_cannot_observe_others(self):
+        mgr, session = self._make_cached_manager()
+        mgr._ai_observe_others = False
+        user_peer = MagicMock()
+        user_peer.chat.return_value = "user recall"
+        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+
+        result = mgr.dialectic_query(session.key, "what do you know?", peer="user")
+
+        assert result == "user recall"
+        user_peer.chat.assert_called_once_with(
+            "what do you know?",
+            target=session.user_peer_id,
+            reasoning_level="low",
+        )
+
     def test_get_ai_representation_uses_peer_api(self):
         mgr, session = self._make_cached_manager()
         ai_peer = MagicMock()

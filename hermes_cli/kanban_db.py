@@ -145,6 +145,63 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     return DEFAULT_CLAIM_TTL_SECONDS
 
 
+def live_worker_workspace_snapshot(task) -> dict[str, str]:
+    """Return live workspace overrides for a worker task row.
+
+    The dispatcher writes the intended workspace state into the DB, but for the
+    currently running worker we prefer the live checkout on disk as the source
+    of truth. We only expose live metadata for actual worktree tasks so scratch
+    and dir workspaces never get an invented branch name -- EXCEPT for the
+    worker's own currently-running task (``HERMES_KANBAN_TASK`` matches the row
+    id), where the live checkout on disk is authoritative even if the persisted
+    ``workspace_kind`` is stale/scratch. The git-worktree probe below still
+    gates any branch name on the workspace actually being a linked worktree, so
+    a non-worktree active workspace still returns no overrides.
+    """
+    is_active_task = (
+        os.environ.get("HERMES_KANBAN_TASK", "").strip() == getattr(task, "id", None)
+    )
+    if not is_active_task and getattr(task, "workspace_kind", None) != "worktree":
+        return {}
+
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    if not workspace:
+        return {}
+
+    path = Path(workspace).expanduser()
+    git_dir = path / ".git"
+    if not git_dir.is_file():
+        return {}
+    try:
+        if not git_dir.read_text(encoding="utf-8").startswith("gitdir:"):
+            return {}
+    except OSError:
+        return {}
+
+    result = subprocess.run(
+        ["git", "-C", str(path), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    branch_name = (result.stdout or "").strip()
+    if not branch_name:
+        return {}
+
+    try:
+        resolved = str(path.resolve(strict=False))
+    except OSError:
+        resolved = str(path)
+    return {
+        "workspace_kind": "worktree",
+        "workspace_path": resolved,
+        "branch_name": branch_name,
+    }
+
+
 # Grace period after a task transitions to ``running`` during which
 # ``detect_crashed_workers`` skips the ``_pid_alive`` check. Covers the
 # fork() → /proc-visibility window where liveness can transiently report
@@ -541,6 +598,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "worktree_base_ref": None,
         "created_at": None,
         "archived": False,
     }
@@ -568,6 +626,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    worktree_base_ref: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -591,6 +650,8 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if worktree_base_ref is not None:
+        meta["worktree_base_ref"] = str(worktree_base_ref) if worktree_base_ref else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -611,6 +672,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    worktree_base_ref: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -628,6 +690,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        worktree_base_ref=worktree_base_ref,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -749,7 +812,10 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    workspace_base_ref: Optional[str] = None
+    workspace_base_commit: Optional[str] = None
     result: Optional[str] = None
+    delivery_state: Optional[dict[str, Any]] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
@@ -814,6 +880,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        delivery_state_value: Optional[dict[str, Any]] = None
+        if "delivery_state" in keys and row["delivery_state"]:
+            try:
+                parsed_delivery_state = json.loads(row["delivery_state"])
+                if isinstance(parsed_delivery_state, dict):
+                    delivery_state_value = parsed_delivery_state
+            except Exception:
+                delivery_state_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -828,10 +902,17 @@ class Task:
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
+            workspace_base_ref=(
+                row["workspace_base_ref"] if "workspace_base_ref" in keys else None
+            ),
+            workspace_base_commit=(
+                row["workspace_base_commit"] if "workspace_base_commit" in keys else None
+            ),
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
+            delivery_state=delivery_state_value,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
@@ -967,6 +1048,226 @@ class Event:
 
 
 # ---------------------------------------------------------------------------
+# Delivery-state helpers (pilot: machine-checkable software-delivery truth)
+# ---------------------------------------------------------------------------
+
+DELIVERY_REVIEW_GATE_STAGES = {"implementation", "qa"}
+DELIVERY_WORKTREE_PROVENANCE_STAGES = {"implementation", "review", "converge"}
+
+
+def _delivery_ref_path(ref: Optional[dict[str, Any]]) -> Optional[str]:
+    if not isinstance(ref, dict):
+        return None
+    raw = ref.get("path") or ref.get("stored_path")
+    if raw is None:
+        return None
+    path = str(raw).strip()
+    return path or None
+
+
+def delivery_artifact_readable(ref: Optional[dict[str, Any]]) -> bool:
+    """Return True when the delivery artifact ref resolves to a readable file.
+
+    The pilot intentionally treats file readability as first-class delivery
+    truth. Unsupported or incomplete refs stay false rather than pretending
+    delivery is green.
+    """
+
+    path = _delivery_ref_path(ref)
+    if not path:
+        return False
+    try:
+        return Path(path).expanduser().is_file()
+    except OSError:
+        return False
+
+
+def _delivery_workspace_snapshot(task: Task) -> dict[str, Any]:
+    return {
+        "kind": task.workspace_kind,
+        "path": task.workspace_path,
+        "branch_name": task.branch_name,
+        "base_ref": task.workspace_base_ref,
+        "base_commit": task.workspace_base_commit,
+    }
+
+
+def _deep_merge_dicts(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dicts(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def derive_delivery_verdict(snapshot: Optional[dict[str, Any]]) -> tuple[str, str]:
+    """Reduce a structured delivery-state snapshot into a verdict + reason."""
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ("unknown", "delivery_state missing")
+
+    required = [
+        "stage",
+        "workflow_stream_id",
+        "artifact",
+        "workspace",
+        "proof",
+        "review",
+        "merge",
+        "release",
+    ]
+    missing = [key for key in required if snapshot.get(key) is None]
+    if missing:
+        return ("unknown", f"missing delivery_state fields: {', '.join(missing)}")
+
+    stage = str(snapshot.get("stage") or "").strip()
+    if not stage:
+        return ("unknown", "stage missing")
+
+    artifact = snapshot.get("artifact") or {}
+    primary_ref = artifact.get("primary_ref")
+    if primary_ref is None:
+        return ("unknown", "primary artifact missing")
+    if artifact.get("readable") is False:
+        return ("blocked", "primary artifact unreadable")
+
+    proof = snapshot.get("proof") or {}
+    proof_status = str(proof.get("proof_status") or "").strip()
+    if proof_status == "failed":
+        return ("failed", "proof status failed")
+
+    workspace = snapshot.get("workspace") or {}
+    if (
+        stage in DELIVERY_WORKTREE_PROVENANCE_STAGES
+        and workspace.get("kind") == "worktree"
+        and (not workspace.get("branch_name") or not workspace.get("base_ref"))
+    ):
+        return ("unknown", "worktree delivery stage missing branch/base provenance")
+
+    task_status = str(snapshot.get("task_status") or "").strip()
+    if task_status == "blocked":
+        return ("blocked", "task is blocked")
+
+    review = snapshot.get("review") or {}
+    merge = snapshot.get("merge") or {}
+    release = snapshot.get("release") or {}
+    review_status = str(review.get("status") or "").strip()
+    merge_status = str(merge.get("status") or "").strip()
+    release_status = str(release.get("status") or "").strip()
+
+    if release_status == "released":
+        return ("released", "release evidence recorded")
+    if merge_status == "merged" and release_status not in {"released", "not_applicable"}:
+        return ("merged_not_released", "merge verified but release not proven")
+    if stage in DELIVERY_REVIEW_GATE_STAGES and review_status not in {"approved", "not_applicable"}:
+        return ("needs_review", "stage output awaits explicit review")
+    if review_status == "approved" and merge_status not in {"merged", "not_applicable"}:
+        return ("verified_not_merged", "review approved but merge not proven")
+    if task_status in {"running", "ready", "todo", "scheduled"}:
+        return ("in_progress", "delivery evidence still being collected")
+    if task_status == "done":
+        return ("in_progress", "task completed but downstream delivery truth is still partial")
+    return ("unknown", "delivery state incomplete")
+
+
+def _normalize_delivery_state(task: Task, state: dict[str, Any]) -> dict[str, Any]:
+    now = int(time.time())
+    normalized = dict(state)
+    normalized["schema_version"] = int(normalized.get("schema_version") or 1)
+    normalized["task_id"] = task.id
+    normalized["task_status"] = task.status
+    normalized["assignee_profile"] = task.assignee
+
+    workspace = normalized.get("workspace")
+    if isinstance(workspace, dict):
+        normalized["workspace"] = _deep_merge_dicts(_delivery_workspace_snapshot(task), workspace)
+    else:
+        normalized["workspace"] = _delivery_workspace_snapshot(task)
+
+    artifact_raw = normalized.get("artifact")
+    artifact: dict[str, Any] = dict(artifact_raw) if isinstance(artifact_raw, dict) else {}
+    artifact.setdefault("primary_ref", None)
+    refs = artifact.get("refs")
+    artifact["refs"] = list(refs) if isinstance(refs, list) else []
+    artifact["readable"] = delivery_artifact_readable(artifact.get("primary_ref"))
+    artifact["last_checked_at"] = now
+    normalized["artifact"] = artifact
+
+    proof_raw = normalized.get("proof")
+    proof: dict[str, Any] = dict(proof_raw) if isinstance(proof_raw, dict) else {}
+    proof.setdefault("tests_required", {"count": 0, "items": []})
+    proof.setdefault("tests_run", {"count": 0, "items": []})
+    proof.setdefault("tests_passed", {"count": 0, "items": []})
+    proof.setdefault("test_evidence_refs", [])
+    proof.setdefault("proof_status", "not_started")
+    normalized["proof"] = proof
+
+    review_raw = normalized.get("review")
+    review: dict[str, Any] = dict(review_raw) if isinstance(review_raw, dict) else {}
+    review.setdefault("status", "not_requested")
+    review.setdefault("reviewer_identity", None)
+    review.setdefault("evidence_ref", None)
+    normalized["review"] = review
+
+    merge_raw = normalized.get("merge")
+    merge: dict[str, Any] = dict(merge_raw) if isinstance(merge_raw, dict) else {}
+    merge.setdefault("status", "not_applicable")
+    merge.setdefault("target", None)
+    merge.setdefault("commit", None)
+    merge.setdefault("evidence_ref", None)
+    normalized["merge"] = merge
+
+    release_raw = normalized.get("release")
+    release: dict[str, Any] = dict(release_raw) if isinstance(release_raw, dict) else {}
+    release.setdefault("status", "not_applicable")
+    release.setdefault("target", None)
+    release.setdefault("evidence_ref", None)
+    normalized["release"] = release
+
+    normalized["risk_class"] = str(normalized.get("risk_class") or "medium")
+    verdict, reason = derive_delivery_verdict(normalized)
+    normalized["delivery_verdict"] = verdict
+    normalized["delivery_verdict_reason"] = reason
+    normalized["last_verified_at"] = now
+    return normalized
+
+
+def build_delivery_state(
+    task: Task,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    base_state: dict[str, Any] = {
+        "schema_version": 1,
+        "task_id": task.id,
+        "workflow_stream_id": workflow_stream_id,
+        "stage": stage,
+        "task_status": task.status,
+        "assignee_profile": task.assignee,
+        "artifact": {
+            "primary_ref": artifact_ref,
+            "refs": list(artifact_refs) if artifact_refs is not None else [],
+        },
+        "workspace": _delivery_workspace_snapshot(task),
+        "proof": proof or {},
+        "review": review or {},
+        "merge": merge or {},
+        "release": release or {},
+        "risk_class": risk_class,
+    }
+    return _normalize_delivery_state(task, base_state)
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
@@ -985,10 +1286,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    workspace_base_ref   TEXT,
+    workspace_base_commit TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
     result               TEXT,
+    delivery_state       TEXT,
     idempotency_key      TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
@@ -1691,6 +1995,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # creation path that doesn't set the env var (CLI, dashboard).
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
+        )
+
+    if "delivery_state" not in cols:
+        # Canonical task-level machine-readable delivery-truth snapshot for
+        # the structured software-delivery pilot. Existing rows keep NULL
+        # until a bounded backfill or an explicit stage handoff writes one.
+        _add_column_if_missing(
+            conn, "tasks", "delivery_state", "delivery_state TEXT"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -2697,6 +3009,259 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def write_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    state: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    """Persist a normalized task-level delivery-truth snapshot."""
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    normalized = _normalize_delivery_state(task, state)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET delivery_state = ? WHERE id = ?",
+            (json.dumps(normalized, ensure_ascii=False), task_id),
+        )
+        if emit_event:
+            _append_event(
+                conn,
+                task_id,
+                "delivery_state_updated",
+                {
+                    "stage": normalized.get("stage"),
+                    "workflow_stream_id": normalized.get("workflow_stream_id"),
+                    "delivery_verdict": normalized.get("delivery_verdict"),
+                    "delivery_verdict_reason": normalized.get("delivery_verdict_reason"),
+                    "artifact_readable": ((normalized.get("artifact") or {}).get("readable")),
+                },
+                run_id=run_id,
+            )
+    return normalized
+
+
+def init_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    state = build_delivery_state(
+        task,
+        stage=stage,
+        workflow_stream_id=workflow_stream_id,
+        artifact_ref=artifact_ref,
+        artifact_refs=artifact_refs,
+        risk_class=risk_class,
+        proof=proof,
+        review=review,
+        merge=merge,
+        release=release,
+    )
+    return write_delivery_state(conn, task_id, state, run_id=run_id, emit_event=emit_event)
+
+
+def patch_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    patch: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    base = task.delivery_state or {}
+    merged = _deep_merge_dicts(base, patch)
+    return write_delivery_state(conn, task_id, merged, run_id=run_id, emit_event=emit_event)
+
+
+def update_delivery_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    primary_ref: Optional[dict[str, Any]] = None,
+    refs: Optional[Iterable[dict[str, Any]]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    artifact_patch: dict[str, Any] = {}
+    if primary_ref is not None:
+        artifact_patch["primary_ref"] = primary_ref
+    if refs is not None:
+        artifact_patch["refs"] = list(refs)
+    return patch_task_delivery_state(
+        conn,
+        task_id,
+        {"artifact": artifact_patch},
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def update_delivery_proof(
+    conn: sqlite3.Connection,
+    task_id: str,
+    proof: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"proof": proof}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    review: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"review": review}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_merge(
+    conn: sqlite3.Connection,
+    task_id: str,
+    merge: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"merge": merge}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_release(
+    conn: sqlite3.Connection,
+    task_id: str,
+    release: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"release": release}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def write_run_delivery_evidence(
+    conn: sqlite3.Connection,
+    run_id: int,
+    delivery_evidence: dict[str, Any],
+    *,
+    merge: bool = True,
+) -> dict[str, Any]:
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown run {run_id}")
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+    except Exception:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    current = metadata.get("delivery_evidence")
+    if merge and isinstance(current, dict):
+        metadata["delivery_evidence"] = _deep_merge_dicts(current, delivery_evidence)
+    else:
+        metadata["delivery_evidence"] = dict(delivery_evidence)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), run_id),
+        )
+    return metadata
+
+
+def refresh_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Re-normalize an existing delivery-state snapshot against live task truth.
+
+    This keeps fields derived from the task row itself (notably
+    ``task_status`` and workspace provenance) aligned after lifecycle
+    transitions such as complete/block/unblock.
+    """
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    if not isinstance(task.delivery_state, dict) or not task.delivery_state:
+        return None
+    return write_delivery_state(
+        conn,
+        task_id,
+        task.delivery_state,
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def backfill_delivery_states(
+    conn: sqlite3.Connection,
+    task_specs: Iterable[dict[str, Any]],
+    *,
+    emit_events: bool = True,
+) -> list[dict[str, Any]]:
+    """Bounded helper for pilot-chain backfills from verified current data."""
+
+    written: list[dict[str, Any]] = []
+    for spec in task_specs:
+        task_id = str(spec.get("task_id") or "").strip()
+        stage = str(spec.get("stage") or "").strip()
+        workflow_stream_id = str(spec.get("workflow_stream_id") or "").strip()
+        if not task_id or not stage or not workflow_stream_id:
+            raise ValueError("each delivery-state backfill spec needs task_id, stage, and workflow_stream_id")
+        written.append(
+            init_task_delivery_state(
+                conn,
+                task_id,
+                stage=stage,
+                workflow_stream_id=workflow_stream_id,
+                artifact_ref=spec.get("artifact_ref"),
+                artifact_refs=spec.get("artifact_refs"),
+                risk_class=str(spec.get("risk_class") or "medium"),
+                proof=spec.get("proof"),
+                review=spec.get("review"),
+                merge=spec.get("merge"),
+                release=spec.get("release"),
+                run_id=spec.get("run_id"),
+                emit_event=emit_events,
+            )
+        )
+    return written
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3559,6 +4124,86 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionGateError(ValueError):
+    """Raised when a task completion fails the reality-based gate.
+
+    The message is designed for direct tool-error surfacing. Callers
+    may inspect ``.details`` for structured diagnostics.
+    """
+
+    def __init__(self, message: str, *, details: Optional[dict] = None):
+        self.details = dict(details or {})
+        super().__init__(message)
+
+
+def _ci_step_passed(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get("passed"), bool):
+            return bool(value["passed"])
+        if isinstance(value.get("ok"), bool):
+            return bool(value["ok"])
+        if isinstance(value.get("success"), bool):
+            return bool(value["success"])
+        if isinstance(value.get("returncode"), int):
+            return value["returncode"] == 0
+        if isinstance(value.get("exit_code"), int):
+            return value["exit_code"] == 0
+        status = str(value.get("status") or value.get("verdict") or "").strip().casefold()
+        if status:
+            return status in {"pass", "passed", "ok", "success", "green"}
+    return False
+
+
+def _completion_ci_green(metadata: Optional[dict]) -> tuple[bool, str]:
+    if not isinstance(metadata, dict):
+        return False, "completion blocked: worktree tasks must include metadata['ci'] with real CI results"
+
+    ci = metadata.get("ci")
+    if ci is None:
+        return False, "completion blocked: worktree tasks must include metadata['ci'] with real CI results"
+
+    if isinstance(ci, bool):
+        return (
+            ci,
+            "completion blocked: CI verdict was red" if not ci else "",
+        )
+
+    if not isinstance(ci, dict):
+        return False, "completion blocked: metadata['ci'] must be a boolean or object with typecheck/lint/tests verdicts"
+
+    if isinstance(ci.get("passed"), bool):
+        passed = bool(ci["passed"])
+        return (
+            passed,
+            "completion blocked: CI verdict was red" if not passed else "",
+        )
+
+    required = {"typecheck": ci.get("typecheck"), "lint": ci.get("lint"), "tests": ci.get("tests")}
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        return False, (
+            "completion blocked: metadata['ci'] must include verdicts for "
+            + ", ".join(missing)
+        )
+
+    failed = [name for name, value in required.items() if not _ci_step_passed(value)]
+    if failed:
+        return False, (
+            "completion blocked: CI failed for " + ", ".join(failed)
+        )
+
+    return True, ""
+
+
+def _block_completion(conn: sqlite3.Connection, task_id: str, kind: str, message: str, details: dict) -> None:
+    payload = {"message": message, **details}
+    with write_txn(conn):
+        _append_event(conn, task_id, f"completion_blocked_{kind}", payload)
+    raise CompletionGateError(message, details=payload)
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3581,6 +4226,12 @@ def complete_task(
     callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+
+    Worktree tasks are gated on the live git checkout: the branch must be
+    merged into the base ref (``workspace_base_ref`` or ``main``) and the
+    completion metadata must include a green ``metadata['ci']`` verdict
+    for typecheck, lint, and tests. This keeps the gate anchored to the
+    branch reality instead of prose quality.
 
     ``created_cards`` is an optional list of task ids the completing
     worker claims to have created. Each id is verified against
@@ -3625,6 +4276,78 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    task = get_task(conn, task_id)
+    if task is None:
+        return False
+
+    workspace_snapshot = live_worker_workspace_snapshot(task)
+    workspace_kind = workspace_snapshot.get("workspace_kind") or getattr(task, "workspace_kind", None)
+    if workspace_kind == "worktree":
+        workspace_path = workspace_snapshot.get("workspace_path") or getattr(task, "workspace_path", None)
+        branch_name = workspace_snapshot.get("branch_name") or getattr(task, "branch_name", None) or f"wt/{task.id}"
+        if not workspace_path:
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: could not locate the live worktree path for this task",
+                {
+                    "workspace_kind": workspace_kind,
+                    "branch_name": branch_name,
+                },
+            )
+        worktree_path = Path(str(workspace_path)).expanduser()
+        if not _is_linked_worktree_checkout(worktree_path):
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: task workspace is not an inspectable git worktree checkout",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                },
+            )
+        repo_root = _repo_root_for_worktree_target(worktree_path.parent)
+        if repo_root is None:
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: could not determine the git repo for this worktree",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                },
+            )
+        assert repo_root is not None
+        base_ref = (getattr(task, "workspace_base_ref", None) or "main").strip() or "main"
+        if not _git_is_ancestor(repo_root, branch_name, base_ref):
+            _block_completion(
+                conn,
+                task_id,
+                "unmerged_branch",
+                f"completion blocked: branch {branch_name!r} is not merged into {base_ref!r} yet",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                    "base_ref": base_ref,
+                },
+            )
+        ci_ok, ci_message = _completion_ci_green(metadata)
+        if not ci_ok:
+            _block_completion(
+                conn,
+                task_id,
+                "ci_failure",
+                ci_message,
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                    "base_ref": base_ref,
+                },
+            )
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -3708,6 +4431,7 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -4161,7 +4885,8 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
-        return True
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
+    return True
 
 
 
@@ -4288,7 +5013,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
-        return True
+    refresh_task_delivery_state(conn, task_id)
+    return True
 
 
 def specify_triage_task(
@@ -4735,16 +5461,10 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
-        p = Path(task.workspace_path).expanduser()
-        if not p.is_absolute():
-            raise ValueError(
-                f"task {task.id} has non-absolute worktree path "
-                f"{task.workspace_path!r}; use an absolute path"
-            )
-        return p
+        workspace, _branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+            task, board=board
+        )
+        return workspace
     raise ValueError(f"unknown workspace_kind: {kind}")
 
 
@@ -4756,6 +5476,295 @@ def set_workspace_path(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
         )
+
+
+def set_workspace_kind(
+    conn: sqlite3.Connection, task_id: str, workspace_kind: str
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = ? WHERE id = ?",
+            (workspace_kind, task_id),
+        )
+
+
+def set_branch_name(
+    conn: sqlite3.Connection, task_id: str, branch_name: Optional[str]
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET branch_name = ? WHERE id = ?",
+            (branch_name, task_id),
+        )
+
+
+def set_workspace_base(
+    conn: sqlite3.Connection,
+    task_id: str,
+    base_ref: Optional[str],
+    base_commit: Optional[str],
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_base_ref = ?, workspace_base_commit = ? WHERE id = ?",
+            (base_ref, base_commit, task_id),
+        )
+
+
+def _git_ref_commit(path: Path, ref: str) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", ref],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    commit = (result.stdout or "").strip()
+    return commit or None
+
+
+def _git_is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _git_remotes(repo_root: Path) -> set:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "remote"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()}
+
+
+def _resolve_worktree_base_commit(repo_root: Path, base_ref: str) -> str:
+    """Resolve ``base_ref`` to a commit, fetching FIRST only if it is a
+    remote-tracking ref (``<remote>/<branch>`` for a configured remote).
+
+    A local ref (e.g. ``main``) is used as-is and NEVER triggers a network
+    fetch. This is deliberate: for installs whose source of truth is local
+    ``main`` and whose ``origin`` is a public fork the fleet must not contact,
+    the base ref stays ``main`` and no remote is ever touched. Boards that
+    genuinely track a remote can opt into ``origin/main`` via board config.
+    """
+    remote = base_ref.split("/", 1)[0] if "/" in base_ref else None
+    if remote and remote in _git_remotes(repo_root):
+        branch = base_ref.split("/", 1)[1]
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "fetch", remote, branch],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"git fetch {remote} {branch} failed in {repo_root}: {stderr}")
+    commit = _git_ref_commit(repo_root, base_ref)
+    if not commit:
+        raise RuntimeError(f"worktree base ref {base_ref!r} is unavailable in {repo_root}")
+    return commit
+
+
+def _worktree_base_ref(board: Optional[str]) -> str:
+    """The git ref new worktrees branch from. Per-board ``worktree_base_ref``
+    config, defaulting to local ``main`` — workers build on the local default
+    branch (the source of truth for patch-maintained installs), not a remote.
+    """
+    if board is not None:
+        ref = (read_board_metadata(board).get("worktree_base_ref") or "").strip()
+        if ref:
+            return ref
+    return "main"
+
+
+def _board_is_git_backed(board: Optional[str]) -> bool:
+    """True when the board's ``default_workdir`` resolves to a git repo root.
+
+    Git-backed boards run workers in worktrees (branch-based, verifiable
+    handoffs); other boards keep scratch/dir workspaces so research / ops
+    workloads still dispatch (kinds coexist by design — see module header).
+    """
+    if board is None:
+        return False
+    wd = read_board_metadata(board).get("default_workdir")
+    if not wd:
+        return False
+    return _repo_root_for_worktree_target(Path(str(wd)).expanduser()) is not None
+
+
+def _git_toplevel(path: Path) -> Optional[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    top = (result.stdout or "").strip()
+    return Path(top).resolve(strict=False) if top else None
+
+
+def _git_current_branch(path: Path) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    branch = (result.stdout or "").strip()
+    return branch or None
+
+
+def _is_linked_worktree_checkout(path: Path) -> bool:
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        return False
+    try:
+        return git_dir.is_file() and git_dir.read_text(encoding="utf-8").startswith("gitdir:")
+    except OSError:
+        return False
+
+
+def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
+    cur = path.resolve(strict=False)
+    result = subprocess.run(
+        ["git", "-C", str(cur), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode == 0:
+        common_dir = (result.stdout or "").strip()
+        if common_dir:
+            common_path = Path(common_dir)
+            if not common_path.is_absolute():
+                common_path = (cur / common_path).resolve(strict=False)
+            return common_path.parent.resolve(strict=False)
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str, base_ref: str) -> None:
+    base_commit = _resolve_worktree_base_commit(repo_root, base_ref)
+    if target.exists():
+        if _is_linked_worktree_checkout(target):
+            actual_branch = _git_current_branch(target)
+            if actual_branch != branch_name:
+                raise RuntimeError(
+                    f"existing worktree {target} is on branch {actual_branch or '(detached)'} "
+                    f"but expected {branch_name}"
+                )
+            if not _git_is_ancestor(repo_root, base_ref, branch_name):
+                raise RuntimeError(
+                    f"existing branch {branch_name} is not based on fresh {base_ref} {base_commit}"
+                )
+            return
+        raise RuntimeError(f"worktree target {target} already exists but is not a linked git worktree")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _git_ref_commit(repo_root, branch_name):
+        if not _git_is_ancestor(repo_root, base_ref, branch_name):
+            raise RuntimeError(
+                f"existing branch {branch_name} is not based on fresh {base_ref} {base_commit}"
+            )
+        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+    else:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name, str(target), base_ref
+        ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"git worktree add failed for {target} on branch {branch_name}: {stderr}")
+
+
+def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> tuple[Path, str, str, str]:
+    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    base_ref = _worktree_base_ref(board)
+
+    def _finish(target_path: Path, resolved_branch: str, repo_root: Path) -> tuple[Path, str, str, str]:
+        base_commit = _git_ref_commit(repo_root, base_ref)
+        if not base_commit:
+            raise RuntimeError(f"worktree base ref {base_ref!r} is unavailable in {repo_root}")
+        return target_path, resolved_branch, base_ref, base_commit
+
+    if not task.workspace_path:
+        repo_root = None
+        if board is not None:
+            board_meta = read_board_metadata(board)
+            board_default = board_meta.get("default_workdir")
+            if board_default:
+                repo_root = _repo_root_for_worktree_target(Path(str(board_default)).expanduser())
+        if repo_root is None:
+            repo_root = _git_toplevel(Path.cwd())
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but no workspace_path, "
+                "and no git repo could be discovered from the board default_workdir or cwd"
+            )
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref)
+        return _finish(target, branch_name, repo_root)
+
+    requested = Path(task.workspace_path).expanduser()
+    if not requested.is_absolute():
+        raise ValueError(
+            f"task {task.id} has non-absolute worktree path {task.workspace_path!r}; use an absolute path"
+        )
+    requested_resolved = requested.resolve(strict=False)
+    if requested.exists() and _is_linked_worktree_checkout(requested):
+        actual_branch = _git_current_branch(requested)
+        if actual_branch != branch_name:
+            raise ValueError(
+                f"task {task.id} worktree path {task.workspace_path!r} is already on branch {actual_branch or '(detached)'} but expected {branch_name}"
+            )
+        repo_root = _repo_root_for_worktree_target(requested.parent)
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo"
+            )
+        _ensure_git_worktree(repo_root, requested, branch_name, base_ref)
+        return _finish(requested_resolved, actual_branch or branch_name, repo_root)
+    repo_root = _git_toplevel(requested)
+    if repo_root is not None and requested_resolved == repo_root:
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref)
+        return _finish(target, branch_name, repo_root)
+    repo_root = _repo_root_for_worktree_target(requested.parent)
+    if repo_root is None:
+        raise ValueError(
+            f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo and does not point at a git repo root"
+        )
+    _ensure_git_worktree(repo_root, requested, branch_name, base_ref)
+    return _finish(requested_resolved, branch_name, repo_root)
 
 
 # ---------------------------------------------------------------------------
@@ -4912,6 +5921,10 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    route_watchdog_hits: list[tuple[str, str, str]] = field(default_factory=list)
+    """Route-watchdog decisions recorded during dispatch, as
+    ``(task_id, kind, action)`` triples. The watchdog is fail-open; this is
+    telemetry and review signal, not a hard dependency on spawning."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6035,6 +7048,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    route_watchdog: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -6107,6 +7121,71 @@ def dispatch_once(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
             ).fetchone()[0]
         )
+
+    route_watchdog_cfg = None
+    route_watchdog_eval = None
+    route_watchdog_board_meta = None
+    if route_watchdog is not None:
+        try:
+            from hermes_cli.kanban_route_watchdog import evaluate_route as route_watchdog_eval_fn
+            from hermes_cli.kanban_route_watchdog import load_watchdog_config
+
+            route_watchdog_cfg = load_watchdog_config(route_watchdog)
+            if route_watchdog_cfg.enabled:
+                route_watchdog_eval = route_watchdog_eval_fn
+                route_watchdog_board_meta = read_board_metadata(board)
+        except Exception:
+            route_watchdog_cfg = None
+            route_watchdog_eval = None
+            route_watchdog_board_meta = None
+
+    def _apply_route_watchdog(task_id: str) -> bool:
+        """Best-effort route watchdog hook.
+
+        Returns True when the watchdog already held the task and the normal
+        spawn path should stop. Never raises.
+        """
+        if route_watchdog_cfg is None or route_watchdog_eval is None:
+            return False
+        try:
+            task = get_task(conn, task_id)
+            if task is None:
+                return False
+            child_ids = [
+                row["child_id"]
+                for row in conn.execute(
+                    "SELECT child_id FROM task_links WHERE parent_id = ?",
+                    (task_id,),
+                )
+            ]
+            decision = route_watchdog_eval(
+                task,
+                config=route_watchdog_cfg,
+                board_meta=route_watchdog_board_meta,
+                child_ids=child_ids,
+            )
+            if decision is None:
+                return False
+            action = "commented"
+            if not dry_run:
+                try:
+                    add_comment(conn, task_id, "route-watchdog", decision.comment_body())
+                except Exception:
+                    pass
+                if route_watchdog_cfg.mode == "hold":
+                    try:
+                        if block_task(conn, task_id, reason=decision.review_reason()):
+                            action = "blocked"
+                    except Exception:
+                        pass
+            else:
+                action = "would_block" if route_watchdog_cfg.mode == "hold" else "would_comment"
+            result.route_watchdog_hits.append((task_id, decision.kind, action))
+            if dry_run:
+                return route_watchdog_cfg.mode == "hold"
+            return route_watchdog_cfg.mode == "hold" and action == "blocked"
+        except Exception:
+            return False
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
@@ -6221,6 +7300,8 @@ def dispatch_once(
         # subprocess would crash on startup, get reaped as a zombie,
         # the task would loop back to ``ready`` on next tick, and we'd
         # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
+        if _apply_route_watchdog(row["id"]):
+            continue
         try:
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
@@ -6282,8 +7363,26 @@ def dispatch_once(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # Git-backed boards (default_workdir resolves to a repo) run workers in
+        # worktrees for branch-based, verifiable handoffs; a worktree-kind task
+        # always does. Other boards keep scratch/dir so research/ops still runs.
+        # goal_mode roots are coordination loops (they fan out / wake on child
+        # completion) and produce no code of their own, so they stay scratch
+        # even on a git-backed board — otherwise the worktree completion gate
+        # (which requires real CI on a code branch) blocks them forever. An
+        # explicit workspace_kind=worktree still wins for the rare goal card
+        # that genuinely edits code.
+        use_worktree = claimed.workspace_kind == "worktree" or (
+            _board_is_git_backed(board) and not getattr(claimed, "goal_mode", False)
+        )
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            if use_worktree:
+                workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                    claimed, board=board
+                )
+            else:
+                workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _base_ref = _base_commit = None
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6294,7 +7393,13 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        if use_worktree:
+            set_workspace_kind(conn, claimed.id, "worktree")
+            set_branch_name(conn, claimed.id, resolved_branch_name)
+            set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(
+            conn, claimed.id, "worktree" if use_worktree else (claimed.workspace_kind or "scratch")
+        )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -6368,8 +7473,23 @@ def dispatch_once(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # goal_mode roots are coordination loops (they fan out / wake on child
+        # completion) and produce no code of their own, so they stay scratch
+        # even on a git-backed board — otherwise the worktree completion gate
+        # (which requires real CI on a code branch) blocks them forever. An
+        # explicit workspace_kind=worktree still wins for the rare goal card
+        # that genuinely edits code.
+        use_worktree = claimed.workspace_kind == "worktree" or (
+            _board_is_git_backed(board) and not getattr(claimed, "goal_mode", False)
+        )
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            if use_worktree:
+                workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                    claimed, board=board
+                )
+            else:
+                workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _base_ref = _base_commit = None
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6380,7 +7500,13 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        if use_worktree:
+            set_workspace_kind(conn, claimed.id, "worktree")
+            set_branch_name(conn, claimed.id, resolved_branch_name)
+            set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(
+            conn, claimed.id, "worktree" if use_worktree else (claimed.workspace_kind or "scratch")
+        )
         # Force-load sdlc-review skill for review agents.  The
         # _default_spawn function already auto-loads kanban-worker, and
         # appends task.skills via --skills.  Setting task.skills here
@@ -6986,13 +8112,23 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted]"
 
     lines: list[str] = []
+    live_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    workspace_kind = task.workspace_kind
+    workspace_path = task.workspace_path
+    branch_name = task.branch_name
+    if live_workspace:
+        live_path = Path(live_workspace).expanduser()
+        if live_path.exists() and _is_linked_worktree_checkout(live_path):
+            workspace_kind = "worktree"
+            workspace_path = str(live_path)
+            branch_name = _git_current_branch(live_path) or branch_name
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    lines.append(f"Workspace: {workspace_kind} @ {workspace_path or '(unresolved)'}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds,
@@ -7002,13 +8138,22 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
-    if task.branch_name:
-        lines.append(f"Branch:   {task.branch_name}")
+    if branch_name:
+        lines.append(f"Branch:   {branch_name}")
     lines.append("")
 
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
+        lines.append("")
+
+    if task.delivery_state:
+        lines.append("## Delivery state")
+        try:
+            state_text = json.dumps(task.delivery_state, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            state_text = str(task.delivery_state)
+        lines.append(f"`{_cap(state_text)}`")
         lines.append("")
 
     # Attachments — files uploaded to this task (PDFs, source docs,

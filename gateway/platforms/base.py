@@ -1857,6 +1857,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        self._sessions_had_task: set = set()  # tracks sessions that ever had a task
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -3705,16 +3706,30 @@ class BasePlatformAdapter(ABC):
         """Return True if the owner task for ``session_key`` is done/cancelled.
 
         A lock is "stale" when the adapter still has ``_active_sessions[key]``
-        AND a known owner task in ``_session_tasks`` that has already exited.
-        When there is no owner task at all, that usually means the guard was
-        installed by some path other than handle_message() (tests sometimes
-        install guards directly) — don't treat that as stale.  The on-entry
-        self-heal only needs to handle the production split-brain case where
-        an owner task was recorded, then exited without clearing its guard.
+        AND the owner task has already exited — or has already been cleaned
+        from ``_session_tasks`` without releasing the guard (guard mismatch
+        in ``_release_session_guard``).
+
+        When there is no owner task at all but a guard IS present in
+        ``_active_sessions``, we check ``_sessions_had_task`` to determine
+        whether a task was ever registered for this session.  If it was,
+        the task completed and cleaned ``_session_tasks`` but failed to
+        release the guard (guard mismatch) — the lock is stale.  If no
+        task was ever registered, the guard was installed directly (e.g.
+        by tests) and should not be treated as stale.
         """
         task = self._session_tasks.get(session_key)
         if task is None:
-            return False
+            # No owner task recorded.  If there is no guard in
+            # _active_sessions, this is the normal idle state (not stale).
+            if session_key not in self._active_sessions:
+                return False
+            # A guard exists but no task.  Check if a task was ever
+            # registered for this session — if so, the task completed
+            # without releasing its guard and the session is deadlocked.
+            if session_key not in getattr(self, '_sessions_had_task', set()):
+                return False
+            return True
         done = getattr(task, "done", None)
         return bool(done and done())
 
@@ -3764,6 +3779,7 @@ class BasePlatformAdapter(ABC):
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
         self._session_tasks[session_key] = task
+        self._sessions_had_task.add(session_key)
         try:
             self._background_tasks.add(task)
         except TypeError:
@@ -4524,6 +4540,7 @@ class BasePlatformAdapter(ABC):
                 # Hand ownership of the session to the drain task so
                 # stale-lock detection keeps working while it runs.
                 self._session_tasks[session_key] = drain_task
+                self._sessions_had_task.add(session_key)
                 try:
                     self._background_tasks.add(drain_task)
                     drain_task.add_done_callback(self._background_tasks.discard)
@@ -4645,6 +4662,7 @@ class BasePlatformAdapter(ABC):
                     # Hand ownership of the session to the drain task so stale-lock
                     # detection keeps working while it runs.
                     self._session_tasks[session_key] = drain_task
+                    self._sessions_had_task.add(session_key)
                     try:
                         self._background_tasks.add(drain_task)
                         drain_task.add_done_callback(self._background_tasks.discard)

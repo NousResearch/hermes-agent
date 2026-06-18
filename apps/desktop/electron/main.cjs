@@ -5731,6 +5731,40 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
+  // On WSL, Electron's clipboard.readImage() reads from the X11 clipboard,
+  // but WSLg puts images on the Wayland clipboard. Use powershell.exe
+  // (Windows clipboard) as the primary source for reliability.
+  if (isWslEnvironment()) {
+    try {
+      const result = execFileSync(
+        '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Add-Type -AssemblyName System.Windows.Forms;' +
+            'Add-Type -AssemblyName System.Drawing;' +
+            '$img = [System.Windows.Forms.Clipboard]::GetImage();' +
+            'if ($null -eq $img) { exit 1 };' +
+            '$ms = New-Object System.IO.MemoryStream;' +
+            '$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);' +
+            'Write-Output ([System.Convert]::ToBase64String($ms.ToArray()))',
+        ],
+        { timeout: 15000, maxBuffer: 50 * 1024 * 1024 },
+      )
+      // execFileSync on WSL returns the stdout Buffer directly when
+      // the child exits with code 0, not a SpawnSyncReturns object
+      // with a .stdout property.
+      const b64 = (result.stdout ?? result).toString().trim()
+      if (b64) {
+        const pngPath = await writeComposerImage(Buffer.from(b64, 'base64'), '.png')
+        if (pngPath) return pngPath
+      }
+    } catch {
+      // Fall through to Electron's clipboard.readImage()
+    }
+  }
+
   const image = clipboard.readImage()
   if (!image || image.isEmpty()) {
     return ''

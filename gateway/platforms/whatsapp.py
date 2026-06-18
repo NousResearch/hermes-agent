@@ -1015,6 +1015,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         period before dispatching the combined message.
         """
         key = self._text_batch_key(event)
+        if event.is_command():
+            pending_task = self._pending_text_batch_tasks.pop(key, None)
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
+            self._pending_text_batches.pop(key, None)
+            asyncio.create_task(self.handle_message(event))
+            return
+
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
         if existing is None:

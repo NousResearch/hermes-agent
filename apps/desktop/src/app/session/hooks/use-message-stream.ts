@@ -858,6 +858,12 @@ export function useMessageStream({
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
+          // Clear compaction flag when model resumes streaming — compaction
+          // may have finished mid-turn without a fresh message.start event.
+          if (compactedTurnRef.current.has(sessionId)) {
+            setSessionCompacting(sessionId, false)
+            compactedTurnRef.current.delete(sessionId)
+          }
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'thinking.delta') {

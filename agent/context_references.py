@@ -412,7 +412,8 @@ def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:
         cursor = ref.end
     pieces.append(message[cursor:])
     text = "".join(pieces)
-    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"[^\S\n]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     return text.strip()
 

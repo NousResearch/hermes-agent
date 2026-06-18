@@ -684,9 +684,16 @@ def _rmtree_writable(path: Path) -> None:
     # instead of silently destroying the user's install.
     target = Path(path).resolve()
     skills_root = SKILLS_DIR.resolve()
-    if not (target == skills_root or skills_root in target.parents):
+    # Every legitimate caller passes a skill directory or its ``.bak``
+    # sibling — always a strict child of the skills root. The skills root
+    # itself must never be removed: a ``dest`` that collapses to
+    # ``SKILLS_DIR`` (e.g. a relative path resolving to ``.``) would wipe
+    # every installed skill, and its ``.bak`` sibling lands one level up in
+    # ``HERMES_HOME``. Require a strict-child relationship so both escape
+    # into the skills root and out of it are refused.
+    if skills_root not in target.parents:
         raise ValueError(
-            f"refusing to rmtree {target!r}: not under {skills_root!r} "
+            f"refusing to rmtree {target!r}: not strictly under {skills_root!r} "
             f"(scope guard — see #48200)"
         )
     import stat

@@ -237,16 +237,23 @@ class TestRmtreeWritableScopeGuard:
             with pytest.raises(ValueError, match="refusing to rmtree"):
                 _rmtree_writable(not_skills)
 
-    def test_allows_skills_root_itself(self, tmp_path):
-        """The skills root directory IS allowed (used for full reset)."""
+    def test_refuses_skills_root_itself(self, tmp_path):
+        """The skills root directory itself must be refused.
+
+        No caller in skills_sync.py ever passes SKILLS_DIR directly — every
+        site passes a skill subdirectory or its ``.bak`` sibling. Removing
+        the root would wipe every installed skill, and a ``dest`` that
+        collapses to the root is exactly the degenerate path #48200 guards
+        against. Require a strict-child relationship.
+        """
         from tools.skills_sync import _rmtree_writable
 
         skills = tmp_path / "skills"
-        skills.mkdir()
+        (skills / "keep").mkdir(parents=True)
         with patch("tools.skills_sync.SKILLS_DIR", skills):
-            # No exception — rmtree is allowed on the root itself.
-            _rmtree_writable(skills)
-        assert not skills.exists()
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(skills)
+        assert (skills / "keep").exists()  # nothing was wiped
 
     def test_allows_subdirectory_of_skills(self, tmp_path):
         """Any directory strictly under SKILLS_DIR is allowed."""

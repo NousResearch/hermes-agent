@@ -583,25 +583,46 @@ class TestHealthDetailedEndpoint:
 
 class TestModelsEndpoint:
     @pytest.mark.asyncio
-    async def test_models_returns_hermes_agent(self, adapter):
+    async def test_models_returns_alias_and_bounded_models(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/models")
+            with patch.object(
+                adapter,
+                "_get_bounded_model_records",
+                return_value=[
+                    {
+                        "public_model_id": "copilot/gpt-5.4",
+                        "provider": "copilot",
+                        "agent_model": "gpt-5.4",
+                        "runtime_kwargs": {"provider": "copilot"},
+                    },
+                    {
+                        "public_model_id": "anthropic/claude-sonnet-4-5-20250929",
+                        "provider": "anthropic",
+                        "agent_model": "claude-sonnet-4-5-20250929",
+                        "runtime_kwargs": {"provider": "anthropic"},
+                    },
+                ],
+                create=True,
+            ):
+                resp = await cli.get("/v1/models")
             assert resp.status == 200
             data = await resp.json()
             assert data["object"] == "list"
-            assert len(data["data"]) == 1
-            assert data["data"][0]["id"] == "hermes-agent"
-            assert data["data"][0]["owned_by"] == "hermes"
+            model_ids = [item["id"] for item in data["data"]]
+            assert "hermes-agent" in model_ids
+            assert "copilot/gpt-5.4" in model_ids
+            assert "anthropic/claude-sonnet-4-5-20250929" in model_ids
 
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):
-        """When running under a named profile, /v1/models advertises the profile name."""
+        """When running under a named profile, /v1/models keeps the profile alias."""
         with patch("gateway.platforms.api_server.APIServerAdapter._resolve_model_name", return_value="lucas"):
             adapter = _make_adapter()
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/models")
+            with patch.object(adapter, "_get_bounded_model_records", return_value=[], create=True):
+                resp = await cli.get("/v1/models")
             assert resp.status == 200
             data = await resp.json()
             assert data["data"][0]["id"] == "lucas"
@@ -614,6 +635,130 @@ class TestModelsEndpoint:
         config = PlatformConfig(enabled=True, extra=extra)
         adapter = APIServerAdapter(config)
         assert adapter._model_name == "my-custom-agent"
+
+    def test_get_bounded_model_records_collects_primary_fallback_and_explicit_aux_models(self, adapter):
+        config = {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "qwen/qwen3-32b"},
+            ],
+            "auxiliary": {
+                "vision": {"provider": "main", "model": "gpt-4o"},
+                "session_search": {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-5-20250929",
+                },
+                "web_extract": {"provider": "auto", "model": "should-not-appear"},
+                "title_generation": {"provider": "openrouter", "model": ""},
+            },
+        }
+
+        def _resolve_runtime(*, requested=None, explicit_api_key=None, explicit_base_url=None, target_model=None):
+            provider = requested or "custom"
+            return {
+                "provider": provider,
+                "api_key": explicit_api_key or f"{provider}-key",
+                "base_url": explicit_base_url or f"https://{provider}.example.com/v1",
+                "api_mode": "codex_responses" if provider == "copilot" else "chat_completions",
+            }
+
+        with patch(
+            "gateway.run._load_gateway_config",
+            return_value=config,
+        ), patch.object(
+            adapter,
+            "_runtime_model_context",
+            return_value={
+                "provider": "copilot",
+                "default_model": "gpt-5.4",
+                "runtime_kwargs": {
+                    "provider": "copilot",
+                    "api_key": "main-key",
+                    "base_url": "https://api.githubcopilot.com",
+                    "api_mode": "codex_responses",
+                },
+            },
+            create=True,
+        ), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_resolve_runtime,
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            side_effect=AssertionError("bounded discovery must not query live provider catalogs"),
+        ):
+            records = adapter._get_bounded_model_records()
+
+        assert [record["public_model_id"] for record in records] == [
+            "copilot/gpt-5.4",
+            "openrouter/qwen/qwen3-32b",
+            "copilot/gpt-4o",
+            "anthropic/claude-sonnet-4-5-20250929",
+        ]
+
+    def test_resolve_request_model_rejects_unknown_unbounded_model(self, adapter):
+        with patch.object(
+            adapter,
+            "_get_bounded_model_records",
+            return_value=[
+                {
+                    "public_model_id": "copilot/gpt-5.4",
+                    "provider": "copilot",
+                    "agent_model": "gpt-5.4",
+                    "runtime_kwargs": {"provider": "copilot"},
+                }
+            ],
+            create=True,
+        ), patch.object(
+            adapter,
+            "_runtime_model_context",
+            return_value={
+                "provider": "copilot",
+                "default_model": "gpt-5.4",
+                "runtime_kwargs": {"provider": "copilot"},
+            },
+            create=True,
+        ):
+            with pytest.raises(ValueError, match="Unknown or inactive model 'anthropic/claude-sonnet-4-5-20250929'"):
+                adapter._resolve_request_model("anthropic/claude-sonnet-4-5-20250929")
+
+    def test_create_agent_ignores_non_aiagent_runtime_kwargs(self, adapter):
+        runtime_kwargs = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+            "api_mode": "chat_completions",
+            "source": "api_server",
+            "session_source": {"platform": "api_server"},
+            "requested_model": "openrouter/google/gemma-4-26b-a4b-it",
+        }
+
+        with patch("run_agent.AIAgent") as mock_aiagent, patch(
+            "gateway.run._load_gateway_config",
+            return_value={},
+        ), patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value=set(),
+        ), patch.object(
+            adapter,
+            "_runtime_model_context",
+            return_value={
+                "runtime_kwargs": {"provider": "copilot", "api_key": "***"},
+                "default_model": "gpt-5.4",
+            },
+            create=True,
+        ):
+            adapter._create_agent(
+                model="google/gemma-4-26b-a4b-it",
+                runtime_kwargs_override=runtime_kwargs,
+            )
+
+        kwargs = mock_aiagent.call_args.kwargs
+        assert kwargs["model"] == "google/gemma-4-26b-a4b-it"
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["api_mode"] == "chat_completions"
+        assert "source" not in kwargs
+        assert "session_source" not in kwargs
+        assert "requested_model" not in kwargs
 
     def test_resolve_model_name_explicit(self):
         assert APIServerAdapter._resolve_model_name("my-bot") == "my-bot"
@@ -863,7 +1008,7 @@ class TestChatCompletionsEndpoint:
     async def test_missing_messages_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/chat/completions", json={"model": "test"})
+            resp = await cli.post("/v1/chat/completions", json={"model": "hermes-agent"})
             assert resp.status == 400
             data = await resp.json()
             assert "messages" in data["error"]["message"]
@@ -872,7 +1017,7 @@ class TestChatCompletionsEndpoint:
     async def test_empty_messages_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
+            resp = await cli.post("/v1/chat/completions", json={"model": "hermes-agent", "messages": []})
             assert resp.status == 400
 
     @pytest.mark.asyncio
@@ -895,7 +1040,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "hi"}],
                         "stream": True,
                     },
@@ -976,7 +1121,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "hi"}],
                         "stream": True,
                     },
@@ -1015,7 +1160,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "do the thing"}],
                         "stream": True,
                     },
@@ -1061,7 +1206,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "What is the answer?"}],
                         "stream": True,
                     },
@@ -1100,7 +1245,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "list files"}],
                         "stream": True,
                     },
@@ -1159,7 +1304,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "search"}],
                         "stream": True,
                     },
@@ -1222,7 +1367,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "list"}],
                         "stream": True,
                     },
@@ -1290,7 +1435,7 @@ class TestChatCompletionsEndpoint:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "test",
+                        "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "ok"}],
                         "stream": True,
                     },
@@ -1312,7 +1457,7 @@ class TestChatCompletionsEndpoint:
             resp = await cli.post(
                 "/v1/chat/completions",
                 json={
-                    "model": "test",
+                    "model": "hermes-agent",
                     "messages": [{"role": "system", "content": "You are helpful."}],
                 },
             )
@@ -1349,6 +1494,110 @@ class TestChatCompletionsEndpoint:
             assert data["choices"][0]["message"]["content"] == "Hello! How can I help you today?"
             assert data["choices"][0]["finish_reason"] == "stop"
             assert "usage" in data
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_accepts_exposed_real_model_and_routes_it(self, adapter):
+        mock_result = {
+            "final_response": "Hello from routed model",
+            "messages": [],
+            "api_calls": 1,
+        }
+        runtime_kwargs = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "***",
+            "api_mode": "codex_responses",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_resolve_request_model",
+                return_value={
+                    "requested_model": "copilot/gpt-5.4",
+                    "agent_model": "gpt-5.4",
+                    "agent_runtime_kwargs": runtime_kwargs,
+                },
+            ) as mock_resolve, patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "copilot/gpt-5.4",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "copilot/gpt-5.4"
+            assert mock_resolve.call_args.args[0] == "copilot/gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_model"] == "gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_runtime_kwargs"] == runtime_kwargs
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_without_model_uses_default_alias(self, adapter):
+        mock_result = {
+            "final_response": "Hello from default model",
+            "messages": [],
+            "api_calls": 1,
+        }
+        runtime_kwargs = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "***",
+            "api_mode": "codex_responses",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_resolve_request_model",
+                return_value={
+                    "requested_model": "hermes-agent",
+                    "agent_model": "gpt-5.4",
+                    "agent_runtime_kwargs": runtime_kwargs,
+                },
+            ) as mock_resolve, patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "hermes-agent"
+            assert mock_resolve.call_args.args[0] is None
+            assert mock_run.call_args.kwargs["agent_model"] == "gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_runtime_kwargs"] == runtime_kwargs
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_rejects_unknown_model_with_openai_error(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_resolve_request_model",
+                side_effect=ValueError("Model 'bad-model' is not available on this Hermes API server."),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "bad-model",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["type"] == "invalid_request_error"
+            assert data["error"]["param"] == "model"
+            assert "not available" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_system_prompt_extracted(self, adapter):
@@ -1530,7 +1779,7 @@ class TestResponsesEndpoint:
     async def test_missing_input_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/v1/responses", json={"model": "test"})
+            resp = await cli.post("/v1/responses", json={"model": "hermes-agent"})
             assert resp.status == 400
             data = await resp.json()
             assert "input" in data["error"]["message"]
@@ -1576,6 +1825,110 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+    @pytest.mark.asyncio
+    async def test_responses_accepts_exposed_real_model_and_routes_it(self, adapter):
+        mock_result = {
+            "final_response": "Routed via responses model",
+            "messages": [],
+            "api_calls": 1,
+        }
+        runtime_kwargs = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "***",
+            "api_mode": "codex_responses",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_resolve_request_model",
+                return_value={
+                    "requested_model": "copilot/gpt-5.4",
+                    "agent_model": "gpt-5.4",
+                    "agent_runtime_kwargs": runtime_kwargs,
+                },
+            ) as mock_resolve, patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "copilot/gpt-5.4",
+                        "input": "Hello",
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "copilot/gpt-5.4"
+            assert mock_resolve.call_args.args[0] == "copilot/gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_model"] == "gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_runtime_kwargs"] == runtime_kwargs
+
+    @pytest.mark.asyncio
+    async def test_responses_without_model_uses_default_alias(self, adapter):
+        mock_result = {
+            "final_response": "Default responses model",
+            "messages": [],
+            "api_calls": 1,
+        }
+        runtime_kwargs = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "***",
+            "api_mode": "codex_responses",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_resolve_request_model",
+                return_value={
+                    "requested_model": "hermes-agent",
+                    "agent_model": "gpt-5.4",
+                    "agent_runtime_kwargs": runtime_kwargs,
+                },
+            ) as mock_resolve, patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "input": "Hello",
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "hermes-agent"
+            assert mock_resolve.call_args.args[0] is None
+            assert mock_run.call_args.kwargs["agent_model"] == "gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_runtime_kwargs"] == runtime_kwargs
+
+    @pytest.mark.asyncio
+    async def test_responses_rejects_unknown_model_with_openai_error(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_resolve_request_model",
+                side_effect=ValueError("Model 'bad-model' is not available on this Hermes API server."),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "bad-model",
+                        "input": "Hello",
+                    },
+                )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["type"] == "invalid_request_error"
+            assert data["error"]["param"] == "model"
+            assert "not available" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):
@@ -2392,7 +2745,7 @@ class TestEndpointAuth:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 "/v1/chat/completions",
-                json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
             )
             assert resp.status == 401
 
@@ -2402,7 +2755,7 @@ class TestEndpointAuth:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 "/v1/responses",
-                json={"model": "test", "input": "hi"},
+                json={"model": "hermes-agent", "input": "hi"},
             )
             assert resp.status == 401
 

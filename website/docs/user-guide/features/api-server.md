@@ -196,7 +196,7 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
+Returns an OpenAI-style model list containing the backward-compatible alias model (`hermes-agent`, or the active [profile](/user-guide/profiles) name) plus any additional bounded, intentionally configured requestable models. These can include provider-qualified IDs such as `copilot/gpt-5.4` or `anthropic/claude-sonnet-4-5-20250929` when Hermes is explicitly configured to route them. Most frontends call this endpoint for model discovery.
 
 ### GET /v1/capabilities
 
@@ -494,7 +494,7 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
 - **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
-- **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.
+- **Request-time model selection is validated** — clients may request the alias model (`hermes-agent`, or the active profile name) or any provider-qualified model returned by `GET /v1/models`. Unknown or inactive models are rejected with an OpenAI-style error. Hermes only advertises the bounded set it is intentionally configured to route, and the provider prefix determines which runtime credentials/base URL are used for the request.
 
 ## Proxy Mode
 

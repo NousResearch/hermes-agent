@@ -1003,6 +1003,164 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _runtime_model_context(self) -> Dict[str, Any]:
+        """Resolve the active runtime/provider context for API-server requests."""
+        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            default_model = _resolve_gateway_model()
+        except Exception:
+            runtime_kwargs = {}
+            default_model = self._model_name
+        return {
+            "runtime_kwargs": runtime_kwargs,
+            "provider": str(runtime_kwargs.get("provider") or "").strip(),
+            "default_model": default_model,
+        }
+
+    @staticmethod
+    def _dedupe_model_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen: set[str] = set()
+        ordered: List[Dict[str, Any]] = []
+        for record in records:
+            model_id = str(record.get("public_model_id") or "").strip()
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            ordered.append(record)
+        return ordered
+
+    def _config_model_records(self) -> List[Dict[str, Any]]:
+        """Return bounded fallback + explicitly pinned auxiliary models from config.yaml."""
+        from gateway.run import _load_gateway_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        user_config = _load_gateway_config() or {}
+        records: List[Dict[str, Any]] = []
+
+        def _append_record(provider_name: str, model_name: str, *, base_url: str = "", api_key: str = "") -> None:
+            provider_name = str(provider_name or "").strip()
+            model_name = str(model_name or "").strip()
+            if not provider_name or not model_name:
+                return
+            runtime = resolve_runtime_provider(
+                requested=provider_name,
+                explicit_base_url=base_url or None,
+                explicit_api_key=api_key or None,
+                target_model=model_name,
+            )
+            resolved_provider = str(runtime.get("provider") or provider_name).strip()
+            records.append(
+                {
+                    "public_model_id": f"{resolved_provider}/{model_name}",
+                    "provider": resolved_provider,
+                    "agent_model": model_name,
+                    "runtime_kwargs": {
+                        "provider": runtime.get("provider"),
+                        "api_key": runtime.get("api_key"),
+                        "base_url": runtime.get("base_url"),
+                        "api_mode": runtime.get("api_mode"),
+                        "command": runtime.get("command"),
+                        "args": list(runtime.get("args") or []),
+                        "credential_pool": runtime.get("credential_pool"),
+                    },
+                }
+            )
+
+        fallback_entries = user_config.get("fallback_providers") or user_config.get("fallback_model") or []
+        if isinstance(fallback_entries, dict):
+            fallback_entries = [fallback_entries]
+        if isinstance(fallback_entries, list):
+            for entry in fallback_entries:
+                if not isinstance(entry, dict):
+                    continue
+                _append_record(
+                    str(entry.get("provider") or "").strip(),
+                    str(entry.get("model") or "").strip(),
+                    base_url=str(entry.get("base_url") or "").strip(),
+                    api_key=str(entry.get("api_key") or "").strip(),
+                )
+
+        auxiliary = user_config.get("auxiliary") if isinstance(user_config, dict) else {}
+        if isinstance(auxiliary, dict):
+            for task_name, task_cfg in auxiliary.items():
+                if task_name not in {"vision", "web_extract", "session_search", "skills_hub", "mcp", "approval", "title_generation", "compression"}:
+                    continue
+                if not isinstance(task_cfg, dict):
+                    continue
+                provider_name = str(task_cfg.get("provider") or "").strip()
+                model_name = str(task_cfg.get("model") or "").strip()
+                if not model_name or provider_name in {"", "auto"}:
+                    continue
+                if provider_name == "main":
+                    provider_name = str(self._runtime_model_context().get("provider") or "").strip()
+                _append_record(
+                    provider_name,
+                    model_name,
+                    base_url=str(task_cfg.get("base_url") or "").strip(),
+                    api_key=str(task_cfg.get("api_key") or "").strip(),
+                )
+
+        return self._dedupe_model_records(records)
+
+    def _get_bounded_model_records(self) -> List[Dict[str, Any]]:
+        """Return the intentionally bounded set of requestable models."""
+        context = self._runtime_model_context()
+        records: List[Dict[str, Any]] = []
+        provider = str(context.get("provider") or "").strip()
+        default_model = str(context.get("default_model") or "").strip()
+        runtime_kwargs = dict(context.get("runtime_kwargs") or {})
+        if provider and default_model:
+            records.append(
+                {
+                    "public_model_id": f"{provider}/{default_model}",
+                    "provider": provider,
+                    "agent_model": default_model,
+                    "runtime_kwargs": runtime_kwargs,
+                }
+            )
+        records.extend(self._config_model_records())
+        return self._dedupe_model_records(records)
+
+    def _resolve_request_model(self, requested_model: Optional[str]) -> Dict[str, Any]:
+        """Resolve a request model into the concrete runtime model Hermes should use."""
+        requested = str(requested_model or "").strip()
+        context = self._runtime_model_context()
+
+        if not requested or requested == self._model_name or requested == "hermes-agent":
+            return {
+                "requested_model": self._model_name,
+                "agent_model": str(context.get("default_model") or self._model_name).strip(),
+                "agent_runtime_kwargs": dict(context.get("runtime_kwargs") or {}),
+            }
+
+        record_by_public_id = {
+            str(record.get("public_model_id") or "").strip(): record
+            for record in self._get_bounded_model_records()
+        }
+        if requested not in record_by_public_id:
+            raise ValueError(f"Unknown or inactive model '{requested}' for this Hermes API server.")
+
+        record = record_by_public_id[requested]
+        return {
+            "requested_model": requested,
+            "agent_model": str(record.get("agent_model") or requested).strip(),
+            "agent_runtime_kwargs": dict(record.get("runtime_kwargs") or {}),
+        }
+
+    @staticmethod
+    def _model_card(model_id: str, *, owned_by: str = "hermes") -> Dict[str, Any]:
+        return {
+            "id": model_id,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": owned_by,
+            "permission": [],
+            "root": model_id,
+            "parent": None,
+        }
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -1016,29 +1174,40 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        model: Optional[str] = None,
+        runtime_kwargs_override: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
-
-        Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
-        base_url, etc. from config.yaml / env vars.  Toolsets are resolved
-        from config.yaml platform_toolsets.api_server (same as all other
-        gateway platforms), falling back to the hermes-api-server default.
-
-        ``gateway_session_key`` is a stable per-channel identifier supplied
-        by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
-        which scopes the short-term transcript and rotates on /new, this
-        key is meant to persist across transcripts so long-term memory
-        providers (e.g. Honcho) can scope their per-chat state correctly
-        — matching the semantics of the native gateway's ``session_key``.
         """
         from run_agent import AIAgent
-        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
+        from gateway.run import _load_gateway_config, GatewayRunner
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        context = self._runtime_model_context()
+        runtime_kwargs = dict(context.get("runtime_kwargs") or {})
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+
+        if runtime_kwargs_override:
+            runtime_kwargs.update(runtime_kwargs_override)
+
+        allowed_runtime_keys = {
+            "api_key",
+            "base_url",
+            "provider",
+            "api_mode",
+            "command",
+            "args",
+            "credential_pool",
+            "acp_command",
+            "acp_args",
+        }
+        runtime_kwargs = {
+            key: value
+            for key, value in runtime_kwargs.items()
+            if key in allowed_runtime_keys
+        }
+        resolved_model = str(model or context.get("default_model") or self._model_name).strip()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1050,7 +1219,7 @@ class APIServerAdapter(BasePlatformAdapter):
         fallback_model = GatewayRunner._load_fallback_model()
 
         agent = AIAgent(
-            model=model,
+            model=resolved_model,
             **runtime_kwargs,
             max_iterations=max_iterations,
             quiet_mode=True,
@@ -1103,24 +1272,28 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
+        """GET /v1/models — return the alias plus bounded requestable models."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
+        data = [self._model_card(self._model_name)]
+        data.extend(
+            self._model_card(str(record.get("public_model_id") or "").strip(), owned_by=str(record.get("provider") or "hermes"))
+            for record in self._get_bounded_model_records()
+        )
+        deduped: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in data:
+            model_id = str(item.get("id") or "").strip()
+            if not model_id or model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            deduped.append(item)
+
         return web.json_response({
             "object": "list",
-            "data": [
-                {
-                    "id": self._model_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": self._model_name,
-                    "parent": None,
-                }
-            ],
+            "data": deduped,
         })
 
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
@@ -1841,7 +2014,13 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        try:
+            resolved_model = self._resolve_request_model(body.get("model"))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), param="model"), status=400)
+        model_name = resolved_model["requested_model"]
+        agent_model = resolved_model["agent_model"]
+        agent_runtime_kwargs = resolved_model["agent_runtime_kwargs"]
         created = int(time.time())
 
         if stream:
@@ -1921,6 +2100,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                agent_model=agent_model,
+                agent_runtime_kwargs=agent_runtime_kwargs,
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
@@ -1945,6 +2126,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                agent_model=agent_model,
+                agent_runtime_kwargs=agent_runtime_kwargs,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2905,6 +3088,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
 
+        try:
+            resolved_model = self._resolve_request_model(body.get("model"))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), param="model"), status=400)
+        model_name = resolved_model["requested_model"]
+        agent_model = resolved_model["agent_model"]
+        agent_runtime_kwargs = resolved_model["agent_runtime_kwargs"]
+
         stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
@@ -2952,6 +3143,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                agent_model=agent_model,
+                agent_runtime_kwargs=agent_runtime_kwargs,
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
@@ -2964,7 +3157,6 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
-            model_name = body.get("model", self._model_name)
             created_at = int(time.time())
 
             return await self._write_sse_responses(
@@ -2991,6 +3183,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                agent_model=agent_model,
+                agent_runtime_kwargs=agent_runtime_kwargs,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3048,7 +3242,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", self._model_name),
+            "model": model_name,
             "output": output_items,
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
@@ -3495,6 +3689,8 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        agent_model: Optional[str] = None,
+        agent_runtime_kwargs: Optional[Dict[str, Any]] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -3533,6 +3729,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
+                    model=agent_model,
+                    runtime_kwargs_override=agent_runtime_kwargs,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent

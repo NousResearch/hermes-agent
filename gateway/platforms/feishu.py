@@ -1890,26 +1890,23 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
 
             card = {
-                "config": {"wide_screen_mode": True},
+                "schema": "2.0",
                 "header": {
                     "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
                     "template": "orange",
                 },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
-                    },
-                    {
-                        "tag": "action",
-                        "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
-                        ],
-                    },
-                ],
+                "body": {
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        },
+                        _btn("✅ Allow Once", "approve_once", "primary"),
+                        _btn("✅ Session", "approve_session"),
+                        _btn("✅ Always", "approve_always"),
+                        _btn("❌ Deny", "deny", "danger"),
+                    ],
+                },
             }
 
             payload = json.dumps(card, ensure_ascii=False)
@@ -1949,21 +1946,18 @@ class FeishuAdapter(BasePlatformAdapter):
             }
 
         return {
-            "config": {"wide_screen_mode": True},
+            "schema": "2.0",
             "header": {
                 "title": {"content": "⚕ Update Needs Your Input", "tag": "plain_text"},
                 "template": "orange",
             },
-            "elements": [
-                {"tag": "markdown", "content": f"{prompt}{default_hint}"},
-                {
-                    "tag": "action",
-                    "actions": [
-                        _btn("✓ Yes", "y", "primary"),
-                        _btn("✗ No", "n", "danger"),
-                    ],
-                },
-            ],
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": f"{prompt}{default_hint}"},
+                    _btn("✓ Yes", "y", "primary"),
+                    _btn("✗ No", "n", "danger"),
+                ],
+            },
         }
 
     async def send_update_prompt(
@@ -2007,17 +2001,19 @@ class FeishuAdapter(BasePlatformAdapter):
         icon = "❌" if choice == "deny" else "✅"
         label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return {
-            "config": {"wide_screen_mode": True},
+            "schema": "2.0",
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
                 "template": "red" if choice == "deny" else "green",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"{icon} **{label}** by {user_name}",
+                    },
+                ],
+            },
         }
 
     @staticmethod
@@ -2025,14 +2021,16 @@ class FeishuAdapter(BasePlatformAdapter):
         yes = answer == "y"
         label = "Yes" if yes else "No"
         return {
-            "config": {"wide_screen_mode": True},
+            "schema": "2.0",
             "header": {
                 "title": {"content": f"{'✅' if yes else '❌'} Update prompt answered: {label}", "tag": "plain_text"},
                 "template": "green" if yes else "red",
             },
-            "elements": [
-                {"tag": "markdown", "content": f"Answered by **{user_name}**"},
-            ],
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": f"Answered by **{user_name}**"},
+                ],
+            },
         }
 
     @staticmethod

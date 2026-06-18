@@ -116,14 +116,16 @@ class TestFeishuExecApproval:
 
         # Verify card payload contains the command and buttons
         card = json.loads(kwargs["payload"])
+        assert card["schema"] == "2.0"
         assert card["header"]["template"] == "orange"
-        assert "rm -rf /important" in card["elements"][0]["content"]
-        assert "dangerous deletion" in card["elements"][0]["content"]
+        elements = card["body"]["elements"]
+        assert "rm -rf /important" in elements[0]["content"]
+        assert "dangerous deletion" in elements[0]["content"]
 
-        # Check buttons
-        actions = card["elements"][1]["actions"]
-        assert len(actions) == 4
-        action_names = [a["value"]["hermes_action"] for a in actions]
+        # Check buttons (Schema 2.0: buttons are direct elements, not wrapped in action)
+        buttons = [e for e in elements if e.get("tag") == "button"]
+        assert len(buttons) == 4
+        action_names = [b["value"]["hermes_action"] for b in buttons]
         assert action_names == [
             "approve_once", "approve_session", "approve_always", "deny"
         ]
@@ -180,7 +182,7 @@ class TestFeishuExecApproval:
             )
 
         card = json.loads(mock_send.call_args[1]["payload"])
-        content = card["elements"][0]["content"]
+        content = card["body"]["elements"][0]["content"]
         assert "..." in content
         assert len(content) < 5000
 
@@ -244,11 +246,13 @@ class TestFeishuUpdatePrompt:
         assert kwargs["metadata"] == {"thread_id": "th_1"}
 
         card = json.loads(kwargs["payload"])
+        assert card["schema"] == "2.0"
         assert card["header"]["template"] == "orange"
-        assert "Restore stashed changes after update?" in card["elements"][0]["content"]
-        assert "Default: `y`" in card["elements"][0]["content"]
-        actions = card["elements"][1]["actions"]
-        assert [a["value"]["hermes_update_prompt_action"] for a in actions] == ["y", "n"]
+        elements = card["body"]["elements"]
+        assert "Restore stashed changes after update?" in elements[0]["content"]
+        assert "Default: `y`" in elements[0]["content"]
+        buttons = [e for e in elements if e.get("tag") == "button"]
+        assert [b["value"]["hermes_update_prompt_action"] for b in buttons] == ["y", "n"]
 
     @pytest.mark.asyncio
     async def test_stores_prompt_state(self):
@@ -500,7 +504,7 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
-        assert "Bob" in card["elements"][0]["content"]
+        assert "Bob" in card["body"]["elements"][0]["content"]
 
     def test_returns_card_for_deny_action(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -568,7 +572,7 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         card = response.card.data
-        assert "ou_unknown" in card["elements"][0]["content"]
+        assert "ou_unknown" in card["body"]["elements"][0]["content"]
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -590,8 +594,8 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         card = response.card.data
-        assert "Old Name" not in card["elements"][0]["content"]
-        assert "ou_expired" in card["elements"][0]["content"]
+        assert "Old Name" not in card["body"]["elements"][0]["content"]
+        assert "ou_expired" in card["body"]["elements"][0]["content"]
 
     def test_rejects_approval_click_from_unauthorized_user(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -662,7 +666,7 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert card["header"]["template"] == "green"
         assert "answered: Yes" in card["header"]["title"]["content"]
-        assert "Bob" in card["elements"][0]["content"]
+        assert "Bob" in card["body"]["elements"][0]["content"]
 
     def test_returns_card_for_update_prompt_no(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -872,3 +876,113 @@ class TestResolveUpdatePrompt:
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
         assert 10 in adapter._update_prompt_state
+
+# ===========================================================================
+# Schema 2.0 compliance — all cards must use "schema": "2.0" + body.elements
+# ===========================================================================
+
+class TestSchema2Compliance:
+    """Verify all card builders produce Schema 2.0 compliant cards."""
+
+    def test_approval_card_uses_schema_2_0(self):
+        """send_exec_approval card must use schema 2.0 with body.elements."""
+        adapter = _make_adapter()
+        # Access the card by calling send_exec_approval with a mocked send
+        import asyncio
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_schema_1"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            asyncio.get_event_loop().run_until_complete(
+                adapter.send_exec_approval(
+                    chat_id="oc_test", command="ls", session_key="s",
+                )
+            )
+        card = json.loads(mock_send.call_args[1]["payload"])
+        assert card.get("schema") == "2.0"
+        assert "config" not in card
+        assert "body" in card
+        assert "elements" in card["body"]
+        # Buttons must be direct elements, not wrapped in action tag
+        buttons = [e for e in card["body"]["elements"] if e.get("tag") == "button"]
+        assert len(buttons) == 4
+        action_tags = [e for e in card["body"]["elements"] if e.get("tag") == "action"]
+        assert len(action_tags) == 0
+
+    def test_update_prompt_card_uses_schema_2_0(self):
+        """_build_update_prompt_card must use schema 2.0 with body.elements."""
+        card = FeishuAdapter._build_update_prompt_card(
+            prompt="Continue?", default="y", prompt_id=1,
+        )
+        assert card.get("schema") == "2.0"
+        assert "config" not in card
+        assert "body" in card
+        assert "elements" in card["body"]
+        buttons = [e for e in card["body"]["elements"] if e.get("tag") == "button"]
+        assert len(buttons) == 2
+        action_tags = [e for e in card["body"]["elements"] if e.get("tag") == "action"]
+        assert len(action_tags) == 0
+
+    def test_resolved_approval_card_uses_schema_2_0(self):
+        """_build_resolved_approval_card must use schema 2.0 with body.elements."""
+        card = FeishuAdapter._build_resolved_approval_card(
+            choice="approve_once", user_name="Alice",
+        )
+        assert card.get("schema") == "2.0"
+        assert "config" not in card
+        assert "body" in card
+        assert "elements" in card["body"]
+        assert "Alice" in card["body"]["elements"][0]["content"]
+
+    def test_resolved_update_prompt_card_uses_schema_2_0(self):
+        """_build_resolved_update_prompt_card must use schema 2.0 with body.elements."""
+        card = FeishuAdapter._build_resolved_update_prompt_card(
+            answer="y", user_name="Bob",
+        )
+        assert card.get("schema") == "2.0"
+        assert "config" not in card
+        assert "body" in card
+        assert "elements" in card["body"]
+        assert "Bob" in card["body"]["elements"][0]["content"]
+
+    def test_no_wide_screen_mode_in_any_card(self):
+        """No card should contain the deprecated wide_screen_mode config."""
+        # Approval card
+        adapter = _make_adapter()
+        import asyncio
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_ws_1"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            asyncio.get_event_loop().run_until_complete(
+                adapter.send_exec_approval(
+                    chat_id="oc_test", command="ls", session_key="s",
+                )
+            )
+        card = json.loads(mock_send.call_args[1]["payload"])
+        assert "wide_screen_mode" not in json.dumps(card)
+
+        # Update prompt card
+        card2 = FeishuAdapter._build_update_prompt_card(
+            prompt="Test?", default="", prompt_id=1,
+        )
+        assert "wide_screen_mode" not in json.dumps(card2)
+
+        # Resolved cards
+        card3 = FeishuAdapter._build_resolved_approval_card(
+            choice="deny", user_name="Eve",
+        )
+        assert "wide_screen_mode" not in json.dumps(card3)
+
+        card4 = FeishuAdapter._build_resolved_update_prompt_card(
+            answer="n", user_name="Eve",
+        )
+        assert "wide_screen_mode" not in json.dumps(card4)

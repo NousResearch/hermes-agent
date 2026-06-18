@@ -6890,6 +6890,8 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
 
 def test_notification_poller_delivers_completion(monkeypatch):
     """Poller picks up completion events and triggers agent turns."""
+    import queue as _queue_mod
+
     from tools.process_registry import process_registry
 
     turns = []
@@ -6916,16 +6918,23 @@ def test_notification_poller_delivers_completion(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-    # Clear queue
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
+    # Isolate the completion queue for the duration of this test. The poller
+    # reads process_registry.completion_queue by attribute at runtime; the
+    # event below carries no session_key, so any *other* poller (a leaked
+    # daemon thread from another test, or a concurrent one in the same xdist
+    # worker) is allowed to dequeue and dispatch it to its own session — whose
+    # agent may be a fixture double without run_conversation. A fresh Queue
+    # here fully isolates this test; monkeypatch restores the original on
+    # teardown. (Same pattern as test_notification_poller_requeues_when_busy.)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_poller_test")
 
     stop = threading.Event()
 
     # Put event on queue, then immediately signal stop so the poller
     # runs exactly one iteration.
-    process_registry.completion_queue.put({
+    isolated_queue.put({
         "type": "completion",
         "session_id": "proc_poller_test",
         "command": "echo hello",
@@ -6953,6 +6962,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
 def test_notification_poller_skips_consumed(monkeypatch):
     """Already-consumed completions are not dispatched by the poller."""
+    import queue as _queue_mod
+
     from tools.process_registry import process_registry
 
     turns = []
@@ -6975,11 +6986,15 @@ def test_notification_poller_skips_consumed(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
+    # Isolate the completion queue so a concurrent/leaked poller in the same
+    # xdist worker can't dequeue this session_key-less event before our poller
+    # does. monkeypatch restores the shared singleton on teardown. (Same
+    # pattern as test_notification_poller_requeues_when_busy.)
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
 
     process_registry._completion_consumed.add("proc_already_done")
-    process_registry.completion_queue.put({
+    isolated_queue.put({
         "type": "completion",
         "session_id": "proc_already_done",
         "command": "echo x",

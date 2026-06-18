@@ -2,7 +2,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { attachedImageNotice } from '../domain/messages.js'
-import { looksLikeSlashCommand } from '../domain/slash.js'
+import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   InputDetectDropResponse,
@@ -354,14 +354,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (value: string) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
+        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
 
-        if (row?.text) {
-          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
-          const next = value.slice(0, composerState.compReplace) + text
-
-          if (next !== value) {
-            return composerActions.setInput(next)
-          }
+        if (next !== null) {
+          return composerActions.setInput(next)
         }
       }
 

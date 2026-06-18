@@ -4220,6 +4220,7 @@ def run_conversation(
                         )
                         if isinstance(_rc_text, str) and _rc_text.strip():
                             final_response = _rc_text.strip()
+                            _turn_exit_reason = "reasoning_content_promoted"
                             logger.info(
                                 "Promoted reasoning_content to visible "
                                 "content after prefill exhaustion "

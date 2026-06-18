@@ -3659,12 +3659,11 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        # #34452: the bare "(empty)" sentinel is now replaced by a
-        # user-visible end-of-turn explanation so the failure isn't silent.
-        assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
-        assert result["turn_exit_reason"] == "empty_response_exhausted"
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        # #48032: after prefill exhaustion, reasoning_content is promoted
+        # to visible content instead of falling through to "(empty)".
+        assert result["final_response"] == "reasoning only"
+        assert result["turn_exit_reason"] == "reasoning_content_promoted"
+        assert result["api_calls"] == 3  # 1 original + 2 prefill retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
         """Structured reasoning-only triggers prefill (2), then retries (3), then (empty)."""
@@ -3683,10 +3682,11 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        # #34452: explanation replaces the bare "(empty)" sentinel.
-        assert result["final_response"] != "(empty)"
-        assert "No reply:" in result["final_response"]
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        # #48032: after prefill exhaustion, reasoning_content is promoted
+        # to visible content instead of falling through to "(empty)".
+        assert result["final_response"] == "structured reasoning answer"
+        assert result["turn_exit_reason"] == "reasoning_content_promoted"
+        assert result["api_calls"] == 3  # 1 original + 2 prefill retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
         """When prefill continuation produces content, it becomes the final response."""

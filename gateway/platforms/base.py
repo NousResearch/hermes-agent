@@ -5895,7 +5895,26 @@ class BasePlatformAdapter(ABC):
 
             # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
-                chunks.append(prefix + remaining)
+                final_chunk = prefix + remaining
+                # Check fence balance: if carry_lang was set, the chunk
+                # starts with an opening fence.  Walk the remaining text
+                # to see if the code block was closed; if not, close it.
+                _final_in_code = carry_lang is not None
+                _final_lang = carry_lang or ""
+                if _final_in_code:
+                    for _line in remaining.split("\n"):
+                        _stripped = _line.strip()
+                        if _stripped.startswith("```"):
+                            if _final_in_code:
+                                _final_in_code = False
+                                _final_lang = ""
+                            else:
+                                _final_in_code = True
+                                _tag = _stripped[3:].strip()
+                                _final_lang = _tag.split()[0] if _tag else ""
+                    if _final_in_code:
+                        final_chunk += FENCE_CLOSE
+                chunks.append(final_chunk)
                 break
 
             # Find a natural split point (prefer newlines, then spaces).

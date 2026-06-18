@@ -2732,7 +2732,12 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
-            echo "git" > "$HERMES_HOME/.install_method"
+            # Code-scoped stamp: write next to the install tree, not into
+            # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
+            # bind-mounted into a Docker gateway too), so a stamp there gets
+            # clobbered by the container's 'docker' stamp and wrongly blocks
+            # 'hermes update' on this host install. See detect_install_method().
+            echo "git" > "$INSTALL_DIR/.install_method"
             ;;
         *)
             log_error "Unknown stage: $stage"
@@ -2811,7 +2816,12 @@ main() {
 
     print_success
 
-    echo "git" > "$HERMES_HOME/.install_method"
+    # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
+    # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
+    # gateway too), so a stamp there gets clobbered by the container's 'docker'
+    # stamp and wrongly blocks 'hermes update' on this host install.
+    # See detect_install_method().
+    echo "git" > "$INSTALL_DIR/.install_method"
 }
 
 if [ "$MANIFEST_MODE" = true ]; then

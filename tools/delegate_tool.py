@@ -48,7 +48,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "execute_code",  # children should reason step-by-step, not write scripts
     ]
 )
 
@@ -1450,6 +1449,279 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
+def _execute_rollbacks(
+    rollback_items: List[Dict[str, Any]],
+    parent_agent,
+    creds: Dict[str, Any],
+    effective_max_iter: int,
+    parent_tool_names: List[str],
+) -> List[Dict[str, Any]]:
+    """Execute rollback instructions for already-succeeded tasks after batch failure.
+
+    Called only in batch mode (n_tasks > 1) when at least one task failed.
+    Iterates *reversed* successful tasks that have a ``rollback`` field and
+    spawns a lightweight child agent to undo each one.  Failures are caught
+    per-item (best-effort) so that one bad rollback does not block the rest.
+
+    Args:
+        rollback_items: List of dicts with keys ``task_index``, ``goal``,
+            ``rollback`` (instruction string).  Only items whose original
+            task *succeeded* should be passed here.
+        parent_agent: The parent AIAgent (used for credential/model inheritance).
+        creds: Resolved delegation credentials dict.
+        effective_max_iter: The effective max_iterations for child agents.
+        parent_tool_names: Saved ``_last_resolved_tool_names`` to restore after
+            child construction.
+
+    Returns:
+        List of rollback result dicts, one per attempted rollback.
+        Each dict may contain ``_child_cost_usd`` for cost rollup.
+    """
+    if not rollback_items:
+        return []
+
+    import model_tools as _mt
+
+    # Import hook once at function top (avoid re-importing inside the per-item loop).
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+    except Exception:
+        _invoke_hook = None
+
+    rollback_results: List[Dict[str, Any]] = []
+
+    for item in rollback_items:
+        idx = item.get("task_index", -1)
+        goal = item.get("goal", "")
+        instruction = item.get("rollback")
+
+        if not instruction or not isinstance(instruction, str):
+            rollback_results.append({
+                "task_index": idx,
+                "status": "skipped",
+                "error": "No rollback instruction provided.",
+            })
+            continue
+
+        child = None
+        _subagent_id = None  # initialised before try for finally-block access
+        rb_entry: Dict[str, Any] = {"task_index": idx, "status": "error", "error": None}
+        # Heartbeat state for this rollback child — same pattern as _run_single_child.
+        _rb_hb_stop = threading.Event()
+
+        try:
+            # Bug #4 fix: max(1, ...) ensures at least 1 iteration even when
+            # effective_max_iter is 0.
+            child = _build_child_agent(
+                task_index=idx,
+                goal=f"ROLLBACK: {instruction}",
+                context=(
+                    f"This is an automated rollback for task {idx} "
+                    f"(original goal: {goal}). Execute the rollback "
+                    f"instruction precisely and report what was undone."
+                ),
+                toolsets=["terminal", "file"],
+                model=creds["model"],
+                max_iterations=max(1, min(10, effective_max_iter)),
+                task_count=1,
+                parent_agent=parent_agent,
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
+                override_api_key=creds["api_key"],
+                override_api_mode=creds["api_mode"],
+                role="leaf",
+            )
+            child._delegate_saved_tool_names = parent_tool_names
+
+            # --- Bug #3 fix: TUI registration for rollback children ---
+            _raw_sid = getattr(child, "_subagent_id", None)
+            _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
+            if _subagent_id:
+                _raw_depth = getattr(child, "_delegate_depth", 1)
+                _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
+                _parent_sid = getattr(child, "_parent_subagent_id", None)
+                _register_subagent(
+                    {
+                        "subagent_id": _subagent_id,
+                        "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
+                        "depth": _tui_depth,
+                        "goal": f"ROLLBACK: {instruction}",
+                        "model": (
+                            getattr(child, "model", None)
+                            if isinstance(getattr(child, "model", None), str)
+                            else None
+                        ),
+                        "started_at": time.time(),
+                        "status": "running",
+                        "tool_count": 0,
+                        "agent": child,
+                    }
+                )
+
+            # --- Bug #2 fix: heartbeat thread for rollback children ---
+            # Same pattern as _run_single_child (~L1510-1587). Without this,
+            # the gateway inactivity timeout kills the parent while the
+            # rollback child is working.
+            def _rb_heartbeat_loop():
+                while not _rb_hb_stop.wait(_HEARTBEAT_INTERVAL):
+                    if parent_agent is None:
+                        continue
+                    touch = getattr(parent_agent, "_touch_activity", None)
+                    if not touch:
+                        continue
+                    desc = f"delegate_task: rollback subagent {idx} working"
+                    try:
+                        if child is not None:
+                            child_summary = child.get_activity_summary()
+                            child_tool = child_summary.get("current_tool")
+                            child_iter = child_summary.get("api_call_count", 0)
+                            child_max = child_summary.get("max_iterations", 0)
+                            if child_tool:
+                                desc = (
+                                    f"delegate_task: rollback subagent running "
+                                    f"{child_tool} (iteration {child_iter}/{child_max})"
+                                )
+                    except Exception:
+                        pass
+                    try:
+                        touch(desc)
+                    except Exception:
+                        pass
+
+            _rb_hb_thread = threading.Thread(target=_rb_heartbeat_loop, daemon=True)
+            _rb_hb_thread.start()
+
+            # --- Bug #1 fix: wrap run_conversation in ThreadPoolExecutor ---
+            # with timeout so a hung rollback child cannot block the parent
+            # indefinitely.  Reuses the same _get_child_timeout() pattern as
+            # _run_single_child (~L1640).
+            rb_start = time.monotonic()
+            child_timeout = _get_child_timeout()
+            _rb_executor = ThreadPoolExecutor(
+                max_workers=1,
+                initializer=_set_subagent_approval_cb,
+                initargs=(_get_subagent_approval_callback(),),
+            )
+
+            def _rb_run():
+                return child.run_conversation(
+                    user_message=f"ROLLBACK: {instruction}",
+                )
+
+            _rb_future = _rb_executor.submit(_rb_run)
+            try:
+                rb_result = _rb_future.result(timeout=child_timeout)
+            except Exception as _rb_timeout_exc:
+                # Signal the child to stop so its thread can exit cleanly.
+                try:
+                    if hasattr(child, "interrupt"):
+                        child.interrupt()
+                    elif hasattr(child, "_interrupt_requested"):
+                        child._interrupt_requested = True
+                except Exception:
+                    pass
+
+                is_timeout = isinstance(
+                    _rb_timeout_exc, (FuturesTimeoutError, TimeoutError)
+                )
+                rb_duration = round(time.monotonic() - rb_start, 2)
+                logger.warning(
+                    "Rollback subagent %d %s after %.1fs",
+                    idx,
+                    "timed out" if is_timeout else f"raised {type(_rb_timeout_exc).__name__}",
+                    rb_duration,
+                )
+                raise
+            finally:
+                _rb_executor.shutdown(wait=False)
+
+            rb_duration = round(time.monotonic() - rb_start, 2)
+
+            rb_summary = rb_result.get("final_response") or ""
+            rb_completed = rb_result.get("completed", False)
+            rb_status = "completed" if rb_summary and rb_completed else "failed"
+
+            # Extract child cost for rollup into parent session
+            rb_cost = float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
+
+            rb_entry = {
+                "task_index": idx,
+                "status": rb_status,
+                "summary": rb_summary,
+                "duration_seconds": rb_duration,
+                "_child_cost_usd": rb_cost,
+            }
+
+        except Exception as exc:
+            logger.warning(
+                "Rollback for task %d failed: %s", idx, exc, exc_info=True
+            )
+            # Try to extract cost even on failure — child may have billed before crashing
+            if child is not None:
+                try:
+                    rb_entry["_child_cost_usd"] = float(
+                        getattr(child, "session_estimated_cost_usd", 0.0) or 0.0
+                    )
+                except Exception:
+                    pass
+            rb_entry["status"] = "error"
+            rb_entry["error"] = str(exc)
+
+        finally:
+            # Stop heartbeat thread so it doesn't keep touching parent activity
+            _rb_hb_stop.set()
+
+            # Unregister from TUI if we registered
+            if _subagent_id:
+                _unregister_subagent(_subagent_id)
+
+            # Snapshot session_id before close (close may clear attributes in future)
+            _child_sid = getattr(child, "session_id", "") if child is not None else ""
+
+            # Always close child to prevent resource leaks
+            if child is not None and hasattr(child, "close"):
+                try:
+                    child.close()
+                except Exception:
+                    pass
+            # Always restore parent tool names
+            try:
+                _mt._last_resolved_tool_names = list(parent_tool_names)
+            except Exception:
+                pass
+
+            # Notify memory provider and fire subagent_stop hook
+            # (same pattern as the main loop at L2334-2396)
+            if child is not None and parent_agent is not None:
+                # on_delegation
+                if hasattr(parent_agent, "_memory_manager") and parent_agent._memory_manager:
+                    try:
+                        parent_agent._memory_manager.on_delegation(
+                            task=f"ROLLBACK: {instruction}",
+                            result=rb_entry.get("summary", "") or "",
+                            child_session_id=_child_sid,
+                        )
+                    except Exception:
+                        logger.debug("rollback on_delegation failed", exc_info=True)
+                # subagent_stop hook (import moved to function top — bug #5 fix)
+                if _invoke_hook is not None:
+                    try:
+                        _invoke_hook(
+                            "subagent_stop",
+                            parent_session_id=getattr(parent_agent, "session_id", None),
+                            child_role="rollback",
+                            child_summary=rb_entry.get("summary"),
+                            child_status=rb_entry.get("status"),
+                            duration_ms=int((rb_entry.get("duration_seconds") or 0) * 1000),
+                        )
+                    except Exception:
+                        logger.debug("rollback subagent_stop hook failed", exc_info=True)
+
+        rollback_results.append(rb_entry)
+
+    return rollback_results
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -2552,12 +2824,86 @@ def delegate_task(
         except Exception:
             logger.debug("Subagent cost rollup failed", exc_info=True)
 
+    # ── Batch rollback ──────────────────────────────────────────────────
+    # In batch mode (n_tasks > 1), if any task failed, execute rollback
+    # instructions for previously-succeeded tasks (in reverse order).
+    rollback_executed = False
+    rollback_results: List[Dict[str, Any]] = []
+    if n_tasks > 1:
+        has_failure = any(
+            r.get("status") not in ("completed",) for r in results
+        )
+        if has_failure:
+            # Collect successful tasks that have a rollback instruction.
+            # Walk in reverse order so the last success is undone first.
+            succeeded_indices = {
+                r["task_index"]
+                for r in results
+                if r.get("status") == "completed"
+            }
+            rollback_items = []
+            for task_idx in reversed(range(n_tasks)):
+                if task_idx not in succeeded_indices:
+                    continue
+                t = task_list[task_idx]
+                rb_instruction = t.get("rollback")
+                if rb_instruction:
+                    rollback_items.append({
+                        "task_index": task_idx,
+                        "goal": t["goal"],
+                        "rollback": rb_instruction,
+                    })
+            if rollback_items:
+                rollback_executed = True
+                try:
+                    rollback_results = _execute_rollbacks(
+                        rollback_items=rollback_items,
+                        parent_agent=parent_agent,
+                        creds=creds,
+                        effective_max_iter=effective_max_iter,
+                        parent_tool_names=_parent_tool_names,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Batch rollback phase failed: %s", exc, exc_info=True
+                    )
+                    rollback_results = [{
+                        "task_index": -1,
+                        "status": "error",
+                        "error": f"Rollback phase failed: {exc}",
+                    }]
+
+    # ── Rollback cost rollup ──────────────────────────────────────────
+    # Fold rollback agent costs into the parent session (same pattern as
+    # the normal children cost rollup above at L2375-2415).
+    if rollback_results:
+        for rb_entry in rollback_results:
+            rb_cost = rb_entry.pop("_child_cost_usd", 0.0)
+            try:
+                if rb_cost:
+                    _children_cost_total += float(rb_cost)
+            except (TypeError, ValueError):
+                pass
+        # Re-rollup into parent (may update a second time if normal tasks also had cost)
+        if _children_cost_total > 0.0:
+            try:
+                current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
+                parent_agent.session_estimated_cost_usd = current + _children_cost_total
+                if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
+                    parent_agent.session_cost_source = "subagent"
+                if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
+                    parent_agent.session_cost_status = "estimated"
+            except Exception:
+                logger.debug("Rollback cost rollup failed", exc_info=True)
+
     total_duration = round(time.monotonic() - overall_start, 2)
 
     return json.dumps(
         {
             "results": results,
             "total_duration_seconds": total_duration,
+            "rollback_executed": rollback_executed,
+            "rollback_results": rollback_results,
         },
         ensure_ascii=False,
     )
@@ -2852,7 +3198,7 @@ def _build_top_level_description() -> str:
         "- Tasks that would flood your context with intermediate data\n"
         "- Parallel independent workstreams (research A and B simultaneously)\n\n"
         "WHEN NOT TO USE (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
+        "- Complex multi-tool pipelines -> use execute_code (Python scripts)\n"
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
         "- Durable long-running work that must outlive the current turn -> "
@@ -2878,10 +3224,10 @@ def _build_top_level_description() -> str:
         "status) and verify it yourself — fetch the URL, stat the file, read "
         "back the content — before telling the user the operation succeeded.\n"
         "- Leaf subagents (role='leaf', the default) CANNOT call: "
-        "delegate_task, clarify, memory, send_message, execute_code.\n"
+        "delegate_task, clarify, memory, send_message.\n"
         "- Orchestrator subagents (role='orchestrator') retain "
         "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
+        "cannot use clarify, memory, or send_message. "
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"

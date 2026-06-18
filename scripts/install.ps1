@@ -318,6 +318,36 @@ function Install-AgentBrowser {
 # Dependency checks
 # ============================================================================
 
+# Resolve the PowerShell host executable used to spawn child PowerShell
+# processes (the astral uv installer below).  We must NOT hardcode the bare
+# name `powershell`: it names *Windows PowerShell* and only resolves when its
+# System32 directory is on PATH.  When install.ps1 is run under PowerShell 7+
+# (`pwsh`) -- or any session where `powershell` isn't on PATH -- a bare
+# `powershell` spawn dies with "The term 'powershell' is not recognized",
+# aborting uv installation (field report: Windows install stuck, uv install
+# failed with exactly that message).  Prefer the absolute path of the host we
+# are already running in (PATH-independent), then fall back to whichever of
+# powershell/pwsh is resolvable, and only then to the bare name.
+function Get-PowerShellHostExe {
+    try {
+        $hostExe = (Get-Process -Id $PID).Path
+        if ($hostExe -and (Test-Path $hostExe)) {
+            $leaf = Split-Path $hostExe -Leaf
+            # Only trust the current host when it is a real PowerShell CLI
+            # (not e.g. powershell_ise.exe or an embedded host that can't take
+            # `-ExecutionPolicy`/`-Command`).
+            if ($leaf -match '^(?i:powershell|pwsh)\.exe$') { return $hostExe }
+        }
+    } catch { }
+    foreach ($candidate in @("powershell", "pwsh")) {
+        $cmd = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($cmd -and $cmd.Source) { return $cmd.Source }
+    }
+    # Last-ditch: hand back the bare name so the spawn surfaces its own error.
+    return "powershell"
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there —
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -341,7 +371,11 @@ function Install-Uv {
     try {
         $ErrorActionPreference = "Continue"
         $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
-        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
+        # than a bare `powershell`, which isn't guaranteed to be on PATH under
+        # PowerShell 7 / pwsh-only setups.
+        $psHostExe = Get-PowerShellHostExe
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {

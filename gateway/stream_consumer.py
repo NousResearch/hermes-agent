@@ -42,13 +42,7 @@ logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
 _DONE = object()
-
-# Sentinel to signal a tool boundary — finalize current message and start a
-# new one so that subsequent text appears below tool progress messages.
 _NEW_SEGMENT = object()
-
-# Queue marker for a completed assistant commentary message emitted between
-# API/tool iterations (for example: "I'll inspect the repo first.").
 _COMMENTARY = object()
 
 # Queue marker for a synchronous flush barrier.  Enqueued as
@@ -77,6 +71,34 @@ def escape_code_fences_for_display(text: str) -> str:
     if not isinstance(text, str) or "```" not in text:
         return text
     return text.replace("```", "\\`\\`\\`")
+
+
+def ensure_closed_code_fences(text: str) -> str:
+    """Append a closing `` ``` `` fence if the text has an odd number of
+    triple-backtick markers.
+
+    When model output is truncated mid-code-block (e.g. by token limits
+    or a finish_reason="length"), the resulting message has an unclosed
+    code fence.  On Discord, Slack, and other platforms this causes
+    everything after the orphaned fence to render as a single code block.
+
+    The fix is trivial: count `` ``` `` occurrences.  If odd, append a
+    closing fence on its own line.  This is safe because nested
+    triple-backtick fences (e.g. a literal `` ``` `` inside a code block)
+    are exceedingly rare in model output and, when they do appear, the
+    extra closing fence just creates a brief empty code block at the end
+    of the message — far less harmful than the entire message being one
+    giant code block.
+
+    Returns:
+        The input text with a closing fence appended if needed, or the
+        input text unchanged.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    if text.count("```") % 2 == 1:
+        return text.rstrip("\n") + "\n```"
+    return text
 
 
 @dataclass
@@ -1119,6 +1141,10 @@ class GatewayStreamConsumer:
         Retries each chunk once on flood-control failures with a short delay.
         """
         final_text = self._clean_for_display(text)
+        # Ensure balanced code fences before computing continuation,
+        # so the closing fence reaches the user even when the fallback
+        # only delivers the tail after mid-stream edits failed.
+        final_text = ensure_closed_code_fences(final_text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
@@ -1776,6 +1802,12 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # Ensure code fences are balanced before send/edit.  Model output
+        # truncated mid-code-block (e.g. finish_reason="length") leaves an
+        # orphaned ``` which, on Discord/Slack/Matrix, causes the entire
+        # remaining output to render as a single code block.  This covers
+        # the streaming edit path (G2) and first-send path alike.
+        text = ensure_closed_code_fences(text)
         # A bare streaming cursor is not meaningful user-visible content and
         # can render as a stray tofu/white-box message on some clients.
         visible_without_cursor = text

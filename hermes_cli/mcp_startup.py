@@ -52,8 +52,19 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 
 
 def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly wait for background MCP discovery before the first tool snapshot."""
+    """Briefly wait for background MCP discovery before the first tool snapshot.
+
+    Kanban workers (detected via ``HERMES_KANBAN_TASK``) automatically use a
+    longer timeout because they depend on MCP tools for task execution and run
+    in the background where a blocking wait is acceptable.  See #43273.
+    """
+    import os
+
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return
+    # Kanban workers can afford to wait longer — MCP tools are critical
+    # for task execution and the worker is a background subprocess.
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        timeout = max(timeout, 60.0)
     thread.join(timeout=timeout)

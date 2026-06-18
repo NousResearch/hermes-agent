@@ -5016,26 +5016,35 @@ class TestPtyWebSocket:
 
         assert captured["resume"] == "sess-99"
 
+    def _assert_pty_propagates(self, monkeypatch, raising_resolver, *, profile=None, expect_detail=None):
+        """Drive /api/pty with a resolver that raises, and assert the error
+        propagates through the real _resolve_chat_argv_async -> asyncio.to_thread
+        -> lock -> re-raise chain into pty_ws's handler: the "Chat unavailable"
+        notice is sent and the socket closes with code 1011 (the stable
+        contract — we assert the close code, not the exact notice wording)."""
+        from starlette.websockets import WebSocketDisconnect
+
+        # Patch the REAL resolver so the whole wrapper/to_thread/lock chain runs.
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", raising_resolver)
+
+        url = self._url(profile=profile) if profile else self._url()
+        with self.client.websocket_connect(url) as conn:
+            notice = conn.receive_text()
+            with pytest.raises(WebSocketDisconnect) as exc:
+                conn.receive_text()
+        assert "Chat unavailable" in notice
+        assert exc.value.code == 1011
+        if expect_detail is not None:
+            assert expect_detail in notice
+
     def test_pty_ws_propagates_systemexit_through_async_wrapper(self, monkeypatch):
-        """SystemExit from _make_tui_argv (node/npm missing) must propagate
-        through asyncio.to_thread + the async wrapper and be caught by
-        pty_ws's ``except SystemExit`` (closes cleanly, no crash)."""
+        """SystemExit from _make_tui_argv (node/npm missing) propagates through
+        the async wrapper and is caught by pty_ws's ``except SystemExit``."""
 
         def boom(resume=None, sidecar_url=None, profile=None):
             raise SystemExit("node not found")
 
-        # Patch the REAL resolver so the whole _resolve_chat_argv_async ->
-        # to_thread -> lock -> re-raise chain is exercised, not mocked away.
-        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", boom)
-
-        text = ""
-        with self.client.websocket_connect(self._url()) as conn:
-            try:
-                text = conn.receive_text()
-            except Exception:
-                pass
-        # Existing error path emits the "Chat unavailable" notice and closes.
-        assert "Chat unavailable" in text
+        self._assert_pty_propagates(monkeypatch, boom)
 
     def test_pty_ws_propagates_httpexception_through_async_wrapper(self, monkeypatch):
         """An invalid-profile HTTPException raised inside the threaded resolver
@@ -5045,16 +5054,9 @@ class TestPtyWebSocket:
         def bad_profile(resume=None, sidecar_url=None, profile=None):
             raise HTTPException(status_code=404, detail="unknown profile")
 
-        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", bad_profile)
-
-        text = ""
-        with self.client.websocket_connect(self._url(profile="ghost")) as conn:
-            try:
-                text = conn.receive_text()
-            except Exception:
-                pass
-        assert "Chat unavailable" in text
-        assert "unknown profile" in text
+        self._assert_pty_propagates(
+            monkeypatch, bad_profile, profile="ghost", expect_detail="unknown profile"
+        )
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(

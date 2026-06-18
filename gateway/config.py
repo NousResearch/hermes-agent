@@ -983,6 +983,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if plat == Platform.SLACK and "async_routing" in platform_cfg:
+                    bridged["async_routing"] = platform_cfg["async_routing"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):
@@ -1041,6 +1043,12 @@ def load_gateway_config() -> GatewayConfig:
             # Slack settings → env vars (env vars take precedence)
             slack_cfg = yaml_cfg.get("slack", {})
             if isinstance(slack_cfg, dict):
+                if "async_routing" in slack_cfg:
+                    _, _slack_extra = _ensure_platform_extra_dict(
+                        platforms_data,
+                        Platform.SLACK.value,
+                    )
+                    _slack_extra.setdefault("async_routing", slack_cfg["async_routing"])
                 if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
                     os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
                 if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):

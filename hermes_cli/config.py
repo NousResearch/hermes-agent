@@ -2023,6 +2023,25 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        # Keep Slack conversational: quick asks run inline, obvious long asks
+        # acknowledge immediately and continue in the background, and project
+        # work can be promoted into kanban/workers when an assignee is set.
+        "async_routing": {
+            "enabled": True,
+            "foreground_max_iterations": 6,
+            "async_on_budget_exceeded": True,
+            "long_word_threshold": 55,
+            # auto | kanban | background | foreground. auto uses kanban only
+            # when project_assignee/default kanban assignee exists.
+            "project_routing": "auto",
+            "project_assignee": "",
+            "project_workspace": "scratch",
+            "project_board": "",
+            "project_goal": True,
+            "project_goal_max_turns": 12,
+            "project_max_runtime": "2h",
+            "project_skills": [],
+        },
     },
 
     # Discord platform settings (gateway mode)

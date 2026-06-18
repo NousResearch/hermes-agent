@@ -2483,6 +2483,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        # Best-effort duplicate suppression for Slack async handoffs within
+        # this gateway process. Slack event dedup runs in the adapter; this
+        # covers direct runner tests and any future adapter path that reaches
+        # the runner with the same event twice.
+        self._slack_async_handoffs: Dict[str, float] = {}
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -3714,6 +3719,269 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return "all"
         return mode
+
+    @staticmethod
+    def _slack_async_policy_from_config():
+        from gateway.slack_intent import policy_from_config
+
+        return policy_from_config(_load_gateway_config())
+
+    @staticmethod
+    def _slack_prune_handoff_ledger(ledger: Dict[str, float]) -> None:
+        if not ledger:
+            return
+        now = time.time()
+        for key, ts in list(ledger.items()):
+            if now - ts > 3600:
+                ledger.pop(key, None)
+        if len(ledger) > 512:
+            for key in list(ledger)[: len(ledger) - 256]:
+                ledger.pop(key, None)
+
+    def _slack_handoff_key(self, event: MessageEvent, route: str) -> str:
+        source = event.source
+        return "|".join(
+            [
+                "slack",
+                route,
+                str(getattr(source, "chat_id", "") or ""),
+                str(getattr(source, "thread_id", "") or ""),
+                str(getattr(event, "message_id", "") or ""),
+                str(getattr(event, "text", "") or "")[:500],
+            ]
+        )
+
+    async def _start_slack_background_handoff(
+        self,
+        *,
+        event: MessageEvent,
+        prompt: str,
+        ack: str,
+        route: str,
+    ) -> str:
+        """Schedule an isolated Slack background task and return the ack text."""
+        from gateway.slack_intent import stable_slack_handoff_id
+
+        if not hasattr(self, "_slack_async_handoffs"):
+            self._slack_async_handoffs = {}
+        self._slack_prune_handoff_ledger(self._slack_async_handoffs)
+
+        key = self._slack_handoff_key(event, route)
+        source = event.source
+        task_id = stable_slack_handoff_id(
+            route,
+            getattr(source, "chat_id", ""),
+            getattr(source, "thread_id", ""),
+            getattr(event, "message_id", ""),
+            prompt,
+        )
+        if key in self._slack_async_handoffs:
+            return f"{ack}\nTask ID: `{task_id}`"
+
+        self._slack_async_handoffs[key] = time.time()
+        if not hasattr(self, "_background_tasks") or self._background_tasks is None:
+            self._background_tasks = set()
+        _task = asyncio.create_task(
+            self._run_background_task(
+                prompt,
+                source,
+                task_id,
+                event_message_id=self._reply_anchor_for_event(event),
+                media_urls=list(event.media_urls) if event.media_urls else [],
+                media_types=list(event.media_types) if event.media_types else [],
+            )
+        )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+        return f"{ack}\nTask ID: `{task_id}`"
+
+    def _slack_project_kanban_available(self, policy: Any) -> bool:
+        if str(getattr(policy, "project_routing", "auto") or "auto") == "background":
+            return False
+        if str(getattr(policy, "project_routing", "auto") or "auto") == "foreground":
+            return False
+        if not getattr(policy, "project_assignee", ""):
+            return False
+        try:
+            cfg = _load_gateway_config()
+            kanban_cfg = cfg.get("kanban") if isinstance(cfg.get("kanban"), dict) else {}
+            if kanban_cfg.get("dispatch_in_gateway", True) is False:
+                return False
+            from hermes_cli.kanban import run_slash as _run_slash  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    async def _route_slack_project_intent(
+        self,
+        event: MessageEvent,
+        decision: Any,
+        policy: Any,
+    ) -> str:
+        source = event.source
+        try:
+            denied = self._check_slash_access(source, "kanban")
+        except Exception:
+            denied = None
+        if denied is None and self._slack_project_kanban_available(policy):
+            from gateway.slack_intent import build_kanban_create_text
+
+            command_text = build_kanban_create_text(
+                decision=decision,
+                policy=policy,
+                chat_id=str(getattr(source, "chat_id", "") or ""),
+                thread_id=str(getattr(source, "thread_id", "") or ""),
+                message_id=str(getattr(event, "message_id", "") or ""),
+                user_id=str(getattr(source, "user_id", "") or ""),
+            )
+            routed_event = dataclasses.replace(
+                event,
+                text=command_text,
+                message_type=MessageType.COMMAND,
+            )
+            return await self._handle_kanban_command(routed_event)
+
+        fallback_reason = "kanban unavailable"
+        if denied is not None:
+            fallback_reason = "kanban command not allowed"
+        project_mode = str(getattr(policy, "project_routing", "auto") or "auto")
+        if project_mode == "kanban":
+            logger.info(
+                "Slack project intent could not route to kanban (%s): chat=%s thread=%s",
+                fallback_reason,
+                getattr(source, "chat_id", "") or "",
+                getattr(source, "thread_id", "") or "",
+            )
+            return (
+                "I recognized this as project work, but kanban worker routing "
+                f"is not available here ({fallback_reason}). I did not start a "
+                "background fallback because `project_routing` is set to `kanban`."
+            )
+        logger.info(
+            "Slack project intent falling back to background (%s): chat=%s thread=%s",
+            fallback_reason,
+            getattr(source, "chat_id", "") or "",
+            getattr(source, "thread_id", "") or "",
+        )
+        ack = (
+            f"{getattr(policy, 'project_ack_prefix', 'Queued for project work')} "
+            f"(background fallback)."
+        )
+        return await self._start_slack_background_handoff(
+            event=event,
+            prompt=decision.text,
+            ack=ack,
+            route="project-background",
+        )
+
+    async def _maybe_route_slack_async_intent(
+        self,
+        event: MessageEvent,
+    ) -> tuple[Optional[str], Optional[Any], Optional[Any]]:
+        """Return ``(response, decision, policy)`` for Slack async routing."""
+        source = event.source
+        if getattr(source, "platform", None) != Platform.SLACK:
+            return None, None, None
+        if event.message_type == MessageType.COMMAND or event.get_command():
+            return None, None, None
+
+        policy = self._slack_async_policy_from_config()
+        if not getattr(policy, "enabled", True):
+            return None, None, policy
+
+        from gateway.slack_intent import SlackIntentKind, classify_slack_intent
+
+        decision = classify_slack_intent(event.text or "", policy)
+        if decision.text != (event.text or ""):
+            try:
+                event.text = decision.text
+            except Exception:
+                event = dataclasses.replace(event, text=decision.text)
+
+        if decision.kind == SlackIntentKind.LONG_AD_HOC:
+            response = await self._start_slack_background_handoff(
+                event=event,
+                prompt=decision.text,
+                ack=getattr(policy, "ad_hoc_ack", "I'll report back here."),
+                route="ad-hoc",
+            )
+            return response, decision, policy
+
+        if decision.kind == SlackIntentKind.PROJECT_CODE:
+            project_mode = str(getattr(policy, "project_routing", "auto") or "auto")
+            if project_mode == "foreground":
+                return None, decision, policy
+            if project_mode == "background":
+                response = await self._start_slack_background_handoff(
+                    event=event,
+                    prompt=decision.text,
+                    ack=(
+                        f"{getattr(policy, 'project_ack_prefix', 'Queued for project work')} "
+                        "(background)."
+                    ),
+                    route="project-background",
+                )
+                return response, decision, policy
+            response = await self._route_slack_project_intent(event, decision, policy)
+            return response, decision, policy
+
+        return None, decision, policy
+
+    @staticmethod
+    def _slack_foreground_iteration_budget(decision: Any, policy: Any) -> Optional[int]:
+        if decision is None or policy is None:
+            return None
+        try:
+            from gateway.slack_intent import SlackIntentKind
+
+            if decision.kind != SlackIntentKind.QUICK:
+                return None
+        except Exception:
+            return None
+        value = int(getattr(policy, "foreground_max_iterations", 0) or 0)
+        return value if value > 0 else None
+
+    @staticmethod
+    def _slack_budget_exceeded(agent_result: Any, policy: Any) -> bool:
+        if not isinstance(agent_result, dict) or policy is None:
+            return False
+        if not getattr(policy, "async_on_budget_exceeded", True):
+            return False
+        cap = int(getattr(policy, "foreground_max_iterations", 0) or 0)
+        if cap <= 0:
+            return False
+        api_calls = int(agent_result.get("api_calls") or 0)
+        if api_calls < cap:
+            return False
+        response = str(agent_result.get("final_response") or "").lower()
+        if "maximum iterations" in response or "maximum tool-iteration" in response:
+            return True
+        if "iteration/cost budget" in response or "per-turn iteration" in response:
+            return True
+        return bool(agent_result.get("failed")) and not agent_result.get("completed")
+
+    async def _handoff_slack_budget_exceeded(
+        self,
+        event: MessageEvent,
+        agent_result: Dict[str, Any],
+        policy: Any,
+    ) -> str:
+        original = event.text or ""
+        foreground = str(agent_result.get("final_response") or "").strip()
+        prompt = (
+            "Continue and finish this Slack request asynchronously. "
+            "If the foreground attempt already completed part of it, summarize "
+            "that briefly and finish the remaining work.\n\n"
+            f"Original request:\n{original}"
+        )
+        if foreground:
+            prompt += f"\n\nForeground result before handoff:\n{foreground}"
+        return await self._start_slack_background_handoff(
+            event=event,
+            prompt=prompt,
+            ack=getattr(policy, "budget_ack", "I'll continue in the background and report back here."),
+            route="budget",
+        )
 
     @staticmethod
     def _load_provider_routing() -> dict:
@@ -7927,6 +8195,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        _slack_intent_decision = None
+        _slack_async_policy = None
+        if not command:
+            (
+                _slack_route_response,
+                _slack_intent_decision,
+                _slack_async_policy,
+            ) = await self._maybe_route_slack_async_intent(event)
+            if _slack_route_response is not None:
+                return _slack_route_response
+
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
             # topic mode and fires ten prompts doesn't get ten copies.
@@ -7958,9 +8237,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        _slack_foreground_max_iterations = self._slack_foreground_iteration_budget(
+            _slack_intent_decision,
+            _slack_async_policy,
+        )
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_kwargs = {}
+            if _slack_foreground_max_iterations is not None:
+                _agent_kwargs["foreground_max_iterations"] = _slack_foreground_max_iterations
+            _agent_result = await self._handle_message_with_agent(
+                event,
+                source,
+                _quick_key,
+                _run_generation,
+                **_agent_kwargs,
+            )
+            if self._slack_budget_exceeded(_agent_result, _slack_async_policy):
+                return await self._handoff_slack_budget_exceeded(
+                    event,
+                    _agent_result,
+                    _slack_async_policy,
+                )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -8312,7 +8610,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(
+        self,
+        event,
+        source,
+        _quick_key: str,
+        run_generation: int,
+        foreground_max_iterations: Optional[int] = None,
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -9033,6 +9338,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=event.channel_prompt,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                max_iterations_override=foreground_max_iterations,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -13739,6 +14045,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         channel_prompt: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        max_iterations_override: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14581,8 +14888,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
+            # Read from env var or use default (same as CLI).  Slack foreground
+            # routing can pass a lower per-turn cap; keep the lower of the two
+            # so operator-wide limits still win.
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            if max_iterations_override is not None:
+                try:
+                    _override_iters = int(max_iterations_override)
+                except (TypeError, ValueError):
+                    _override_iters = 0
+                if _override_iters > 0:
+                    max_iterations = min(max_iterations, _override_iters)
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -15260,6 +15576,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _srn:
                     message = _srn + "\n\n" + message
 
+            _previous_max_iterations = getattr(agent, "max_iterations", None)
+            if max_iterations > 0:
+                agent.max_iterations = max_iterations
+
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
@@ -15311,6 +15631,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
+                if _previous_max_iterations is not None:
+                    agent.max_iterations = _previous_max_iterations
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,

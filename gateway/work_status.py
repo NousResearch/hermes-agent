@@ -287,7 +287,7 @@ def interpret_status_request(source: str, mode: str) -> str:
     if mode == "Ask":
         if re.search(r"\b(how did|how'd)\b.*\b(implementation|change|fix|patch|deploy|work)\b", lowered):
             return "Summarize implementation outcome"
-        if re.search(r"\b(what'?s left|what remains|remaining|todo|next steps)\b", lowered):
+        if re.search(r"\b(what'?s left|what is left|what remains|remaining|todo|next steps)\b", lowered):
             return "Summarize remaining work"
         if re.search(r"\b(did you|have you|all done|finished|complete)\b", lowered):
             return "Report completion status"
@@ -385,11 +385,18 @@ async def maybe_ai_status_text(config: WorkStatusConfig, event: Any) -> str:
         label = sanitize_status_label(extract_content_or_reasoning(response), max_len=92)
         if not label:
             return fallback
+        mode = infer_status_mode(source, event)
+        interpreted = interpret_status_request(source, mode)
         normal_label = re.sub(r"\W+", "", label).lower()
         normal_source = re.sub(r"\W+", "", source).lower()
-        if normal_label and (normal_label in normal_source or normal_source in normal_label):
-            return fallback
-        return format_status_text(infer_status_mode(source, event), label)
+        normal_interpreted = re.sub(r"\W+", "", interpreted).lower()
+        label_quotes_source = bool(normal_label and (normal_label in normal_source or normal_source in normal_label))
+        label_is_answer_echo = bool(re.match(r"^(answer|respond|reply)\b\s*:?", label, flags=re.I))
+        if label_quotes_source or label_is_answer_echo:
+            return format_status_text(mode, interpreted)
+        if normal_label == normal_interpreted:
+            return format_status_text(mode, interpreted)
+        return format_status_text(mode, label)
     except Exception:
         logger.debug("AI work-status summary failed; using fallback", exc_info=True)
         return fallback

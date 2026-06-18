@@ -11,6 +11,7 @@ from gateway.work_status import (
     fallback_status_text,
     infer_status_mode,
     interpret_status_request,
+    maybe_ai_status_text,
     resolve_work_status_config,
 )
 
@@ -113,8 +114,24 @@ def test_status_mode_replaces_working_prefix_with_request_interpretation():
     assert infer_status_mode("Can you explain what broke?") == "Ask"
     assert interpret_status_request("How did the implementation go", "Ask") == "Summarize implementation outcome"
     assert interpret_status_request("What's left?", "Ask") == "Summarize remaining work"
+    assert interpret_status_request("What is left?", "Ask") == "Summarize remaining work"
     assert infer_status_mode("Plan the migration") == "Plan"
     assert interpret_status_request("Our pinned message is dumb", "Debug") == "Investigate pinned message code"
+
+
+@pytest.mark.asyncio
+async def test_ai_status_does_not_echo_ask_question_with_answer_prefix(monkeypatch):
+    async def fake_call_llm(*args, **kwargs):
+        return {"choices": [{"message": {"content": "Answer: How did the implementation go"}}]}
+
+    def fake_extract(response):
+        return response["choices"][0]["message"]["content"]
+
+    monkeypatch.setattr("agent.auxiliary_client.async_call_llm", fake_call_llm)
+    monkeypatch.setattr("agent.auxiliary_client.extract_content_or_reasoning", fake_extract)
+
+    text = await maybe_ai_status_text(WorkStatusConfig(ai_summary=True), event("How did the implementation go"))
+    assert text == "📌 [Ask] Summarize implementation outcome"
 
 
 @pytest.mark.asyncio

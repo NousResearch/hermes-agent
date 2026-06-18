@@ -4203,10 +4203,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 after=_after_obj,
                 oldest_first=False,
             ):
-                # Stop at our own message — this is the partition point.
-                # Everything before this is already in the session transcript.
-                # (Redundant when _after_obj is set, but needed for cold start.)
+                # In regular channels: stop at our own message — this is the
+                # natural partition point. Everything before it is already
+                # in the session transcript.
+                #
+                # In threads: skip our own messages instead of breaking.
+                # Threads with thread_require_mention=false process every
+                # message, so bot responses sit between user messages.  A
+                # new trigger after a bot response would scan backwards and
+                # immediately break at the bot's last reply, collecting
+                # zero user messages.  After a gateway restart the session
+                # transcript may also be fresh, so the partition rule
+                # cannot assume prior context already exists.
                 if msg.author == self._client.user:
+                    if isinstance(channel, discord.Thread):
+                        continue
                     break
 
                 # Skip system messages (pins, joins, thread renames, etc.)
@@ -5223,6 +5234,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # and response) are not captured — this is an accepted simplification
         # to keep the partition rule clean.
         _channel_context = None
+        # Honor auto-thread context set earlier (see "Auto-thread context" block).
+        if auto_threaded_channel is not None and normalized_content:
+            _author_name = getattr(message.author, "display_name", None) or "User"
+            _channel_context = (
+                f"[Thread started from message]\n[{_author_name}] {normalized_content}"
+            )
         _is_dm = isinstance(message.channel, discord.DMChannel)
         if not _is_dm and self._discord_history_backfill():
             # Run backfill when there's a real gap to fill:

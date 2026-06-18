@@ -652,13 +652,28 @@ def is_api_format(workflow: Any) -> bool:
     return False
 
 
+def _drop_non_node_keys(workflow: dict) -> dict:
+    """Drop top-level entries whose value is not a node object.
+
+    ComfyUI's ``/prompt`` validator treats every top-level key as a node and
+    calls ``.get`` on its value, so a documentation key like
+    ``"_comment": "..."`` (a string) raises ``AttributeError: 'str' object has
+    no attribute 'get'`` and the submission fails with HTTP 500. Real API-format
+    nodes are always JSON objects, so keep only dict-valued entries. Returns the
+    input unchanged when there is nothing to drop (avoids a needless copy).
+    """
+    if all(isinstance(v, dict) for v in workflow.values()):
+        return workflow
+    return {k: v for k, v in workflow.items() if isinstance(v, dict)}
+
+
 def unwrap_workflow(payload: Any) -> dict:
     """Unwrap common wrapper variants. Returns API-format workflow or raises ValueError."""
     if isinstance(payload, dict) and is_api_format(payload):
-        return payload
+        return _drop_non_node_keys(payload)
     # Some files wrap workflow under "prompt" key (e.g. saved /prompt payloads)
     if isinstance(payload, dict) and "prompt" in payload and is_api_format(payload["prompt"]):
-        return payload["prompt"]
+        return _drop_non_node_keys(payload["prompt"])
     # Editor format
     if isinstance(payload, dict) and "nodes" in payload and "links" in payload:
         raise ValueError(

@@ -1,5 +1,4 @@
 {
-  "_comment": "SDXL text-to-image at 1024x1024. Required model: sd_xl_base_1.0.safetensors (or any SDXL checkpoint).",
   "3": {
     "class_type": "KSampler",
     "_meta": {"title": "KSampler"},

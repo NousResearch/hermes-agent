@@ -1,5 +1,4 @@
 {
-  "_comment": "SDXL inpainting: given an image + mask, regenerate the masked region. Upload both: --input-image image=./photo.png --input-image mask_image=./mask.png. White pixels in mask = regenerate; black = preserve.",
   "1": {
     "class_type": "LoadImage",
     "_meta": {"title": "Load Source"},

@@ -1,5 +1,4 @@
 {
-  "_comment": "Standalone 4x upscale of an input image using ESRGAN. Required model: 4x-UltraSharp.pth (or any upscaler in models/upscale_models/). Upload with --input-image image=./photo.png.",
   "1": {
     "class_type": "LoadImage",
     "_meta": {"title": "Load Image"},

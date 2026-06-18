@@ -649,6 +649,26 @@ class DingTalkAdapter(BasePlatformAdapter):
                 session_webhook_expired_time,
             )
 
+            # Persist to disk so external tools (e.g. startup notification hooks)
+            # can send proactive DingTalk messages without an inbound message first.
+            _cache_path = os.path.join(
+                os.environ.get("HERMES_HOME", "/opt/data"),
+                ".hermes",
+                "dingtalk_webhook_cache.json",
+            )
+            try:
+                import json as _json
+                with open(_cache_path, "w") as _f:
+                    _json.dump(
+                        {
+                            "webhook_url": session_webhook,
+                            "expired_time_ms": session_webhook_expired_time,
+                        },
+                        _f,
+                    )
+            except Exception:
+                pass
+
         # Resolve media download codes to URLs so vision tools can use them
         await self._resolve_media_codes(message)
 
@@ -1424,6 +1444,29 @@ class _IncomingHandler(
         attribute 'pre_start'`` and kills the stream connection.
         """
         return
+
+    def raw_process(self, message: "CallbackMessage") -> tuple:
+        """Synchronous entry-point required by some dingtalk-stream SDK versions.
+
+        The SDK calls this method instead of ``process()`` when the
+        ``_STREAM_TYPE`` is ``STREAM`` (raw mode).  It must return an
+        ``AckMessage`` tuple: ``(status_code: int, status_msg: str)``.
+        We simply forward to the async ``process()`` by wrapping it in an
+        event-loop call, which is acceptable for the single-threaded stream
+        dispatcher.
+        """
+        try:
+            loop = self._loop or asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self.process(message), loop
+        )
+        try:
+            return future.result(timeout=30)
+        except Exception:
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "error"
 
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.

@@ -1851,7 +1851,7 @@ def list_authenticated_providers(
             if not raw_name or not api_url:
                 continue
             inline_api_key = (entry.get("api_key") or "").strip()
-            key_env = (entry.get("key_env") or "").strip()
+            key_env = (entry.get("key_env") or entry.get("api_key_env") or "").strip()
             api_key = inline_api_key or (
                 os.environ.get(key_env, "").strip() if key_env else ""
             )

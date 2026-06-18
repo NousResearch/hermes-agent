@@ -541,7 +541,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
             # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
+            key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
             resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
@@ -628,7 +628,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
-        key_env = str(entry.get("key_env", "") or "").strip()
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
         if key_env:
             result["key_env"] = key_env
         if provider_key:
@@ -878,7 +878,7 @@ def _resolve_named_custom_runtime(
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
-        os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
+        os.getenv(str(custom_provider.get("key_env") or custom_provider.get("api_key_env") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
         (os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),

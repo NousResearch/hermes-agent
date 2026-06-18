@@ -4015,7 +4015,7 @@ def _normalize_custom_provider_entry(
     if isinstance(api_key, str) and api_key.strip():
         normalized["api_key"] = api_key.strip()
 
-    key_env = entry.get("key_env")
+    key_env = entry.get("key_env") or entry.get("api_key_env")
     if isinstance(key_env, str) and key_env.strip():
         normalized["key_env"] = key_env.strip()
 

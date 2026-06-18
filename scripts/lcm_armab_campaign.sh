@@ -72,10 +72,12 @@ PYEOF
   echo "[campaign] AC-7 contract OK for $1"
 }
 run_arm_a() {  # $1=N  $2=report
+  local underpowered=""
+  if [ "$1" -lt 180 ]; then underpowered="--allow-underpowered-live"; fi  # staged shakedown only
   $PY scripts/lcm_live_recovery.py --live --session-mode --profile aegis \
     --model claude-haiku-4-5 --n "$1" --lcm-threshold 0.02 \
     --probe-kind "$PROBE_KIND" --filler-turns "$FILLER_TURNS" --filler-tokens 2500 \
-    --lcm-db "$ARMA_DB" --void-redraw --void-rate-max "$VOID_RATE_MAX" \
+    --lcm-db "$ARMA_DB" --void-redraw --void-rate-max "$VOID_RATE_MAX" $underpowered \
     --out "$2"
 }
 

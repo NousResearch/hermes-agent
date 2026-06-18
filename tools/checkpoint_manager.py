@@ -272,6 +272,28 @@ def _git_env(
     return env
 
 
+def _repair_bare_repo_dirs(store: Path) -> None:
+    """Recreate refs/ and branches/ dirs that ``git gc`` may have removed.
+
+    ``git gc --prune=now`` on a bare repo with only packed refs can remove
+    the empty ``refs/heads/`` directory.  Git 2.34+ requires ``refs/`` (and
+    some versions require ``branches/``) to exist even when all refs are
+    packed in ``packed-refs``.  Without them, ``git add -A`` returns
+    ``fatal: not a git repository`` and all checkpoint operations fail
+    silently.
+    """
+    for subdir in ("refs/heads", "branches"):
+        path = store / subdir
+        if not path.exists():
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                logger.debug("Repaired missing %s in checkpoint store", subdir)
+            except OSError as exc:
+                logger.warning(
+                    "Cannot create %s in checkpoint store: %s", subdir, exc,
+                )
+
+
 def _run_git(
     args: List[str],
     store: Path,
@@ -1086,6 +1108,7 @@ class CheckpointManager:
             ["gc", "--prune=now", "--quiet"],
             store, working_dir, timeout=_GIT_TIMEOUT * 3,
         )
+        _repair_bare_repo_dirs(store)
 
     def _enforce_size_cap(self, store: Path) -> None:
         """If total store size exceeds ``max_total_size_mb``, drop oldest
@@ -1173,6 +1196,7 @@ class CheckpointManager:
             ["gc", "--prune=now", "--quiet"],
             store, str(store.parent), timeout=_GIT_TIMEOUT * 3,
         )
+        _repair_bare_repo_dirs(store)
 
 
 def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
@@ -1384,6 +1408,7 @@ def prune_checkpoints(
             ["gc", "--prune=now", "--quiet"],
             store, str(base), timeout=_GIT_TIMEOUT * 3,
         )
+        _repair_bare_repo_dirs(store)
 
         # Size-cap pass across remaining projects.
         if max_total_size_mb > 0:
@@ -1455,6 +1480,7 @@ def prune_checkpoints(
                 ["gc", "--prune=now", "--quiet"],
                 store, str(base), timeout=_GIT_TIMEOUT * 3,
             )
+            _repair_bare_repo_dirs(store)
 
     size_after = _dir_size_bytes(base)
     delta = size_before - size_after

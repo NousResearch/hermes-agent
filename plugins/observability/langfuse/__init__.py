@@ -54,6 +54,15 @@ class TraceState:
 
 _STATE_LOCK = threading.Lock()
 _TRACE_STATE: Dict[str, TraceState] = {}
+# Hard cap on live trace state. Each turn keys _TRACE_STATE by a unique
+# turn_id, and an entry is normally reclaimed by _finish_trace when a turn
+# ends cleanly (final response has content and no tool calls). A turn that
+# never reaches that state — interrupted, a tool-only final step, or empty
+# final content — would otherwise linger forever, so over the cap we evict
+# the least-recently-updated entries (ending their root span first). The cap
+# is far above any realistic concurrent-live-turn working set; it exists only
+# to bound the leak from non-finalizing turns, not to limit concurrency.
+_MAX_TRACE_STATE = 256
 _LANGFUSE_CLIENT = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
@@ -701,6 +710,30 @@ def _merge_trace_output(output: Any, state: TraceState) -> Any:
     return merged
 
 
+def _evict_stale_locked() -> None:
+    """Drop least-recently-updated trace state to make room for a new entry.
+
+    Caller MUST hold ``_STATE_LOCK`` and call this immediately before inserting
+    one new entry. Bounds the leak from turns that never reach ``_finish_trace``
+    (interrupted / tool-only final step / empty final content), whose unique
+    per-turn key would otherwise linger forever. We evict down to
+    ``_MAX_TRACE_STATE - 1`` so that the about-to-be-added entry leaves the dict
+    at ``_MAX_TRACE_STATE`` — a true ceiling. The evicted entry's root span is
+    ended so it is not left dangling on the Langfuse side.
+    """
+    over = len(_TRACE_STATE) - (_MAX_TRACE_STATE - 1)
+    if over <= 0:
+        return
+    # Oldest-first by last_updated_at; evict just enough to make room.
+    stale = sorted(_TRACE_STATE.items(), key=lambda kv: kv[1].last_updated_at)[:over]
+    for key, state in stale:
+        _TRACE_STATE.pop(key, None)
+        try:
+            state.root_span.end()
+        except Exception as exc:  # pragma: no cover - fail-open
+            _debug(f"evict stale trace failed: {exc}")
+
+
 def _finish_trace(task_key: str, *, output: Any = None) -> None:
     client = _get_langfuse()
     if client is None:
@@ -785,6 +818,7 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                 turn_id=turn_id,
                 api_request_id=api_request_id,
             )
+            _evict_stale_locked()
             _TRACE_STATE[task_key] = state
         state.last_updated_at = time.time()
 
@@ -848,6 +882,7 @@ def on_pre_llm_request(
                 turn_id=turn_id,
                 api_request_id=api_request_id,
             )
+            _evict_stale_locked()
             _TRACE_STATE[task_key] = state
         state.last_updated_at = time.time()
         previous = state.generations.pop(req_key, None)

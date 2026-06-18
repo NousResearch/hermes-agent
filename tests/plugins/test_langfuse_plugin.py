@@ -373,6 +373,27 @@ class TestTurnTraceIsolation:
 
         assert k_pre_api == k_post_api == k_post_turn
 
+    def test_non_finalizing_turns_do_not_grow_state_unboundedly(self, monkeypatch):
+        """Per-turn keys mean a turn that never finalizes leaves a lingering
+        entry.  Without a cap that grows once per non-finalizing turn forever;
+        the LRU eviction must bound _TRACE_STATE at _MAX_TRACE_STATE.
+        """
+        mod = self._fresh_plugin()
+        started: list = []
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: self._fake_client(started))
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        monkeypatch.setattr(mod, "_MAX_TRACE_STATE", 8)
+        mod._TRACE_STATE.clear()
+
+        # Far more non-finalizing turns than the cap.
+        for n in range(50):
+            self._run_turn(mod, session="sess-leak", turn_n=n, finalize=False)
+
+        assert len(mod._TRACE_STATE) <= 8
+        # The survivors are the most-recently-updated turns (LRU eviction).
+        surviving = sorted(int(k.rsplit("turn", 1)[1]) for k in mod._TRACE_STATE)
+        assert surviving == list(range(42, 50))
+
     def test_trace_key_strings_unchanged_by_refactor(self):
         """Pin the exact key strings across all task/session/turn/api
         combinations so the _scope_prefix extraction can never silently change

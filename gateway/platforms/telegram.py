@@ -914,6 +914,25 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
+    def _polling_kwargs(self) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {}
+
+        timeout = os.getenv("HERMES_TELEGRAM_POLL_TIMEOUT")
+        if timeout is not None:
+            try:
+                kwargs["timeout"] = max(1, min(int(timeout), 60))
+            except ValueError:
+                kwargs["timeout"] = 1
+
+        interval = os.getenv("HERMES_TELEGRAM_POLL_INTERVAL")
+        if interval is not None:
+            try:
+                kwargs["poll_interval"] = max(0.0, min(float(interval), 60.0))
+            except ValueError:
+                kwargs["poll_interval"] = 1.0
+
+        return kwargs
+
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
             return {}
@@ -1467,6 +1486,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
+                **self._polling_kwargs(),
             )
             logger.info(
                 "[%s] Telegram polling resumed after network error (attempt %d)",
@@ -1594,6 +1614,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
+                    **self._polling_kwargs(),
                 )
                 logger.info(
                     "[%s] Telegram polling resumed after conflict retry %d/%d",
@@ -2029,6 +2050,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 except (TypeError, ValueError):
                     return default
 
+            import httpx
+
             request_kwargs = {
                 "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
                 "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
@@ -2063,17 +2086,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(fallback_ips),
+                        "limits": httpx.Limits(
+                            max_keepalive_connections=0,
+                            max_connections=request_kwargs["connection_pool_size"],
+                        ),
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
                 request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs={
+                        "limits": httpx.Limits(
+                            max_keepalive_connections=0,
+                            max_connections=request_kwargs["connection_pool_size"],
+                        ),
+                    },
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
                 request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={
+                        "limits": httpx.Limits(
+                            max_keepalive_connections=0,
+                            max_connections=request_kwargs["connection_pool_size"],
+                        ),
+                    },
+                )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
@@ -2196,6 +2242,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
+                    **self._polling_kwargs(),
                 )
             
             # Register bot commands so Telegram shows a hint menu when users type /

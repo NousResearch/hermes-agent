@@ -2,7 +2,6 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
-import { setProcessNotificationsMode } from '@/store/process-notifications'
 import {
   $currentCwd,
   setAvailablePersonalities,

@@ -17642,6 +17642,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
+    try:
+        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+
+        start_nous_auth_keepalive()
+    except Exception as exc:
+        logger.debug("Nous auth keepalive did not start: %s", exc)
+
     _ensure_windows_gateway_venv_imports()
 
     # MCP tool discovery — run in an executor so the asyncio event loop
@@ -17697,6 +17704,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
+
+    try:
+        from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
+
+        stop_nous_auth_keepalive()
+    except Exception:
+        pass
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:

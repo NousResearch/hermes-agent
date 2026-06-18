@@ -163,6 +163,200 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_runtime_guard_disabled_allows_send_message_policy(self):
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_runtime_guard_enabled_blocks_scoped_send_message_before_platform_send(self):
+        telegram_cfg = SimpleNamespace(
+            enabled=True,
+            token_value="redacted-test-token",
+            extra={
+                "runtime_guard": {
+                    "enabled": True,
+                    "dry_run": False,
+                    "scope": {
+                        "platforms": ["telegram"],
+                        "chat_ids": ["-1001"],
+                    },
+                },
+            },
+        )
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001",
+                        "message": "blocked before send",
+                    }
+                )
+            )
+
+        assert result["blocked"] is True
+        assert result["surface"] == "send_message_tool"
+        assert result["reason"] == "surface_policy_block"
+        assert "Runtime guard blocked" in result["error"]
+        send_mock.assert_not_awaited()
+
+    def test_runtime_guard_enabled_blocks_scoped_reaction_before_adapter_call(self, monkeypatch):
+        telegram_cfg = SimpleNamespace(
+            enabled=True,
+            token_value="redacted-test-token",
+            extra={
+                "runtime_guard": {
+                    "enabled": True,
+                    "dry_run": False,
+                    "scope": {
+                        "platforms": ["telegram"],
+                        "chat_ids": ["-1001"],
+                    },
+                },
+            },
+        )
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        adapter = SimpleNamespace(add_reaction=AsyncMock(return_value={"success": True}))
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: adapter})
+        monkeypatch.setitem(
+            sys.modules,
+            "gateway.run",
+            SimpleNamespace(_gateway_runner_ref=lambda: runner),
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "react",
+                        "target": "telegram:-1001",
+                        "emoji": "👍",
+                        "message_id": "msg-1",
+                    }
+                )
+            )
+
+        assert result["blocked"] is True
+        assert result["surface"] == "send_message_reaction"
+        assert result["reason"] == "surface_policy_block"
+        assert "Runtime guard blocked" in result["error"]
+        adapter.add_reaction.assert_not_called()
+
+    def test_runtime_guard_reaction_uses_live_adapter_config_when_config_load_fails(self, monkeypatch):
+        telegram_cfg = SimpleNamespace(
+            enabled=True,
+            token_value="redacted-test-token",
+            extra={
+                "runtime_guard": {
+                    "enabled": True,
+                    "dry_run": False,
+                    "scope": {
+                        "platforms": ["telegram"],
+                        "chat_ids": ["-1001"],
+                    },
+                },
+            },
+        )
+        adapter = SimpleNamespace(
+            config=telegram_cfg,
+            add_reaction=AsyncMock(return_value={"success": True}),
+        )
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: adapter})
+        monkeypatch.setitem(
+            sys.modules,
+            "gateway.run",
+            SimpleNamespace(_gateway_runner_ref=lambda: runner),
+        )
+
+        with patch("gateway.config.load_gateway_config", side_effect=RuntimeError("config unavailable")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "react",
+                        "target": "telegram:-1001",
+                        "emoji": "👍",
+                        "message_id": "msg-1",
+                    }
+                )
+            )
+
+        assert result["blocked"] is True
+        assert result["surface"] == "send_message_reaction"
+        adapter.add_reaction.assert_not_called()
+
+    def test_runtime_guard_disabled_allows_unreact_existing_behavior(self, monkeypatch):
+        telegram_cfg = SimpleNamespace(
+            enabled=True,
+            token_value="redacted-test-token",
+            extra={},
+        )
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        adapter = SimpleNamespace(remove_reaction=AsyncMock(return_value={"success": True}))
+        runner = SimpleNamespace(adapters={Platform.TELEGRAM: adapter})
+        monkeypatch.setitem(
+            sys.modules,
+            "gateway.run",
+            SimpleNamespace(_gateway_runner_ref=lambda: runner),
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "unreact",
+                        "target": "telegram:-1001",
+                        "message_id": "msg-1",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        adapter.remove_reaction.assert_awaited_once_with(
+            chat_id="-1001",
+            message_id="msg-1",
+        )
+
     def test_ntfy_topic_target_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref("ntfy", "alerts-channel")
 

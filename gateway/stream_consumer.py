@@ -21,12 +21,14 @@ import logging
 import queue
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+from gateway.runtime_guard import GuardContext, get_runtime_guard_manager
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -178,6 +180,8 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        self._runtime_guard_first_visible_checked = False
+        self._runtime_guard_stream_blocked = False
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -235,6 +239,71 @@ class GatewayStreamConsumer:
     def message_id(self) -> str | None:
         """The Discord/chat message ID of the last-sent or edited message."""
         return self._message_id
+
+    def _runtime_guard_config_source(self) -> Any:
+        config = getattr(self.adapter, "config", None)
+        extra = getattr(config, "extra", None)
+        if isinstance(extra, Mapping):
+            runtime_guard = extra.get("runtime_guard")
+            return runtime_guard if isinstance(runtime_guard, Mapping) else None
+        if isinstance(config, Mapping):
+            runtime_guard = config.get("runtime_guard")
+            return runtime_guard if isinstance(runtime_guard, Mapping) else None
+        return None
+
+    def _build_runtime_guard_context(self, surface: str = "assistant_stream") -> GuardContext:
+        metadata = self.metadata if isinstance(self.metadata, Mapping) else {}
+        return GuardContext(
+            surface=surface,
+            platform=getattr(self.adapter, "platform", None),
+            chat_id=self.chat_id,
+            thread_id=metadata.get("thread_id"),
+            parent_chat_id=metadata.get("parent_chat_id"),
+            guild_id=metadata.get("guild_id"),
+            user_id=metadata.get("user_id"),
+            session_key=metadata.get("session_key"),
+            chat_type=self.cfg.chat_type or metadata.get("chat_type"),
+            metadata=metadata,
+        )
+
+    def _runtime_guard_manager(self):
+        return get_runtime_guard_manager(self._runtime_guard_config_source())
+
+    def runtime_guard_disables_streaming(
+        self,
+        context: Optional[GuardContext] = None,
+    ) -> bool:
+        return self._runtime_guard_manager().should_disable_streaming(
+            context or self._build_runtime_guard_context("assistant_stream")
+        )
+
+    def _runtime_guard_allows_visible_stream_send(
+        self,
+        context: Optional[GuardContext] = None,
+    ) -> bool:
+        if self._runtime_guard_stream_blocked:
+            return False
+
+        stream_context = context or self._build_runtime_guard_context("assistant_stream")
+        manager = self._runtime_guard_manager()
+        if manager.should_disable_streaming(stream_context):
+            self._runtime_guard_stream_blocked = True
+            self._edit_supported = False
+            return False
+
+        if self._runtime_guard_first_visible_checked:
+            return True
+        if not manager.requires_first_visible_stream_guard(stream_context):
+            return True
+
+        decision = manager.check_first_visible_stream(stream_context)
+        self._runtime_guard_first_visible_checked = True
+        if decision.allowed:
+            return True
+
+        self._runtime_guard_stream_blocked = True
+        self._edit_supported = False
+        return False
 
     @property
     def final_content_delivered(self) -> bool:
@@ -791,6 +860,8 @@ class GatewayStreamConsumer:
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
+        if not self._runtime_guard_allows_visible_stream_send():
+            return reply_to_id
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -857,6 +928,8 @@ class GatewayStreamConsumer:
         final_text = self._clean_for_display(text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
+        if not self._runtime_guard_allows_visible_stream_send():
+            return
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
             # BUT: if final_text itself has meaningful content (e.g. a timeout
@@ -1051,6 +1124,9 @@ class GatewayStreamConsumer:
             # set in tandem with _draft_id in run().  Disable to be safe.
             self._use_draft_streaming = False
             return False
+        if not self._runtime_guard_allows_visible_stream_send():
+            self._use_draft_streaming = False
+            return False
         try:
             result = await self.adapter.send_draft(
                 chat_id=self.chat_id,
@@ -1099,6 +1175,8 @@ class GatewayStreamConsumer:
         tail = self._clean_for_display(tail)
         if not tail.strip():
             return
+        if not self._runtime_guard_allows_visible_stream_send():
+            return
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -1134,6 +1212,8 @@ class GatewayStreamConsumer:
         """Send a completed interim assistant commentary message."""
         text = self._clean_for_display(text)
         if not text.strip():
+            return False
+        if not self._runtime_guard_allows_visible_stream_send():
             return False
         try:
             result = await self.adapter.send(
@@ -1268,6 +1348,8 @@ class GatewayStreamConsumer:
         stale_ids = set(self._preview_message_ids)
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)
+        if not self._runtime_guard_allows_visible_stream_send():
+            return False
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -1358,6 +1440,8 @@ class GatewayStreamConsumer:
                 and self.cfg.cursor in text
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
+        if not self._runtime_guard_allows_visible_stream_send():
+            return False
 
         # Native draft streaming: route mid-stream frames through send_draft.
         # The final answer is delivered via the regular sendMessage path

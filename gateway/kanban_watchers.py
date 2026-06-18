@@ -23,6 +23,40 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.run")
 
 
+def check_kanban_notification_runtime_guard(
+    config_source: Any,
+    subscription: dict,
+    *,
+    task_id: str | None = None,
+    event_kind: str | None = None,
+    board: str | None = None,
+):
+    """Classify a kanban notification against runtime_guard policy.
+
+    This does not open kanban databases or touch adapters; it only maps the
+    already-collected subscription/event metadata into a GuardContext.
+    """
+
+    from gateway.runtime_guard import check_delivery_surface_policy
+
+    metadata: dict[str, Any] = {}
+    if task_id:
+        metadata["task_id"] = task_id
+    if event_kind:
+        metadata["event_kind"] = event_kind
+    if board:
+        metadata["board"] = board
+
+    return check_delivery_surface_policy(
+        config_source,
+        "kanban_notification",
+        platform=(subscription or {}).get("platform"),
+        chat_id=(subscription or {}).get("chat_id"),
+        thread_id=(subscription or {}).get("thread_id"),
+        metadata=metadata or None,
+    )
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -300,6 +334,25 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
+                            pconfig = getattr(adapter, "config", None)
+                            runtime_guard_config = None
+                            if pconfig is not None:
+                                runtime_guard_config = {"runtime_guard": (getattr(pconfig, "extra", {}) or {}).get("runtime_guard")}
+                            guard_decision = check_kanban_notification_runtime_guard(
+                                runtime_guard_config,
+                                sub,
+                                task_id=sub.get("task_id"),
+                                event_kind=kind,
+                                board=board_slug,
+                            )
+                            if not guard_decision.allowed:
+                                logger.warning(
+                                    "kanban notifier: runtime_guard blocked %s event for %s on board %s: %s",
+                                    kind, sub["task_id"], board_slug,
+                                    guard_decision.reason or guard_decision.status,
+                                )
+                                sub_fail_counts.pop(sub_key, None)
+                                continue
                             await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )

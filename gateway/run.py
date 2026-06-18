@@ -68,6 +68,18 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+
+def _stream_response_previewed(stream_consumer: Any, full_response: str) -> bool:
+    """Return True only when streaming actually delivered visible content.
+
+    A stream consumer can exist while runtime_guard suppresses all visible stream
+    sends. In that case the final send path must not treat the response as
+    previewed/already delivered, or the user can get a silent drop.
+    """
+    if stream_consumer is None or not bool(full_response):
+        return False
+    return bool(getattr(stream_consumer, "final_content_delivered", False))
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -13720,7 +13732,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "tools": [],
             "history_offset": len(history),
             "session_id": session_id,
-            "response_previewed": _stream_consumer is not None and bool(full_response),
+            "response_previewed": _stream_response_previewed(_stream_consumer, full_response),
         }
 
     # ------------------------------------------------------------------

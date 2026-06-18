@@ -480,20 +480,48 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with configurable compactness."""
         if not entries:
             return ""
+
+        try:
+            from hermes_cli.config import load_config
+            mem_cfg = load_config().get("memory", {})
+            if not isinstance(mem_cfg, dict):
+                mem_cfg = {}
+        except Exception:
+            mem_cfg = {}
+
+        mode = str(mem_cfg.get("system_prompt_format", "compact") or "compact").strip().lower()
+        max_cfg = mem_cfg.get("max_system_entries", {})
+        max_entries = None
+        if isinstance(max_cfg, dict):
+            raw_max = max_cfg.get(target)
+            if isinstance(raw_max, (int, float)) and int(raw_max) > 0:
+                max_entries = int(raw_max)
+        if max_entries is not None:
+            entries = entries[:max_entries]
+        if not entries:
+            return ""
+
+        if target == "user":
+            compact_header = "USER PROFILE"
+            verbose_header_prefix = "USER PROFILE (who the user is)"
+        else:
+            compact_header = "MEMORY"
+            verbose_header_prefix = "MEMORY (your personal notes)"
+
+        if mode == "minimal":
+            return f"{compact_header}: " + " | ".join(entries)
+
+        if mode == "compact":
+            return compact_header + ":\n" + "\n".join(f"- {e}" for e in entries)
 
         limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
-
-        if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
-        else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
-
+        header = f"{verbose_header_prefix} [{pct}% — {current:,}/{limit:,} chars]"
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
 

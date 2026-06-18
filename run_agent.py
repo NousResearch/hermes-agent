@@ -145,6 +145,7 @@ from agent.context_compressor import ContextCompressor  # noqa: F401
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
     DEFAULT_AGENT_IDENTITY,
+    build_skills_discovery_prompt,
     build_skills_system_prompt,
     build_context_files_prompt,
     build_environment_hints,

@@ -26,21 +26,34 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+import hermes_cli.config as hermes_config
+
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE_MINIMAL,
     HERMES_AGENT_HELP_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE_MINIMAL,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
+    MEMORY_GUIDANCE_MINIMAL,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    OPENAI_MODEL_EXECUTION_GUIDANCE_MINIMAL,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
+    SESSION_SEARCH_GUIDANCE_MINIMAL,
     SKILLS_GUIDANCE,
+    SKILLS_GUIDANCE_MINIMAL,
     STEER_CHANNEL_NOTE,
+    STEER_CHANNEL_NOTE_MINIMAL,
     TASK_COMPLETION_GUIDANCE,
+    TASK_COMPLETION_GUIDANCE_MINIMAL,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_GUIDANCE_MINIMAL,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
+    get_platform_hint,
+    select_prompt_text,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -82,6 +95,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
+    cfg = hermes_config.load_config()
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent"), dict) else {}
+    skills_cfg = cfg.get("skills", {}) if isinstance(cfg.get("skills"), dict) else {}
+    prompt_mode_raw = agent_cfg.get("prompt_mode", "standard")
+    prompt_mode = str("standard" if prompt_mode_raw is None else prompt_mode_raw).strip().lower()
+    skills_mode_raw = skills_cfg.get("system_prompt_mode", "compact")
+    skills_mode = str("compact" if skills_mode_raw is None else skills_mode_raw).strip().lower()
 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
@@ -101,7 +121,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    stable_parts.append(
+        select_prompt_text(
+            HERMES_AGENT_HELP_GUIDANCE,
+            prompt_mode=prompt_mode,
+            minimal=HERMES_AGENT_HELP_GUIDANCE_MINIMAL,
+        )
+    )
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -110,16 +136,40 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # config.yaml ``agent.task_completion_guidance`` (default True) so
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
-        stable_parts.append(TASK_COMPLETION_GUIDANCE)
+        stable_parts.append(
+            select_prompt_text(
+                TASK_COMPLETION_GUIDANCE,
+                prompt_mode=prompt_mode,
+                minimal=TASK_COMPLETION_GUIDANCE_MINIMAL,
+            )
+        )
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
-        tool_guidance.append(MEMORY_GUIDANCE)
+        tool_guidance.append(
+            select_prompt_text(
+                MEMORY_GUIDANCE,
+                prompt_mode=prompt_mode,
+                minimal=MEMORY_GUIDANCE_MINIMAL,
+            )
+        )
     if "session_search" in agent.valid_tool_names:
-        tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        tool_guidance.append(
+            select_prompt_text(
+                SESSION_SEARCH_GUIDANCE,
+                prompt_mode=prompt_mode,
+                minimal=SESSION_SEARCH_GUIDANCE_MINIMAL,
+            )
+        )
     if "skill_manage" in agent.valid_tool_names:
-        tool_guidance.append(SKILLS_GUIDANCE)
+        tool_guidance.append(
+            select_prompt_text(
+                SKILLS_GUIDANCE,
+                prompt_mode=prompt_mode,
+                minimal=SKILLS_GUIDANCE_MINIMAL,
+            )
+        )
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
@@ -136,7 +186,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Steering only lands inside tool results, so it's only reachable when the
     # agent has tools. Static text → byte-stable prompt (no cache hit).
     if agent.valid_tool_names:
-        stable_parts.append(STEER_CHANNEL_NOTE)
+        stable_parts.append(
+            select_prompt_text(
+                STEER_CHANNEL_NOTE,
+                prompt_mode=prompt_mode,
+                minimal=STEER_CHANNEL_NOTE_MINIMAL,
+            )
+        )
 
     # Computer-use (macOS) — goes in as its own block rather than being
     # merged into tool_guidance because the content is multi-paragraph.
@@ -169,22 +225,51 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
         if _inject:
-            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+            stable_parts.append(
+                select_prompt_text(
+                    TOOL_USE_ENFORCEMENT_GUIDANCE,
+                    prompt_mode=prompt_mode,
+                    minimal=TOOL_USE_ENFORCEMENT_GUIDANCE_MINIMAL,
+                )
+            )
             _model_lower = (agent.model or "").lower()
             # Google model operational guidance (conciseness, absolute
             # paths, parallel tool calls, verify-before-edit, etc.)
             if "gemini" in _model_lower or "gemma" in _model_lower:
-                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                stable_parts.append(
+                    select_prompt_text(
+                        GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+                        prompt_mode=prompt_mode,
+                        minimal=GOOGLE_MODEL_OPERATIONAL_GUIDANCE_MINIMAL,
+                    )
+                )
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
             # Also applied to xAI Grok — same failure modes (claims completion
             # without tool calls, suggests workarounds instead of using
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                stable_parts.append(
+                    select_prompt_text(
+                        OPENAI_MODEL_EXECUTION_GUIDANCE,
+                        prompt_mode=prompt_mode,
+                        minimal=OPENAI_MODEL_EXECUTION_GUIDANCE_MINIMAL,
+                    )
+                )
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
+        if skills_mode in {"false", "0", "none", "disabled"}:
+            skills_mode = "off"
+        try:
+            skills_max_chars = int(skills_cfg.get("system_prompt_max_chars", 1200) or 1200)
+        except Exception:
+            skills_max_chars = 1200
+        try:
+            skills_max_per_cat = int(skills_cfg.get("system_prompt_max_skills_per_category", 4) or 4)
+        except Exception:
+            skills_max_per_cat = 4
+
         avail_toolsets = {
             toolset
             for toolset in (
@@ -205,11 +290,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             _compact_cats = frozenset()
-        skills_prompt = _r.build_skills_system_prompt(
-            available_tools=agent.valid_tool_names,
-            available_toolsets=avail_toolsets,
-            compact_categories=_compact_cats or None,
-        )
+
+        if skills_mode == "off":
+            skills_prompt = _r.build_skills_discovery_prompt()
+        else:
+            skills_prompt = _r.build_skills_system_prompt(
+                available_tools=agent.valid_tool_names,
+                available_toolsets=avail_toolsets,
+                compact_categories=_compact_cats or None,
+                mode=skills_mode,
+                max_chars=skills_max_chars,
+                max_skills_per_category=skills_max_per_cat,
+                prompt_mode=prompt_mode,
+            )
     else:
         skills_prompt = ""
     if skills_prompt:
@@ -309,7 +402,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
-        stable_parts.append(PLATFORM_HINTS[platform_key])
+        stable_parts.append(get_platform_hint(platform_key, prompt_mode=prompt_mode))
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:

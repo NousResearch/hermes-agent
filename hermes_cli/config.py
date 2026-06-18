@@ -816,6 +816,11 @@ DEFAULT_CONFIG = {
     "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
+        # Prompt rendering mode for fixed system-prompt overhead.
+        #   "minimal"  — shortest policy blocks where supported
+        #   "standard" — balanced default
+        #   "full"     — verbose guidance blocks
+        "prompt_mode": "standard",
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -1756,6 +1761,18 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Rendering mode for MEMORY / USER PROFILE blocks inside the system prompt.
+        #   "verbose" — boxed headers + usage (legacy behaviour)
+        #   "compact" — simple bullet list
+        #   "minimal" — single-line pipe-delimited facts
+        "system_prompt_format": "compact",
+        # Hard cap on how many entries are injected into the system prompt.
+        # Keeps fixed overhead bounded even when the on-disk files are near
+        # their character limits.
+        "max_system_entries": {
+            "memory": 8,
+            "user": 6,
+        },
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
@@ -1835,6 +1852,18 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # How much of the installed skill catalog to inject into the system prompt.
+        #   "off"        — no catalog, only a short discovery hint
+        #   "names_only" — category -> skill names only
+        #   "compact"    — category -> a few skill names (+N more)
+        #   "full"       — verbose category + per-skill descriptions (legacy)
+        "system_prompt_mode": "compact",
+        # Soft ceiling for the rendered skill-index body (characters, excluding
+        # the surrounding policy text). The renderer trims whole lines/categories
+        # to stay under budget.
+        "system_prompt_max_chars": 1200,
+        # Per-category cap used by compact / names_only rendering.
+        "system_prompt_max_skills_per_category": 4,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

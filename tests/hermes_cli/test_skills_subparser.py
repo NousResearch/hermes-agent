@@ -32,3 +32,28 @@ def test_no_duplicate_skills_subparser():
                 "See issue #898 for details."
             ) from e
         raise
+
+
+def test_skills_lint_parses_with_defaults():
+    """`hermes skills lint` argparse wiring: defaults and flags round-trip."""
+    import argparse as _argparse
+
+    from hermes_cli.subcommands.skills import build_skills_parser
+
+    parser = _argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_skills_parser(subparsers, cmd_skills=lambda args: None)
+
+    args = parser.parse_args(["skills", "lint"])
+    assert args.skills_action == "lint"
+    assert args.targets == []
+    assert args.all_skills is False
+    assert args.json is False
+    assert args.fail_on == "error"
+
+    args = parser.parse_args(
+        ["skills", "lint", "my-skill", "--json", "--fail-on", "warning"]
+    )
+    assert args.targets == ["my-skill"]
+    assert args.json is True
+    assert args.fail_on == "warning"

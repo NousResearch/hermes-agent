@@ -135,6 +135,34 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
+    skills_lint = skills_subparsers.add_parser(
+        "lint",
+        help="Validate skill structure (frontmatter, fields, requirements)",
+        description=(
+            "Validate SKILL.md structure: frontmatter syntax, required fields, "
+            "field constraints, and requirement declarations. Targets can be "
+            "paths to skill directories or installed skill names. With no "
+            "target, lints the current directory if it contains a SKILL.md. "
+            "Exit codes: 0 clean, 1 findings at/above --fail-on, 2 usage error."
+        ),
+    )
+    skills_lint.add_argument(
+        "targets",
+        nargs="*",
+        help="Skill directories or installed skill names (default: ./SKILL.md)",
+    )
+    skills_lint.add_argument(
+        "--all", action="store_true", dest="all_skills",
+        help="Lint every installed skill",
+    )
+    skills_lint.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
+    )
+    skills_lint.add_argument(
+        "--fail-on", default="error", choices=["error", "warning"],
+        help="Severity threshold for exit code 1 (default: error)",
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )

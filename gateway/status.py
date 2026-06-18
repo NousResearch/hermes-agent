@@ -164,20 +164,60 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
-def _looks_like_gateway_process(pid: int) -> bool:
-    """Return True when the live PID still looks like the Hermes gateway."""
-    cmdline = _read_process_cmdline(pid)
+# Canonical command-line signals that identify a Hermes gateway process.
+#
+# A NAMED-profile gateway runs as ``... -m hermes_cli.main --profile <name>
+# gateway run ...`` (or ``-p <name>``), so the ``--profile <name>`` token sits
+# BETWEEN the entrypoint and the ``gateway`` subcommand. A contiguous-substring
+# match on ``"hermes_cli.main gateway"`` therefore only recognises the DEFAULT
+# profile and silently misses every named profile (zeus/apollo/athena/...),
+# making the dashboard report a healthy named-profile gateway as offline and
+# tricking ``acquire_scoped_lock`` into evicting a live gateway's lock as stale.
+#
+# We can't widen to a bare ``"hermes_cli.main --profile"`` substring because that
+# also matches sibling subcommands sharing the same entrypoint (``... --profile
+# <name> dashboard``), which would misclassify a dashboard process as a gateway.
+# Instead we require an ENTRYPOINT signal AND the ``gateway`` subcommand token,
+# which holds for every profile. The standalone signals (the gateway console
+# shim, ``gateway/run.py``) are unambiguous on their own. This mirrors the
+# matcher in ``hermes_cli.gateway._scan_gateway_pids``; keep them aligned.
+_GATEWAY_ENTRYPOINT_PATTERNS = (
+    "hermes_cli.main",
+    "hermes_cli/main.py",
+    "hermes ",  # the ``hermes`` console script (trailing space avoids ``hermesd`` etc.)
+)
+# Unambiguous on their own — no separate ``gateway`` subcommand token required.
+_GATEWAY_STANDALONE_PATTERNS = (
+    "hermes-gateway",
+    "gateway/run.py",
+)
+
+
+def _cmdline_looks_like_gateway(cmdline: Optional[str]) -> bool:
+    """Return True when a command-line string carries a gateway identity signal.
+
+    Profile-agnostic: matches default AND named-profile invocations
+    (``--profile <name>`` / ``-p <name>`` between the entrypoint and the
+    ``gateway`` subcommand) while NOT matching sibling subcommands that share
+    the same entrypoint (e.g. ``... --profile <name> dashboard``).
+
+    Shared by the live-process oracle (:func:`_looks_like_gateway_process`) and
+    the PID-record oracle (:func:`_record_looks_like_gateway`) so both recognise
+    named-profile invocations identically.
+    """
     if not cmdline:
         return False
-
-    patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "hermes-gateway",
-        "gateway/run.py",
+    if any(pattern in cmdline for pattern in _GATEWAY_STANDALONE_PATTERNS):
+        return True
+    has_entrypoint = any(
+        pattern in cmdline for pattern in _GATEWAY_ENTRYPOINT_PATTERNS
     )
-    return any(pattern in cmdline for pattern in patterns)
+    return has_entrypoint and "gateway" in cmdline.split()
+
+
+def _looks_like_gateway_process(pid: int) -> bool:
+    """Return True when the live PID still looks like the Hermes gateway."""
+    return _cmdline_looks_like_gateway(_read_process_cmdline(pid))
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
@@ -191,13 +231,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
 
     # Normalize Windows backslashes so patterns match cross-platform.
     cmdline = " ".join(str(part) for part in argv).replace("\\", "/")
-    patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "gateway/run.py",
-    )
-    return any(pattern in cmdline for pattern in patterns)
+    return _cmdline_looks_like_gateway(cmdline)
 
 
 def _build_pid_record() -> dict:

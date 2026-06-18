@@ -801,6 +801,55 @@ async def test_no_allowlist_still_pairs_by_default(monkeypatch):
     assert "PAIR1234" in adapter.send.await_args.args[1]
 
 
+@pytest.mark.asyncio
+async def test_email_no_allowlist_ignores_unknown_senders_by_default(monkeypatch):
+    """Email should not send pairing codes to arbitrary unread inbox senders."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.EMAIL, config)
+    runner.pairing_store.generate_code.return_value = "EMAIL123"
+
+    result = await runner._handle_message(
+        _make_event(Platform.EMAIL, "stranger@example.com", "stranger@example.com")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_email_pairing_requires_explicit_platform_opt_in(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.EMAIL: PlatformConfig(
+                enabled=True,
+                extra={"unauthorized_dm_behavior": "pair"},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.EMAIL, config)
+    runner.pairing_store.generate_code.return_value = "EMAIL123"
+
+    result = await runner._handle_message(
+        _make_event(Platform.EMAIL, "stranger@example.com", "stranger@example.com")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once_with(
+        "email",
+        "stranger@example.com",
+        "tester",
+    )
+    adapter.send.assert_awaited_once()
+    assert "EMAIL123" in adapter.send.await_args.args[1]
+
+
 def test_explicit_pair_config_overrides_allowlist_default(monkeypatch):
     """Explicit unauthorized_dm_behavior='pair' overrides the allowlist default.
 
@@ -856,6 +905,18 @@ def test_get_unauthorized_dm_behavior_no_allowlist_returns_pair(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
     assert behavior == "pair"
+
+
+def test_get_unauthorized_dm_behavior_email_no_allowlist_returns_ignore(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.EMAIL, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.EMAIL)
+    assert behavior == "ignore"
 
 
 def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):

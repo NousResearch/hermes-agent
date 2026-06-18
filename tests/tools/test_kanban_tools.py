@@ -604,7 +604,44 @@ def test_block_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, worker_env).status == "blocked"
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_block_waits_on_cards_created_by_same_worker(worker_env):
+    """Create-remediation-then-block should self-wire the retry gate.
+
+    Workers often create a focused remediation card and then block the current
+    review/gate. The current task must be linked under that remediation so the
+    remediation completion can wake the gate for re-review.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    created = json.loads(kt._handle_create({
+        "title": "remediate finding",
+        "assignee": "test-worker",
+    }))
+    assert created["ok"] is True
+    remediation = created["task_id"]
+
+    blocked = json.loads(kt._handle_block({"reason": "waiting on remediation"}))
+    assert blocked["ok"] is True
+
+    conn = kb.connect()
+    try:
+        assert remediation in kb.parent_ids(conn, worker_env)
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "blocked"
+
+        assert kb.complete_task(conn, remediation, summary="fixed")
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "ready"
     finally:
         conn.close()
 

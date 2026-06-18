@@ -346,6 +346,57 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_completed_blocker_auto_unblocks_blocked_gate(kanban_home):
+    """A blocked review gate linked under a remediation should wake up.
+
+    Review/remediation loops commonly look like:
+    implementation done -> review blocks -> remediation task runs -> review
+    should re-run. The remediation must be able to gate the blocked review
+    without requiring an orchestrator to manually unblock the review after the
+    remediation completes.
+    """
+    with kb.connect() as conn:
+        implementation = kb.create_task(conn, title="implementation")
+        kb.complete_task(conn, implementation, summary="implementation done")
+
+        review = kb.create_task(
+            conn,
+            title="review gate",
+            assignee="reviewer",
+            parents=[implementation],
+        )
+        review_task = kb.get_task(conn, review)
+        assert review_task is not None
+        assert review_task.status == "ready"
+        assert kb.claim_task(conn, review, claimer="host:reviewer") is not None
+
+        remediation = kb.create_task(
+            conn,
+            title="remediation",
+            assignee="worker",
+            parents=[implementation],
+        )
+        kb.link_tasks(conn, remediation, review)
+        assert kb.block_task(conn, review, reason="waiting on remediation")
+        review_task = kb.get_task(conn, review)
+        assert review_task is not None
+        assert review_task.status == "blocked"
+
+        kb.complete_task(conn, remediation, summary="remediation fixed")
+
+        review_task = kb.get_task(conn, review)
+        assert review_task is not None
+        assert review_task.status == "ready"
+        events = kb.list_events(conn, review)
+        assert any(
+            ev.kind == "unblocked"
+            and ev.payload
+            and ev.payload.get("auto") is True
+            and ev.payload.get("resolved_parent") == remediation
+            for ev in events
+        )
+
+
 # ---------------------------------------------------------------------------
 # Atomic claim (CAS)
 # ---------------------------------------------------------------------------

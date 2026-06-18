@@ -45,6 +45,12 @@ logger = logging.getLogger(__name__)
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
 
+# Per-process memory of cards this worker created during the current task run.
+# When the same worker later blocks the task, these cards are treated as
+# remediation/blocker parents so their completion can wake the blocked gate for
+# retry.  This covers the common review pattern: create remediation -> block.
+_CREATED_TASKS_BY_WORKER_TASK: dict[str, list[str]] = {}
+
 
 def _profile_has_kanban_toolset() -> bool:
     # Uses load_config() which has mtime-based caching, so this adds
@@ -584,6 +590,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
+            _CREATED_TASKS_BY_WORKER_TASK.pop(tid, None)
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
@@ -612,6 +619,24 @@ def _handle_block(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            waiting_on = list(_CREATED_TASKS_BY_WORKER_TASK.get(tid, []))
+            for blocker_id in waiting_on:
+                if blocker_id == tid:
+                    continue
+                try:
+                    kb.link_tasks(conn, parent_id=blocker_id, child_id=tid)
+                except ValueError:
+                    # If the worker already parented the remediation on this
+                    # task, adding the reverse edge would create a cycle.  Do
+                    # not fail the block call; the explicit dependency graph is
+                    # already carrying the worker's intent and a reviewer can
+                    # diagnose the cycle from the events.
+                    logger.debug(
+                        "kanban_block skipped auto blocker link %s -> %s",
+                        blocker_id,
+                        tid,
+                        exc_info=True,
+                    )
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
@@ -622,6 +647,7 @@ def _handle_block(args: dict, **kw) -> str:
                     f"could not block {tid} (unknown id or not in "
                     f"running/ready)"
                 )
+            _CREATED_TASKS_BY_WORKER_TASK.pop(tid, None)
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
@@ -818,6 +844,11 @@ def _handle_create(args: dict, **kw) -> str:
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
+            current_tid = os.environ.get("HERMES_KANBAN_TASK")
+            if current_tid:
+                created = _CREATED_TASKS_BY_WORKER_TASK.setdefault(current_tid, [])
+                if new_tid not in created:
+                    created.append(new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,

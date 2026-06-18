@@ -2965,6 +2965,78 @@ def recompute_ready(
     return promoted
 
 
+def auto_unblock_resolved_blocked_children(
+    conn: sqlite3.Connection,
+    parent_id: str,
+) -> int:
+    """Unblock blocked child tasks whose blocker parent just resolved.
+
+    This is the review/remediation retry valve: a review gate can be linked
+    as a child of the remediation card it is waiting on.  When the remediation
+    reaches ``done`` and every other parent is also done/archived, the blocked
+    review should become ``ready`` for re-review instead of waiting for a human
+    orchestrator to notice and run ``unblock`` manually.
+    """
+    released = 0
+    now = int(time.time())
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT child_id FROM task_links l "
+            "JOIN tasks c ON c.id = l.child_id "
+            "WHERE l.parent_id = ? AND c.status = 'blocked' "
+            "ORDER BY c.created_at ASC",
+            (parent_id,),
+        ).fetchall()
+        for row in rows:
+            child_id = row["child_id"]
+            undone = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? "
+                "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+                (child_id,),
+            ).fetchone()
+            if undone:
+                continue
+
+            stale = conn.execute(
+                "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'blocked'",
+                (child_id,),
+            ).fetchone()
+            if stale and stale["current_run_id"]:
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status = 'reclaimed', outcome = 'reclaimed',
+                           summary = COALESCE(summary, 'invariant recovery on auto-unblock'),
+                           ended_at = ?,
+                           claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                     WHERE id = ? AND ended_at IS NULL
+                    """,
+                    (now, int(stale["current_run_id"])),
+                )
+
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', current_run_id = NULL "
+                "WHERE id = ? AND status = 'blocked'",
+                (child_id,),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn,
+                child_id,
+                "unblocked",
+                {
+                    "status": "ready",
+                    "auto": True,
+                    "resolved_parent": parent_id,
+                },
+            )
+            released += 1
+    return released
+
+
 # ---------------------------------------------------------------------------
 # Claim / complete / block
 # ---------------------------------------------------------------------------
@@ -3736,6 +3808,10 @@ def complete_task(
     _clear_failure_counter(conn, task_id)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
+    # If this completion resolved a remediation/blocker parent for a blocked
+    # review gate, wake that gate for re-review.  ``recompute_ready`` only
+    # promotes todo tasks; blocked tasks need this explicit retry valve.
+    auto_unblock_resolved_blocked_children(conn, task_id)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
     return True

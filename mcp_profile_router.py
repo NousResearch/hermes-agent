@@ -2,16 +2,19 @@
 
 This module is intentionally small and side-effect free: it only parses
 fully-qualified profile refs and exposes read-only local profile inventory for
-the ChatGPT ↔ Hermes MCP router.  It must not import or call the Hermes agent
-loop, provider clients, or AI coding CLIs.  Later filesystem/terminal tools
-should build on the explicit cost metadata here rather than exposing arbitrary
-Hermes tools by default.
+the ChatGPT ↔ Hermes MCP router, plus policy-gated read-only workspace access.
+It must not import or call the Hermes agent loop, provider clients, or AI coding
+CLIs. Later filesystem/terminal tools should build on the explicit cost
+metadata here rather than exposing arbitrary Hermes tools by default.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import posixpath
+import re
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -50,6 +53,12 @@ SECRET_PATH_NAMES = frozenset(
     }
 )
 SECRET_PATH_PREFIXES = (".env.",)
+MAX_FILE_READ_LINES = 200
+MAX_FILE_READ_CHARS = 60_000
+MAX_FILE_SEARCH_RESULTS = 50
+MAX_FILE_SEARCH_BYTES = 1_000_000
+MAX_SEARCH_LINE_CHARS = 500
+ALLOWED_SEARCH_OUTPUT_MODES = frozenset({"content", "files_only", "count"})
 
 
 class ProfileRouterError(ValueError):
@@ -493,6 +502,24 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
     ),
+    "workspace_open": RouterToolMetadata(
+        name="workspace_open",
+        description="Open a policy-gated read-only local workspace with an opaque ID.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
+    "file_read": RouterToolMetadata(
+        name="file_read",
+        description="Read a paginated text file through an opened read-only workspace.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
+    "file_search": RouterToolMetadata(
+        name="file_search",
+        description="Search text files through an opened read-only workspace.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
 }
 
 
@@ -660,6 +687,341 @@ def resolve_workspace_path(
     return str(resolved_candidate)
 
 
+class WorkspaceRegistry:
+    """In-memory server-side registry for opaque workspace IDs.
+
+    MCP clients only receive the opaque ``workspace_id``. Host-local roots stay
+    in this registry and every read/search path is resolved through
+    ``resolve_workspace_path`` before file access.
+    """
+
+    def __init__(self) -> None:
+        self._workspaces: dict[str, WorkspaceMetadata] = {}
+
+    def open(
+        self,
+        profile_ref: str,
+        root: str,
+        *,
+        mode: str = "checkout",
+    ) -> WorkspaceMetadata:
+        workspace = create_workspace_metadata(profile_ref, root, mode=mode)
+        self._workspaces[workspace.workspace_id] = workspace
+        return workspace
+
+    def get(self, workspace_id: str) -> WorkspaceMetadata:
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise ProfileRouterError("invalid_workspace", "workspace_id is required")
+        workspace = self._workspaces.get(workspace_id.strip())
+        if workspace is None:
+            raise ProfileRouterError(
+                "workspace_not_found", f"Workspace is not open: {workspace_id}"
+            )
+        return workspace
+
+    def close(self, workspace_id: str) -> WorkspaceMetadata:
+        workspace = self.get(workspace_id)
+        del self._workspaces[workspace.workspace_id]
+        return workspace
+
+
+DEFAULT_WORKSPACE_REGISTRY = WorkspaceRegistry()
+
+
+def _public_workspace_dict(workspace: WorkspaceMetadata) -> dict:
+    """Return workspace metadata safe for an external MCP client.
+
+    The host-local root is intentionally omitted; clients must use the opaque
+    ID and workspace-relative paths instead of learning or replaying server
+    absolute paths.
+    """
+
+    return {
+        "workspace_id": workspace.workspace_id,
+        "profile_ref": workspace.profile_ref,
+        "host": workspace.host,
+        "profile": workspace.profile,
+        "mode": workspace.mode,
+        "read_only": workspace.read_only,
+        "cost_class": workspace.cost_class,
+        "llm_calls": workspace.llm_calls,
+    }
+
+
+def _bounded_int(
+    value: int | None,
+    field: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProfileRouterError("invalid_pagination", f"{field} must be an integer")
+    if value < minimum:
+        raise ProfileRouterError(
+            "invalid_pagination", f"{field} must be >= {minimum}"
+        )
+    return min(value, maximum)
+
+
+def _ensure_text_file(path: Path) -> None:
+    if not path.is_file():
+        raise ProfileRouterError("not_a_file", f"Path is not a file: {path.name}")
+    try:
+        with path.open("rb") as handle:
+            sample = handle.read(4096)
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", f"File is not readable: {path.name}") from exc
+    if b"\x00" in sample:
+        raise ProfileRouterError("binary_file_not_supported", "Binary files are not readable")
+
+
+def open_workspace(
+    profile_ref: str,
+    root: str,
+    *,
+    mode: str = "checkout",
+    registry: WorkspaceRegistry | None = None,
+) -> WorkspaceMetadata:
+    """Open a read-only local workspace through the policy/secret gate."""
+
+    assert_default_tools_are_no_model()
+    return (registry or DEFAULT_WORKSPACE_REGISTRY).open(profile_ref, root, mode=mode)
+
+
+def read_workspace_file(
+    workspace_id: str,
+    path: str,
+    *,
+    offset: int | None = 1,
+    limit: int | None = MAX_FILE_READ_LINES,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Read a bounded text slice from an opened workspace."""
+
+    assert_default_tools_are_no_model()
+    line_offset = _bounded_int(
+        offset,
+        "offset",
+        default=1,
+        minimum=1,
+        maximum=1_000_000,
+    )
+    line_limit = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_FILE_READ_LINES,
+        minimum=1,
+        maximum=MAX_FILE_READ_LINES,
+    )
+    workspace = (registry or DEFAULT_WORKSPACE_REGISTRY).get(workspace_id)
+    resolved_path = Path(resolve_workspace_path(workspace, path))
+    _ensure_text_file(resolved_path)
+
+    selected_lines: list[str] = []
+    chars = 0
+    truncated = False
+    try:
+        with resolved_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if line_number < line_offset:
+                    continue
+                if len(selected_lines) >= line_limit:
+                    truncated = True
+                    break
+                remaining_chars = MAX_FILE_READ_CHARS - chars
+                if remaining_chars <= 0:
+                    truncated = True
+                    break
+                if len(line) > remaining_chars:
+                    selected_lines.append(line[:remaining_chars])
+                    truncated = True
+                    break
+                selected_lines.append(line)
+                chars += len(line)
+    except OSError as exc:
+        raise ProfileRouterError("file_not_readable", f"File is not readable: {path}") from exc
+
+    return {
+        "workspace_id": workspace.workspace_id,
+        "path": posixpath.normpath(path.strip() or "."),
+        "offset": line_offset,
+        "limit": line_limit,
+        "content": "".join(selected_lines),
+        "lines_returned": len(selected_lines),
+        "truncated": truncated,
+    }
+
+
+def _workspace_relative_path(workspace: WorkspaceMetadata, path: Path) -> str:
+    try:
+        return path.relative_to(Path(workspace.root)).as_posix()
+    except ValueError as exc:
+        raise ProfileRouterError("path_outside_workspace", "path escapes workspace root") from exc
+
+
+def _iter_search_candidates(
+    workspace: WorkspaceMetadata,
+    search_root: Path,
+    *,
+    file_glob: str | None,
+):
+    if search_root.is_file():
+        rel_path = _workspace_relative_path(workspace, search_root)
+        if not file_glob or fnmatch.fnmatch(rel_path, file_glob) or fnmatch.fnmatch(search_root.name, file_glob):
+            yield rel_path, search_root
+        return
+
+    if not search_root.is_dir():
+        raise ProfileRouterError("not_a_directory", "Search path must be a file or directory")
+
+    for dirpath, dirnames, filenames in os.walk(search_root, followlinks=False):
+        rel_dir = _workspace_relative_path(workspace, Path(dirpath))
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if not _is_secret_path(posixpath.join(rel_dir, dirname))
+        ]
+        for filename in filenames:
+            candidate = Path(dirpath) / filename
+            rel_path = _workspace_relative_path(workspace, candidate)
+            if file_glob and not (
+                fnmatch.fnmatch(rel_path, file_glob)
+                or fnmatch.fnmatch(filename, file_glob)
+            ):
+                continue
+            yield rel_path, candidate
+
+
+def search_workspace_files(
+    workspace_id: str,
+    pattern: str,
+    *,
+    path: str | None = None,
+    file_glob: str | None = None,
+    output_mode: str = "content",
+    limit: int | None = MAX_FILE_SEARCH_RESULTS,
+    registry: WorkspaceRegistry | None = None,
+) -> dict:
+    """Search bounded text files inside an opened workspace."""
+
+    assert_default_tools_are_no_model()
+    if not isinstance(pattern, str) or not pattern:
+        raise ProfileRouterError("invalid_search_pattern", "pattern must be a non-empty string")
+    if file_glob is not None and not isinstance(file_glob, str):
+        raise ProfileRouterError("invalid_file_glob", "file_glob must be a string")
+    if output_mode not in ALLOWED_SEARCH_OUTPUT_MODES:
+        raise ProfileRouterError(
+            "invalid_output_mode",
+            "output_mode must be one of: " + ", ".join(sorted(ALLOWED_SEARCH_OUTPUT_MODES)),
+        )
+    max_results = _bounded_int(
+        limit,
+        "limit",
+        default=MAX_FILE_SEARCH_RESULTS,
+        minimum=1,
+        maximum=MAX_FILE_SEARCH_RESULTS,
+    )
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ProfileRouterError("invalid_search_pattern", str(exc)) from exc
+
+    workspace = (registry or DEFAULT_WORKSPACE_REGISTRY).get(workspace_id)
+    search_path = path if path is not None else "."
+    search_root = Path(resolve_workspace_path(workspace, search_path))
+
+    matches: list[dict] = []
+    files: list[str] = []
+    counts: list[dict] = []
+    skipped = {"secret": 0, "binary": 0, "large": 0, "unreadable": 0}
+    truncated = False
+    normalized_glob = file_glob.strip() if isinstance(file_glob, str) and file_glob.strip() else None
+
+    for rel_path, candidate in _iter_search_candidates(
+        workspace,
+        search_root,
+        file_glob=normalized_glob,
+    ):
+        try:
+            resolved_candidate = Path(resolve_workspace_path(workspace, rel_path))
+            _ensure_text_file(resolved_candidate)
+        except ProfileRouterError as exc:
+            if exc.code == "secret_path_denied":
+                skipped["secret"] += 1
+                continue
+            if exc.code == "binary_file_not_supported":
+                skipped["binary"] += 1
+                continue
+            skipped["unreadable"] += 1
+            continue
+
+        try:
+            if resolved_candidate.stat().st_size > MAX_FILE_SEARCH_BYTES:
+                skipped["large"] += 1
+                continue
+        except OSError:
+            skipped["unreadable"] += 1
+            continue
+
+        file_match_count = 0
+        try:
+            with resolved_candidate.open("r", encoding="utf-8", errors="replace") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if not compiled.search(line):
+                        continue
+                    file_match_count += 1
+                    if output_mode == "content":
+                        matches.append(
+                            {
+                                "path": rel_path,
+                                "line": line_number,
+                                "content": line.rstrip("\n")[:MAX_SEARCH_LINE_CHARS],
+                            }
+                        )
+                        if len(matches) >= max_results:
+                            truncated = True
+                            break
+                if output_mode == "content" and truncated:
+                    break
+        except OSError:
+            skipped["unreadable"] += 1
+            continue
+
+        if file_match_count:
+            if output_mode == "files_only" and rel_path not in files:
+                files.append(rel_path)
+                if len(files) >= max_results:
+                    truncated = True
+                    break
+            elif output_mode == "count":
+                counts.append({"path": rel_path, "count": file_match_count})
+                if len(counts) >= max_results:
+                    truncated = True
+                    break
+
+    payload = {
+        "workspace_id": workspace.workspace_id,
+        "path": posixpath.normpath(search_path.strip() or "."),
+        "pattern": pattern,
+        "file_glob": file_glob,
+        "output_mode": output_mode,
+        "limit": max_results,
+        "truncated": truncated,
+        "skipped": skipped,
+    }
+    if output_mode == "content":
+        payload["matches"] = matches
+    elif output_mode == "files_only":
+        payload["files"] = files
+    else:
+        payload["counts"] = counts
+    return payload
+
+
 def _safe_profile_summary(
     info: ProfileInfo,
     *,
@@ -813,3 +1175,70 @@ def profile_health(profile_ref: str) -> str:
         )
     except ProfileRouterError as exc:
         return _tool_error("profile_health", exc)
+
+
+def workspace_open(profile_ref: str, root: str, mode: str = "checkout") -> str:
+    """MCP-ready wrapper: open a read-only workspace without invoking a model."""
+
+    try:
+        workspace = open_workspace(profile_ref, root, mode=mode)
+        return _tool_envelope(
+            "workspace_open",
+            {"ok": True, "workspace": _public_workspace_dict(workspace)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_open", exc)
+
+
+def file_read(
+    workspace_id: str,
+    path: str,
+    offset: int | None = 1,
+    limit: int | None = MAX_FILE_READ_LINES,
+) -> str:
+    """MCP-ready wrapper: read a bounded text slice from a workspace."""
+
+    try:
+        return _tool_envelope(
+            "file_read",
+            {
+                "ok": True,
+                "file": read_workspace_file(
+                    workspace_id,
+                    path,
+                    offset=offset,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("file_read", exc)
+
+
+def file_search(
+    workspace_id: str,
+    pattern: str,
+    path: str | None = None,
+    file_glob: str | None = None,
+    output_mode: str = "content",
+    limit: int | None = MAX_FILE_SEARCH_RESULTS,
+) -> str:
+    """MCP-ready wrapper: search bounded text files in a workspace."""
+
+    try:
+        return _tool_envelope(
+            "file_search",
+            {
+                "ok": True,
+                "search": search_workspace_files(
+                    workspace_id,
+                    pattern,
+                    path=path,
+                    file_glob=file_glob,
+                    output_mode=output_mode,
+                    limit=limit,
+                ),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("file_search", exc)

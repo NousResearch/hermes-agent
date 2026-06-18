@@ -12,6 +12,8 @@ from mcp_profile_router import (
     RouterToolMetadata,
     assert_default_tools_are_no_model,
     create_workspace_metadata,
+    file_read,
+    file_search,
     get_router_tool_metadata,
     load_profile_router_policy,
     parse_profile_ref,
@@ -19,6 +21,7 @@ from mcp_profile_router import (
     profile_health,
     profiles_list,
     resolve_workspace_path,
+    workspace_open,
 )
 
 
@@ -96,7 +99,14 @@ def test_parse_profile_ref_requires_fully_qualified_ref():
 
 def test_router_tool_metadata_is_explicitly_no_model_by_default():
     metadata = get_router_tool_metadata()
-    assert set(metadata) == {"profiles_list", "profile_get", "profile_health"}
+    assert set(metadata) == {
+        "profiles_list",
+        "profile_get",
+        "profile_health",
+        "workspace_open",
+        "file_read",
+        "file_search",
+    }
     for tool in metadata.values():
         assert tool["cost_class"] == COST_CLASS_NO_MODEL
         assert tool["llm_calls"] == 0
@@ -273,6 +283,81 @@ def test_resolve_workspace_path_rejects_symlink_traversal(hermes_home, tmp_path)
         resolve_workspace_path(workspace, "link")
 
 
+def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    notes = workspace_root / "notes.md"
+    notes.write_text("alpha\nbeta\nalpha again\n", encoding="utf-8")
+    (workspace_root / ".env.local").write_text("SECRET=1\n", encoding="utf-8")
+    (workspace_root / "binary.bin").write_bytes(b"alpha\x00secret")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    assert opened["ok"] is True
+    assert opened["llm_calls"] == 0
+    workspace = opened["workspace"]
+    assert workspace["workspace_id"].startswith("ws_")
+    assert workspace["profile_ref"] == "local:main-bot"
+    assert workspace["read_only"] is True
+    assert "root" not in workspace
+
+    read_result = json.loads(file_read(workspace["workspace_id"], "notes.md", offset=2, limit=1))
+    assert read_result["ok"] is True
+    assert read_result["llm_calls"] == 0
+    assert read_result["file"]["content"] == "beta\n"
+    assert read_result["file"]["truncated"] is True
+
+    secret = json.loads(file_read(workspace["workspace_id"], ".env.local"))
+    assert secret["ok"] is False
+    assert secret["error"]["code"] == "secret_path_denied"
+    assert secret["llm_calls"] == 0
+
+    binary = json.loads(file_read(workspace["workspace_id"], "binary.bin"))
+    assert binary["ok"] is False
+    assert binary["error"]["code"] == "binary_file_not_supported"
+    assert binary["llm_calls"] == 0
+
+    search_result = json.loads(
+        file_search(workspace["workspace_id"], "alpha", file_glob="*.md")
+    )
+    assert search_result["ok"] is True
+    assert search_result["llm_calls"] == 0
+    assert [match["line"] for match in search_result["search"]["matches"]] == [1, 3]
+    assert search_result["search"]["skipped"]["binary"] == 0
+
+    files_only = json.loads(
+        file_search(
+            workspace["workspace_id"],
+            "alpha",
+            file_glob="*.md",
+            output_mode="files_only",
+        )
+    )
+    assert files_only["ok"] is True
+    assert files_only["search"]["files"] == ["notes.md"]
+    assert files_only["llm_calls"] == 0
+
+    missing_workspace = json.loads(file_read("ws_missing", "notes.md"))
+    assert missing_workspace["ok"] is False
+    assert missing_workspace["error"]["code"] == "workspace_not_found"
+    assert missing_workspace["llm_calls"] == 0
+
+
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
     result = json.loads(profiles_list())
     assert result["ok"] is True
@@ -388,9 +473,18 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
     server = mcp_serve.create_profile_router_mcp_server()
     tools = server._tool_manager._tools
 
-    assert set(tools) == {"profiles_list", "profile_get", "profile_health"}
+    assert set(tools) == {
+        "profiles_list",
+        "profile_get",
+        "profile_health",
+        "workspace_open",
+        "file_read",
+        "file_search",
+    }
     assert "messages_send" not in tools
     assert "conversations_list" not in tools
+    assert "terminal_run" not in tools
+    assert "file_write" not in tools
 
     listed = json.loads(tools["profiles_list"].fn())
     assert listed["ok"] is True

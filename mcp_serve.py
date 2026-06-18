@@ -876,9 +876,12 @@ def create_profile_router_mcp_server():
 
     from mcp_profile_router import (
         assert_default_tools_are_no_model,
+        file_read as _file_read,
+        file_search as _file_search,
         profile_get as _profile_get,
         profile_health as _profile_health,
         profiles_list as _profiles_list,
+        workspace_open as _workspace_open,
     )
 
     assert_default_tools_are_no_model()
@@ -886,9 +889,11 @@ def create_profile_router_mcp_server():
         "hermes-profile-router",
         instructions=(
             "Hermes Agent no-model profile router. This surface exposes only "
-            "read-only profile inventory tools: profiles_list, profile_get, "
-            "and profile_health. It does not expose conversation messaging, "
-            "filesystem, terminal, cron, or agent-loop execution tools."
+            "read-only profile inventory and policy-gated read-only workspace "
+            "tools: profiles_list, profile_get, profile_health, "
+            "workspace_open, file_read, and file_search. It does not expose "
+            "conversation messaging, write/patch, terminal, cron, or "
+            "agent-loop execution tools."
         ),
     )
 
@@ -906,6 +911,45 @@ def create_profile_router_mcp_server():
     def profile_health(profile_ref: str) -> str:
         """Report read-only profile health without invoking any model or tool."""
         return _profile_health(profile_ref)
+
+    @mcp.tool()
+    def workspace_open(profile_ref: str, root: str, mode: str = "checkout") -> str:
+        """Open a read-only, policy-gated workspace and return an opaque ID."""
+        return _workspace_open(profile_ref=profile_ref, root=root, mode=mode)
+
+    @mcp.tool()
+    def file_read(
+        workspace_id: str,
+        path: str,
+        offset: int | None = 1,
+        limit: int | None = 200,
+    ) -> str:
+        """Read a bounded text slice through an opened workspace ID."""
+        return _file_read(
+            workspace_id=workspace_id,
+            path=path,
+            offset=offset,
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def file_search(
+        workspace_id: str,
+        pattern: str,
+        path: str | None = None,
+        file_glob: str | None = None,
+        output_mode: str = "content",
+        limit: int | None = 50,
+    ) -> str:
+        """Search bounded text files through an opened workspace ID."""
+        return _file_search(
+            workspace_id=workspace_id,
+            pattern=pattern,
+            path=path,
+            file_glob=file_glob,
+            output_mode=output_mode,
+            limit=limit,
+        )
 
     return mcp
 

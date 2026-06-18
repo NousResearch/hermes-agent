@@ -1823,6 +1823,30 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 last_response = response
 
+            # If the final response failed with a token/auth error, rebuild the
+            # client and retry once. The lark_oapi SDK's built-in tenant access
+            # token refresh can become stale after long uptime, leaving the
+            # internal token cache in a broken state that survives normal retries.
+            # Rebuilding the client forces a fresh token fetch.
+            if (
+                not self._response_succeeded(last_response)
+                and self._is_token_error(last_response)
+            ):
+                logger.warning("[Feishu] Token/auth error detected (%s); rebuilding client and retrying",
+                               getattr(last_response, "code", "unknown"))
+                await self._rebuild_client()
+                last_response = None
+                for chunk in chunks:
+                    msg_type, payload = self._build_outbound_payload(chunk)
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type=msg_type,
+                        payload=payload,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                    last_response = response
+
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
@@ -4505,6 +4529,40 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
         return bool(response and getattr(response, "success", lambda: False)())
+
+    # Error codes indicating tenant access token / auth issues that may survive
+    # the SDK's built-in auto-refresh (long uptime stale state).
+    _TOKEN_ERROR_CODES = frozenset({
+        99991400,   # token expired
+        99991663,   # permission denied
+        99991664,   # access token invalid
+        99992402,   # field validation failed (often triggered by stale token)
+    })
+
+    def _is_token_error(self, response: Any) -> bool:
+        """Check if a failed response is likely a token/auth error."""
+        if not response or self._response_succeeded(response):
+            return False
+        code = getattr(response, "code", None)
+        if code is None:
+            return False
+        try:
+            code = int(code)
+        except (TypeError, ValueError):
+            return False
+        return code in self._TOKEN_ERROR_CODES
+
+    async def _rebuild_client(self) -> None:
+        """Rebuild the lark_oapi client to force a fresh tenant access token.
+
+        The SDK's internal token cache can become stale after long uptime,
+        causing all API calls to fail even though the credentials are valid.
+        Rebuilding the client discards the stale cache and triggers a new
+        token fetch on the next API call.
+        """
+        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        logger.info("[Feishu] Rebuilding lark client to refresh tenant access token")
+        self._client = self._build_lark_client(domain)
 
     @staticmethod
     def _extract_response_field(response: Any, field_name: str) -> Any:

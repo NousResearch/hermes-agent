@@ -1,8 +1,11 @@
 import { useMemo, type ReactNode } from "react";
 
+import { cn } from "@/lib/utils";
+
 /**
  * Lightweight markdown renderer for LLM output.
- * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
+ * Handles: code blocks, inline code, bold, italic, headers, links, lists,
+ * tables, horizontal rules.
  * NOT a full CommonMark parser — optimized for typical assistant message patterns.
  *
  * `streaming` renders a blinking caret at the tail of the last block so it
@@ -53,8 +56,11 @@ type BlockNode =
   | { type: "code"; lang: string; content: string }
   | { type: "heading"; level: number; content: string }
   | { type: "hr" }
+  | { type: "table"; headers: string[]; align: TableAlign[]; rows: string[][] }
   | { type: "list"; ordered: boolean; items: string[] }
   | { type: "paragraph"; content: string };
+
+type TableAlign = "left" | "center" | "right" | null;
 
 /* ------------------------------------------------------------------ */
 /*  Block parser                                                       */
@@ -102,6 +108,13 @@ function parseBlocks(text: string): BlockNode[] {
       continue;
     }
 
+    const table = parseTable(lines, i);
+    if (table) {
+      blocks.push(table.block);
+      i = table.nextIndex;
+      continue;
+    }
+
     // Unordered list
     if (/^[-*+]\s/.test(line)) {
       const items: string[] = [];
@@ -139,7 +152,8 @@ function parseBlocks(text: string): BlockNode[] {
       !lines[i].match(/^#{1,4}\s/) &&
       !lines[i].match(/^[-*+]\s/) &&
       !lines[i].match(/^\d+[.)]\s/) &&
-      !lines[i].match(/^[-*_]{3,}\s*$/)
+      !lines[i].match(/^[-*_]{3,}\s*$/) &&
+      !parseTable(lines, i)
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -150,6 +164,104 @@ function parseBlocks(text: string): BlockNode[] {
   }
 
   return blocks;
+}
+
+function parseTable(
+  lines: string[],
+  startIndex: number,
+): { block: Extract<BlockNode, { type: "table" }>; nextIndex: number } | null {
+  const headerLine = lines[startIndex];
+  const separatorLine = lines[startIndex + 1];
+  if (!headerLine || !separatorLine) return null;
+
+  const headers = splitTableRow(headerLine);
+  if (headers.length < 2) return null;
+
+  const align = parseTableSeparator(splitTableRow(separatorLine));
+  if (!align || align.length !== headers.length) return null;
+
+  const rows: string[][] = [];
+  let i = startIndex + 2;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line || line.trim() === "") break;
+    const cells = splitTableRow(line);
+    if (cells.length < 2) break;
+    rows.push(normalizeTableRow(cells, headers.length));
+    i++;
+  }
+
+  return {
+    block: {
+      type: "table",
+      headers: headers.map((cell) => cell.trim()),
+      align,
+      rows,
+    },
+    nextIndex: i,
+  };
+}
+
+function splitTableRow(line: string): string[] {
+  let text = line.trim();
+  if (!text.includes("|")) return [];
+  if (text.startsWith("|")) text = text.slice(1);
+  if (text.endsWith("|")) text = text.slice(0, -1);
+
+  const cells: string[] = [];
+  let current = "";
+  let escaped = false;
+  let inCode = false;
+
+  for (const char of text) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "`") {
+      inCode = !inCode;
+      current += char;
+      continue;
+    }
+    if (char === "|" && !inCode) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseTableSeparator(cells: string[]): TableAlign[] | null {
+  if (cells.length < 2) return null;
+  const align: TableAlign[] = [];
+
+  for (const raw of cells) {
+    const cell = raw.trim();
+    if (!/^:?-{3,}:?$/.test(cell)) return null;
+    const left = cell.startsWith(":");
+    const right = cell.endsWith(":");
+    align.push(left && right ? "center" : right ? "right" : left ? "left" : null);
+  }
+
+  return align;
+}
+
+function normalizeTableRow(cells: string[], length: number): string[] {
+  if (cells.length === length) return cells.map((cell) => cell.trim());
+  if (cells.length > length) return cells.slice(0, length).map((cell) => cell.trim());
+  return [
+    ...cells.map((cell) => cell.trim()),
+    ...Array.from({ length: length - cells.length }, () => ""),
+  ];
 }
 
 /* ------------------------------------------------------------------ */
@@ -200,6 +312,58 @@ function Block({
         </>
       );
 
+    case "table":
+      return (
+        <>
+          <div className="overflow-x-auto rounded border border-border">
+            <table className="min-w-full border-collapse text-sm">
+              <thead className="bg-muted/30 text-text-secondary">
+                <tr>
+                  {block.headers.map((header, i) => (
+                    <th
+                      key={i}
+                      className={cn(
+                        "border-b border-border px-3 py-2 font-semibold",
+                        tableAlignClass(block.align[i]),
+                      )}
+                    >
+                      <InlineContent
+                        text={header}
+                        highlightTerms={highlightTerms}
+                      />
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {block.rows.map((row, rowIndex) => (
+                  <tr
+                    key={rowIndex}
+                    className="border-b border-border/60 last:border-b-0"
+                  >
+                    {row.map((cell, cellIndex) => (
+                      <td
+                        key={cellIndex}
+                        className={cn(
+                          "px-3 py-2 align-top text-foreground",
+                          tableAlignClass(block.align[cellIndex]),
+                        )}
+                      >
+                        <InlineContent
+                          text={cell}
+                          highlightTerms={highlightTerms}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {caret}
+        </>
+      );
+
     case "list": {
       const Tag = block.ordered ? "ol" : "ul";
       const last = block.items.length - 1;
@@ -225,6 +389,12 @@ function Block({
         </p>
       );
   }
+}
+
+function tableAlignClass(align: TableAlign | undefined): string {
+  if (align === "center") return "text-center";
+  if (align === "right") return "text-right";
+  return "text-left";
 }
 
 /* ------------------------------------------------------------------ */

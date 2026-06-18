@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import unicodedata
-from typing import Optional
+from typing import Any, Optional
 from hermes_cli.config import cfg_get
 
 from utils import env_var_enabled, is_truthy_value
@@ -294,6 +294,13 @@ HARDLINE_PATTERNS_COMPILED = [
     for pattern, description in HARDLINE_PATTERNS
 ]
 
+# Pre-compiled user blocklist patterns. Built at module load time from
+# config.yaml's command_blocklist. Each user-provided pattern is
+# re.escape()'d and anchored with _CMDPOS + word boundary to prevent
+# false positives (e.g. "pip" matching "pipeline" or "uv" matching
+# "uvicorn").
+_BLOCKLIST_PATTERNS_COMPILED: list[tuple[re.Pattern, str]] = []
+
 
 # =========================================================================
 # Sudo stdin guard — block password guessing via "sudo -S"
@@ -342,6 +349,22 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+def detect_blocked_command(command: str) -> tuple[bool, str | None]:
+    """Check if a command matches any user-configured blocklist pattern.
+
+    Uses _CMDPOS anchoring + word boundaries (like the hardline patterns)
+    so "pip" blocks "pip install" but not "pipeline" or "equipment".
+
+    Returns:
+        (is_blocked, matching_pattern) or (False, None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern_re, raw_pattern in _BLOCKLIST_PATTERNS_COMPILED:
+        if pattern_re.search(normalized):
+            return (True, raw_pattern)
+    return (False, None)
+
+
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
     return {
@@ -354,6 +377,23 @@ def _hardline_block_result(description: str) -> dict:
             "approvals.mode=off, or cron approve mode. If you genuinely "
             "need to run it, run it yourself in a terminal outside the "
             "agent."
+        ),
+    }
+
+
+def _blocklist_block_result(pattern: str) -> dict[str, Any]:
+    """Build the standard block result for a user-configured blocklist match."""
+    return {
+        "approved": False,
+        "blocklisted": True,
+        "message": (
+            f"BLOCKED (user blocklist): '{pattern}' matches your "
+            f"command_blocklist entry. This command is on your configured "
+            f"blocklist and cannot be executed via the agent — not even "
+            f"with --yolo, /yolo, or approvals.mode=off. Remove it from "
+            f"command_blocklist in ~/.hermes/config.yaml if you need to "
+            f"run it, or run the command yourself in a terminal outside "
+            f"the agent."
         ),
     }
 
@@ -676,6 +716,7 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+_permanent_blocked: set[str] = set()
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -914,6 +955,39 @@ def save_permanent_allowlist(patterns: set):
         logger.warning("Could not save allowlist: %s", e)
 
 
+def load_permanent_blocklist() -> set[str]:
+    """Load permanently blocked command patterns from config."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        patterns = set(config.get("command_blocklist", []) or [])
+        with _lock:
+            _permanent_blocked.update(patterns)
+        return patterns
+    except Exception as e:
+        logger.warning("Failed to load blocklist: %s", e)
+        return set()
+
+
+def _compile_blocklist_patterns() -> None:
+    """(Re)build _BLOCKLIST_PATTERNS_COMPILED from _permanent_blocked.
+
+    Each user pattern is re.escape()'d and wrapped with _CMDPOS + word
+    boundary for safe regex matching. Call after loading from config.
+    """
+    global _BLOCKLIST_PATTERNS_COMPILED
+    compiled = []
+    with _lock:
+        for pattern in _permanent_blocked:
+            try:
+                escaped = re.escape(pattern)
+                regex = _CMDPOS + r'(' + escaped + r')\b'
+                compiled.append((re.compile(regex, _RE_FLAGS), pattern))
+            except Exception as e:
+                logger.warning("Failed to compile blocklist pattern %r: %s", pattern, e)
+        _BLOCKLIST_PATTERNS_COMPILED = compiled
+
+
 # =========================================================================
 # Approval prompting + orchestration
 # =========================================================================
@@ -1148,6 +1222,15 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
+    # == User-configured blocklist ==
+    # Check user-defined blocked patterns. This fires BEFORE the container
+    # skip so it applies even inside Docker/Modal — a user who explicitly
+    # blocks a command means it everywhere.
+    is_blocked, blocked_pattern = detect_blocked_command(command)
+    if is_blocked:
+        logger.warning("Blocklist match: %s (command: %s)", blocked_pattern, command[:200])
+        return _blocklist_block_result(blocked_pattern)
+
     if env_type in {"docker", "singularity", "modal", "daytona"}:
         return {"approved": True, "message": None}
 
@@ -1381,6 +1464,15 @@ def check_all_command_guards(command: str, env_type: str,
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
     """
+    # == User-configured blocklist ==
+    # Check user-defined blocked patterns. This fires BEFORE the container
+    # skip so it applies even inside Docker/Modal — a user who explicitly
+    # blocks a command means it everywhere.
+    is_blocked, blocked_pattern = detect_blocked_command(command)
+    if is_blocked:
+        logger.warning("Blocklist match: %s (command: %s)", blocked_pattern, command[:200])
+        return _blocklist_block_result(blocked_pattern)
+
     # Skip containers for both checks
     if env_type in {"docker", "singularity", "modal", "daytona"}:
         return {"approved": True, "message": None}
@@ -1697,6 +1789,17 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         "approval is one-shot for this run."
     )
 
+    # == User-configured blocklist ==
+    # Check user-defined blocked patterns. This fires BEFORE the container
+    # skip so it applies even inside Docker/Modal — a user who explicitly
+    # blocks a command means it everywhere.
+    # For execute_code, we check the synthetic command representation.
+    command = f"execute_code <<'PY'\n{code}\nPY"
+    is_blocked, blocked_pattern = detect_blocked_command(command)
+    if is_blocked:
+        logger.warning("Blocklist match: %s (execute_code)", blocked_pattern)
+        return _blocklist_block_result(blocked_pattern)
+
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command.
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
@@ -1852,5 +1955,7 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "user_approved": True, "description": description}
 
 
-# Load permanent allowlist from config on module import
+# Load permanent allowlist and blocklist from config on module import
 load_permanent_allowlist()
+load_permanent_blocklist()
+_compile_blocklist_patterns()

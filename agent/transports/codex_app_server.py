@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -28,6 +29,19 @@ from typing import Any, Optional
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+
+
+def _resolve_codex_bin(codex_bin: str) -> str:
+    """Resolve a bare command name to its full path for subprocess use.
+
+    On Windows, `npm i -g @openai/codex` installs `codex.CMD` (not
+    `codex.exe`). Passing the bare name `"codex"` to subprocess without
+    `shell=True` fails with `[WinError 2]` because `CreateProcess` does
+    not search `PATHEXT`. `shutil.which` resolves the real launcher
+    (e.g. `codex.CMD`); fall back to the original name so the existing
+    not-found handling still fires when codex genuinely isn't installed.
+    """
+    return shutil.which(codex_bin) or codex_bin
 
 
 @dataclass
@@ -110,7 +124,7 @@ class CodexAppServerClient:
                 ]
             )
 
-        cmd = [codex_bin, "app-server"] + app_server_args
+        cmd = [_resolve_codex_bin(codex_bin), "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
@@ -374,7 +388,7 @@ def check_codex_binary(
     Returns (ok, message). Used by setup wizard and runtime startup."""
     try:
         proc = subprocess.run(
-            [codex_bin, "--version"],
+            [_resolve_codex_bin(codex_bin), "--version"],
             capture_output=True,
             text=True,
             timeout=10,

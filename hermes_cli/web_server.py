@@ -122,15 +122,35 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     a user creates in the app would never fire. We run a minimal ticker here
     (no live adapters; delivery falls back to the per-platform send path).
 
-    Cross-process safe: ``cron.scheduler.tick`` takes the ``cron/.tick.lock``
-    file lock, so this never double-fires alongside a real gateway on the same
-    HERMES_HOME — whichever process grabs the lock first wins the tick.
+    If a real gateway is already running for this HERMES_HOME, the desktop
+    ticker must stand down. Some macOS TCC permissions (Calendar/EventKit in
+    particular) are attached to the process context that wins the cron lock.
+    Letting the dashboard race the gateway can make cron jobs run from a
+    different, unauthorized requester even though the gateway can run them.
     """
     from cron.scheduler import tick as cron_tick
 
     _log.info("Desktop cron ticker started (interval=%ds)", interval)
+    skipped_for_gateway = False
     # Tick once up front (catches jobs due at launch), then on the interval.
     while not stop_event.is_set():
+        try:
+            gateway_pid = get_running_pid(cleanup_stale=True)
+        except Exception as e:
+            gateway_pid = None
+            _log.debug("Desktop cron gateway probe failed: %s", e)
+
+        if gateway_pid is not None and gateway_pid != os.getpid():
+            if not skipped_for_gateway:
+                _log.info(
+                    "Desktop cron ticker standing down; gateway PID %s owns cron",
+                    gateway_pid,
+                )
+                skipped_for_gateway = True
+            stop_event.wait(interval)
+            continue
+
+        skipped_for_gateway = False
         try:
             cron_tick(verbose=False, sync=False)
         except Exception as e:

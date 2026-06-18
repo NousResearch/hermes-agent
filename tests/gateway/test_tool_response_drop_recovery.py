@@ -256,3 +256,122 @@ class TestUnrecoverableDropIsLoud:
             "response_delivery_dropped" in r.getMessage()
             for r in caplog.records if r.levelno == logging.ERROR
         ), [r.getMessage() for r in caplog.records]
+
+
+# ===========================================================================
+# Issue #44212: post-/stop stale interrupt silently swallows the next message
+# ===========================================================================
+
+class TestPostStopInterruptSwallow:
+    """A `/stop` sets ``_interrupt_requested`` on the session's cached agent,
+    but the flag is only cleared by the turn finalizer.  When the stopped run
+    is hung or still draining, the flag survives the lock release and the
+    session's NEXT message is killed at the top of the tool loop —
+    ``interrupted=True, api_calls=0, final_response=""`` — which
+    ``_normalize_empty_agent_response`` used to pass through as pure silence.
+
+    Two-layer fix: ``_interrupt_and_clear_session`` evicts the cached agent
+    (root cause), and the normalizer surfaces a notice for interrupted runs
+    that never made an API call (a swallowed user turn, not a drain)."""
+
+    def test_interrupted_zero_api_calls_surfaces_notice(self):
+        """Interrupted before the first API call → the user's message was
+        never processed; silence here swallows it (the #44212 malign shape:
+        ``response ready ... api_calls=0 response=0 chars``)."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "partial": False,
+            "interrupted": True,
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert response != "", "A turn killed before doing any work must not be silent"
+        assert "send it again" in response.lower()
+
+    def test_interrupted_after_work_stays_silent(self):
+        """Interrupted mid-work → this is the drain of a run the user
+        deliberately stopped/steered; its silence is intentional (any
+        queued/interrupting message is delivered by the recursive drain
+        inside _run_agent)."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 3,
+            "partial": False,
+            "interrupted": True,
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert response == ""
+
+    def test_uninterrupted_zero_api_calls_stays_silent(self):
+        """No interrupt and no work — unchanged behavior."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "partial": False,
+            "interrupted": False,
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert response == ""
+
+    @pytest.mark.asyncio
+    async def test_interrupt_and_clear_session_evicts_cached_agent(self):
+        """The control-interrupt path must evict the session's cached agent
+        so its ``_interrupt_requested`` flag cannot leak into the next turn."""
+        import threading
+
+        from gateway.run import GatewayRunner, _INTERRUPT_REASON_STOP
+
+        class _RecordingAgent:
+            def __init__(self):
+                self.interrupt_reasons = []
+
+            def interrupt(self, reason=None):
+                self.interrupt_reasons.append(reason)
+
+        agent = _RecordingAgent()
+        session_key = "agent:main:telegram:dm:12345"
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+        )
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {session_key: agent}
+        runner._agent_cache = {session_key: (agent, "config-sig")}
+        runner._agent_cache_lock = threading.Lock()
+        runner.adapters = {}
+        runner._pending_messages = {}
+
+        invalidated = []
+        runner._invalidate_session_run_generation = (
+            lambda key, reason=None: invalidated.append((key, reason))
+        )
+        released = []
+        runner._release_running_agent_state = (
+            lambda key, **kw: released.append(key)
+        )
+
+        await runner._interrupt_and_clear_session(
+            session_key,
+            source,
+            interrupt_reason=_INTERRUPT_REASON_STOP,
+            invalidation_reason="stop_command",
+        )
+
+        assert agent.interrupt_reasons == [_INTERRUPT_REASON_STOP]
+        assert released == [session_key]
+        assert session_key not in runner._agent_cache, (
+            "Cached agent with a set interrupt flag must be evicted on /stop "
+            "so the flag cannot kill the session's next message (#44212)"
+        )

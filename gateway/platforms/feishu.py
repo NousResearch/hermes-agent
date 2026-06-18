@@ -3129,7 +3129,23 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        parent_media_urls: List[str] = []
+        parent_media_types: List[str] = []
+        if reply_to_message_id:
+            reply_to_text, parent_media_urls, parent_media_types = (
+                await self._fetch_parent_message_with_media(reply_to_message_id)
+            )
+        else:
+            reply_to_text = None
+        if parent_media_urls:
+            media_urls = list(media_urls) + parent_media_urls
+            media_types = list(media_types) + parent_media_types
+        # If the current message is plain text but the quoted message has media, upgrade type
+        if inbound_type == MessageType.TEXT and parent_media_types:
+            try:
+                inbound_type = MessageType(parent_media_types[0])
+            except ValueError:
+                inbound_type = MessageType.PHOTO
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -4054,6 +4070,57 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _fetch_parent_message_with_media(
+        self, message_id: str
+    ) -> tuple[Optional[str], List[str], List[str]]:
+        """Fetch a parent/quoted message and return (text, media_urls, media_types).
+
+        Unlike _fetch_message_text, this also downloads images and files attached to
+        the quoted message so Hermes can see them when the user replies to a media message.
+        """
+        if not self._client or not message_id:
+            return None, [], []
+        # Text-only result may already be cached; re-use it (media already empty for pure-text).
+        if message_id in self._message_text_cache:
+            return self._message_text_cache[message_id], [], []
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
+                return None, [], []
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            parent = items[0] if items else None
+            body = getattr(parent, "body", None)
+            msg_type = getattr(parent, "msg_type", "") or ""
+            raw_content = getattr(body, "content", "") or ""
+            parent_mentions = getattr(parent, "mentions", None) if parent else None
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
+                raw_content=raw_content,
+                mentions=parent_mentions,
+                bot=self._bot_identity(),
+            )
+            text = normalized.text_content
+            if not text:
+                placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
+                text = str(placeholder).strip() or None
+            self._message_text_cache[message_id] = text
+            while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+                self._message_text_cache.popitem(last=False)
+
+            # Download images and files from the quoted message
+            media_urls, media_types = await self._download_feishu_message_resources(
+                message_id=message_id,
+                normalized=normalized,
+            )
+            return text, media_urls, media_types
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            return None, [], []
 
     def _extract_text_from_raw_content(
         self,

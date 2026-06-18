@@ -4944,3 +4944,146 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuFetchParentMessageWithMedia(unittest.TestCase):
+    """Tests for _fetch_parent_message_with_media — the fix for quoted-message media passthrough."""
+
+    def _build_adapter(self):
+        from collections import OrderedDict
+
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._message_text_cache = OrderedDict()
+        adapter._client = Mock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        return adapter
+
+    def _make_response(self, msg_type: str, content: str):
+        parent = SimpleNamespace(
+            body=SimpleNamespace(content=content),
+            msg_type=msg_type,
+            mentions=[],
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        return response
+
+    def test_returns_text_and_empty_media_for_text_message(self):
+        adapter = self._build_adapter()
+        adapter._client.im.v1.message.get = Mock(
+            return_value=self._make_response("text", json.dumps({"text": "hello"}))
+        )
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_parent_message_with_media("om_parent")
+        )
+        self.assertEqual(text, "hello")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    def test_returns_media_urls_for_image_message(self):
+        adapter = self._build_adapter()
+        adapter._client.im.v1.message.get = Mock(
+            return_value=self._make_response(
+                "image", json.dumps({"image_key": "img_abc123"})
+            )
+        )
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/tmp/img.jpg"], ["image/jpeg"])
+        )
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_parent_message_with_media("om_img")
+        )
+        self.assertEqual(media_urls, ["/tmp/img.jpg"])
+        self.assertEqual(media_types, ["image/jpeg"])
+
+    def test_cache_hit_returns_cached_text_with_empty_media(self):
+        from collections import OrderedDict
+
+        adapter = self._build_adapter()
+        adapter._message_text_cache = OrderedDict({"om_cached": "cached text"})
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_parent_message_with_media("om_cached")
+        )
+        self.assertEqual(text, "cached text")
+        self.assertEqual(media_urls, [])
+        # Should not call the API
+        adapter._client.im.v1.message.get.assert_not_called()
+
+    def test_returns_none_and_empty_lists_on_api_failure(self):
+        adapter = self._build_adapter()
+        response = Mock()
+        response.success = Mock(return_value=False)
+        response.code = 404
+        response.msg = "not found"
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_parent_message_with_media("om_missing")
+        )
+        self.assertIsNone(text)
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    def test_returns_none_and_empty_lists_when_no_client(self):
+        adapter = self._build_adapter()
+        adapter._client = None
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_parent_message_with_media("om_any")
+        )
+        self.assertIsNone(text)
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    def test_process_inbound_message_merges_parent_media(self):
+        """When replying to an image message, parent media is merged into the event."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "User", "user_id_alt": None}
+        )
+        # Simulate: quoted message is an image
+        adapter._fetch_parent_message_with_media = AsyncMock(
+            return_value=("[image]", ["/tmp/parent_img.jpg"], ["image/jpeg"])
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id="om_img_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"what is in this image?"}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertIn("/tmp/parent_img.jpg", event.media_urls)
+        self.assertEqual(event.reply_to_text, "[image]")

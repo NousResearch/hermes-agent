@@ -41,11 +41,12 @@ import uuid
 import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ _OPENVIKING_ENV_KEYS = (
     "OPENVIKING_AGENT",
 )
 _TIMEOUT = 30.0
+_SESSION_DRAIN_TIMEOUT = 10.0
+_DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
@@ -140,6 +143,19 @@ def _format_openviking_exception(error: Exception) -> str:
     return _sanitize_openviking_error_message(str(error), status_code)
 
 
+def _derive_openviking_user_text(content: Any) -> str:
+    """Strip Hermes slash-skill scaffolding before sending content to OpenViking.
+
+    Defense-in-depth: MemoryManager already strips skill scaffolding for the
+    whole provider fan-out (see ``MemoryManager._strip_skill_scaffolding``), so
+    in normal operation this receives already-clean text and passes it through
+    unchanged. It stays here so OpenViking is correct if its hooks are ever
+    invoked outside the manager. Delegates to the canonical extractor in
+    ``agent.skill_commands`` — no duplicated marker literals, no drift risk.
+    """
+    return extract_user_instruction_from_skill_message(content) or ""
+
+
 # ---------------------------------------------------------------------------
 # Process-level atexit safety net — ensures pending sessions are committed
 # even if shutdown_memory_provider is never called (e.g. gateway crash,
@@ -185,8 +201,12 @@ class _VikingClient:
                  agent: Optional[str] = None):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        self._account = account if account is not None else os.environ.get("OPENVIKING_ACCOUNT", _DEFAULT_ACCOUNT)
-        self._user = user if user is not None else os.environ.get("OPENVIKING_USER", _DEFAULT_USER)
+        # Empty account/user fall back to "default" and the tenant headers are
+        # always sent — ROOT API keys require them (preserves the merged
+        # contract from #22414/#21232; an empty string must NOT omit the
+        # header). Use `or` (not `is not None`) so "" also falls back.
+        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
+        self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
         self._httpx = _get_httpx()
         if self._httpx is None:
@@ -738,6 +758,22 @@ def _restrict_secret_file_permissions(path: Path) -> None:
         logger.debug("Could not restrict permissions on %s: %s", path, e)
 
 
+def _precreate_secret_file(path: Path) -> None:
+    """Create (or tighten) a secret-bearing file with 0600 BEFORE writing.
+
+    Writing the file first and chmod-ing afterwards leaves a window where a
+    freshly-created file is world-readable under the default umask (e.g. 0644),
+    briefly exposing the api_key/root_api_key. Pre-creating with 0600 closes
+    that window; an existing file is tightened to 0600 here too.
+    """
+    try:
+        if not path.exists():
+            os.close(os.open(str(path), os.O_CREAT | os.O_WRONLY, 0o600))
+        _restrict_secret_file_permissions(path)
+    except OSError as e:
+        logger.debug("Could not pre-create secret file %s: %s", path, e)
+
+
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
@@ -756,6 +792,8 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
     for key, val in env_writes.items():
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
+    # Pre-create with 0600 so secrets are never briefly world-readable.
+    _precreate_secret_file(env_path)
     env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
     _restrict_secret_file_permissions(env_path)
 
@@ -790,6 +828,8 @@ def _ovcli_data_from_connection_values(values: dict) -> dict:
 
 def _write_ovcli_config(path: Path, values: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-create with 0600 so secrets are never briefly world-readable.
+    _precreate_secret_file(path)
     path.write_text(json.dumps(_ovcli_data_from_connection_values(values), indent=2) + "\n", encoding="utf-8")
     _restrict_secret_file_permissions(path)
 
@@ -1582,12 +1622,37 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._api_key = ""
         self._session_id = ""
         self._turn_count = 0
-        self._sync_thread: Optional[threading.Thread] = None
+        # Guards the (_session_id, _turn_count) pair. sync_turn runs on the
+        # MemoryManager's background sync executor while on_session_end /
+        # on_session_switch run on the caller's thread, so the snapshot+reset
+        # of the turn counter and the session-id rotation must be atomic
+        # against a concurrent increment. See hermes-agent#28296 review.
+        self._session_state_lock = threading.Lock()
+        # Commit only after session writes drain. The set is keyed by the sid
+        # the writer is POSTing under (snapshotted at spawn), so on_session_end
+        # / on_session_switch see every still-alive writer for that sid even
+        # if later writes have replaced the latest-tracked thread.
+        self._inflight_writers: Dict[str, Set[threading.Thread]] = {}
+        self._inflight_lock = threading.Lock()
+        self._deferred_commit_sids: Set[str] = set()
+        self._deferred_commit_threads: Set[threading.Thread] = set()
+        self._deferred_commit_lock = threading.Lock()
+        self._committed_session_ids: Set[str] = set()
+        self._committed_session_lock = threading.Lock()
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._runtime_start_lock = threading.Lock()
         self._runtime_start_thread: Optional[threading.Thread] = None
+        # All prefetch threads ever spawned (daemon, short-lived). Tracked so
+        # shutdown() can drain them and rapid re-queues don't orphan a still-
+        # running thread by overwriting the single _prefetch_thread slot.
+        self._prefetch_threads: Set[threading.Thread] = set()
+        # Set on shutdown so deferred-commit / writer finalizers stop issuing
+        # network writes against a torn-down provider.
+        self._shutting_down = False
+        # Drop prefetch results from older switch generations.
+        self._prefetch_generation = 0
 
     @property
     def name(self) -> str:
@@ -1928,8 +1993,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""
+        query = _derive_openviking_user_text(query)
         if not self._client or not query:
             return
+
+        # Drop prefetch results from older switch generations.
+        with self._prefetch_lock:
+            gen = self._prefetch_generation
+
+        holder: List[threading.Thread] = []
 
         def _run():
             try:
@@ -1939,7 +2011,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
                 resp = client.post("/api/v1/search/find", {
                     "query": query,
-                    "top_k": 5,
+                    "limit": 5,
                 })
                 result = resp.get("result", {})
                 parts = []
@@ -1953,51 +2025,280 @@ class OpenVikingMemoryProvider(MemoryProvider):
                             parts.append(f"- [{score:.2f}] {abstract} ({uri})")
                 if parts:
                     with self._prefetch_lock:
+                        if gen != self._prefetch_generation:
+                            return
                         self._prefetch_result = "\n".join(parts)
             except Exception as e:
                 logger.debug("OpenViking prefetch failed: %s", e)
+            finally:
+                with self._prefetch_lock:
+                    if holder:
+                        self._prefetch_threads.discard(holder[0])
 
-        self._prefetch_thread = threading.Thread(
+        thread = threading.Thread(
             target=_run, daemon=True, name="openviking-prefetch"
         )
-        self._prefetch_thread.start()
+        holder.append(thread)
+        with self._prefetch_lock:
+            self._prefetch_thread = thread
+            self._prefetch_threads.add(thread)
+        thread.start()
+
+    def _spawn_writer(self, sid: str, target: Callable[[], None], name: str) -> None:
+        """Spawn a daemon writer tracked in _inflight_writers[sid].
+
+        Tracking is keyed by sid (not by a single latest-thread slot) so that
+        on_session_end / on_session_switch can drain every still-alive writer
+        for the session being committed.
+        """
+        holder: List[threading.Thread] = []
+
+        def _wrapped():
+            try:
+                target()
+            finally:
+                with self._inflight_lock:
+                    workers = self._inflight_writers.get(sid)
+                    if workers is not None:
+                        workers.discard(holder[0])
+                        if not workers:
+                            self._inflight_writers.pop(sid, None)
+
+        thread = threading.Thread(target=_wrapped, daemon=True, name=name)
+        holder.append(thread)
+        with self._inflight_lock:
+            self._inflight_writers.setdefault(sid, set()).add(thread)
+        thread.start()
+
+    def _drain_finalizers(self, timeout: float) -> bool:
+        """Join every in-flight async session finalizer within a timeout.
+
+        The switch-path commit runs on a daemon finalizer thread so it never
+        blocks the caller's command thread; this lets shutdown and tests wait
+        for those commits deterministically. Returns True if all drained.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._deferred_commit_lock:
+                workers = [t for t in self._deferred_commit_threads if t.is_alive()]
+            if not workers:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            for t in workers:
+                slice_left = deadline - time.monotonic()
+                if slice_left <= 0:
+                    break
+                # Floor the per-join wait so a thread whose join() returns
+                # instantly while still reporting alive can't hot-spin this loop.
+                t.join(timeout=min(slice_left, 0.05))
+
+    def _drain_writers(self, sid: str, timeout: float) -> bool:
+        """Join every in-flight writer for sid within a shared timeout budget.
+
+        Returns True if all writers drained, False if any are still alive when
+        the budget runs out. Callers use the False return to skip the commit.
+        """
+        if not sid:
+            return True
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._inflight_lock:
+                workers = [t for t in self._inflight_writers.get(sid, ()) if t.is_alive()]
+            if not workers:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            for t in workers:
+                slice_left = deadline - time.monotonic()
+                if slice_left <= 0:
+                    break
+                t.join(timeout=slice_left)
+
+    def _new_client(self) -> _VikingClient:
+        return _VikingClient(
+            self._endpoint,
+            self._api_key,
+            account=self._account,
+            user=self._user,
+            agent=self._agent,
+        )
+
+    @staticmethod
+    def _text_part(content: str) -> Dict[str, str]:
+        return {"type": "text", "text": content}
+
+    @classmethod
+    def _turn_batch_payload(cls, user_content: str, assistant_content: str) -> Dict[str, Any]:
+        return {
+            "messages": [
+                {"role": "user", "parts": [cls._text_part(user_content)]},
+                {"role": "assistant", "parts": [cls._text_part(assistant_content)]},
+            ]
+        }
+
+    @classmethod
+    def _post_session_turn(
+        cls,
+        client: _VikingClient,
+        sid: str,
+        user_content: str,
+        assistant_content: str,
+    ) -> None:
+        client.post(
+            f"/api/v1/sessions/{sid}/messages/batch",
+            cls._turn_batch_payload(user_content, assistant_content),
+        )
+
+    def _session_has_pending_tokens(self, sid: str) -> bool:
+        try:
+            response = self._client.get(f"/api/v1/sessions/{sid}")
+        except Exception:
+            return False
+        session = self._unwrap_result(response)
+        if not isinstance(session, dict):
+            return False
+        try:
+            return int(session.get("pending_tokens") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _has_committed_session(self, sid: str) -> bool:
+        with self._committed_session_lock:
+            return sid in self._committed_session_ids
+
+    def _mark_session_committed(self, sid: str) -> None:
+        with self._committed_session_lock:
+            self._committed_session_ids.add(sid)
+
+    def _session_needs_commit(self, sid: str, turn_count: int) -> bool:
+        # Already-committed sessions never need a second commit, regardless of
+        # the turn counter — a racing sync_turn can re-increment _turn_count
+        # after a commit+reset, so the committed-guard must win over turn_count.
+        if self._has_committed_session(sid):
+            return False
+        if turn_count > 0:
+            return True
+        return self._session_has_pending_tokens(sid)
+
+    def _commit_session(self, sid: str, turn_count: int, *, context: str) -> bool:
+        try:
+            self._client.post(f"/api/v1/sessions/{sid}/commit")
+            self._mark_session_committed(sid)
+            logger.info("OpenViking session %s committed %s (%d turns)", sid, context, turn_count)
+            return True
+        except Exception as e:
+            logger.warning("OpenViking session commit failed for %s: %s", sid, e)
+            return False
+
+    def _finalize_session_async(self, sid: str, turn_count: int, *, context: str) -> None:
+        """Drain the old session's writers and commit it on a daemon thread.
+
+        Used by on_session_switch (and the deferred-commit fallback) so the
+        potentially-multi-second drain + pending-token GET + commit POST never
+        runs on the caller's command thread. Deduped by sid so a rapid second
+        switch can't stack two finalizers for the same session, and a no-op
+        once shutdown has begun so we don't POST against a torn-down client.
+        """
+        if not sid:
+            return
+        with self._deferred_commit_lock:
+            if self._shutting_down or sid in self._deferred_commit_sids:
+                return
+            self._deferred_commit_sids.add(sid)
+
+        holder: List[threading.Thread] = []
+
+        def _finalize() -> None:
+            try:
+                if self._shutting_down:
+                    return
+                if not self._drain_writers(sid, timeout=_DEFERRED_COMMIT_TIMEOUT):
+                    logger.warning(
+                        "OpenViking writer for %s still alive after drain — "
+                        "leaving session uncommitted",
+                        sid,
+                    )
+                    return
+                if self._shutting_down:
+                    return
+                if self._session_needs_commit(sid, turn_count):
+                    self._commit_session(sid, turn_count, context=context)
+            finally:
+                with self._deferred_commit_lock:
+                    self._deferred_commit_sids.discard(sid)
+                    if holder:
+                        self._deferred_commit_threads.discard(holder[0])
+
+        thread = threading.Thread(
+            target=_finalize,
+            daemon=True,
+            name=f"openviking-finalize-{sid}",
+        )
+        holder.append(thread)
+        with self._deferred_commit_lock:
+            self._deferred_commit_threads.add(thread)
+        thread.start()
+
+    def _invalidate_prefetch_state(self) -> None:
+        # Bump the generation under the same lock used by prefetch workers so
+        # late results from an older session are discarded deterministically.
+        with self._prefetch_lock:
+            self._prefetch_generation += 1
+            self._prefetch_result = ""
+            # Join EVERY tracked prefetch thread, not just the latest slot — a
+            # rapid re-queue can leave an older thread for the abandoned session
+            # still running (consistent with shutdown()).
+            workers = [t for t in self._prefetch_threads if t.is_alive()]
+        for t in workers:
+            t.join(timeout=3.0)
+        with self._prefetch_lock:
+            self._prefetch_result = ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in OpenViking's session (non-blocking)."""
         if not self._client:
             return
 
-        self._turn_count += 1
+        user_content = _derive_openviking_user_text(user_content)
+        if not user_content:
+            return
+
+        # Snapshot the sid and bump the turn counter atomically so a
+        # concurrent on_session_switch/on_session_end can't interleave its
+        # snapshot+reset between the read and the increment (lost turn) and so
+        # the turn is unambiguously attributed to the session it targets.
+        with self._session_state_lock:
+            sid = str(session_id or self._session_id).strip()
+            if not sid:
+                return
+            self._turn_count += 1
 
         def _sync():
             try:
-                client = _VikingClient(
-                    self._endpoint, self._api_key,
-                    account=self._account, user=self._user, agent=self._agent,
+                client = self._new_client()
+                self._post_session_turn(
+                    client,
+                    sid,
+                    user_content[:4000],
+                    assistant_content[:4000],
                 )
-                sid = self._session_id
-
-                # Add user message
-                client.post(f"/api/v1/sessions/{sid}/messages", {
-                    "role": "user",
-                    "content": user_content[:4000],  # trim very long messages
-                })
-                # Add assistant message
-                client.post(f"/api/v1/sessions/{sid}/messages", {
-                    "role": "assistant",
-                    "content": assistant_content[:4000],
-                })
             except Exception as e:
-                logger.debug("OpenViking sync_turn failed: %s", e)
+                logger.debug("OpenViking sync_turn failed, reconnecting: %s", e)
+                try:
+                    client = self._new_client()
+                    self._post_session_turn(
+                        client,
+                        sid,
+                        user_content[:4000],
+                        assistant_content[:4000],
+                    )
+                except Exception as retry_error:
+                    logger.warning("OpenViking sync_turn failed: %s", retry_error)
 
-        # Wait for any previous sync to finish before starting a new one
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="openviking-sync"
-        )
-        self._sync_thread.start()
+        self._spawn_writer(sid, _sync, name="openviking-sync")
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Commit the session to trigger memory extraction.
@@ -2008,20 +2309,98 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not self._client:
             return
 
-        # Wait for any pending sync to finish first — do this before the
-        # turn_count check so the last turn's messages are flushed even if
-        # the count hasn't been incremented yet.
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=10.0)
+        # Snapshot sid + turn count atomically against a concurrent sync_turn
+        # increment. on_session_end runs at teardown so the drain+commit stays
+        # synchronous here (we want it to land before the process exits), but
+        # the counter read must still be consistent.
+        with self._session_state_lock:
+            sid = self._session_id
+            turn_count = self._turn_count
 
-        if self._turn_count == 0:
+        # Commit only after session writes drain.
+        if not self._drain_writers(sid, timeout=_SESSION_DRAIN_TIMEOUT):
+            logger.warning(
+                "OpenViking writer for %s still alive after drain — skipping commit",
+                sid,
+            )
             return
 
-        try:
-            self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
-            logger.info("OpenViking session %s committed (%d turns)", self._session_id, self._turn_count)
-        except Exception as e:
-            logger.warning("OpenViking session commit failed: %s", e)
+        if not self._session_needs_commit(sid, turn_count):
+            return
+
+        if self._commit_session(sid, turn_count, context="on session end"):
+            # Mark clean so a follow-up on_session_switch skips its own commit.
+            with self._session_state_lock:
+                if self._session_id == sid:
+                    self._turn_count = 0
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Commit the old session and rotate cached state to the new session_id.
+
+        Fires on /resume, /branch, /reset, /new, and context compression.
+        Without this hook, ``_session_id`` stays stuck at the value
+        ``initialize()`` cached, so subsequent ``sync_turn()`` writes land in
+        the already-closed old session and ``on_session_end()`` tries to
+        commit it a second time. The new session never accumulates messages,
+        and memory extraction never fires for it. See hermes-agent#28296.
+
+        Flushes any in-flight sync under the old session_id, commits the old
+        session if it has pending turns (same extraction semantics as
+        ``on_session_end``), drains and clears any stale prefetch result,
+        then rotates ``_session_id`` and resets ``_turn_count``.
+        """
+        new_id = str(new_session_id or "").strip()
+        if not new_id or not self._client:
+            return
+
+        rewound = bool(kwargs.get("rewound"))
+
+        # Rotate cached session state synchronously (cheap, in-memory) and
+        # snapshot the old session under the lock so a concurrent sync_turn
+        # either lands fully before the rotation (counted under old) or fully
+        # after (counted under new) — never split. The OLD session's commit
+        # (drain + pending-token GET + commit POST, potentially many seconds)
+        # is then offloaded so /new, /branch, /resume, /undo never block the
+        # caller's command thread (cf. the end-of-turn-sync offload in #41945).
+        with self._session_state_lock:
+            old_session_id = self._session_id
+            old_turn_count = self._turn_count
+            rotate = not (rewound or new_id == old_session_id)
+            if rotate:
+                self._session_id = new_id
+                self._turn_count = 0
+
+        # Invalidate stale prefetch OUTSIDE the session lock — it takes its own
+        # _prefetch_lock and may join a prefetch thread for up to 3s, which we
+        # must not do while holding the session lock (would block sync_turn and
+        # risk lock-ordering coupling).
+        self._invalidate_prefetch_state()
+
+        if not rotate:
+            # Same-session rewind (/undo) or no-op rotation: no commit, no
+            # counter reset — just the prefetch invalidation above.
+            logger.debug(
+                "OpenViking on_session_switch invalidated state without rotation: "
+                "session=%s rewound=%s",
+                old_session_id, rewound,
+            )
+            return
+
+        # Drain + commit the OLD session off the command thread.
+        if old_session_id:
+            self._finalize_session_async(old_session_id, old_turn_count, context="on switch")
+
+        logger.debug(
+            "OpenViking on_session_switch: old=%s new=%s parent=%s reset=%s",
+            old_session_id, new_id, parent_session_id, reset,
+        )
 
     def _build_memory_uri(self, subdir: str) -> str:
         """Build a viking:// memory URI under the configured user/agent/subdir."""
@@ -2082,11 +2461,28 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return tool_error(str(e))
 
     def shutdown(self) -> None:
-        # Wait for background threads to finish
-        for t in (self._sync_thread, self._prefetch_thread):
-            if t and t.is_alive():
+        # Stop deferred finalizers from issuing new commits against a
+        # torn-down client, then drain everything still in flight.
+        self._shutting_down = True
+        # Wait for every in-flight writer across all tracked sessions.
+        with self._inflight_lock:
+            all_workers = [
+                t for workers in self._inflight_writers.values() for t in workers
+            ]
+        with self._deferred_commit_lock:
+            deferred_workers = list(self._deferred_commit_threads)
+        with self._prefetch_lock:
+            prefetch_workers = list(self._prefetch_threads)
+        for t in all_workers:
+            if t.is_alive():
                 t.join(timeout=5.0)
-        # Clear atexit reference so it doesn't double-commit
+        for t in deferred_workers:
+            if t.is_alive():
+                t.join(timeout=5.0)
+        for t in prefetch_workers:
+            if t.is_alive():
+                t.join(timeout=5.0)
+        # Clear atexit reference so it doesn't double-commit.
         global _last_active_provider
         if _last_active_provider is self:
             _last_active_provider = None
@@ -2145,7 +2541,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if args.get("scope"):
             payload["target_uri"] = args["scope"]
         if args.get("limit"):
-            payload["top_k"] = args["limit"]
+            payload["limit"] = args["limit"]
 
         resp = self._client.post("/api/v1/search/find", payload)
         result = resp.get("result", {})

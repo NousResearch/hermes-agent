@@ -430,6 +430,10 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      defaultsLabel: string
+      reasoning: string
+      reasoningOff: string
+      defaultsFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
       auxiliaryDesc: string
@@ -1369,6 +1373,7 @@ export interface Translations {
       refresh: string
       moreActions: string
       branchNewChat: string
+      dismissError: string
       readAloudFailed: string
       preparingAudio: string
       stopReading: string
@@ -1476,6 +1481,9 @@ export interface Translations {
     regenerateFailed: string
     editFailed: string
     resumeFailed: string
+    resumeStrandedTitle: string
+    resumeStrandedBody: string
+    resumeRetry: string
     nothingToBranch: string
     branchNeedsChat: string
     sessionBusy: string

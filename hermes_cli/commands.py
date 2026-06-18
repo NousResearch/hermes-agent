@@ -1280,6 +1280,10 @@ class SlashCommandCompleter(Completer):
         current word doesn't look like a path.  A word is path-like when
         it starts with ``./``, ``../``, ``~/``, ``/``, or contains a
         ``/`` separator (e.g. ``src/main.py``).
+
+        Tokens containing a ``://`` scheme separator (e.g. URLs like
+        ``https://example.com/x``) are excluded even though they contain a
+        ``/`` — they are never useful local-path completions.
         """
         if not text:
             return None
@@ -1290,6 +1294,12 @@ class SlashCommandCompleter(Completer):
             i -= 1
         word = text[i + 1:]
         if not word:
+            return None
+        # URLs contain "/" but are not local paths. Treating them as paths fires
+        # os.listdir on every keystroke while typing/pasting a link (e.g. an
+        # https:// URL becomes a listdir of "https:") — pure latency, never a
+        # useful completion. Skip any token with a scheme separator.
+        if "://" in word:
             return None
         # Only trigger path completion for path-like tokens
         if word.startswith(("./", "../", "~/", "/")) or "/" in word:

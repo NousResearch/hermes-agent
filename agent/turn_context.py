@@ -69,6 +69,7 @@ def build_turn_context(
     task_id: Optional[str],
     stream_callback,
     persist_user_message: Optional[str],
+    persist_user_timestamp: Optional[float] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -121,6 +122,7 @@ def build_turn_context(
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
+    agent._persist_user_message_timestamp = persist_user_timestamp
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id

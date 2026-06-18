@@ -1241,6 +1241,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id = (msg.get("result") or {}).get("message_id")
         else:
             message_id = getattr(msg, "message_id", None)
+        if message_id is not None:
+            # Telegram won't echo rich content in reply_to_message, so remember
+            # what we sent — replies to this message resolve via this index.
+            try:
+                from gateway import rich_sent_store
+                rich_sent_store.record(str(chat_id), str(message_id), content)
+            except Exception:
+                pass
         return SendResult(
             success=True,
             message_id=str(message_id) if message_id is not None else None,
@@ -6700,6 +6708,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     or message.reply_to_message.caption
                     or None
                 )
+                if not reply_to_text:
+                    # Rich messages (sendRichMessage — the launchd briefings and
+                    # the gateway's own rich finals) are NOT echoed with their
+                    # content in reply_to_message; Telegram sends no text,
+                    # caption, or api_kwargs for them. Recover the text we sent
+                    # from our local send-time index, keyed by message id.
+                    try:
+                        from gateway import rich_sent_store
+                        reply_to_text = rich_sent_store.lookup(
+                            str(chat.id), reply_to_id
+                        )
+                    except Exception:
+                        reply_to_text = None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
@@ -957,6 +958,80 @@ CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
+# Dynamic-cap parameters (used when no explicit context_file_max_chars is set).
+# The cap scales with the model's context window so large-context models rarely
+# truncate a project doc, while small-context models stay at the historical
+# 20K floor. ~4 chars/token is the usual English heuristic; we spend a small
+# slice of the window on context files since they share the cached prefix with
+# the system prompt, tools, memory, and the whole conversation.
+_CONTEXT_FILE_CHARS_PER_TOKEN = 4
+_CONTEXT_FILE_WINDOW_FRACTION = 0.06
+_CONTEXT_FILE_DYNAMIC_CEILING = 500_000
+
+
+def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
+    """Derive a char cap from the model's context window.
+
+    Returns at least ``CONTEXT_FILE_MAX_CHARS`` (the historical 20K floor) and
+    at most ``_CONTEXT_FILE_DYNAMIC_CEILING``. When ``context_length`` is
+    unknown/invalid, returns the flat default so behavior is unchanged.
+    """
+    if not isinstance(context_length, int) or context_length <= 0:
+        return CONTEXT_FILE_MAX_CHARS
+    budget = int(
+        context_length * _CONTEXT_FILE_CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION
+    )
+    return max(CONTEXT_FILE_MAX_CHARS, min(budget, _CONTEXT_FILE_DYNAMIC_CEILING))
+
+
+def _get_context_file_max_chars(context_length: Optional[int] = None) -> int:
+    """Return the context-file truncation limit.
+
+    Resolution order:
+      1. Explicit ``context_file_max_chars`` in config.yaml — user knows best,
+         always wins (including over the dynamic cap).
+      2. Dynamic cap derived from the model's ``context_length`` when provided
+         (scales the budget to the window; floor 20K, ceiling 500K).
+      3. ``CONTEXT_FILE_MAX_CHARS`` (20K) as the upstream-compatible fallback.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        val = load_config().get("context_file_max_chars")
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    except Exception as e:
+        logger.debug("Could not read context_file_max_chars from config: %s", e)
+    return _dynamic_context_file_max_chars(context_length)
+
+# Collect truncation warnings so the caller (run_agent) can surface them.
+# A ContextVar (not a module-global list) isolates accumulation per thread /
+# per async task, so concurrent gateway-session prompt builds can't drain or
+# clear each other's pending warnings (cross-session leak). Each build runs in
+# its own context, collects its own warnings, and drains them synchronously.
+_truncation_warnings: "contextvars.ContextVar[Optional[list]]" = contextvars.ContextVar(
+    "context_file_truncation_warnings", default=None
+)
+
+
+def _record_truncation_warning(msg: str) -> None:
+    """Append a truncation warning to the current context's accumulator."""
+    warnings = _truncation_warnings.get()
+    if warnings is None:
+        warnings = []
+        _truncation_warnings.set(warnings)
+    warnings.append(msg)
+
+
+def drain_truncation_warnings() -> list:
+    """Return and clear any truncation warnings accumulated in this context."""
+    warnings = _truncation_warnings.get()
+    if not warnings:
+        return []
+    drained = list(warnings)
+    warnings.clear()
+    return drained
+
 
 # =========================================================================
 # Skills prompt cache
@@ -1463,19 +1538,47 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
-def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
-    """Head/tail truncation with a marker in the middle."""
+def _truncate_content(
+    content: str,
+    filename: str,
+    max_chars: Optional[int] = None,
+    context_length: Optional[int] = None,
+    read_path: Optional[str] = None,
+) -> str:
+    """Head/tail truncation with a marker in the middle.
+
+    ``filename`` is the human label used in warnings. ``read_path`` is the
+    concrete path the agent should ``read_file`` to recover the full content
+    (defaults to ``filename`` when not supplied). ``context_length`` lets the
+    cap scale to the model's window when no explicit config override is set.
+    """
+    if max_chars is None:
+        max_chars = _get_context_file_max_chars(context_length)
     if len(content) <= max_chars:
         return content
+    target = read_path or filename
+    msg = (
+        f"⚠️  Context file {filename} TRUNCATED: "
+        f"{len(content)} chars exceeds limit of {max_chars} — "
+        f"trim the file, pin a larger context_file_max_chars, or use a "
+        f"larger-context model!"
+    )
+    logger.warning(msg)
+    _record_truncation_warning(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     head = content[:head_chars]
     tail = content[-tail_chars:]
-    marker = f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. Use file tools to read the full file.]\n\n"
+    marker = (
+        f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of "
+        f"{len(content)} chars. The middle is omitted — if you need the full "
+        f"instructions, read the complete file with the read_file tool: "
+        f"{target}]\n\n"
+    )
     return head + marker + tail
 
 
-def load_soul_md() -> Optional[str]:
+def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
@@ -1496,14 +1599,17 @@ def load_soul_md() -> Optional[str]:
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
+        content = _truncate_content(
+            content, "SOUL.md", context_length=context_length,
+            read_path=str(soul_path),
+        )
         return content
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
 
 
-def _load_hermes_md(cwd_path: Path) -> str:
+def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)
     if not hermes_md_path:
@@ -1520,13 +1626,16 @@ def _load_hermes_md(cwd_path: Path) -> str:
             pass
         content = _scan_context_content(content, rel)
         result = f"## {rel}\n\n{content}"
-        return _truncate_content(result, ".hermes.md")
+        return _truncate_content(
+            result, ".hermes.md", context_length=context_length,
+            read_path=str(hermes_md_path),
+        )
     except Exception as e:
         logger.debug("Could not read %s: %s", hermes_md_path, e)
         return ""
 
 
-def _load_agents_md(cwd_path: Path) -> str:
+def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
@@ -1536,13 +1645,16 @@ def _load_agents_md(cwd_path: Path) -> str:
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
+                    return _truncate_content(
+                        result, "AGENTS.md", context_length=context_length,
+                        read_path=str(candidate),
+                    )
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
 
 
-def _load_claude_md(cwd_path: Path) -> str:
+def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
         candidate = cwd_path / name
@@ -1552,13 +1664,16 @@ def _load_claude_md(cwd_path: Path) -> str:
                 if content:
                     content = _scan_context_content(content, name)
                     result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "CLAUDE.md")
+                    return _truncate_content(
+                        result, "CLAUDE.md", context_length=context_length,
+                        read_path=str(candidate),
+                    )
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
 
 
-def _load_cursorrules(cwd_path: Path) -> str:
+def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
@@ -1585,10 +1700,17 @@ def _load_cursorrules(cwd_path: Path) -> str:
 
     if not cursorrules_content:
         return ""
-    return _truncate_content(cursorrules_content, ".cursorrules")
+    return _truncate_content(
+        cursorrules_content, ".cursorrules", context_length=context_length,
+        read_path=str(cwd_path / ".cursorrules"),
+    )
 
 
-def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+def build_context_files_prompt(
+    cwd: Optional[str] = None,
+    skip_soul: bool = False,
+    context_length: Optional[int] = None,
+) -> str:
     """Discover and load context files for the system prompt.
 
     Priority (first found wins — only ONE project context type is loaded):
@@ -1598,7 +1720,11 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
     SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
+
+    Each context source is capped before injection. The cap defaults to the
+    model's context window (scaled — see ``_dynamic_context_file_max_chars``)
+    when *context_length* is provided, falling back to 20,000 chars otherwise.
+    An explicit ``context_file_max_chars`` in config.yaml always wins.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -1611,17 +1737,17 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     # Priority-based project context: first match wins
     project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
+        _load_hermes_md(cwd_path, context_length)
+        or _load_agents_md(cwd_path, context_length)
+        or _load_claude_md(cwd_path, context_length)
+        or _load_cursorrules(cwd_path, context_length)
     )
     if project_context:
         sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
-        soul_content = load_soul_md()
+        soul_content = load_soul_md(context_length)
         if soul_content:
             sections.append(soul_content)
 

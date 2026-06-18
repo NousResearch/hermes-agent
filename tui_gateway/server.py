@@ -904,6 +904,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
     ready = session.get("agent_ready")
     if ready is None:
         return
+    # A lazy watch session spectating an in-flight child must stay lazy so the
+    # subagent live-mirror keeps flowing. Incidental RPCs (session.info, model
+    # metadata, etc.) resolve through _sess(), which would otherwise upgrade it
+    # to a full agent mid-stream and silently kill the mirror (the mirror bails
+    # once agent is set). Once the child completes, the guard lifts and the next
+    # prompt/RPC builds the agent normally so the user can talk to the session.
+    if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        return
     lock = session.setdefault("agent_build_lock", threading.Lock())
     with lock:
         if ready.is_set() or session.get("agent_build_started"):
@@ -2867,7 +2875,14 @@ def _on_tool_progress(
         if preview and event_type == "subagent.tool":
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)
-        _emit(event_type, sid, payload)
+        # subagent.text is the child's per-token reply, relayed solely to feed a
+        # watch window's live mirror. It is meaningless on the parent session
+        # (which shows the child via the spawn tree, not its reply body), so
+        # skip the parent emit — sending hundreds of ignored token frames there
+        # is wasted traffic and a trap for any future parent-side subagent
+        # catch-all. The mirror keys off the child sid and is unaffected.
+        if event_type != "subagent.text":
+            _emit(event_type, sid, payload)
         _mirror_subagent_to_child(event_type, payload)
 
 
@@ -2927,11 +2942,15 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         if event_type == "subagent.thinking":
             if text := str(payload.get("text") or ""):
                 _emit("reasoning.delta", csid, {"text": text})
-        elif event_type in {"subagent.start", "subagent.progress"}:
-            # Mirror branch-level progress lines so a just-opened child window
-            # shows immediate activity instead of waiting for the next tool or
-            # completion event. This matches the TUI /agents "live branch log"
-            # feel that users expect.
+        elif event_type == "subagent.text":
+            # The child's streamed reply text — the actual "agent talking".
+            # Relayed token-by-token from the child's run_conversation
+            # stream_callback, so the watch window streams the reply live.
+            if text := str(payload.get("text") or ""):
+                _emit("message.delta", csid, {"text": text})
+        elif event_type == "subagent.start":
+            # One-time header line (the child's goal) so a freshly opened window
+            # shows immediate context before the first reply token streams.
             if text := str(payload.get("text") or ""):
                 _emit("message.delta", csid, {"text": f"{text}\n"})
         elif event_type == "subagent.tool":
@@ -4226,6 +4245,19 @@ def _(rid, params: dict) -> dict:
         found = db.get_session_by_title(target)
         if found:
             target = found["id"]
+        elif is_truthy_value(params.get("lazy", False)) and _child_run_active(target):
+            # Race: a watch window opened on a freshly-spawned subagent. The
+            # child relays `subagent.start` (which carries child_session_id and
+            # triggers the window) BEFORE its first run_conversation() flushes
+            # the DB row via _ensure_db_session, so db.get_session(target) is
+            # momentarily empty. On slower hosts (notably WSL2, where SQLite +
+            # process scheduling widen the gap) the window's resume consistently
+            # lands inside this window and used to hard-fail "session not found"
+            # — the frontend then 404'd on the REST messages fallback and the
+            # window spun forever. The child is provably live (_child_run_active),
+            # so proceed into the lazy branch with empty history; the live mirror
+            # streams the whole turn anyway and the row exists by upgrade time.
+            found = {}
         else:
             return _err(rid, 4007, "session not found")
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
@@ -4769,7 +4801,6 @@ def _(rid, params: dict) -> dict:
             session["pending_title"] = None
             return _ok(rid, {"pending": False, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
-        # Queue only when the session row truly does not exist yet.
         existing_row = db.get_session(key)
         if existing_row:
             session["pending_title"] = None
@@ -4780,6 +4811,23 @@ def _(rid, params: dict) -> dict:
                     "title": (existing_row.get("title") or title),
                 },
             )
+        # No row yet (the DB write is deferred to the first prompt so empty
+        # drafts don't litter the sidebar). An explicit /title is clear user
+        # intent, not an abandoned draft — so persist the row NOW and set the
+        # title, mirroring the messaging gateway's _handle_title_command. The
+        # old behavior only queued pending_title and relied on the post-turn
+        # apply block; if that turn never landed under this session_key the
+        # title was silently lost and the sidebar fell back to the message
+        # preview. Creating the row up front removes that race entirely. The
+        # min-messages sidebar filter keeps a titled 0-message row hidden, so
+        # a /title'd-but-never-used draft still doesn't clutter the list.
+        _ensure_session_db_row(session)
+        with _session_db(session) as scoped_db:
+            if scoped_db is not None and scoped_db.set_session_title(key, title):
+                session["pending_title"] = None
+                return _ok(rid, {"pending": False, "title": title})
+        # Row creation didn't take (DB unavailable, or a concurrent writer) —
+        # fall back to queuing so the post-turn apply block can still recover.
         session["pending_title"] = title
         return _ok(rid, {"pending": True, "title": title})
     except ValueError as e:

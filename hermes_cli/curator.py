@@ -77,6 +77,10 @@ def _cmd_status(args) -> int:
     print(f"  interval:       every {_interval_label}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
+    print(
+        f"  consolidate:    {'on' if curator.get_consolidate() else 'off'}"
+        f"{'' if curator.get_consolidate() else ' (prune-only; LLM merge pass opt-in)'}"
+    )
 
     rows = skill_usage.agent_created_report()
     if not rows:
@@ -174,10 +178,20 @@ def _cmd_run(args) -> int:
     dry = bool(getattr(args, "dry_run", False))
     background = bool(getattr(args, "background", False))
     synchronous = bool(getattr(args, "synchronous", False)) or not background
+    # --consolidate forces the LLM umbrella-building pass on for this run,
+    # overriding the config default (off). When the flag is absent, pass None
+    # so run_curator_review reads curator.consolidate from config.
+    consolidate = True if bool(getattr(args, "consolidate", False)) else None
     if dry:
         print("curator: running DRY-RUN (report only, no mutations)...")
     else:
         print("curator: running review pass...")
+    if consolidate is None and not curator.get_consolidate():
+        print(
+            "curator: consolidation is off — running prune-only "
+            "(deterministic stale/archive). Pass --consolidate or set "
+            "`curator.consolidate: true` to enable the LLM merge pass."
+        )
 
     def _on_summary(msg: str) -> None:
         print(msg)
@@ -186,6 +200,7 @@ def _cmd_run(args) -> int:
         on_summary=_on_summary,
         synchronous=synchronous,
         dry_run=dry,
+        consolidate=consolidate,
     )
     auto = result.get("auto_transitions", {})
     if auto:
@@ -502,6 +517,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
         "--dry-run", dest="dry_run", action="store_true",
         help="Report only — no state changes, no archives, no consolidation "
              "(use this to preview what curator would do)",
+    )
+    p_run.add_argument(
+        "--consolidate", dest="consolidate", action="store_true",
+        help="Force the LLM umbrella-building consolidation pass on for this "
+             "run, overriding the config default (off). Without this flag the "
+             "run is prune-only unless `curator.consolidate: true` is set.",
     )
     p_run.set_defaults(func=_cmd_run)
 

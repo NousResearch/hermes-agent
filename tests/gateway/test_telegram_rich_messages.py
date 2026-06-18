@@ -756,3 +756,110 @@ async def test_finalize_edit_rich_over_markdownv2_limit_not_split():
     api_kwargs = _rich_edit_kwargs(adapter)
     assert api_kwargs["rich_message"]["markdown"] == big_table
     adapter._bot.edit_message_text.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# Rich-reply recovery (#47375): Telegram does not echo a sendRichMessage's
+# content in reply_to_message (.text/.caption empty, .api_kwargs None), so we
+# record message_id -> text at send time and recover it on inbound reply.
+# --------------------------------------------------------------------------
+
+
+def _reply_message(reply_to_id, *, reply_text=None, reply_caption=None, quote_text=None):
+    """Build a mock inbound reply Message for _build_message_event."""
+    replied = SimpleNamespace(
+        message_id=int(reply_to_id),
+        text=reply_text,
+        caption=reply_caption,
+    )
+    quote = SimpleNamespace(text=quote_text) if quote_text is not None else None
+    return SimpleNamespace(
+        message_id=999,
+        chat=SimpleNamespace(id=12345, type="private", title=None, full_name="U"),
+        from_user=SimpleNamespace(
+            id=42, username="u", first_name="U", last_name=None,
+            full_name="U", is_bot=False,
+        ),
+        text="what did this mean?",
+        caption=None,
+        reply_to_message=replied,
+        quote=quote,
+        message_thread_id=None,
+        is_topic_message=False,
+        entities=[],
+        date=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
+    """A reply to a rich-sent message resolves the original text via the index."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+    from gateway import rich_sent_store
+
+    adapter = _make_adapter()
+
+    # _try_send_rich records (chat_id, message_id) -> content on a successful
+    # rich send. Drive that path directly so the test doesn't depend on send()
+    # gating heuristics (length, content shape) choosing the rich path.
+    adapter._bot.do_api_request = AsyncMock(
+        return_value=SimpleNamespace(message_id=678)
+    )
+    send_result = await adapter._try_send_rich(
+        "12345", "Your morning briefing: CI is green.", None, None,
+    )
+    assert send_result is not None and send_result.success is True
+    assert send_result.message_id == "678"
+    assert rich_sent_store.lookup("12345", "678") == "Your morning briefing: CI is green."
+
+    # Inbound reply carries NO text/caption (the rich-message blind spot).
+    event = adapter._build_message_event(
+        _reply_message("678"), MessageType.TEXT,
+    )
+    assert event.reply_to_message_id == "678"
+    assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+@pytest.mark.asyncio
+async def test_rich_reply_lookup_miss_leaves_text_none(monkeypatch, tmp_path):
+    """No recorded entry -> reply_to_text stays None, no crash."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    event = adapter._build_message_event(
+        _reply_message("404"), MessageType.TEXT,
+    )
+    assert event.reply_to_message_id == "404"
+    assert event.reply_to_text is None
+
+
+@pytest.mark.asyncio
+async def test_rich_reply_native_quote_wins_over_lookup(monkeypatch, tmp_path):
+    """A native partial quote takes precedence over the send-time index."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+    from gateway import rich_sent_store
+
+    rich_sent_store.record("12345", "678", "full recorded body")
+    adapter = _make_adapter()
+    event = adapter._build_message_event(
+        _reply_message("678", quote_text="just this part"), MessageType.TEXT,
+    )
+    assert event.reply_to_text == "just this part"
+
+
+@pytest.mark.asyncio
+async def test_rich_reply_caption_wins_over_lookup(monkeypatch, tmp_path):
+    """When Telegram DOES echo a caption, it wins over the index fallback."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.platforms.base import MessageType
+    from gateway import rich_sent_store
+
+    rich_sent_store.record("12345", "678", "recorded body")
+    adapter = _make_adapter()
+    event = adapter._build_message_event(
+        _reply_message("678", reply_caption="echoed caption"), MessageType.TEXT,
+    )
+    assert event.reply_to_text == "echoed caption"

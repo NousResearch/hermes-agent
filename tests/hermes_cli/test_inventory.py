@@ -606,3 +606,57 @@ def test_aggregator_dedup_multiple_user_providers():
     assert or_row["models"] == ["model-z"]
     assert or_row["total_models"] == 1
 
+
+def test_aggregator_dedup_does_not_empty_user_defined_custom_provider():
+    """A named custom provider has slug ``custom:<name>``, which makes it
+    *both* ``is_user_defined=True`` *and* ``is_aggregator()==True``
+    (is_aggregator reports True for every ``custom:*`` slug).  The dedup
+    must skip user-defined rows: their models populate ``user_models``, so
+    filtering them against that set would strip the row's entire catalog and
+    hide the provider from the picker.  Regression for the #45954 dedup
+    emptying ``custom:*`` providers (e.g. a local llama.cpp endpoint or an
+    Anthropic-compatible proxy)."""
+    rows = [
+        _user_provider_row("custom:my-proxy", ["my-model-a", "my-model-b"]),
+        _aggregator_row("openrouter", ["my-model-a", "other/model"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    proxy_row = next(
+        r for r in payload["providers"] if r["slug"] == "custom:my-proxy"
+    )
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+
+    # The user's own custom provider keeps all of its models.
+    assert proxy_row["models"] == ["my-model-a", "my-model-b"]
+    assert proxy_row["total_models"] == 2
+
+    # A genuine aggregator is still deduped against the user's models.
+    assert "my-model-a" not in or_row["models"]
+    assert "other/model" in or_row["models"]
+    assert or_row["total_models"] == 1
+
+
+def test_two_custom_providers_with_overlap_both_survive():
+    """Two user-defined custom endpoints that happen to expose an
+    overlapping model must each keep their full catalog. Neither is the
+    aggregator the dedup exists to trim, so cross-filtering between two
+    user-defined rows must not happen.
+    """
+    rows = [
+        _user_provider_row("custom:proxy-a", ["shared/model", "a/only"]),
+        _user_provider_row("custom:proxy-b", ["shared/model", "b/only"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    a_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-a")
+    b_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-b")
+    assert a_row["models"] == ["shared/model", "a/only"]
+    assert b_row["models"] == ["shared/model", "b/only"]
+    assert a_row["total_models"] == 2
+    assert b_row["total_models"] == 2
+

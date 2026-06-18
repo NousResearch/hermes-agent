@@ -16,6 +16,7 @@ class CopilotACPProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Model listing is handled by the ACP subprocess."""

@@ -1134,6 +1134,12 @@ class HonchoSessionManager:
                 search_query=query,
                 target=target,
             )
+            # In directional observation mode the observer->target slot
+            # (e.g. hermes-about-Jesse) is often empty while the data lives
+            # on the target peer's own self-representation. Mirror the
+            # get_peer_card fallback so semantic search still returns results.
+            if not ctx["representation"] and not ctx["card"] and target and target != observer_peer_id:
+                ctx = self._fetch_peer_context(target, search_query=query)
             parts = []
             if ctx["representation"]:
                 parts.append(ctx["representation"])

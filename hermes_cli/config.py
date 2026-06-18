@@ -1104,10 +1104,13 @@ DEFAULT_CONFIG = {
         "min_interval_hours": 24,
     },
 
-    # Maximum characters loaded from a single automatic context file such as
-    # SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes
-    # applies head/tail truncation. This is separate from read_file tool limits.
-    "context_file_max_chars": 20_000,
+    # Hard cap (chars) for a single automatic context file such as SOUL.md,
+    # AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes applies
+    # head/tail truncation. ``null`` (the default) lets the cap scale with the
+    # model's context window (floor 20K, ceiling 500K) so large-context models
+    # rarely truncate a project doc. Set a positive integer to pin a fixed cap
+    # and override the dynamic behavior. Separate from read_file tool limits.
+    "context_file_max_chars": None,
 
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
@@ -1895,6 +1898,14 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Run the LLM consolidation (umbrella-building) pass. OFF by default.
+        # When off, a curator run does ONLY the deterministic inactivity prune
+        # (mark stale / archive long-unused skills) and skips the forked
+        # aux-model review entirely — no umbrella-building, no aux-model cost.
+        # Set to true to opt back into merging overlapping skills into
+        # class-level umbrellas. `hermes curator run --consolidate` overrides
+        # this for a single invocation.
+        "consolidate": False,
         # Also prune (archive) bundled built-in skills after the inactivity
         # period, not just agent-created ones. ON by default. Built-ins are
         # normally restored on every `hermes update`, so pruning them only
@@ -2569,7 +2580,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 29,
+    "_config_version": 30,
 }
 
 # =============================================================================
@@ -4857,6 +4868,29 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+
+    # ── Version 29 → 30: seed curator.consolidate (default false) ──
+    # Consolidation (the LLM umbrella-building fork) is now an opt-in toggle,
+    # OFF by default. The deterministic inactivity prune still runs whenever
+    # the curator is enabled; only the opinionated, aux-model-cost LLM pass is
+    # gated. The runtime deep-merge already supplies the default, but we seed
+    # the key so it's visible/editable in config.yaml. Existing installs that
+    # WANT the old always-consolidate behavior must set it to true explicitly.
+    # Only add the key when a curator section exists and lacks it — never
+    # clobber a value the user already set.
+    if current_ver < 30:
+        config = read_raw_config()
+        raw_curator = config.get("curator")
+        if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
+            raw_curator["consolidate"] = False
+            config["curator"] = raw_curator
+            save_config(config)
+            results["config_added"].append("curator.consolidate=false")
+            if not quiet:
+                print(
+                    "  ✓ Seeded curator.consolidate: false "
+                    "(LLM consolidation is now opt-in; pruning stays on)"
+                )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

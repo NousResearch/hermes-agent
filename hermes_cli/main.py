@@ -7724,8 +7724,9 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
     The normal path (``ensure_uv()`` in managed_uv) installs the managed
     standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
-    installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
-    which gets a Termux-compatible binary.
+    installer may not work (glibc vs bionic).  Prefer a uv already on PATH
+    (e.g. ``pkg install uv``); only if there is none do we fall back to a
+    wheel-only ``pip install uv`` so we never source-build the Rust crate.
     """
     from hermes_cli.managed_uv import resolve_uv
 
@@ -7734,6 +7735,12 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return existing
     if not _is_termux_env():
         return None
+    # A Termux-packaged uv lands on PATH but not in the managed bin dir, so
+    # resolve_uv() misses it. Use it before pip, which has no Android wheel and
+    # would otherwise build uv from source on a low-memory device.
+    system_uv = shutil.which("uv")
+    if system_uv:
+        return system_uv
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
         result = subprocess.run(

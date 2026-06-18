@@ -3772,18 +3772,41 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # ids the endpoint advertises (OpenAI ``/v1/models`` shape) so the GUI can
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
-        url = value.rstrip("/") + "/models"
+        base = value.rstrip("/")
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
         # their models instead of returning an empty list behind a 401.
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        # Probe the URL as given, then the OpenAI-compat ``/v1`` surface. Local
+        # servers (Ollama, llama.cpp, vLLM) serve models at ``/v1/models``, so a
+        # user who pastes the bare root (e.g. http://127.0.0.1:11434) must still
+        # enumerate models instead of hard-failing with "advertised no models".
+        # Return the candidate that actually worked as ``base_url`` so the caller
+        # persists the URL the runtime can reach. Mirrors the CLI's
+        # ``probe_api_models`` fallback and the runtime's /v1 normalization.
+        candidates = [base]
+        if not base.lower().endswith("/v1"):
+            candidates.append(base + "/v1")
+        reached = False
         try:
             with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-                resp = client.get(url, headers=headers)
-            return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+                for candidate in candidates:
+                    try:
+                        resp = client.get(candidate + "/models", headers=headers)
+                    except Exception:
+                        continue
+                    reached = True
+                    models = _parse_model_ids(resp)
+                    if models:
+                        return {"ok": True, "reachable": True, "message": "",
+                                "models": models, "base_url": candidate}
         except Exception:
-            return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+            return {"ok": False, "reachable": False, "message": f"Could not reach {value}."}
+        if reached:
+            # Endpoint is up but advertised no models on any surface.
+            return {"ok": True, "reachable": True, "message": "", "models": [], "base_url": base}
+        return {"ok": False, "reachable": False, "message": f"Could not reach {value}."}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:

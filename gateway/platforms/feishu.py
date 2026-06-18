@@ -548,6 +548,169 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _build_card_payload_from_blocks(content: str) -> str:
+    """Build a Feishu interactive card (JSON 2.0) with mixed markdown + table elements.
+
+    Splits content into blocks: prose/code sections are markdown elements,
+    markdown tables are parsed and rendered as native CardKit ``table`` elements
+    via direct REST API (bypasses lark-oapi which chokes on JSON 2.0 schema).
+
+    Returns the serialized card JSON string.
+    """
+    elements = _split_into_card_elements(content)
+    if not elements:
+        elements = [{"tag": "markdown", "content": content}]
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {"elements": elements},
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+# Regex to match a full markdown table block
+# Matches the complete block: header line + separator line + data lines.
+# Each line is captured as a whole row, then parsed by _build_card_table_element.
+_TABLE_BLOCK_RE = re.compile(
+r"^(\|.+\|)[ \t]*\n"         # header row (greedy to end of line)
+r"(\|[-:| ]+\|)[ \t]*\n"     # separator row
+r"((?:\|.+\|[ \t]*\n?)*)",   # data rows (greedy, each line)
+    re.MULTILINE,
+)
+
+
+def _parse_and_remove_tables(text: str) -> tuple[list[dict], str]:
+    """Extract all markdown tables from text, parse them into CardKit table
+    elements, and return (table_elements, plain_text_with_tables_removed).
+
+    Each table is converted to a CardKit ``table`` element with proper columns
+    and rows.  Multiple tables each get their own element.
+    """
+    table_elements: list[dict] = []
+    # Work on segments between tables; tables are replaced with sentinel markers
+    # so remaining text flow is preserved.
+    parts: list[str] = []
+    cursor = 0
+    for m in _TABLE_BLOCK_RE.finditer(text):
+        start, end = m.start(), m.end()
+        if start > cursor:
+            parts.append(text[cursor:start])
+        table_element = _build_card_table_element(m.group(0))
+        if table_element is not None:
+            table_elements.append(table_element)
+        cursor = end
+    if cursor < len(text):
+        parts.append(text[cursor:])
+    remaining = "".join(parts)
+    return table_elements, remaining
+
+
+def _split_into_card_elements(content: str) -> list[dict]:
+    """Split content into a list of CardKit elements.
+
+    * Prose / code blocks → ``markdown`` elements
+    * Tables → ``table`` elements (native CardKit table)
+
+    Multiple heading/body/table sections are ordered as they appear.
+    Empty sections are collapsed.
+    """
+    table_elements, remaining = _parse_and_remove_tables(content)
+
+    # If there are no tables, return a single markdown element
+    if not table_elements:
+        return [{"tag": "markdown", "content": content}]
+
+    # Split remaining text into markdown elements (between table positions)
+    elements: list[dict] = []
+    # We need to interleave remaining text segments with table elements
+    # based on original positions.  For simplicity, split remaining around
+    # table markers: every non-empty text segment is a markdown element.
+    parts = [p.strip() for p in remaining.split("\n") if p.strip()]
+    # Build the final interleaved list
+    # Simpler approach: rebuild by scanning the original content and
+    # interleaving text segments with extracted table elements.
+    return _interleave_text_and_tables(content, table_elements)
+
+
+def _interleave_text_and_tables(original: str, table_elements: list[dict]) -> list[dict]:
+    """Interleave text segments and table elements preserving original order.
+
+    Scans ``original`` for tables (via _TABLE_BLOCK_RE) and turns every
+    non-table text region into a ``markdown`` element.  Tables become
+    ``table`` elements.
+    """
+    elements: list[dict] = []
+    cursor = 0
+    ti = 0  # table index
+    for m in _TABLE_BLOCK_RE.finditer(original):
+        start, end = m.start(), m.end()
+        # Text before this table
+        if start > cursor:
+            text_seg = original[cursor:start].strip()
+            if text_seg:
+                elements.append({"tag": "markdown", "content": text_seg})
+        # Table element
+        if ti < len(table_elements):
+            elements.append(table_elements[ti])
+            ti += 1
+        cursor = end
+    # Remaining text after last table
+    if cursor < len(original):
+        text_seg = original[cursor:].strip()
+        if text_seg:
+            elements.append({"tag": "markdown", "content": text_seg})
+    return elements
+
+
+def _build_card_table_element(table_text: str) -> dict | None:
+    """Parse a markdown table string and build a CardKit ``table`` element.
+
+    Expects the full table block (header + separator + data rows).
+    Returns None if parsing fails.
+    """
+    try:
+        lines = [l.strip() for l in table_text.strip().split("\n") if l.strip()]
+        if len(lines) < 2:
+            return None
+
+        header_line = lines[0].strip("|")
+        headers = [h.strip() for h in header_line.split("|")]
+
+        data_lines = lines[2:]  # skip separator line
+        columns = []
+        for i, h in enumerate(headers):
+            columns.append({
+                "name": f"c{i}",
+                "display_name": h,
+                "data_type": "text",
+                "horizontal_align": "left",
+            })
+
+        rows = []
+        for line in data_lines:
+            line = line.strip().strip("|")
+            cells = [c.strip() for c in line.split("|")]
+            row = {}
+            for i, cell in enumerate(cells):
+                if i < len(columns):
+                    row[f"c{i}"] = cell
+            rows.append(row)
+
+        return {
+            "tag": "table",
+            "page_size": 20,
+            "columns": columns,
+            "rows": rows,
+        }
+    except Exception:
+        return None
+
+
+def _build_card_code_payload(content: str) -> str:
+    """Backward-compat alias.  Delegates to ``_build_card_payload_from_blocks``."""
+    return _build_card_payload_from_blocks(content)
+
+
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
     return json.dumps(
@@ -1767,9 +1930,80 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_runner = None
             self._webhook_site = None
 
-    # =========================================================================
-    # Outbound — send / edit / send_image / send_voice / …
-    # =========================================================================
+# =========================================================================
+# Outbound — send / edit / send_image / send_voice / …
+# =========================================================================
+
+    async def _get_tenant_access_token(self) -> str:
+        """Obtain a tenant access token via the Feishu internal auth API."""
+        import urllib.request as _ur
+
+        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        auth_url = f"https://{domain}/open-apis/auth/v3/tenant_access_token/internal"
+        data = json.dumps({"app_id": self._app_id, "app_secret": self._app_secret}).encode()
+        req = _ur.Request(auth_url, data=data, headers={"Content-Type": "application/json"})
+        try:
+            resp = json.loads(_ur.urlopen(req, timeout=10).read())
+            return resp.get("tenant_access_token", "")
+        except Exception as exc:
+            logger.error("[Feishu] Failed to get tenant access token: %s", exc)
+            return ""
+
+    async def _send_interactive_via_rest(
+        self,
+        *,
+        chat_id: str,
+        payload: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Any:
+        """Send an interactive card via direct REST API, bypassing lark-oapi.
+
+        The lark-oapi SDK does not handle JSON 2.0 card schema properly, so
+        we send interactive cards directly via the Feishu REST API.
+        """
+        import urllib.request as _ur
+        import urllib.error as _ue
+
+        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        token = await self._get_tenant_access_token()
+        if not token:
+            raise RuntimeError("Failed to obtain tenant access token for card send")
+
+        receive_id_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
+        url = f"https://{domain}/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
+
+        body = {
+            "receive_id": chat_id,
+            "msg_type": "interactive",
+            "content": payload,
+        }
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        req = _ur.Request(
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        try:
+            resp = json.loads(_ur.urlopen(req, timeout=15).read())
+        except _ue.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Feishu card API error {exc.code}: {err_body}") from exc
+
+        code = resp.get("code", -1)
+        if code != 0:
+            raise RuntimeError(f"Feishu card API error [{code}]: {resp.get('msg', 'unknown')}")
+
+        message_id = resp.get("data", {}).get("message_id", "")
+        return SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id=message_id),
+            code=0,
+            msg="success",
+        )
 
     async def send(
         self,
@@ -1808,6 +2042,25 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                # Card fallback: if interactive card was rejected, rebuild as post
+                if msg_type == "interactive" and not self._response_succeeded(response):
+                    logger.warning("[Feishu] Interactive card rejected by API; falling back to post")
+                    try:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="post",
+                            payload=_build_markdown_post_payload(chunk),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    except Exception:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
@@ -4374,12 +4627,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # OpenClaw-style: fenced code blocks and markdown tables are sent as
+        # interactive cards instead of plain text or post.  Feishu post-type
+        # 'md' elements do not render tables (message appears blank), and code
+        # blocks render much better in card markdown elements.
+        if "```" in content or _MARKDOWN_TABLE_RE.search(content):
+            return "interactive", _build_card_code_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
@@ -4625,6 +4878,20 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        """Send a message via the Feishu API with retry logic.
+
+        For ``msg_type="interactive"``, sends directly via REST API (lark-oapi
+        SDK does not handle JSON 2.0 card schema properly).  Otherwise uses
+        the SDK path.
+        """
+        if msg_type == "interactive":
+            return await self._send_interactive_via_rest(
+                chat_id=chat_id,
+                payload=payload,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+
         last_error: Optional[Exception] = None
         active_reply_to = reply_to
         for attempt in range(_FEISHU_SEND_ATTEMPTS):

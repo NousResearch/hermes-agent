@@ -972,6 +972,63 @@ class TestFTS5Search:
         assert any("deployment" in (r.get("snippet") or r.get("content", "")).lower()
                    for r in results)
 
+    def test_search_adjacent_operators_still_find_content(self, db):
+        """Adjacent/repeated boolean operators must not silently return empty.
+
+        FTS5 rejects adjacent operators ('a AND OR b' -> 'syntax error near
+        "OR"') and stacked operators at the ends. Step 4 of _sanitize_fts5_query
+        used to remove only ONE leading and ONE trailing operator, so a user who
+        double-typed an operator ('python AND OR java') got an invalid query
+        whose OperationalError was swallowed into zero results -- even though the
+        content was present. Regression for that silent-empty bug; mirrors
+        test_search_colon_query_still_finds_content.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="python and java are languages")
+
+        # Control: each keyword is found on its own.
+        assert len(db.search_messages("python")) >= 1
+        assert len(db.search_messages("java")) >= 1
+
+        # Adjacent operators in the middle must still find content.
+        results = db.search_messages("python AND OR java")
+        assert isinstance(results, list)
+        assert len(results) >= 1, "adjacent-operator query silently returned []"
+
+        # A trailing run of operators must not leave a dangling operator.
+        results = db.search_messages("python OR AND")
+        assert isinstance(results, list)
+        assert len(results) >= 1, "trailing operator run silently returned []"
+
+    def test_sanitize_fts5_query_strips_adjacent_operators(self):
+        """_sanitize_fts5_query must not leave any bare/dangling boolean operator.
+
+        Direct unit test on the sanitizer: the output must be a clean, valid
+        FTS5 query with no leading, trailing, or adjacent operators left behind.
+        """
+        s = SessionDB._sanitize_fts5_query
+
+        # Adjacent middle operators collapse to the first (intended) one.
+        assert s("python AND OR java") == "python AND java"
+        assert s("a AND OR b") == "a AND b"
+
+        # Stacked operators at the ends are fully stripped (fixpoint).
+        assert s("foo AND OR") == "foo"
+        assert s("hello AND OR") == "hello"
+        assert s("a OR AND b OR") == "a OR b"
+
+        # All-operator garbage sanitizes to empty, not a dangling operator.
+        assert s("AND OR") == ""
+        assert s("NOT NOT") == ""
+
+        # Sanity: nothing left in any result is a bare operator at an edge.
+        for q in ("python AND OR java", "foo AND OR", "a OR AND b OR"):
+            out = s(q)
+            tokens = out.split()
+            if tokens:
+                assert tokens[0].upper() not in ("AND", "OR", "NOT"), out
+                assert tokens[-1].upper() not in ("AND", "OR", "NOT"), out
+
     def test_search_quoted_phrase_preserved(self, db):
         """User-provided quoted phrases should be preserved for exact matching."""
         db.create_session(session_id="s1", source="cli")

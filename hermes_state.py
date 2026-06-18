@@ -3202,10 +3202,28 @@ class SessionDB:
         sanitized = re.sub(r"\*+", "*", sanitized)
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
 
-        # Step 4: Remove dangling boolean operators at start/end that would
-        # cause syntax errors (e.g. "hello AND" or "OR world")
-        sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
-        sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+        # Step 4: Remove dangling boolean operators that would cause syntax
+        # errors. FTS5 rejects bare operators at the start/end (e.g. "hello AND",
+        # "OR world") *and* adjacent/repeated operators in the middle (e.g.
+        # "python AND OR java" -> 'fts5: syntax error near "OR"'). The previous
+        # single leading + single trailing pass missed both adjacent runs and
+        # stacked operators, leaving an invalid query that silently returned
+        # zero results once the OperationalError was swallowed downstream.
+        #
+        # First collapse any run of 2+ whitespace-separated operators down to
+        # the first one ("python AND OR java" -> "python AND java", preserving
+        # the user's first/intended operator), then strip leading and trailing
+        # operators to a fixpoint so stacked operators ("a OR AND b OR") can't
+        # leave a second dangling operator behind.
+        sanitized = sanitized.strip()
+        sanitized = re.sub(
+            r"(?i)\b(AND|OR|NOT)(?:\s+(?:AND|OR|NOT)\b)+", r"\1", sanitized
+        )
+        prev = None
+        while prev != sanitized:
+            prev = sanitized
+            sanitized = re.sub(r"(?i)^(?:AND|OR|NOT)\b\s*", "", sanitized).strip()
+            sanitized = re.sub(r"(?i)\s*\b(?:AND|OR|NOT)$", "", sanitized).strip()
 
         # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning

@@ -1518,6 +1518,15 @@ def _run_single_child(
             _scope_token = (
                 _mt.set_resolved_tool_names_scope(_child_scope) if _child_scope else None
             )
+            # Re-pin the cron-session flag in this worker context so cron's
+            # approval mode keeps applying to cron-delegated subagents (CRON-1).
+            _cron_token = None
+            if getattr(child, "_delegate_in_cron_session", False):
+                try:
+                    from tools.approval import set_cron_session as _set_cron
+                    _cron_token = _set_cron()
+                except Exception:
+                    _cron_token = None
             try:
                 return child.run_conversation(
                     user_message=goal,
@@ -1526,6 +1535,12 @@ def _run_single_child(
             finally:
                 if _scope_token is not None:
                     _mt.reset_resolved_tool_names_scope(_scope_token)
+                if _cron_token is not None:
+                    try:
+                        from tools.approval import reset_cron_session as _reset_cron
+                        _reset_cron(_cron_token)
+                    except Exception:
+                        pass
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
@@ -2066,6 +2081,17 @@ def delegate_task(
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
+    # Capture whether the parent is running inside a cron job. Subagents run in
+    # fresh worker-thread contexts that don't inherit the parent's cron-session
+    # ContextVar, so without re-pinning it the cron approval mode (e.g.
+    # cron_mode=deny) would silently stop applying to cron-delegated subagents
+    # (CRON-1). Read here on the parent thread, which has the flag.
+    try:
+        from tools.approval import _in_cron_session as _approval_in_cron_session
+        _parent_in_cron_session = _approval_in_cron_session()
+    except Exception:
+        _parent_in_cron_session = False
+
     # Build all child agents on the main thread (thread-safe construction)
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
@@ -2101,6 +2127,7 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            child._delegate_in_cron_session = _parent_in_cron_session
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built

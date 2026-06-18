@@ -37,6 +37,18 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     default="",
 )
 
+# Per-task cron-session flag. cron/scheduler.py used to set
+# os.environ["HERMES_CRON_SESSION"]="1" process-globally and never clear it, so
+# once the in-process scheduler ran a single job, EVERY subsequent live-chat
+# turn in the same process inherited cron's dangerous-command approval bypass
+# (CRON-1). Bind it to the cron job's context instead; live-chat turns run in
+# other contexts and never observe it. The env var remains a fallback for CLI
+# and tests that still set it directly.
+_cron_session: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "hermes_cron_session",
+    default=False,
+)
+
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook for the approval system.
@@ -72,6 +84,31 @@ def set_current_session_key(session_key: str) -> contextvars.Token[str]:
 def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
+
+
+def set_cron_session() -> contextvars.Token[bool]:
+    """Mark the current context as a cron-job execution (per-task, not a
+    process-global env var). Returns a token for :func:`reset_cron_session`."""
+    return _cron_session.set(True)
+
+
+def reset_cron_session(token: contextvars.Token[bool]) -> None:
+    """Restore the prior cron-session state."""
+    _cron_session.reset(token)
+
+
+def _in_cron_session() -> bool:
+    """True when running inside a cron job.
+
+    Prefers the context-local flag (set by cron/scheduler per job and
+    propagated into delegation workers); falls back to the HERMES_CRON_SESSION
+    env var for CLI/test callers that set it directly. Replaces the bare
+    process-global env read so a cron job can no longer leave the bypass enabled
+    for concurrent live-chat turns in the same process.
+    """
+    if _cron_session.get():
+        return True
+    return env_var_enabled("HERMES_CRON_SESSION")
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -113,7 +150,7 @@ def _is_gateway_approval_context() -> bool:
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _in_cron_session():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -968,7 +1005,7 @@ def check_dangerous_command(command: str, env_type: str,
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _in_cron_session():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -1205,7 +1242,7 @@ def check_all_command_guards(command: str, env_type: str,
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _in_cron_session():
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -1491,7 +1528,7 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _in_cron_session():
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,

@@ -1402,9 +1402,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     agent = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
+    # Per-job ContextVar, NOT a process-global env var: the old
+    # os.environ["HERMES_CRON_SESSION"]="1" was never cleared, so once the
+    # in-process scheduler ran one job every subsequent live-chat turn in the
+    # same process inherited cron's dangerous-command approval bypass (CRON-1).
+    # run_job already executes inside a copy_context() per tick (see _run_loop),
+    # and the agent runs in a further copy_context() below, so this flag reaches
+    # the job's tool calls but not concurrent live-chat contexts. Reset in the
+    # finally for direct (non-copy_context) callers.
+    from tools.approval import set_cron_session, reset_cron_session
+    _cron_session_token = set_cron_session()
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
@@ -1828,6 +1835,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        # Clear the per-job cron-session flag (CRON-1).
+        reset_cron_session(_cron_session_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

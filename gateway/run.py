@@ -7483,6 +7483,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _denied is not None:
                 return _denied
 
+        # Log slash commands as inbound messages so model switches and
+        # other state changes are visible in gateway.log for debugging
+        # and analytics.  Regular messages are logged inside
+        # _handle_message_with_agent, but slash commands return early
+        # before reaching that path.  (Fixes #48240)
+        if command and canonical:
+            _slash_platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            _slash_args = (event.get_command_args() or "").strip()[:60]
+            logger.info(
+                "inbound slash command: platform=%s user=%s chat=%s command=/%s args=%r",
+                _slash_platform,
+                source.user_name or source.user_id or "unknown",
+                source.chat_id or "unknown",
+                canonical,
+                _slash_args,
+            )
+
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a
         # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``

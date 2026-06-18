@@ -110,6 +110,8 @@ class WebSocketRelayTransport:
         *,
         connect_timeout_s: float = _HANDSHAKE_TIMEOUT_S,
         outbound_timeout_s: float = _OUTBOUND_TIMEOUT_S,
+        gateway_id: Optional[str] = None,
+        upgrade_secret: Optional[str] = None,
     ) -> None:
         if not WEBSOCKETS_AVAILABLE:
             raise RuntimeError(
@@ -121,6 +123,14 @@ class WebSocketRelayTransport:
         self._bot_id = bot_id
         self._connect_timeout_s = connect_timeout_s
         self._outbound_timeout_s = outbound_timeout_s
+        # Connection auth (Phase 2): when a per-gateway secret is configured the
+        # gateway presents an HMAC bearer on the WS upgrade so the connector can
+        # authenticate it (reject 4401 otherwise). gateway_id identifies the
+        # enrolled instance — the connector peeks it to index its secret verify
+        # list, then verifies the signature. Absent -> unauthenticated upgrade
+        # (dev/test, or a connector that doesn't enforce auth).
+        self._gateway_id = gateway_id
+        self._upgrade_secret = upgrade_secret
 
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
@@ -135,11 +145,32 @@ class WebSocketRelayTransport:
     async def connect(self) -> bool:
         loop = asyncio.get_running_loop()
         self._descriptor_ready = loop.create_future()
-        self._ws = await websockets.connect(self._url)  # type: ignore[union-attr]
+        headers = self._upgrade_headers()
+        if headers:
+            self._ws = await websockets.connect(self._url, additional_headers=headers)  # type: ignore[union-attr]
+        else:
+            self._ws = await websockets.connect(self._url)  # type: ignore[union-attr]
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
         # Send hello; the descriptor arrives via the reader and resolves handshake().
         await self._send({"type": "hello", "platform": self._platform, "botId": self._bot_id})
         return True
+
+    def _upgrade_headers(self) -> Dict[str, str]:
+        """Auth headers for the WS upgrade, or {} when no secret is configured.
+
+        Presents ``Authorization: Bearer *** where the token is a signed
+        bearer built with the per-gateway secret (``gateway/relay/auth.py``
+        ``make_upgrade_token``), keyed by ``gateway_id`` so the connector can
+        index its verify list. The connector rejects the upgrade (close 4401)
+        when this is missing/invalid/revoked; an unauthenticated connector
+        ignores it.
+        """
+        if not (self._upgrade_secret and self._gateway_id):
+            return {}
+        from gateway.relay.auth import make_upgrade_token
+
+        token = make_upgrade_token(self._gateway_id, self._upgrade_secret)
+        return {"Authorization": f"Bearer {token}"}
 
     async def disconnect(self) -> None:
         self._closing = True

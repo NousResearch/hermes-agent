@@ -26,6 +26,7 @@ from hermes_cli.commands import (
     slack_native_slashes,
     slack_subcommand_map,
     telegram_bot_commands,
+    telegram_max_commands_per_scope,
     telegram_menu_commands,
 )
 
@@ -1153,6 +1154,66 @@ class TestTelegramMenuCommands:
             "status",
         ):
             assert name in names
+
+
+    def test_telegram_menu_limit_reads_gateway_config(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  telegram:\n"
+            "    max_commands_per_scope: 42\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert telegram_max_commands_per_scope() == 42
+
+    def test_telegram_menu_limit_clamps_to_bot_api_cap(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  telegram:\n"
+            "    max_commands_per_scope: 500\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert telegram_max_commands_per_scope() == 100
+
+    def test_configured_telegram_menu_priority_pins_commands(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  telegram:\n"
+            "    menu_priority:\n"
+            "      - whoami\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, _ = telegram_menu_commands(max_commands=5)
+
+        assert [name for name, _desc in menu][0] == "whoami"
+
+    def test_dedupes_sanitized_plugin_command_names(self, tmp_path, monkeypatch):
+        """Hyphen/underscore plugin aliases should not waste Telegram menu slots."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "dupe-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: dupe-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('ops-check', lambda args: 'ok', description='Ops check')\n"
+            "    ctx.register_command('ops_check', lambda args: 'ok', description='Ops check alias')\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - dupe-plugin\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        names = [name for name, _desc in menu]
+        assert names.count("ops_check") == 1
 
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""

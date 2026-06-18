@@ -164,6 +164,13 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
         )
+        # Schema-foreign session metadata that strict providers (Fireworks,
+        # Moonshot/Kimi, opencode-go) reject with HTTP 400.  These are
+        # persisted in the messages table but are NOT part of the OpenAI
+        # Chat Completions message schema and must never reach the wire.
+        SESSION_METADATA_KEYS = frozenset(
+            ("timestamp", "observed", "platform_message_id")
+        )
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -172,6 +179,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or any(k in msg for k in SESSION_METADATA_KEYS)
             ):
                 needs_sanitize = True
                 break
@@ -201,6 +209,12 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            # Drop session metadata fields that are NOT part of the
+            # OpenAI Chat Completions message schema.  Strict providers
+            # (Fireworks, Moonshot/Kimi, opencode-go) reject any payload
+            # containing them with HTTP 400.
+            for k in SESSION_METADATA_KEYS:
+                msg.pop(k, None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.

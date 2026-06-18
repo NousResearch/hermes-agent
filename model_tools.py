@@ -269,11 +269,55 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+# Tools that always receive full schemas in stub mode — the main agent calls
+# these directly to think, remember, and delegate.  Everything else is reduced
+# to a name+description stub so the model routes tool use through delegate_task.
+_STUB_MODE_FULL_TOOLS: frozenset = frozenset({
+    "delegate_task",
+    "memory",
+    "skills_list",
+    "skill_view",
+    "skill_manage",
+    "clarify",
+    "send_message",
+    "session_search",
+    "todo",
+    "cronjob",
+})
+
+
+def _apply_stub_mode(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Replace full schemas with name+description stubs for non-core tools.
+
+    The main agent can still *see* every tool (for planning / delegation), but
+    can only invoke the ones in ``_STUB_MODE_FULL_TOOLS`` directly.  All others
+    must be reached via ``delegate_task``, keeping the main conversation thread
+    free of tool-call and parameter noise.
+    """
+    result = []
+    for tool in tools:
+        fn = tool.get("function", {})
+        name = fn.get("name", "")
+        if name in _STUB_MODE_FULL_TOOLS:
+            result.append(tool)
+        else:
+            desc = fn.get("description", "")
+            result.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": f"{desc} [stub — use delegate_task to invoke]",
+                },
+            })
+    return result
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    stub_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -289,6 +333,10 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        stub_mode: When True, reduce non-core tool schemas to name+description
+            stubs.  The main agent can see every tool for planning but must
+            route actual invocations through ``delegate_task``.  Tools in
+            ``_STUB_MODE_FULL_TOOLS`` always receive their full schema.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -316,6 +364,7 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            bool(stub_mode),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -328,7 +377,8 @@ def get_tool_definitions(
             return list(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+                                       skip_tool_search_assembly=skip_tool_search_assembly,
+                                       stub_mode=stub_mode)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -352,6 +402,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    stub_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -532,6 +583,15 @@ def _compute_tool_definitions(
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
+
+    if stub_mode and not skip_tool_search_assembly:
+        filtered_tools = _apply_stub_mode(filtered_tools)
+        if not quiet_mode:
+            stubbed = sum(
+                1 for t in filtered_tools
+                if t.get("function", {}).get("name", "") not in _STUB_MODE_FULL_TOOLS
+            )
+            print(f"🪶  Tool stub mode: {stubbed} tools reduced to stubs (full schemas kept for {len(filtered_tools) - stubbed})")
 
     return filtered_tools
 

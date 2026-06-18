@@ -954,10 +954,16 @@ def init_agent(
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
     # Get available tools with filtering
+    _tool_stub_mode = bool(
+        cfg_get(agent_cfg, "tools", "stub_mode", default=False)
+        if isinstance(agent_cfg, dict)
+        else False
+    )
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        stub_mode=_tool_stub_mode,
     )
     
     # Show tool configuration and store valid tool names for validation

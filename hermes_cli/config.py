@@ -2210,6 +2210,13 @@ DEFAULT_CONFIG = {
     # See tools/tool_search.py for full design notes and the
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
+        # When true, non-core tool schemas are reduced to name+description stubs.
+        # The main agent can plan and delegate but must route actual tool
+        # invocations through delegate_task.  Tools in _STUB_MODE_FULL_TOOLS
+        # (delegate_task, memory, skills_list, skill_view, skill_manage, clarify,
+        # send_message, session_search, todo, cronjob) always keep full schemas.
+        # Saves ~8–10k tokens per call on a typical 29-tool load.
+        "stub_mode": False,
         "tool_search": {
             # "auto" (default) — activate only when deferrable tool schemas
             #   exceed ``threshold_pct`` of the active model's context length,

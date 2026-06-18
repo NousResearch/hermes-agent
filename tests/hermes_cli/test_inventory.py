@@ -660,3 +660,31 @@ def test_two_custom_providers_with_overlap_both_survive():
     assert a_row["total_models"] == 2
     assert b_row["total_models"] == 2
 
+
+def test_build_models_payload_no_max_models_returns_full_list():
+    """When max_models is not passed (None), build_models_payload must
+    return the full model list — not truncate to the old default of 50.
+    Regression for #48279: Kilo Gateway picker was capped at 50 of 336
+    models, making most models undiscoverable via search."""
+    full_models = [f"model-{i}" for i in range(100)]
+    rows = [
+        {
+            "slug": "kilocode",
+            "name": "Kilo Code",
+            "models": full_models,
+            "total_models": len(full_models),
+            "is_current": False,
+            "is_user_defined": False,
+            "source": "built-in",
+        },
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        # No max_models argument — should return all 100 models
+        payload = build_models_payload(ctx)
+
+    kilo_row = next(r for r in payload["providers"] if r["slug"] == "kilocode")
+    assert kilo_row["models"] == full_models
+    assert kilo_row["total_models"] == 100
+    assert len(kilo_row["models"]) == 100
+

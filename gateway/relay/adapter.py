@@ -58,6 +58,10 @@ class RelayAdapter(BasePlatformAdapter):
         # Capability surface read by stream_consumer (getattr(..., 4096)).
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
+        # Inbound delivery receiver (signed connector→gateway HTTP POSTs). Built
+        # lazily in connect() when a delivery key + bind port are configured; a
+        # purely-outbound dev gateway runs without it. See inbound_receiver.py.
+        self._inbound_runner: Any = None
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -88,7 +92,39 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay handshake failed: %s", exc)
             return False
         self._apply_descriptor(descriptor)
+        # Start the signed inbound-delivery receiver if configured (the connector
+        # POSTs normalized events to it over HTTP, verified with the tenant
+        # delivery key). Non-fatal: a receiver bind failure must not fail the
+        # outbound connection — the gateway can still send.
+        await self._maybe_start_inbound_receiver()
         return True
+
+    async def _maybe_start_inbound_receiver(self) -> None:
+        """Start the inbound HTTP receiver when a delivery key + port are set."""
+        from gateway.relay import relay_inbound_config
+
+        delivery_key, host, port = relay_inbound_config()
+        if not (delivery_key and port):
+            return  # no inbound URL configured -> outbound-only gateway
+        try:
+            from aiohttp import web
+
+            from gateway.relay.inbound_receiver import InboundDeliveryReceiver
+
+            receiver = InboundDeliveryReceiver(
+                delivery_key_verify_list=lambda: [delivery_key],
+                on_message=self._on_inbound,
+                on_interrupt=self.on_interrupt,
+            )
+            runner = web.AppRunner(receiver.build_app(), access_log=None)
+            await runner.setup()
+            site = web.TCPSite(runner, host, port)
+            await site.start()
+            self._inbound_runner = runner
+            logger.info("relay inbound receiver listening on http://%s:%s", host, port)
+        except Exception as exc:  # noqa: BLE001 - inbound bind failure must not kill outbound
+            logger.warning("relay inbound receiver failed to start: %s", exc)
+            self._inbound_runner = None
 
     def _apply_descriptor(self, descriptor: CapabilityDescriptor) -> None:
         """Adopt a (re)negotiated descriptor into the live capability surface."""
@@ -112,6 +148,12 @@ class RelayAdapter(BasePlatformAdapter):
         await self.interrupt_session_activity(session_key, chat_id)
 
     async def disconnect(self) -> None:
+        if self._inbound_runner is not None:
+            try:
+                await self._inbound_runner.cleanup()
+            except Exception:  # noqa: BLE001 - best-effort teardown
+                pass
+            self._inbound_runner = None
         if self._transport is not None:
             await self._transport.disconnect()
 

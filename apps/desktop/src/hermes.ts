@@ -17,6 +17,7 @@ import type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  MemoryProviderConfig,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -71,6 +72,7 @@ export type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
+  MemoryProviderConfig,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -336,6 +338,23 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
     path: '/api/config',
     method: 'PUT',
     body: { config }
+  })
+}
+
+export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
+  return window.hermesDesktop.api<MemoryProviderConfig>({
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`
+  })
+}
+
+export function saveMemoryProviderConfig(
+  provider: string,
+  values: Record<string, string>
+): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    method: 'PUT',
+    body: { values }
   })
 }
 

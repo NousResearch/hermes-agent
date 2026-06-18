@@ -239,6 +239,7 @@ class TestOpenVikingSkillQuerySafety:
                         {
                             "role": "assistant",
                             "parts": [{"type": "text", "text": "Done."}],
+                            "peer_id": "hermes",
                         },
                     ]
                 },
@@ -474,8 +475,8 @@ class TestOpenVikingBrowse:
 class TestOpenVikingMemoryUriBuilder:
     """Regression tests for _build_memory_uri — fixes #36969.
 
-    Before the fix the URI omitted /agent/{agent}/, causing all agents
-    under the same user to share the same memory namespace.
+    OpenViking's current memory layout stores peer-scoped memories under
+    viking://user/peers/{peer_id}/...
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -484,19 +485,19 @@ class TestOpenVikingMemoryUriBuilder:
         p._agent = agent
         return p
 
-    def test_uri_layout_includes_agent_segment(self):
-        """URI must contain /agent/{agent}/ between user and memories."""
+    def test_uri_layout_includes_peer_segment(self):
+        """URI must contain /peers/{peer_id}/ between user and memories."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/alice/agent/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
-    def test_uri_uses_configured_agent_not_default(self):
-        """_agent value must be interpolated — not hardcoded to 'hermes'."""
+    def test_uri_uses_configured_peer_not_default(self):
+        """_agent value is the OpenViking actor peer ID, not hardcoded to 'hermes'."""
         p = self._make_provider(user="alice", agent="research-bot")
         uri = p._build_memory_uri("entities")
-        assert "/agent/research-bot/" in uri
-        assert "/agent/hermes/" not in uri
+        assert "/peers/research-bot/" in uri
+        assert "/peers/hermes/" not in uri
 
     def test_uri_slug_is_twelve_hex_chars_and_unique(self):
         """Slug must be 12 hex chars and differ between calls."""

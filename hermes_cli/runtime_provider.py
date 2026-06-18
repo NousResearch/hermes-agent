@@ -713,6 +713,69 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
     return None
 
 
+def canonical_custom_identity(
+    *,
+    base_url: Optional[str] = None,
+    config_provider: Optional[str] = None,
+) -> Optional[str]:
+    """Recover a routable ``custom:<name>`` identity for a bare custom provider.
+
+    The bare string ``"custom"`` is the *resolved billing class* shared by
+    every named ``providers:`` / ``custom_providers:`` entry — it is NOT a
+    routable provider identity (``resolve_runtime_provider("custom")`` falls
+    through to the OpenRouter default URL with no api_key, which surfaces to
+    the user as "No LLM provider configured").
+
+    Any code path that persists or restores a session's provider override
+    must run the resolved provider through this helper so a bare ``"custom"``
+    is upgraded back to its durable ``custom:<name>`` menu key. Two recovery
+    sources, in priority order:
+
+    1. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
+       (the one fact that always survives the persistence round-trip when a
+       URL was recorded).
+    2. ``config_provider`` — the active ``config.model.provider`` (or its
+       ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When the agent
+       was built without a base_url on the override (the recurring
+       Desktop/TUI regression vector), the configured provider is the only
+       durable identity left, so fall back to it when it names a real entry.
+
+    Returns ``custom:<name>`` when a routable identity is recovered, else
+    ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
+    resort, e.g. a genuine ad-hoc endpoint with no config entry).
+    """
+    # 1. Reverse-lookup by endpoint URL.
+    if base_url:
+        identity = find_custom_provider_identity(base_url)
+        if identity:
+            return identity
+
+    # 2. Fall back to the configured provider when it names a real entry.
+    candidate = str(config_provider or "").strip()
+    if not candidate:
+        try:
+            candidate = str(_get_model_config().get("provider") or "").strip()
+        except Exception:
+            candidate = ""
+    if not candidate:
+        candidate = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
+
+    candidate_norm = _normalize_custom_provider_name(candidate)
+    # A bare/non-routable candidate cannot heal a bare custom override.
+    if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
+        return None
+    # Only return it when it actually resolves to a configured custom entry,
+    # so we never invent a `custom:<x>` that resolution can't honor.
+    try:
+        if _get_named_custom_provider(candidate) is not None:
+            if candidate_norm.startswith("custom:"):
+                return candidate_norm
+            return f"custom:{candidate_norm}"
+    except Exception:
+        pass
+    return None
+
+
 def _normalize_base_url_for_match(value) -> str:
     return str(value or "").strip().rstrip("/").lower()
 

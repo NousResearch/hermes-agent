@@ -23,6 +23,7 @@ import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
+import { ProviderConfigPanel } from './provider-config-panel'
 
 function ConfigField({
   schemaKey,
@@ -368,6 +369,9 @@ export function ConfigSettings({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
+              {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
+                <ProviderConfigPanel provider={String(getNested(config, key))} />
+              ) : null}
             </div>
           ))}
         </div>

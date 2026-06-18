@@ -113,6 +113,31 @@ export interface EnvVarInfo {
   url: null | string
 }
 
+export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
+
+export interface MemoryProviderFieldOption {
+  description: string
+  label: string
+  value: string
+}
+
+export interface MemoryProviderField {
+  description: string
+  is_set: boolean
+  key: string
+  kind: MemoryProviderFieldKind
+  label: string
+  options: MemoryProviderFieldOption[]
+  placeholder: string
+  value: string
+}
+
+export interface MemoryProviderConfig {
+  fields: MemoryProviderField[]
+  label: string
+  name: string
+}
+
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string

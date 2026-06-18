@@ -48,9 +48,15 @@ kanban_complete(
 )
 ```
 
+**Self-improvement risk split:**
+
+Low-risk self-improvement tasks may complete automatically after verification. Low-risk classes are task/status file updates, docs/todo updates, health checks, watchdog/preflight scripts, log parsers, report/status commands, skill artifact verification, source-health checks, and disabled-platform noise suppression. Run the relevant tests or verification command, write the result note in `kanban_complete(summary=..., metadata=...)`, and complete the task.
+
+Medium/high-risk work still requires review: code changes affecting runtime behavior, auth/session changes, launchd/cron changes, external posting/actions, browser automation, and deletion or destructive operations.
+
 **Coding task that needs human review (review-required):**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+For medium/high-risk code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
 
 ```python
 import json
@@ -69,7 +75,7 @@ kanban_block(
 )
 ```
 
-Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+Use `kanban_complete` when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, a verified low-risk self-improvement from the list above, or a research task where the artifact IS the writeup itself.
 
 **Research task:**
 ```python

@@ -223,6 +223,168 @@ atexit.register(_shutdown_parallel_pool)
 _hermes_home: Path | None = None
 
 
+def _requires_chrome_x_preflight(job: dict) -> bool:
+    """Return true for private Chrome/X monitor jobs that can suppress delivery."""
+    text = f"{job.get('name', '')}\n{job.get('prompt', '')}".lower()
+    if not text.strip():
+        return False
+
+    public_source_markers = (
+        "x_search api",
+        "x search api",
+        "public x",
+        "no chrome",
+        "without chrome",
+    )
+    if any(marker in text for marker in public_source_markers):
+        return False
+
+    chrome_markers = ("chrome", "browser tab", "existing tab")
+    x_markers = (" x ", "x/", "x.com", "twitter", "tweet", "bookmarks")
+    private_markers = ("logged-in", "logged in", "private", "existing", "tab")
+    padded = f" {text} "
+    return (
+        any(marker in padded for marker in chrome_markers)
+        and any(marker in padded for marker in x_markers)
+        and any(marker in padded for marker in private_markers)
+    )
+
+
+def _append_chrome_x_preflight_contract(prompt: str, artifact_path: str | Path) -> str:
+    """Append the required Chrome/X preflight artifact contract to a prompt."""
+    artifact_path = Path(artifact_path)
+    return (
+        f"{prompt.rstrip()}\n\n"
+        "## Chrome/X preflight contract\n\n"
+        "Before returning a final answer, write a JSON artifact to this exact path:\n"
+        f"{artifact_path}\n\n"
+        "The artifact must be a JSON object with these keys:\n"
+        "- preflight_ok: boolean\n"
+        "- chrome_access_ok: boolean\n"
+        "- x_tab_seen: boolean\n"
+        "- items_scanned: integer\n"
+        "- new_items: integer\n"
+        "- failure_reason: string or null\n\n"
+        "You may return exactly `[SILENT]` only after preflight_ok, "
+        "chrome_access_ok, and x_tab_seen are true and new_items is 0. "
+        "If Chrome or the existing X/Twitter tab cannot be verified, report the "
+        "blocker instead of returning `[SILENT]`."
+    )
+
+
+def _read_chrome_x_preflight_artifact(path: str | Path) -> tuple[dict | None, str | None]:
+    """Read and validate the Chrome/X preflight artifact."""
+    path = Path(path)
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            artifact = json.load(f)
+    except FileNotFoundError:
+        return None, "missing artifact"
+    except json.JSONDecodeError as exc:
+        return None, f"invalid JSON artifact: {exc}"
+    except OSError as exc:
+        return None, f"could not read artifact: {exc}"
+
+    if not isinstance(artifact, dict):
+        return None, "artifact must be a JSON object"
+
+    required = {
+        "preflight_ok": bool,
+        "chrome_access_ok": bool,
+        "x_tab_seen": bool,
+        "items_scanned": int,
+        "new_items": int,
+        "failure_reason": (str, type(None)),
+    }
+    for key, expected_type in required.items():
+        if key not in artifact:
+            return None, f"missing key: {key}"
+        if not isinstance(artifact[key], expected_type):
+            return None, f"invalid type for {key}"
+    for key in ("items_scanned", "new_items"):
+        if artifact[key] < 0:
+            return None, f"{key} must be non-negative"
+
+    return artifact, None
+
+
+def _enforce_chrome_x_silent_gate(
+    final_response: str,
+    artifact: dict | None,
+    artifact_error: str | None,
+) -> str:
+    """Reject `[SILENT]` unless the Chrome/X artifact proves a clean scan."""
+    if str(final_response or "").strip().upper() != SILENT_MARKER:
+        return final_response
+    if artifact_error:
+        raise RuntimeError(f"Chrome/X preflight missing artifact: {artifact_error}")
+    if artifact is None:
+        raise RuntimeError("Chrome/X preflight missing artifact")
+    if artifact.get("preflight_ok") is not True:
+        reason = artifact.get("failure_reason") or "preflight_ok was false"
+        raise RuntimeError(f"Chrome/X preflight failed preflight: {reason}")
+    if artifact.get("chrome_access_ok") is not True:
+        raise RuntimeError("Chrome/X preflight returned [SILENT] without verified Chrome access")
+    if artifact.get("x_tab_seen") is not True:
+        raise RuntimeError("Chrome/X preflight returned [SILENT] without verifying an existing X/Twitter tab")
+    if int(artifact.get("new_items") or 0) > 0:
+        raise RuntimeError("Chrome/X preflight returned [SILENT] with new_items > 0")
+    return SILENT_MARKER
+
+
+def _finalize_chrome_x_preflight_response(
+    job: dict,
+    final_response: str,
+    artifact_path: str | Path,
+    *,
+    ledger_path: str | Path | None = None,
+) -> str:
+    """Apply novelty gating, then enforce Chrome/X proof before silence."""
+    from cron.alert_novelty import apply_alert_novelty_gate
+
+    artifact, artifact_error = _read_chrome_x_preflight_artifact(artifact_path)
+    gated_response = apply_alert_novelty_gate(
+        job,
+        True,
+        final_response,
+        ledger_path=ledger_path,
+    )
+    return _enforce_chrome_x_silent_gate(gated_response, artifact, artifact_error)
+
+
+def _apply_monitor_source_health_gate(success: bool, final_response: str) -> str:
+    """Suppress delivery when a monitor status line marks weak source health."""
+    if not success:
+        return final_response
+
+    try:
+        from cron.source_health import MONITOR_STATUS_PREFIX
+    except Exception:
+        return final_response
+
+    status_payload = None
+    for line in str(final_response or "").splitlines():
+        if line.startswith(MONITOR_STATUS_PREFIX):
+            status_payload = line[len(MONITOR_STATUS_PREFIX):]
+    if not status_payload:
+        return final_response
+
+    try:
+        status = json.loads(status_payload)
+    except json.JSONDecodeError:
+        return final_response
+
+    if not isinstance(status, dict):
+        return final_response
+    if status.get("delivery_suppressed") is True or status.get("delivery_allowed") is False:
+        logger.info(
+            "Monitor source-health suppressed cron delivery: %s",
+            status.get("suppression_reason") or status.get("failure_reason") or "policy",
+        )
+        return SILENT_MARKER
+    return final_response
+
+
 def _get_hermes_home() -> Path:
     """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
     return _hermes_home or get_hermes_home()
@@ -1455,8 +1617,26 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             return True, silent_doc, SILENT_MARKER, None
 
+    run_stamp = _hermes_now().strftime("%Y%m%d_%H%M%S")
+    chrome_x_artifact_path: Path | None = None
+    prompt_job = job
+    if _requires_chrome_x_preflight(job):
+        chrome_x_artifact_path = (
+            _get_hermes_home()
+            / "cron"
+            / "output"
+            / str(job_id)
+            / f"cron_{job_id}_{run_stamp}.preflight.json"
+        )
+        chrome_x_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_job = dict(job)
+        prompt_job["prompt"] = _append_chrome_x_preflight_contract(
+            str(job.get("prompt") or ""),
+            chrome_x_artifact_path,
+        )
+
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script)
+        prompt = _build_job_prompt(prompt_job, prerun_script=prerun_script)
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
@@ -1484,7 +1664,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _cron_session_id = f"cron_{job_id}_{run_stamp}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -1557,6 +1737,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if _job_workdir:
         os.environ["TERMINAL_CWD"] = _job_workdir
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
+
+    auth_preflight_note = ""
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -1661,6 +1843,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            auth_preflight_note = f"Cron auth preflight: primary auth failed ({auth_exc}); trying fallback."
             fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
             fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
             runtime = None
@@ -1675,11 +1858,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         fb_kwargs["explicit_api_key"] = entry["api_key"]
                     runtime = resolve_runtime_provider(**fb_kwargs)
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                    auth_preflight_note = (
+                        auth_preflight_note
+                        + f" Fallback resolved to {runtime.get('provider') or 'configured provider'}."
+                    )
                     break
                 except Exception as fb_exc:
                     logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
             if runtime is None:
-                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+                auth_preflight_note = auth_preflight_note + " No fallback provider resolved."
+                raise RuntimeError(
+                    f"Cron auth preflight failed: {format_runtime_provider_error(auth_exc)}"
+                ) from auth_exc
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
@@ -1869,15 +2059,27 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
+        if chrome_x_artifact_path is not None:
+            final_response = _finalize_chrome_x_preflight_response(
+                job,
+                final_response,
+                chrome_x_artifact_path,
+            )
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
+        preflight_section = (
+            f"\n## Preflight\n\n{auth_preflight_note}\n"
+            if auth_preflight_note
+            else ""
+        )
         
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+{preflight_section}
 
 ## Prompt
 
@@ -1894,12 +2096,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        preflight_section = (
+            f"\n## Preflight\n\n{auth_preflight_note}\n"
+            if auth_preflight_note
+            else ""
+        )
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+{preflight_section}
 
 ## Prompt
 
@@ -2057,6 +2265,18 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                if success:
+                    deliver_content = _apply_monitor_source_health_gate(success, deliver_content)
+                    if not _requires_chrome_x_preflight(job):
+                        try:
+                            from cron.alert_novelty import apply_alert_novelty_gate
+                            deliver_content = apply_alert_novelty_gate(job, success, deliver_content)
+                        except Exception as novelty_exc:
+                            logger.warning(
+                                "Job '%s': alert novelty gate failed open: %s",
+                                job["id"],
+                                novelty_exc,
+                            )
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.

@@ -31,6 +31,7 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
+    KANBAN_GUIDANCE,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
@@ -51,6 +52,12 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_kanban_guidance_allows_low_risk_self_improvement_completion(self):
+        assert "Low-risk self-improvement tasks may auto-complete" in KANBAN_GUIDANCE
+        assert "task/status file updates" in KANBAN_GUIDANCE
+        assert "code changes affecting runtime behavior" in KANBAN_GUIDANCE
+        assert "review-required" in KANBAN_GUIDANCE
 
 
 # =========================================================================

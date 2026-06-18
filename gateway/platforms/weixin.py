@@ -1225,6 +1225,7 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._model_picker_state: Dict[str, dict] = {}
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
@@ -1467,6 +1468,17 @@ class WeixinAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
+
+        # Model picker response intercept: if there's active picker state for
+        # this chat and the message is plain text, handle it as a picker
+        # selection instead of forwarding to the agent.
+        if text and event.message_type == MessageType.TEXT:
+            picker_result = await self._handle_picker_response(
+                chat_id=effective_chat_id, text=text,
+            )
+            if picker_result is not None:
+                return  # message consumed by picker flow
+
         if event.message_type == MessageType.TEXT:
             self._enqueue_text_event(event)
         else:
@@ -2267,6 +2279,213 @@ class WeixinAdapter(BasePlatformAdapter):
                 "len": str(kw["plaintext_size"]),
             },
         }
+
+    # ------------------------------------------------------------------
+    # Model picker (text-only interactive flow for platforms without
+    # inline keyboards, e.g. WeChat).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_picker_provider_text(
+        providers: list,
+        current_model: str,
+        current_provider: str,
+    ) -> str:
+        """Build a numbered text list of providers for the user to choose from."""
+        from hermes_cli.providers import get_label
+
+        lines = [f"Current: {current_model or 'unknown'} ({get_label(current_provider)})", ""]
+        lines.append("Select a provider (reply with the number):")
+        lines.append("")
+        for i, p in enumerate(providers, 1):
+            tag = " [current]" if p.get("is_current") else ""
+            model_count = len(p.get("models", []))
+            lines.append(f"  {i}. {p['name']} ({model_count} models){tag}")
+        lines.append("")
+        lines.append("Or type /model <name> --provider <slug> directly.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_picker_model_text(models: list, provider_name: str) -> str:
+        """Build a fully enumerated text list of models.
+        Shows every model — no paging, since WeChat has no inline keyboard.
+        """
+        lines = [f"Models available on {provider_name}:", ""]
+        for i, m in enumerate(models, 1):
+            lines.append(f"  {i}. {m}")
+        lines.append("")
+        lines.append("Reply with the model number or exact model name.")
+        return "\n".join(lines)
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive text-based model picker.
+
+        Two-step drill-down: provider selection -> model selection.
+        On WeChat, the user replies with a number at each step.
+        """
+        try:
+            text = self._build_picker_provider_text(
+                providers, current_model, current_provider,
+            )
+            msg = self.format_message(text)
+            result = await self.send(chat_id, msg)
+
+            self._model_picker_state[chat_id] = {
+                "stage": "provider",
+                "providers": providers,
+                "session_key": session_key,
+                "current_model": current_model,
+                "current_provider": current_provider,
+                "on_model_selected": on_model_selected,
+            }
+
+            return SendResult(
+                success=result.success,
+                message_id=result.message_id,
+            )
+        except Exception as e:
+            logger.warning("[%s] send_model_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_picker_response(
+        self, chat_id: str, text: str,
+    ) -> Optional[str]:
+        """Process a user reply as a model picker selection.
+
+        Returns None if there's no active picker state for this chat (the
+        message should be forwarded to the agent normally). Returns a
+        non-None value when the message was consumed by the picker flow.
+        """
+        state = self._model_picker_state.get(chat_id)
+        if state is None:
+            return None
+
+        text = text.strip()
+        from hermes_cli.providers import get_label
+
+        if state["stage"] == "provider":
+            # User is selecting a provider
+            selected_provider = None
+            selected_idx = None
+
+            # Try numeric selection
+            if text.isdigit():
+                idx = int(text) - 1
+                providers = state["providers"]
+                if 0 <= idx < len(providers):
+                    selected_provider = providers[idx]
+                    selected_idx = idx
+
+            # Try slug match
+            if selected_provider is None:
+                slug = text.lower().strip()
+                for p in state["providers"]:
+                    if p.get("slug", "").lower() == slug:
+                        selected_provider = p
+                        break
+
+            if selected_provider is None:
+                await self.send(
+                    chat_id,
+                    self.format_message(
+                        f"Invalid selection. Reply with a number (1-{len(state['providers'])}) "
+                        f"or a provider slug."
+                    ),
+                )
+                return "picker_consumed"
+
+            models = selected_provider.get("models", [])
+            provider_name = selected_provider.get("name", selected_provider.get("slug", "?"))
+
+            if not models:
+                # No curated models — switch directly to the provider
+                # (auto-detect model from endpoint).
+                try:
+                    confirm = await state["on_model_selected"](
+                        chat_id, "", selected_provider["slug"],
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] picker callback failed: %s", self.name, exc)
+                    confirm = f"Switch to {provider_name} failed: {exc}"
+                self._model_picker_state.pop(chat_id, None)
+                await self.send(chat_id, self.format_message(confirm))
+                return "picker_consumed"
+
+            if len(models) == 1:
+                # Only one model — switch directly
+                try:
+                    confirm = await state["on_model_selected"](
+                        chat_id, models[0], selected_provider["slug"],
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] picker callback failed: %s", self.name, exc)
+                    confirm = f"Switch to {models[0]} on {provider_name} failed: {exc}"
+                self._model_picker_state.pop(chat_id, None)
+                await self.send(chat_id, self.format_message(confirm))
+                return "picker_consumed"
+
+            # Multiple models — send model list
+            model_text = self._build_picker_model_text(models, provider_name)
+            await self.send(chat_id, self.format_message(model_text))
+
+            state["stage"] = "model"
+            state["selected_provider_slug"] = selected_provider["slug"]
+            state["selected_provider_name"] = provider_name
+            state["selected_provider_models"] = models
+            return "picker_consumed"
+
+        if state["stage"] == "model":
+            models = state.get("selected_provider_models", [])
+            provider_slug = state.get("selected_provider_slug", "")
+            provider_name = state.get("selected_provider_name", "?")
+            selected_model = None
+
+            # Try numeric selection
+            if text.isdigit():
+                idx = int(text) - 1
+                if 0 <= idx < len(models):
+                    selected_model = models[idx]
+
+            # Try exact model name match
+            if selected_model is None:
+                for m in models:
+                    if m.lower() == text.lower():
+                        selected_model = m
+                        break
+
+            if selected_model is None:
+                await self.send(
+                    chat_id,
+                    self.format_message(
+                        f"Invalid selection. Reply with a number (1-{len(models)}) "
+                        f"or an exact model name."
+                    ),
+                )
+                return "picker_consumed"
+
+            try:
+                confirm = await state["on_model_selected"](
+                    chat_id, selected_model, provider_slug,
+                )
+            except Exception as exc:
+                logger.warning("[%s] picker callback failed: %s", self.name, exc)
+                confirm = f"Switch to {selected_model} on {provider_name} failed: {exc}"
+            self._model_picker_state.pop(chat_id, None)
+            await self.send(chat_id, self.format_message(confirm))
+            return "picker_consumed"
+
+        # Unknown stage — clear state and fall through
+        self._model_picker_state.pop(chat_id, None)
+        return None
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_type = "group" if chat_id.endswith("@chatroom") else "dm"

@@ -103,7 +103,8 @@ class CompressionConfig:
     api_key_env: str = "OPENROUTER_API_KEY"
     temperature: float = 0.3
     max_retries: int = 3
-    retry_delay: int = 2
+    retry_delay: float = 2.0
+    retry_max_delay: float = 60.0
     
     # Output
     add_summary_notice: bool = True
@@ -156,6 +157,9 @@ class CompressionConfig:
             config.temperature = data['summarization'].get('temperature', config.temperature)
             config.max_retries = data['summarization'].get('max_retries', config.max_retries)
             config.retry_delay = data['summarization'].get('retry_delay', config.retry_delay)
+            config.retry_max_delay = data['summarization'].get(
+                'retry_max_delay', config.retry_max_delay
+            )
         
         # Output
         if 'output' in data:
@@ -671,7 +675,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
+                    time.sleep(
+                        jittered_backoff(
+                            attempt + 1,
+                            base_delay=self.config.retry_delay,
+                            max_delay=self.config.retry_max_delay,
+                        )
+                    )
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
@@ -740,7 +750,13 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
+                    await asyncio.sleep(
+                        jittered_backoff(
+                            attempt + 1,
+                            base_delay=self.config.retry_delay,
+                            max_delay=self.config.retry_max_delay,
+                        )
+                    )
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"

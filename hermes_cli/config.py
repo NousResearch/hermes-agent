@@ -912,6 +912,14 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Jittered exponential backoff for the agent's API retry loop.
+        # retry_* applies to invalid-response / transient API failures;
+        # rate_limit_retry_* applies when the provider returns 429 without
+        # a Retry-After header (or when Retry-After exceeds the cap below).
+        "retry_base_delay": 5.0,
+        "retry_max_delay": 120.0,
+        "rate_limit_retry_base_delay": 2.0,
+        "rate_limit_retry_max_delay": 60.0,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -1269,6 +1277,11 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        # Jittered exponential backoff for trajectory-compressor summarization
+        # retries (also mirrored in trajectory_compressor YAML as
+        # summarization.retry_delay / summarization.retry_max_delay).
+        "retry_base_delay": 2.0,
+        "retry_max_delay": 60.0,
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

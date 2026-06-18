@@ -1266,6 +1266,25 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    def _parse_retry_delay(raw, default: float) -> float:
+        try:
+            return max(float(raw), 0.0)
+        except (TypeError, ValueError):
+            return default
+
+    agent._retry_base_delay = _parse_retry_delay(
+        _agent_section.get("retry_base_delay", 5.0), 5.0
+    )
+    agent._retry_max_delay = _parse_retry_delay(
+        _agent_section.get("retry_max_delay", 120.0), 120.0
+    )
+    agent._rate_limit_retry_base_delay = _parse_retry_delay(
+        _agent_section.get("rate_limit_retry_base_delay", 2.0), 2.0
+    )
+    agent._rate_limit_retry_max_delay = _parse_retry_delay(
+        _agent_section.get("rate_limit_retry_max_delay", 60.0), 60.0
+    )
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

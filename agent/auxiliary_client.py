@@ -4728,7 +4728,10 @@ def _get_cached_client(
                     effective = _compat_model(cached_client, model, cached_default)
                     return cached_client, effective
                 # Stale — evict and fall through to create a new client.
-                _force_close_async_httpx(cached_client)
+                # Do not force-close the cached client here: _force_close_async_httpx
+                # can deadlock when called from sync-to-async bridging (e.g.
+                # session_search parallel summarization) because it may block on
+                # the wrong event loop.
                 del _client_cache[cache_key]
             else:
                 effective = _compat_model(cached_client, model, cached_default)

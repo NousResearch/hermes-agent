@@ -9,6 +9,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _summarize_tool_result,
 )
 from hermes_state import SessionDB
 
@@ -111,6 +112,26 @@ class TestPreflightDeferral:
         # short-circuit applies => no deferral.
         assert compressor.should_defer_preflight_to_real_usage(95_000) is False
 
+
+
+class TestSummarizeToolResult:
+    @pytest.mark.parametrize("tool_args", [
+        '[{"code": "print(1)"}]',
+        '"not an object"',
+        "123",
+        "true",
+        "null",
+    ])
+    def test_non_object_tool_args_do_not_crash(self, tool_args):
+        """Regression: pre-compression pruning may see legacy non-dict args."""
+        summary = _summarize_tool_result(
+            "execute_code",
+            tool_args,
+            '{"output": "1", "exit_code": 0}',
+        )
+
+        assert summary.startswith("[execute_code]")
+        assert "lines output" in summary
 
 
 class TestCompress:

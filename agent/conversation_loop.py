@@ -827,6 +827,12 @@ def run_conversation(
         # manual message manipulation are always caught.
         api_messages = agent._sanitize_api_messages(api_messages)
 
+        # Gateway session restore can briefly resurrect openai-codex with the
+        # chat-completions transport. Repair before api_kwargs are built so the
+        # payload shape matches the Codex Responses adapter.
+        from agent.chat_completion_helpers import _ensure_openai_codex_runtime
+        _ensure_openai_codex_runtime(agent)
+
         # Drop thinking-only assistant turns (reasoning but no visible
         # output and no tool_calls) and merge any adjacent user messages
         # left behind. Prevents Anthropic 400s ("The final block in an

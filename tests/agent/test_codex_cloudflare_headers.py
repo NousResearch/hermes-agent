@@ -117,6 +117,52 @@ class TestCodexCloudflareHeaders:
 # ---------------------------------------------------------------------------
 
 class TestPrimaryClientWiring:
+    def test_stale_codex_chat_completions_runtime_is_repaired(self):
+        """Restored gateway sessions must not hit /codex/chat/completions."""
+        from agent.chat_completion_helpers import _ensure_openai_codex_runtime
+
+        agent = MagicMock()
+        agent.provider = "openai-codex"
+        agent.api_mode = "chat_completions"
+        agent.api_key = _make_codex_jwt("acct-runtime-repair")
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._client_kwargs = {
+            "api_key": agent.api_key,
+            "base_url": agent.base_url,
+        }
+        agent._transport_cache = {"chat_completions": object()}
+
+        def _apply_headers(base_url):
+            from agent.auxiliary_client import _codex_cloudflare_headers
+
+            assert base_url == agent.base_url
+            agent._client_kwargs["default_headers"] = _codex_cloudflare_headers(
+                agent.api_key
+            )
+
+        agent._apply_client_headers_for_base_url.side_effect = _apply_headers
+
+        _ensure_openai_codex_runtime(agent)
+
+        assert agent.api_mode == "codex_responses"
+        assert agent._transport_cache == {}
+        headers = agent._client_kwargs["default_headers"]
+        assert headers["originator"] == "codex_cli_rs"
+        assert headers["ChatGPT-Account-ID"] == "acct-runtime-repair"
+
+    def test_codex_app_server_runtime_is_preserved(self):
+        from agent.chat_completion_helpers import _ensure_openai_codex_runtime
+
+        agent = MagicMock()
+        agent.provider = "openai-codex"
+        agent.api_mode = "codex_app_server"
+        agent._client_kwargs = {}
+
+        _ensure_openai_codex_runtime(agent)
+
+        assert agent.api_mode == "codex_app_server"
+        agent._apply_client_headers_for_base_url.assert_not_called()
+
     def test_init_wires_codex_headers_for_chatgpt_base_url(self):
         from run_agent import AIAgent
         token = _make_codex_jwt("acct-primary-init")

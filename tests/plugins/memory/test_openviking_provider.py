@@ -680,7 +680,7 @@ def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://localhost:1934")
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "https://localhost:1934"
 
         def health(self):
@@ -710,7 +710,7 @@ def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypa
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "http://localhost:1934"
 
         def health(self):
@@ -793,7 +793,7 @@ def test_manual_setup_does_not_offer_autostart_when_local_server_is_unhealthy(mo
     _clear_openviking_env(monkeypatch)
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "http://localhost:1933"
 
         def health_payload(self):
@@ -837,7 +837,7 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
     waiter_calls = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "http://127.0.0.1:1934"
 
         def health(self):
@@ -879,7 +879,7 @@ def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeyp
     wait_calls = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             self.endpoint = endpoint
             self.api_key = api_key
             self.account = account
@@ -954,7 +954,7 @@ def test_initialize_does_not_autostart_remote_openviking(monkeypatch, caplog):
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "https://openviking.example"
 
         def health(self):
@@ -985,7 +985,7 @@ def test_initialize_warns_clearly_when_local_runtime_autostart_fails(monkeypatch
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "http://localhost:1934"
 
         def health(self):
@@ -1017,7 +1017,7 @@ def test_initialize_emits_cli_warning_when_local_runtime_autostart_fails(monkeyp
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "http://localhost:1934"
 
         def health(self):
@@ -1047,7 +1047,7 @@ def test_initialize_does_not_emit_cli_warning_when_callback_absent(monkeypatch):
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "http://localhost:1934"
 
         def health(self):
@@ -1964,7 +1964,7 @@ def test_validate_openviking_reachability_uses_health_only(monkeypatch):
     events = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "https://openviking.example"
             assert api_key == ""
 
@@ -1987,7 +1987,7 @@ def test_validate_openviking_auth_uses_status_without_health(monkeypatch):
     events = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "https://openviking.example"
             assert api_key == "test-key"
             assert account == "acct"
@@ -2017,7 +2017,7 @@ def test_validate_openviking_root_access_uses_admin_endpoint(monkeypatch):
     events = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "https://openviking.example"
             assert api_key == "root-key"
             assert account == ""
@@ -2061,7 +2061,7 @@ def test_validate_openviking_setup_values_local_dev_no_key_uses_health_only(monk
     events = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "http://localhost:1933"
             assert api_key == ""
 
@@ -2091,7 +2091,7 @@ def test_validate_openviking_setup_values_user_key_runs_status_and_classifies_ro
     events = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "https://openviking.example"
             assert api_key == "user-key"
             assert account == ""
@@ -2126,7 +2126,7 @@ def test_validate_openviking_setup_values_root_key_runs_admin_probe(monkeypatch)
     events = []
 
     class FakeVikingClient:
-        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+        def __init__(self, endpoint, api_key="", account="", user="", agent="", peer_id=""):
             assert endpoint == "https://openviking.example"
             assert api_key == "root-key"
             assert account == "acct"

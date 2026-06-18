@@ -1048,6 +1048,32 @@ def test_terminal_run_reports_allowlist_policy_without_executing(
         "resolved_host_path_exposed": False,
     }
     assert plan["limits"]["timeout_seconds"] == 30
+    readiness = plan["execution_readiness_review"]
+    assert readiness["gate"] == "terminal_execution_readiness_review"
+    assert readiness["scope"] == "private_non_executing_terminal_scaffold"
+    assert readiness["pre_executor_checks_passed"] is True
+    assert readiness["current_phase_allows_subprocess_run"] is False
+    assert readiness["subprocess_run_allowed"] is False
+    assert readiness["real_executor_status"] == "blocked_pending_auth_public_exposure_review"
+    assert readiness["fresh_context_enforced_before_gate"] is True
+    assert readiness["raw_command_exposed"] is False
+    assert readiness["argv_values_exposed"] is False
+    assert readiness["env_values_exposed"] is False
+    assert readiness["root_exposed"] is False
+    assert readiness["llm_calls"] == 0
+    assert readiness["failed_checks"] == []
+    assert all(readiness["checks"].values())
+    assert readiness["checks"]["fresh_context_validated_upstream"] is True
+    assert readiness["checks"]["terminal_execution_policy_enabled"] is True
+    assert readiness["checks"]["allowlist_match"] is True
+    assert readiness["checks"]["sanitized_env"] is True
+    assert readiness["checks"]["bounded_result_contract"] is True
+    assert readiness["checks"]["public_mcp_absent_by_default"] is True
+    assert readiness["sanitized_env"] == {
+        "inherits_parent_env": False,
+        "key_count": 6,
+        "values_redacted": True,
+    }
     assert str(workspace_root) not in json.dumps(allowed)
     assert "pwd" not in json.dumps(allowed)
 
@@ -1170,6 +1196,15 @@ def test_terminal_executor_boundary_is_non_executing_and_not_public(
         "uses_shell": False,
         "llm_calls": 0,
     }
+    readiness = plan["execution_readiness_review"]
+    assert readiness["pre_executor_checks_passed"] is True
+    assert readiness["current_phase_allows_subprocess_run"] is False
+    assert readiness["subprocess_run_allowed"] is False
+    assert readiness["checks"]["executor_boundary_non_executing"] is True
+    assert readiness["checks"]["tool_metadata_no_model"] is True
+    assert readiness["checks"]["public_mcp_absent_by_default"] is True
+    assert readiness["checks"]["fresh_context_validated_upstream"] is True
+    assert readiness["failed_checks"] == []
 
     metadata = get_router_tool_metadata()["terminal_run"]
     assert metadata["enabled_by_default"] is False

@@ -2508,6 +2508,96 @@ def _terminal_executor_boundary_audit(plan: TerminalSubprocessPlan) -> dict:
     }
 
 
+def _terminal_env_is_sanitized(plan: TerminalSubprocessPlan) -> bool:
+    """Return whether a future executor plan uses only deterministic safe env."""
+
+    return dict(plan.env) == _build_terminal_sanitized_env() and all(
+        _terminal_env_key_is_allowed(key) for key in plan.env
+    )
+
+
+def _terminal_execution_readiness_review_gate(
+    plan: TerminalSubprocessPlan,
+    *,
+    classification: Mapping[str, Any],
+    execution_policy: Mapping[str, Any],
+    executor_boundary: Mapping[str, Any],
+    fresh_context_validated: bool,
+    metadata: Mapping[str, RouterToolMetadata] = ROUTER_TOOL_METADATA,
+) -> dict:
+    """Private pre-executor review gate for future terminal execution.
+
+    This gate is deliberately non-enabling: it records the checks that must hold
+    before a later real executor can be considered, while keeping
+    ``subprocess.run`` disallowed in the current phase. It also avoids raw
+    command, argv, env-value, and host-root serialization.
+    """
+
+    terminal_meta = metadata.get("terminal_run")
+    result_contract = _terminal_shaped_result_contract(plan)
+    checks = {
+        "fresh_context_validated_upstream": bool(fresh_context_validated),
+        "classification_not_blocked": classification.get("blocked") is False,
+        "decision_pending_execution_implementation": classification.get("decision")
+        == "disabled_pending_execution_implementation",
+        "terminal_execution_policy_enabled": execution_policy.get("enabled") is True,
+        "allowlist_match": execution_policy.get("allowlist_match") is True,
+        "require_no_shell": execution_policy.get("require_no_shell") is True,
+        "plan_shell_false": plan.uses_shell is False,
+        "plan_executes_false": plan.executes is False,
+        "sanitized_env": _terminal_env_is_sanitized(plan),
+        "bounded_result_contract": bool(
+            result_contract["stdout_stderr_bounded"]
+            and result_contract["root_exposed"] is False
+            and result_contract["argv_values_exposed"] is False
+            and result_contract["env_values_exposed"] is False
+            and result_contract["uses_shell"] is False
+            and result_contract["llm_calls"] == 0
+            and plan.max_output_chars <= MAX_TERMINAL_OUTPUT_CHARS
+        ),
+        "executor_boundary_non_executing": bool(
+            executor_boundary.get("execution_attempted") is False
+            and executor_boundary.get("subprocess_run_allowed") is False
+            and executor_boundary.get("subprocess_run_called") is False
+            and executor_boundary.get("executes") is False
+            and executor_boundary.get("shell") is False
+        ),
+        "tool_metadata_no_model": bool(
+            terminal_meta
+            and terminal_meta.cost_class == COST_CLASS_NO_MODEL
+            and terminal_meta.llm_calls == 0
+        ),
+        "public_mcp_absent_by_default": bool(
+            terminal_meta
+            and terminal_meta.enabled_by_default is False
+            and terminal_meta.requires_context is True
+        ),
+    }
+    failed_checks = [name for name, passed in checks.items() if not passed]
+
+    return {
+        "gate": "terminal_execution_readiness_review",
+        "scope": "private_non_executing_terminal_scaffold",
+        "pre_executor_checks_passed": not failed_checks,
+        "current_phase_allows_subprocess_run": False,
+        "subprocess_run_allowed": False,
+        "real_executor_status": "blocked_pending_auth_public_exposure_review",
+        "checks": checks,
+        "failed_checks": failed_checks,
+        "fresh_context_enforced_before_gate": bool(fresh_context_validated),
+        "raw_command_exposed": False,
+        "argv_values_exposed": False,
+        "env_values_exposed": False,
+        "root_exposed": False,
+        "llm_calls": 0,
+        "sanitized_env": {
+            "inherits_parent_env": False,
+            "key_count": len(plan.env),
+            "values_redacted": True,
+        },
+    }
+
+
 def _terminal_execution_plan_audit(
     command: str,
     *,
@@ -2517,6 +2607,7 @@ def _terminal_execution_plan_audit(
     public_cwd: str,
     timeout_seconds: int,
     max_output_chars: int,
+    fresh_context_validated: bool = False,
 ) -> dict:
     """Return a redacted, non-executing argv/env plan for allowlisted commands."""
 
@@ -2526,6 +2617,8 @@ def _terminal_execution_plan_audit(
         and execution_policy.get("allowlist_match", False)
     )
     prepared_plan = None
+    executor_boundary = None
+    execution_readiness_review = None
     if plan_available:
         prepared_plan = _prepare_terminal_subprocess_plan(
             command,
@@ -2533,6 +2626,14 @@ def _terminal_execution_plan_audit(
             public_cwd=public_cwd,
             timeout_seconds=timeout_seconds,
             max_output_chars=max_output_chars,
+        )
+        executor_boundary = _terminal_executor_boundary_audit(prepared_plan)
+        execution_readiness_review = _terminal_execution_readiness_review_gate(
+            prepared_plan,
+            classification=classification,
+            execution_policy=execution_policy,
+            executor_boundary=executor_boundary,
+            fresh_context_validated=fresh_context_validated,
         )
 
     return {
@@ -2543,9 +2644,8 @@ def _terminal_execution_plan_audit(
         "argv": _terminal_argv_shape(prepared_plan.argv) if prepared_plan else None,
         "argv_redacted": True,
         "env_policy": _terminal_sanitized_env_policy(),
-        "executor_boundary": (
-            _terminal_executor_boundary_audit(prepared_plan) if prepared_plan else None
-        ),
+        "executor_boundary": executor_boundary,
+        "execution_readiness_review": execution_readiness_review,
         "cwd": {
             "workspace_relative": public_cwd,
             "root_exposed": False,
@@ -2623,6 +2723,7 @@ def preflight_terminal_command(
         public_cwd=public_cwd,
         timeout_seconds=timeout_seconds,
         max_output_chars=capped_output_chars,
+        fresh_context_validated=True,
     )
     return {
         **classification,

@@ -285,7 +285,17 @@ def interpret_status_request(source: str, mode: str) -> str:
         return f"Plan {target}" if target else "Plan implementation approach"
 
     if mode == "Ask":
-        return cleaned if cleaned.endswith("?") else f"Answer: {cleaned}"
+        if re.search(r"\b(how did|how'd)\b.*\b(implementation|change|fix|patch|deploy|work)\b", lowered):
+            return "Summarize implementation outcome"
+        if re.search(r"\b(what'?s left|what remains|remaining|todo|next steps)\b", lowered):
+            return "Summarize remaining work"
+        if re.search(r"\b(did you|have you|all done|finished|complete)\b", lowered):
+            return "Report completion status"
+        if re.search(r"\b(what happened|what did you do|what changed)\b", lowered):
+            return "Summarize completed changes"
+        if re.search(r"\b(why|how)\b", lowered):
+            return "Explain request context"
+        return "Answer user question"
 
     if mode == "Verify":
         if lowered in {"test", "tests"}:

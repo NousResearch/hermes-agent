@@ -10820,7 +10820,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         style_dict = dict(getattr(self, "_tui_style_base", {}) or {})
         try:
             from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
-            style_dict.update(get_prompt_toolkit_style_overrides())
+            overrides = get_prompt_toolkit_style_overrides()
+            if overrides:
+                style_dict.update(overrides)
         except Exception:
             pass
         # Light-mode remap on the style strings.  Each value is a pt
@@ -12808,14 +12810,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
-        
+
         # Create the application
+        from prompt_toolkit.output.color_depth import ColorDepth
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
             full_screen=False,
             mouse_support=False,
+            color_depth=ColorDepth.TRUE_COLOR,
             # The status bar contains wall-clock read-outs (live prompt elapsed
             # and idle-since-last-turn). Once a turn finishes there may be no
             # further events to invalidate the app, so prompt_toolkit would keep

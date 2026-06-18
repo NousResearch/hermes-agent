@@ -604,7 +604,7 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
-def test_build_oauth_auth_preserves_server_url_path():
+def test_build_oauth_auth_preserves_server_url_path(tmp_path, monkeypatch):
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 
     Regression for #16015: previously ``_parse_base_url`` stripped the path,
@@ -616,6 +616,7 @@ def test_build_oauth_auth_preserves_server_url_path():
     """
     from tools import mcp_oauth
 
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     captured: dict = {}
 
     class _FakeProvider:
@@ -625,9 +626,7 @@ def test_build_oauth_auth_preserves_server_url_path():
     with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
          patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
          patch.object(mcp_oauth, "_is_interactive", return_value=True), \
-         patch.object(mcp_oauth, "_maybe_preregister_client"), \
-         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
-        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+         patch.object(mcp_oauth, "_maybe_preregister_client"):
         build_oauth_auth(
             server_name="notion",
             server_url="https://mcp.notion.com/mcp",

@@ -219,6 +219,14 @@ gateway:
 
   resume:
     db_unavailable:        "Base de dados de sessões indisponível."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "Não foram encontradas sessões com nome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
     list_header:           "📋 **Sessões com nome**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,10 +259,20 @@ gateway:
 
   status:
     header:                "📊 **Estado do Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID da sessão:** `{session_id}`"
     title:                 "**Título:** {title}"
     created:               "**Criada:** {timestamp}"
     last_activity:         "**Última atividade:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Tokens de API cumulativos (reenviados a cada chamada):** {tokens}"
     agent_running:         "**Agente em execução:** {state}"
     state_yes:             "Sim ⚡"
@@ -319,6 +337,9 @@ gateway:
     label_estimated_context:  "Contexto estimado: ~{count} tokens"
     detailed_after_first:     "_(Utilização detalhada disponível após a primeira resposta do agente)_"
     no_data:                  "Não há dados de utilização disponíveis para esta sessão."
+
+  credits:
+    not_logged_in:            "Você não está conectado ao Nous Portal. Faça login para ver seu saldo de créditos e recarregar."
 
   verbose:
     not_enabled:           "O comando `/verbose` não está ativado para plataformas de mensagens.\n\nAtiva-o em `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

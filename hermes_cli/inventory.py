@@ -157,6 +157,44 @@ def build_models_payload(
         max_models=max_models,
     )
 
+    # --- Deduplicate: remove models from aggregators that overlap with
+    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
+    # serves a model whose name also appears in an aggregator's curated
+    # catalog, the picker would show the model under both providers.
+    # Selecting it from the aggregator row sets model.provider to the
+    # aggregator (e.g. openrouter) instead of the user's proxy — silently
+    # breaking the call.  Filtering at the payload level keeps the
+    # aggregator rows honest: they only show models the user can't get
+    # from a more-specific provider.  (#45954)
+    try:
+        from hermes_cli.providers import is_aggregator as _is_aggregator
+    except Exception:
+        _is_aggregator = None  # type: ignore[assignment]
+
+    if _is_aggregator is not None:
+        user_models: set[str] = set()
+        for row in rows:
+            if row.get("is_user_defined"):
+                user_models.update(m.lower() for m in (row.get("models") or []))
+        if user_models:
+            for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_aggregator() reports True for every custom:*
+                # slug.  Without this guard the dedup strips a user-defined
+                # custom provider's entire model list (all of it lives in
+                # user_models), emptying its picker row.
+                if row.get("is_user_defined"):
+                    continue
+                slug = row.get("slug", "")
+                if not _is_aggregator(slug):
+                    continue
+                original = row.get("models") or []
+                filtered = [m for m in original if m.lower() not in user_models]
+                if len(filtered) < len(original):
+                    row["models"] = filtered
+                    row["total_models"] = len(filtered)
+
     if include_unconfigured:
         rows = list(rows) + _append_unconfigured_rows(rows, ctx)
     if picker_hints:

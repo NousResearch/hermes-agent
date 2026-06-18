@@ -134,6 +134,80 @@ def _containing_skills_root(skill_path: Path) -> Path:
     return SKILLS_DIR
 
 
+def _is_path_redirect(path: Path) -> bool:
+    """True when ``path`` is a symlink or (on Windows) a directory junction.
+
+    Either form lets a poisoned skills tree redirect a subsequent
+    ``shutil.rmtree`` to content outside the skills root. ``is_junction``
+    only exists on Python 3.12+ Windows; gate with ``hasattr``.
+    """
+    try:
+        return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+    except OSError:
+        return False
+
+
+def _validate_delete_target(skill_dir: Path) -> Optional[str]:
+    """Last-line guard before ``shutil.rmtree(skill_dir)`` in ``_delete_skill``.
+
+    ``_find_skill`` already restricts ``skill_dir`` to a real ``SKILL.md``
+    parent discovered by walking the skills roots, so the agent cannot inject
+    an arbitrary path the way Kilo Code's HTTP endpoint could (their issue
+    #11227: a built-in-skill sentinel resolved to the server cwd and a
+    recursive delete wiped the user's entire working directory). This is the
+    matching defense-in-depth for our agent-facing ``skill_manage`` delete
+    path: even if discovery or a poisoned tree hands us a bad directory, never
+    recursively delete
+
+      1. a path that is not strictly *inside* one of the known skills roots,
+      2. a skills root itself (would wipe every installed skill), or
+      3. a directory reached via a symlink / junction (``rmtree`` would follow
+         it into content outside the skills tree).
+
+    Returns an error string to refuse on, or ``None`` when the delete is safe.
+    """
+    from agent.skill_utils import get_all_skills_dirs
+
+    # (3) Reject symlink/junction redirects on the skill directory itself.
+    if _is_path_redirect(skill_dir):
+        return (
+            f"Refusing to delete '{skill_dir}': the skill directory is a "
+            f"symlink/junction. Remove the link target manually if intended."
+        )
+
+    try:
+        resolved = skill_dir.resolve()
+    except OSError as exc:
+        return f"Refusing to delete '{skill_dir}': could not resolve path ({exc})."
+
+    roots = []
+    for root in get_all_skills_dirs():
+        try:
+            roots.append(root.resolve())
+        except OSError:
+            continue
+
+    for root in roots:
+        # (2) Never rmtree a skills root itself.
+        if resolved == root:
+            return (
+                f"Refusing to delete '{skill_dir}': resolves to the skills root "
+                f"itself, which would remove every installed skill."
+            )
+        # (1) Must be strictly inside a known root.
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts:  # at least one component below the root
+            return None
+
+    return (
+        f"Refusing to delete '{skill_dir}': path does not resolve inside any "
+        f"known skills root."
+    )
+
+
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
@@ -524,11 +598,22 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    # Extract description from frontmatter for verbose notifications
+    _desc = ""
+    try:
+        _fm_end = re.search(r'\n---\s*\n', content[3:])
+        if _fm_end:
+            _parsed = yaml.safe_load(content[3:_fm_end.start() + 3])
+            _desc = str(_parsed.get("description", ""))[:120]
+    except Exception:
+        pass
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
         "path": str(skill_dir.relative_to(SKILLS_DIR)),
         "skill_md": str(skill_md),
+        "_change": {"description": _desc},
     }
     if category:
         result["category"] = category
@@ -565,10 +650,21 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
+    # Extract description from new content for verbose notifications
+    _desc = ""
+    try:
+        _fm_end = re.search(r'\n---\s*\n', content[3:])
+        if _fm_end:
+            _parsed = yaml.safe_load(content[3:_fm_end.start() + 3])
+            _desc = str(_parsed.get("description", ""))[:120]
+    except Exception:
+        pass
+
     return {
         "success": True,
-        "message": f"Skill '{name}' updated.",
+        "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(existing["path"]),
+        "_change": {"description": _desc},
     }
 
 
@@ -660,10 +756,16 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
     }
+    # Include change previews for verbose notifications
+    result["_change"] = {
+        "old": old_string[:200] + ("…" if len(old_string) > 200 else ""),
+        "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
+    }
+    return result
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
@@ -706,6 +808,12 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
     skill_dir = existing["path"]
     skills_root = _containing_skills_root(skill_dir)
+
+    # Defense-in-depth before the recursive delete (port of Kilo Code #11240).
+    unsafe = _validate_delete_target(skill_dir)
+    if unsafe:
+        return {"success": False, "error": unsafe}
+
     shutil.rmtree(skill_dir)
 
     # Clean up empty category directories (don't remove the skills root itself)
@@ -822,6 +930,75 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 # Main entry point
 # =============================================================================
 
+# ContextVar bypass: set while replaying an already-approved staged skill write
+# so skill_manage() does not re-gate (and re-stage) it.
+import contextvars as _ctxvars
+_skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
+    "skill_gate_bypass", default=False
+)
+
+
+def _apply_skill_write_gate(action, name, **payload_kwargs):
+    """Evaluate the skill write gate. Returns a JSON tool-result string when the
+    write should NOT proceed (blocked or staged), or None to perform the real
+    write. Bypassed during approved-pending replay.
+    """
+    if action not in {"create", "edit", "patch", "delete", "write_file", "remove_file"}:
+        return None
+    if _skill_gate_bypass.get():
+        return None
+
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        return None  # fail open
+
+    decision = wa.evaluate_gate(wa.SKILLS)
+    if decision.allow:
+        return None
+    if decision.blocked:
+        return tool_error(decision.message, success=False)
+
+    # stage — record the full skill_manage kwargs so approval can replay it.
+    payload = {"action": action, "name": name}
+    payload.update({k: v for k, v in payload_kwargs.items() if v is not None})
+    gist = wa.skill_gist(
+        action, name,
+        content=payload_kwargs.get("content") or "",
+        file_path=payload_kwargs.get("file_path") or "",
+        old_string=payload_kwargs.get("old_string") or "",
+        new_string=payload_kwargs.get("new_string") or "",
+    )
+    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    return json.dumps(
+        {"success": True, "staged": True, "pending_id": record["id"],
+         "gist": gist, "message": decision.message},
+        ensure_ascii=False,
+    )
+
+
+def apply_skill_pending(payload: Dict[str, Any]) -> str:
+    """Replay a staged skill write, bypassing the gate. Returns the tool result
+    JSON string. Called by the /skills approve handler.
+    """
+    token = _skill_gate_bypass.set(True)
+    try:
+        return skill_manage(
+            action=payload.get("action", ""),
+            name=payload.get("name", ""),
+            content=payload.get("content"),
+            category=payload.get("category"),
+            file_path=payload.get("file_path"),
+            file_content=payload.get("file_content"),
+            old_string=payload.get("old_string"),
+            new_string=payload.get("new_string"),
+            replace_all=payload.get("replace_all", False),
+            absorbed_into=payload.get("absorbed_into"),
+        )
+    finally:
+        _skill_gate_bypass.reset(token)
+
+
 def skill_manage(
     action: str,
     name: str,
@@ -839,6 +1016,19 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    # Approval gate: when on, stages the write for review (skills are too large
+    # to review inline, so they always stage regardless of origin); when off
+    # (default) passes straight through. The gate is bypassed when this call is
+    # itself replaying an already-approved staged write (_skill_apply_pending).
+    gate_result = _apply_skill_write_gate(
+        action, name, content=content, category=category,
+        file_path=file_path, file_content=file_content,
+        old_string=old_string, new_string=new_string,
+        replace_all=replace_all, absorbed_into=absorbed_into,
+    )
+    if gate_result is not None:
+        return gate_result
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)

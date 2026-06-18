@@ -34,7 +34,7 @@ import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface SessionInfo {
   cwd?: string;
@@ -71,10 +71,12 @@ const STATE_TONE: Record<
 
 interface ChatSidebarProps {
   channel: string;
+  /** Management profile from the dashboard switcher — scopes session.create. */
+  profile?: string;
   className?: string;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -90,8 +92,29 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Profile or PTY channel change tears down both WebSockets. Bump `version`
+  // (same path as the manual Reconnect button) so the gateway client is
+  // recreated and the events feed resubscribes — otherwise the old events
+  // socket's close handler can leave a stale error banner after a switch.
+  const scopeKey = `${channel}\0${profile ?? ""}`;
+  const prevScopeKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevScopeKey.current === null) {
+      prevScopeKey.current = scopeKey;
+      return;
+    }
+    if (prevScopeKey.current === scopeKey) return;
+    prevScopeKey.current = scopeKey;
+    setError(null);
+    setTools([]);
+    setVersion((v) => v + 1);
+  }, [scopeKey]);
+
   useEffect(() => {
     let cancelled = false;
+    setSessionId(null);
+    setInfo({});
+    setError(null);
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
@@ -124,6 +147,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         // slash_worker subprocess) when the WS drops, instead of leaking it.
         return gw.request<{ session_id: string }>("session.create", {
           close_on_disconnect: true,
+          ...(profile ? { profile } : {}),
         });
       })
       .then((created) => {
@@ -145,6 +169,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       offError();
       gw.close();
     };
+    // `profile` is read from render; scope changes bump `version` → new `gw`.
   }, [gw]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
@@ -292,24 +317,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     setVersion((v) => v + 1);
   }, []);
 
-  // Picker hands us a fully-formed slash command (e.g. "/model anthropic/...").
-  // Fire-and-forget through `slash.exec`; the TUI pane will render the result
-  // via PTY, so the sidebar doesn't need to surface output of its own.
-  const onModelSubmit = useCallback(
-    (slashCommand: string) => {
-      if (!sessionId) {
-        return;
-      }
-
-      void gw.request("slash.exec", {
-        session_id: sessionId,
-        command: slashCommand,
-      });
-      setModelOpen(false);
-    },
-    [gw, sessionId],
-  );
-
   const canPickModel = state === "open" && !!sessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
   const banner = error ?? info.credential_warning ?? null;
@@ -322,7 +329,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       )}
     >
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
             model
           </div>
@@ -332,19 +339,26 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
             size="sm"
             disabled={!canPickModel}
             onClick={() => setModelOpen(true)}
-            suffix={
-              canPickModel ? (
-                <ChevronDown className="text-text-secondary" />
-              ) : undefined
-            }
-            className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium hover:underline disabled:no-underline"
+            className={cn(
+              "max-w-full min-w-0 px-0 py-0",
+              "self-start normal-case tracking-normal text-sm font-medium",
+              "hover:underline disabled:no-underline",
+            )}
             title={info.model ?? "switch model"}
           >
-            <span className="truncate">{modelLabel}</span>
+            <span className="flex min-w-0 max-w-full items-center gap-1">
+              <span className="truncate">{modelLabel}</span>
+
+              {canPickModel ? (
+                <ChevronDown className="size-3.5 shrink-0 text-text-secondary" />
+              ) : null}
+            </span>
           </Button>
         </div>
 
-        <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>
+        <Badge tone={STATE_TONE[state]} className="shrink-0">
+          {STATE_LABEL[state]}
+        </Badge>
       </Card>
 
       {banner && (
@@ -390,7 +404,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           gw={gw}
           sessionId={sessionId}
           onClose={() => setModelOpen(false)}
-          onSubmit={onModelSubmit}
         />
       )}
     </aside>

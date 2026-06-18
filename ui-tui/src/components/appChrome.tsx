@@ -341,6 +341,21 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   return fmtDuration(now - startedAt)
 }
 
+function IdleSince({ endedAt }: { endedAt: number }) {
+  // Time since the last final agent response. Re-ticks every second like
+  // SessionDuration so the read-out stays live while the session idles.
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 1000)
+
+    return () => clearInterval(id)
+  }, [endedAt])
+
+  return `✓ ${fmtDuration(now - endedAt)}`
+}
+
 const effortLabel = (effort?: string) => {
   const value = String(effort ?? '')
     .trim()
@@ -400,6 +415,7 @@ export function StatusRule({
   notice,
   usage,
   bgCount,
+  lastTurnEndedAt,
   liveSessionCount,
   sessionStartedAt,
   showCost,
@@ -488,6 +504,10 @@ export function StatusRule({
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+  // Idle clock — time since the last final agent response. Hidden while busy
+  // (the FaceTicker's elapsed tail covers the live turn) and before the first
+  // turn completes. Shares the duration breakpoint and width reservation.
+  const showIdle = segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
@@ -565,6 +585,12 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <SessionDuration startedAt={sessionStartedAt!} />
+          </Text>
+        ) : null}
+        {showIdle ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <IdleSince endedAt={lastTurnEndedAt!} />
           </Text>
         ) : null}
         {showCompressions ? (
@@ -725,6 +751,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   bgCount: number
+  lastTurnEndedAt?: null | number
   liveSessionCount: number
   busy: boolean
   cols: number

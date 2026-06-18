@@ -6306,12 +6306,38 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
+    # Managed scope: surface that some settings are administrator-pinned so the
+    # user understands why their config.yaml value may not be the effective one.
+    from hermes_cli import managed_scope
+
+    _managed_keys = managed_scope.managed_config_keys()
+    _managed_env = managed_scope.load_managed_env()
+    if _managed_keys or _managed_env:
+        _managed_dir = managed_scope.get_managed_dir()
+        print()
+        print(color(
+            f"  ⚷ Some settings are managed by your administrator ({_managed_dir}) "
+            f"and cannot be changed",
+            Colors.YELLOW,
+            Colors.BOLD,
+        ))
+        if _managed_keys:
+            print(color(
+                f"    Managed config keys: {', '.join(sorted(_managed_keys))}",
+                Colors.YELLOW,
+            ))
+        if _managed_env:
+            print(color(
+                f"    Managed env keys: {', '.join(sorted(_managed_env))}",
+                Colors.YELLOW,
+            ))
+
     # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))

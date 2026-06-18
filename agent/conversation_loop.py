@@ -2453,6 +2453,17 @@ def run_conversation(
                                 active_system_prompt = _sanitized_system
                                 agent._cached_system_prompt = _sanitized_system
                                 _system_sanitized = True
+                                if agent._session_db and agent.session_id:
+                                    try:
+                                        agent._session_db.update_system_prompt(
+                                            agent.session_id, agent._cached_system_prompt
+                                        )
+                                    except Exception as exc:
+                                        logger.warning(
+                                            "Session DB update_system_prompt failed "
+                                            "after non-ASCII sanitization (session=%s): %s",
+                                            agent.session_id, exc,
+                                        )
                         if isinstance(getattr(agent, "ephemeral_system_prompt", None), str):
                             _sanitized_ephemeral = _strip_non_ascii(agent.ephemeral_system_prompt)
                             if _sanitized_ephemeral != agent.ephemeral_system_prompt:

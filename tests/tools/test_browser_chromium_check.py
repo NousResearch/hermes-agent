@@ -63,6 +63,26 @@ class TestChromiumInstalled:
 
 
 
+    def test_true_when_macos_user_app_bundle_present(self, monkeypatch):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.sys, "platform", "darwin")
+        monkeypatch.setattr(bt.shutil, "which", lambda _name: None)
+        monkeypatch.setenv("HOME", "/Users/alice")
+
+        user_chrome = os.path.join(
+            "/Users/alice",
+            "Applications",
+            "Google Chrome.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome",
+        )
+        monkeypatch.setattr(bt.os.path, "isfile", lambda path: path == user_chrome)
+        monkeypatch.setattr(bt.os.path, "isdir", lambda _path: False)
+
+        assert bt._detect_system_chromium_executable() == user_chrome
+        assert bt._chromium_installed() is True
+
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium-1208").mkdir()

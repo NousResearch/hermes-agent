@@ -2871,11 +2871,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # agent:main) unless multiplexing is on, then the active profile.
         _profile = None
         if getattr(config, "multiplex_profiles", False):
-            try:
-                from hermes_cli.profiles import get_active_profile_name
-                _profile = get_active_profile_name() or "default"
-            except Exception:
-                _profile = None
+            if source.profile:
+                _profile = source.profile
+            else:
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+                    _profile = get_active_profile_name() or "default"
+                except Exception:
+                    _profile = None
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
@@ -13857,14 +13860,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
         """Resolve which profile's HERMES_HOME should serve this inbound source.
 
-        Phase 2 baseline: the active profile (the multiplexer's own home). Phase
-        1/3 wire real per-source attribution (URL prefix, per-credential adapter
-        ownership) by overriding the resolved profile on the source/adapter; this
-        method is the single point they hook.
+        Prefers the profile the source was routed to (``source.profile`` — set
+        by the /p/<profile>/ URL prefix or a per-credential adapter), falling
+        back to the active profile (the multiplexer's own home).
         """
         from hermes_cli.profiles import get_active_profile_name, get_profile_dir
         try:
-            name = get_active_profile_name() or "default"
+            name = (source.profile or "").strip() or get_active_profile_name() or "default"
             return get_profile_dir(name)
         except Exception:
             from hermes_constants import get_hermes_home

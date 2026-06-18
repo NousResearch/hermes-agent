@@ -417,6 +417,51 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_falls_back_to_text_when_interactive_update_is_rejected(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                if request.request_body.msg_type == "interactive":
+                    return SimpleNamespace(success=lambda: False, code=230001, msg="interactive card rejected")
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| 功能 | 状态 |\n| --- | --- |\n| 表格 | ✅ |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_progress")
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(
+            captured["calls"][1].request_body.content,
+            json.dumps({"text": content}, ensure_ascii=False),
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -2578,6 +2623,201 @@ class TestAdapterBehavior(unittest.TestCase):
         payload = json.loads(captured["request"].request_body.content)
         elements = payload["zh_cn"]["content"][0]
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_markdown_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "# 表格\n\n| 功能 | 状态 |\n| --- | --- |\n| 加粗 | ✅ |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["schema"], "2.0")
+        self.assertTrue(payload["config"]["wide_screen_mode"])
+        self.assertEqual(payload["body"]["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["body"]["elements"][0]["content"], content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_for_indented_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_indented_markdown_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "表格：\n  | Regex | Meaning |\n  | --- | --- |\n  | `a|b` | alternation |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        element = payload["body"]["elements"][0]
+        self.assertEqual(element["tag"], "markdown")
+        self.assertEqual(element["content"], content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_falls_back_to_text_when_interactive_card_table_is_rejected(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                if request.request_body.msg_type == "interactive":
+                    raise RuntimeError("interactive card rejected")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table_plain"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| 功能 | 状态 |\n| --- | --- |\n| 加粗 | ✅ |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][-1].request_body.msg_type, "text")
+        self.assertEqual(
+            captured["calls"][-1].request_body.content,
+            json.dumps({"text": content}, ensure_ascii=False),
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_keeps_table_inside_fenced_code_block_as_post_markdown(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_code_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "代码：\n```markdown\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "代码："}],
+                [{"tag": "md", "text": "```markdown\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_keeps_table_inside_tilde_fenced_code_block_out_of_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_tilde_code_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "# 代码\n~~~markdown\n| A | B |\n| --- | --- |\n| 1 | 2 |\n~~~"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertNotEqual(captured["request"].request_body.msg_type, "interactive")
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):

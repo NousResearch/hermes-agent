@@ -2567,6 +2567,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    speed: Optional[float] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2581,6 +2582,7 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        speed: Optional playback speed multiplier (0.25-4.0). Overrides config.yaml.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2597,6 +2599,13 @@ def text_to_speech_tool(
         return tool_error("Text is empty after TTS cleanup", success=False)
 
     tts_config = _load_tts_config()
+
+    # When the model supplies a speed parameter, inject it into the config
+    # so all downstream provider functions pick it up uniformly.
+    if speed is not None:
+        clamped = max(0.25, min(4.0, float(speed)))
+        tts_config = dict(tts_config)  # shallow copy to avoid mutating the cache
+        tts_config["speed"] = clamped
     provider = _get_provider(tts_config)
 
     # User-declared command provider (type: command under tts.providers.<name>)
@@ -3320,6 +3329,10 @@ TTS_SCHEMA = {
             "output_path": {
                 "type": "string",
                 "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+            },
+            "speed": {
+                "type": "number",
+                "description": "Playback speed multiplier. 1.0 = normal, 0.5 = very slow (language learning), 2.0 = fast. Range: 0.25-4.0. Overrides the speed configured in config.yaml."
             }
         },
         "required": ["text"]
@@ -3332,7 +3345,8 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
-        output_path=args.get("output_path")),
+        output_path=args.get("output_path"),
+        speed=args.get("speed")),
     check_fn=check_tts_requirements,
     emoji="🔊",
 )

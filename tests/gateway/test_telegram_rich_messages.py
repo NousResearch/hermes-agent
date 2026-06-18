@@ -229,9 +229,11 @@ async def test_rich_messages_can_be_opted_out():
 
 
 @pytest.mark.asyncio
-async def test_plain_markdown_stays_on_legacy_path():
-    """Ordinary replies (no table/task-list/details/math) stay on the legacy
-    MarkdownV2 path for consistent client rendering, even with rich enabled."""
+async def test_plain_markdown_uses_rich_path():
+    """All non-empty content goes through the rich path when supported, even
+    ordinary replies without tables/task-lists/details/math. Hermes Desktop
+    renders bold, italic, headings, links, etc. natively; plain Telegram
+    clients get equivalent visual output via Bot API entity fallback."""
     adapter = _make_adapter()
 
     result = await adapter.send("12345", "Hello **there**\n\nA normal reply.")
@@ -239,8 +241,108 @@ async def test_plain_markdown_stays_on_legacy_path():
     assert result.success is True
     bot = adapter._bot
     assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Parametrized coverage: all markdown constructs now go through rich.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [
+        ("bold", "This is **bold** text"),
+        ("italic", "This is *italic* text"),
+        ("strikethrough", "This is ~~strikethrough~~ text"),
+        ("spoiler", "This has ||spoiler|| content"),
+        ("inline_code", "Use the `print()` function"),
+        ("code_block", "```python\nprint('hello')\n```"),
+        ("link", "Visit [the docs](https://example.com) for more"),
+        ("heading_h1", "# Main Heading"),
+        ("heading_h2", "## Sub Heading"),
+        ("heading_h3", "### Deep Heading"),
+        ("blockquote", "> This is a quote"),
+        ("ordered_list", "1. First item\n2. Second item"),
+        ("unordered_list", "- First item\n- Second item"),
+        ("table", "| A | B |\n|---|---|\n| 1 | 2 |"),
+        ("task_list", "- [x] Done\n- [ ] Todo"),
+        ("details", "<details><summary>More</summary>\nExpanded.\n</details>"),
+        ("math_block", "$$E = mc^2$$"),
+        ("mixed", "# Title\n\n**Bold** and `code` with [link](https://x.com)\n\n| H |\n|---|\n| V |"),
+    ],
+)
+async def test_all_markdown_constructs_use_rich_send(label, content):
+    """Every markdown construct routes through sendRichMessage when the bot
+    supports it — no content is relegated to the legacy MarkdownV2 path."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+    # Verify the raw markdown passes through unescaped.
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [
+        ("bold", "This is **bold** text"),
+        ("italic", "This is *italic* text"),
+        ("code_block", "```python\nprint('hello')\n```"),
+        ("link", "Visit [the docs](https://example.com) for more"),
+        ("heading", "## Section Title"),
+        ("mixed", "## Title\n\n**Bold** and `code`"),
+    ],
+)
+async def test_all_markdown_constructs_use_rich_finalize_edit(label, content):
+    """Every markdown construct edits in place via the rich edit endpoint
+    when finalizing a streamed message."""
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message("12345", "555", content, finalize=True)
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == content
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_empty_content_returns_success_without_sending():
+    """Empty content short-circuits — neither rich nor legacy send runs."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", "")
+
+    assert result.success is True
+    assert result.message_id is None
+    bot = adapter._bot
+    assert bot is not None
     bot.do_api_request.assert_not_called()
-    bot.send_message.assert_awaited()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_content_returns_success_without_sending():
+    """Whitespace-only content short-circuits — neither rich nor legacy send runs."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", "   \n  \t  ")
+
+    assert result.success is True
+    assert result.message_id is None
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -659,9 +761,9 @@ async def test_finalize_edit_uses_rich_for_table_content():
 
 
 @pytest.mark.asyncio
-async def test_finalize_edit_plain_content_stays_legacy():
-    """Finalizing plain content (no table/task-list/details/math) uses the
-    legacy MarkdownV2 edit_message_text path, not the rich edit endpoint."""
+async def test_finalize_edit_plain_content_uses_rich():
+    """All non-empty content edits in place via the rich edit endpoint, even
+    plain content without tables/task-lists/details/math."""
     adapter = _make_adapter()
 
     result = await adapter.edit_message(
@@ -669,8 +771,9 @@ async def test_finalize_edit_plain_content_stays_legacy():
     )
 
     assert result.success is True
-    adapter._bot.do_api_request.assert_not_called()
-    adapter._bot.edit_message_text.assert_awaited()
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == "Just a normal answer, no rich constructs."
+    adapter._bot.edit_message_text.assert_not_called()
 
 
 @pytest.mark.asyncio

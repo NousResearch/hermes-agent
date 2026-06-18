@@ -982,26 +982,22 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     def _needs_rich_rendering(self, content: str) -> bool:
-        """Return True for markdown constructs that the legacy path degrades.
+        """Return True for any non-empty content when rich is available.
 
-        Keep ordinary replies on the pre-rich MarkdownV2 path so Telegram
-        clients render a consistent font weight/spacing. The rich endpoint is
-        reserved for constructs where raw markdown materially improves output:
-        pipe tables (MarkdownV2 has no table syntax and rewrites them into
-        bullet lists), GFM task lists, collapsible ``<details>`` blocks, and
-        block math.  Adapted from #45995 (@YonganZhang).
+        Hermes Desktop (and any Bot API 10.1+ client) renders ALL markdown
+        constructs natively via ``sendRichMessage`` — bold, italic, headings,
+        links, inline code, code blocks, tables, task lists, collapsible
+        ``<details>`` blocks, math, etc.  Routing everything through the rich
+        endpoint gives users the full fidelity of the agent's raw markdown on
+        supporting clients; plain Telegram clients get the same visual result
+        via Bot API entity fallback (bold, italic, etc. map to native
+        Telegram entities automatically).
+
+        The remaining safety gates in :meth:`_rich_eligible` still enforce:
+        ``_rich_messages_enabled`` opt-out, size limits, TDesktop crash-shape
+        guard, ``_bot_supports_rich``, and ``expect_edits`` metadata.
         """
-        if not content:
-            return False
-        if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
-            return True
-        if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
-            return True
-        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
-            return True
-        if "$$" in content:
-            return True
-        return False
+        return bool(content and content.strip())
 
     def _rich_eligible(self, content: str) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.

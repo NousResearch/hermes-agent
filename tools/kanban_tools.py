@@ -817,14 +817,25 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                allow_thin=True,  # Agent-created tasks bypass R1 body-min
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
-            return _ok(
+            # Surface Layer 1 intake warnings (R4 self-review, etc.) in
+            # the tool response so the calling agent sees them.
+            warnings = []
+            all_events = kb.list_events(conn, new_tid)
+            for ev in all_events:
+                if ev.kind == "intake_warning" and isinstance(ev.payload, dict):
+                    warnings.append(ev.payload)
+            result = _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
                 subscribed=subscribed,
             )
+            if warnings:
+                result["intake_warnings"] = warnings
+            return result
         finally:
             conn.close()
     except ValueError as e:

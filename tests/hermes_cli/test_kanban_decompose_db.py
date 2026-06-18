@@ -22,6 +22,9 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=None):
+    # R1 intake guard requires BODY_MIN_NONWS_CHARS non-ws chars in body
+    # unless allow_thin=True.  Test helpers that don't care about body
+    # content use allow_thin to bypass the guard.
     return kb.create_task(
         conn,
         title=title,
@@ -29,6 +32,7 @@ def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=No
         assignee=assignee,
         tenant=tenant,
         triage=True,
+        allow_thin=True,
     )
 
 
@@ -82,7 +86,12 @@ def test_decompose_returns_none_when_task_missing(kanban_home):
 
 def test_decompose_returns_none_when_task_not_in_triage(kanban_home):
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="already a real task")  # not triage
+        # Task with assignee (avoids R2 auto-triage) and running status
+        # (not triage) — decompose should refuse.
+        tid = kb.create_task(
+            conn, title="already a real task", assignee="worker",
+            allow_thin=True,
+        )
         result = kb.decompose_triage_task(
             conn,
             tid,
@@ -175,6 +184,7 @@ def test_decompose_children_inherit_dir_workspace(kanban_home):
         tid = kb.create_task(
             conn, title="codegen root", assignee="worker",
             workspace_kind="dir", workspace_path=proj, triage=True,
+            allow_thin=True,
         )
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="orchestrator",
@@ -195,6 +205,7 @@ def test_decompose_children_stay_scratch_when_root_scratch(kanban_home):
         tid = kb.create_task(
             conn, title="scratch root", assignee="worker",
             workspace_kind="scratch", triage=True,
+            allow_thin=True,
         )
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="orchestrator",
@@ -213,6 +224,7 @@ def test_decompose_per_child_workspace_override(kanban_home):
         tid = kb.create_task(
             conn, title="root", assignee="worker",
             workspace_kind="dir", workspace_path=proj, triage=True,
+            allow_thin=True,
         )
         child_ids = kb.decompose_triage_task(
             conn, tid, root_assignee="orchestrator",

@@ -795,12 +795,43 @@ class GatewayKanbanWatchersMixin:
         # subscriptions etc.). Matches the notifier watcher's delay.
         await asyncio.sleep(5)
 
-        # Health telemetry mirrored from `_cmd_daemon`: warn when ready
-        # queue is non-empty but spawns are 0 for N consecutive ticks —
-        # usually means broken PATH, missing venv, or credential loss.
+        # Dispatcher profile: used to scope health telemetry to tasks THIS
+        # dispatcher is responsible for. In a multi-gateway setup each
+        # dispatcher handles only its own profile's tasks — a global check
+        # that lumps all profiles together produces false positives when
+        # another profile's tasks are stuck but this one is healthy.
+        dispatcher_profile = self._active_profile_name()
+
+        # Health telemetry: warn only when the SAME spawnable-ready tasks
+        # *assigned to this dispatcher's profile* sit unclaimed across the
+        # whole window — i.e. THIS dispatcher couldn't spawn them. That is
+        # the true "stuck" signal (broken PATH / missing venv / credential
+        # loss for this profile, OR a card the dispatcher keeps refusing).
+        #
+        # The original check ("ready queue non-empty AND I spawned 0 this
+        # tick") produced chronic false positives: a single lingering ready
+        # card the dispatcher legitimately won't respawn (respawn-guarded,
+        # e.g. an active-PR review wedge) kept the queue non-empty forever,
+        # and under multiple co-resident dispatchers only one wins each
+        # atomic claim so the losers always see "I spawned 0".
+        #
+        # The churn-aware fix (Zeus, 2026-06-18) addressed the
+        # respawn-guard and multi-dispatcher race by watching the persistent-
+        # unclaimed ID set instead of "did I spawn". However it still
+        # aggregated across ALL profiles and ALL boards, meaning a stuck
+        # task for profile B would trigger a warning on profile A's
+        # dispatcher. Scoping to this dispatcher's own profile eliminates
+        # that cross-profile false positive and makes the warning
+        # actionable: it names *which* profile is stuck and which tasks.
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
+        # IDs that were spawnable-ready AND unclaimed on the previous tick.
+        # A task only counts toward ``bad_ticks`` while it stays in this
+        # set across consecutive ticks (nobody drained it). When the set
+        # churns (tasks leaving ready because someone claimed them), the
+        # board is being worked and we reset.
+        prev_stuck_ids: set = set()
         # Avoid hot-looping corrupt-looking board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
         # surface as "database disk image is malformed" for one tick.
@@ -938,18 +969,24 @@ class GatewayKanbanWatchersMixin:
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
-        def _ready_nonempty() -> bool:
-            """Cheap probe: is there at least one ready+assigned+unclaimed
-            task on ANY board whose assignee maps to a real Hermes profile
-            (i.e. one the dispatcher would actually spawn for)?
+        def _my_spawnable_ready_ids() -> set:
+            """Aggregate the set of spawnable-ready task IDs assigned to
+            THIS dispatcher's profile across all boards.
 
-            Tasks assigned to control-plane lanes (e.g. ``orion-cc``,
-            ``orion-research``) are pulled by terminals via
-            ``claim_task`` directly and never spawnable, so a queue full
-            of those is "correctly idle", not "stuck". Filtering them out
-            here keeps the stuck-warn fire only on real failures (broken
-            PATH, missing venv, credential loss for a real Hermes profile).
+            Unlike the global ``_spawnable_ready_id_set``, this scopes to
+            tasks whose assignee matches ``dispatcher_profile`` — the exact
+            set of tasks this dispatcher is responsible for. In a
+            multi-gateway setup, another gateway's stuck tasks don't
+            trigger false-positive warnings here.
+
+            IDs are namespaced by board slug (``slug::task_id``) so two
+            boards can't collide on the same task id. The health telemetry
+            watches this set churn across consecutive ticks: a task that
+            persists across the whole window is genuinely stuck for this
+            profile; a set that churns means tasks are being claimed and
+            the profile is healthy.
             """
+            ids: set = set()
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
@@ -959,10 +996,10 @@ class GatewayKanbanWatchersMixin:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
-                    if _kb.has_spawnable_ready(conn):
-                        return True
-                    if _kb.has_spawnable_review(conn):
-                        return True
+                    for tid in _kb.spawnable_ready_ids_for_profile(
+                        conn, dispatcher_profile,
+                    ):
+                        ids.add(f"{slug}::{tid}")
                 except Exception:
                     continue
                 finally:
@@ -971,7 +1008,7 @@ class GatewayKanbanWatchersMixin:
                             conn.close()
                         except Exception:
                             pass
-            return False
+            return ids
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs
         # before the dispatcher fans out workers. Gated by
@@ -1104,21 +1141,48 @@ class GatewayKanbanWatchersMixin:
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                # Health telemetry (churn-aware, per-dispatcher, across boards).
+                #
+                # Count a "bad tick" ONLY when the set of spawnable-ready
+                # tasks assigned to THIS dispatcher's profile that were
+                # unclaimed last tick is STILL unclaimed this tick — i.e.
+                # the SAME tasks persist with nobody (this dispatcher or a
+                # co-resident peer for the same profile) able to drain
+                # them. That is the genuine stuck signal: this profile's
+                # worker can't be spawned (broken venv / PATH /
+                # credentials), or a card the dispatcher keeps refusing
+                # (e.g. a respawn-guarded review wedge).
+                #
+                # Scoping to this profile's tasks eliminates cross-profile
+                # false positives: if profile zeus has stuck tasks but this
+                # is the apollo dispatcher, apollo won't warn about zeus.
+                # Each dispatcher only warns about its own responsibility.
+                cur_ids = await asyncio.to_thread(_my_spawnable_ready_ids)
+                # Tasks stuck across BOTH ticks (still ready, still
+                # unclaimed, nobody moved them).
+                persistent = cur_ids & prev_stuck_ids
+                prev_stuck_ids = cur_ids
+                if persistent:
                     bad_ticks += 1
                 else:
                     bad_ticks = 0
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:
+                        sample = sorted(persistent)[:5]
                         logger.warning(
-                            "kanban dispatcher stuck: ready queue non-empty for "
-                            "%d consecutive ticks but 0 workers spawned. Check "
-                            "profile health (venv, PATH, credentials) and "
-                            "`hermes kanban list --status ready`.",
+                            "kanban dispatcher stuck (profile=%s): "
+                            "%d spawnable-ready task(s) assigned to this "
+                            "profile sat unclaimed for %d consecutive "
+                            "ticks. Likely broken profile health (venv, "
+                            "PATH, credentials) or a card the dispatcher "
+                            "keeps refusing. Stuck sample: %s. See "
+                            "`hermes kanban list --status ready` / "
+                            "`hermes kanban doctor`.",
+                            dispatcher_profile,
+                            len(persistent),
                             bad_ticks,
+                            ", ".join(sample) if sample else "(none)",
                         )
                         last_warn_at = now
             except asyncio.CancelledError:

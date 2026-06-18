@@ -362,6 +362,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_create.add_argument("--allow-thin", action="store_true",
+                          help="Bypass R1 body-minimum guard (allow cards "
+                               "with <20 non-whitespace chars in body)")
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -489,6 +492,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_diag.add_argument(
         "--json", action="store_true",
         help="Emit JSON (structured) instead of the default human table",
+    )
+
+    # --- doctor (board health snapshot — Layer 3) ---
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Board health snapshot (stuck/waiting/review counts, bottleneck, heal log)",
+        description=(
+            "Read-only board health report. Shows counts of genuinely-stuck "
+            "vs waiting-by-design vs review-required tasks, the bottleneck "
+            "profile (most review-required items), the oldest stalled task, "
+            "dependency deadlocks, active Layer 1 diagnostics, and the "
+            "Layer 2 auto-resolver heal log from the last 24h. "
+            "Exit code is always 0 so --json consumers don't fire false alerts."
+        ),
+    )
+    p_doctor.add_argument(
+        "--json", action="store_true",
+        help="Emit structured JSON for machine consumption (watchdog cron)",
     )
 
     # --- link / unlink ---
@@ -973,6 +994,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "context":  _cmd_context,
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
+            "doctor":   _cmd_doctor,
             "gc":       _cmd_gc,
         }
         handler = handlers.get(action)
@@ -1359,8 +1381,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             goal_mode=bool(getattr(args, "goal_mode", False)),
-            goal_max_turns=getattr(args, "goal_max_turns", None),
+            goal_max_turns=args.goal_max_turns,
             initial_status=getattr(args, "initial_status", "running"),
+            allow_thin=bool(getattr(args, "allow_thin", False)),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1379,6 +1402,28 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+
+        # Surface Layer 1 intake warnings (R1 thin-body, R2 auto-triage,
+        # R4 self-review) on the newly created task.  Only shown in human-
+        # readable mode (--json callers can query events themselves).
+        with kb.connect_closing() as conn:
+            all_events = kb.list_events(conn, task_id)
+        warnings = [e for e in all_events if e.kind == "intake_warning"]
+        for w in warnings:
+            payload = w.payload or {}
+            kind = payload.get("kind", "unknown") if isinstance(payload, dict) else "unknown"
+            msg = payload.get("message", "") if isinstance(payload, dict) else ""
+            if kind == "thin_body":
+                n = payload.get("nonws_chars", "?")
+                m = payload.get("minimum", "?")
+                msg = msg or f"Body has only {n} non-whitespace chars (minimum {m}). Card created with --allow-thin."
+            elif kind == "auto_triage":
+                msg = msg or "No assignee provided — card auto-routed to triage. Add --assignee to dispatch directly."
+            elif kind == "self_review":
+                a = payload.get("assignee", "?")
+                msg = msg or f"Self-review detected: assignee={a} == author. Consider routing to a different reviewer."
+            if msg:
+                print(f"⚠  {msg}", file=sys.stderr)
     return 0
 
 
@@ -1808,6 +1853,141 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 if a.suggested:
                     print(f"       → {a.label}")
         print()
+    return 0
+
+
+def _fmt_duration(seconds: Optional[int]) -> str:
+    """Format a duration in seconds to a human-readable string."""
+    if seconds is None:
+        return "N/A"
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    hours = seconds // 3600
+    mins = (seconds % 3600) // 60
+    if hours < 24:
+        return f"{hours}h {mins}m"
+    days = hours // 24
+    rem_h = hours % 24
+    return f"{days}d {rem_h}h"
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Board health snapshot — Layer 3 self-healing audit.
+
+    Calls :func:`board_doctor` from ``kanban_doctor`` and renders either
+    a human-readable summary or ``--json`` output for machine consumption
+    (watchdog cron).
+    """
+    from hermes_cli.kanban_doctor import board_doctor
+
+    with kb.connect_closing() as conn:
+        report = board_doctor(conn)
+
+    # --- JSON output ---
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    # --- Human-readable output ---
+    counts = report["counts"]
+    bottleneck = report["bottleneck"]
+    oldest = report["oldest_stalled"]
+    deadlocks = report["deadlocks"]
+    l1_warnings = report["layer1_warnings"]
+    heal_log = report["heal_log_24h"]
+    is_healthy = report["healthy"]
+
+    # Header
+    status_marker = "✓" if is_healthy else "✗"
+    status_label = "HEALTHY" if is_healthy else "ATTENTION"
+    print(f"\n  {status_marker} Board {status_label}\n")
+
+    # Counts section
+    by_status = counts.get("by_status", {})
+    total = counts.get("total_non_archived", 0)
+    stuck = counts.get("blocked_genuinely_stuck", 0)
+    waiting = counts.get("blocked_waiting_by_design", 0)
+    review_req = counts.get("blocked_review_required", 0)
+    scheduled_wbd = counts.get("scheduled_waiting_by_design", 0)
+
+    print(f"  Tasks: {total} non-archived")
+    status_parts = []
+    for s in ("todo", "ready", "running", "blocked", "scheduled", "done"):
+        n = by_status.get(s, 0)
+        if n:
+            status_parts.append(f"{s}={n}")
+    if status_parts:
+        print(f"    {', '.join(status_parts)}")
+
+    # Blocked classification
+    print(f"\n  Blocked classification:")
+    print(f"    Genuinely stuck:        {stuck}")
+    print(f"    Waiting by design:      {waiting}  (incl. {scheduled_wbd} scheduled)")
+    print(f"    Review-required:        {review_req}")
+
+    # Bottleneck
+    if bottleneck.get("profile"):
+        by_prof = bottleneck.get("review_required_by_profile", {})
+        parts = [f"@{p}={n}" for p, n in sorted(by_prof.items(), key=lambda kv: -kv[1])]
+        print(f"\n  Bottleneck: @{bottleneck['profile']} ({bottleneck['review_required_count']} review-required)")
+        print(f"    by profile: {', '.join(parts)}")
+    else:
+        print(f"\n  Bottleneck: none (no review-required items)")
+
+    # Oldest stalled
+    if oldest.get("task_id"):
+        age_str = _fmt_duration(oldest["age_seconds"])
+        print(f"\n  Oldest stalled: {oldest['task_id']}")
+        print(f"    Title:    {oldest['title']}")
+        print(f"    Status:   {oldest['status']}")
+        print(f"    Assignee: @{oldest['assignee'] or '(unassigned)'}")
+        print(f"    Age:      {age_str}")
+    else:
+        print(f"\n  Oldest stalled: none")
+
+    # Deadlocks
+    if deadlocks:
+        print(f"\n  Deadlocks: {len(deadlocks)} cycle(s) detected")
+        for i, d in enumerate(deadlocks, 1):
+            cycle_str = " → ".join(d["cycle"])
+            print(f"    #{i}: {cycle_str} (length {d['length']})")
+    else:
+        print(f"\n  Deadlocks: none")
+
+    # Layer 1 warnings
+    if l1_warnings:
+        total_diags = sum(len(w["diagnostics"]) for w in l1_warnings)
+        print(f"\n  Layer 1 warnings: {total_diags} diagnostic(s) across {len(l1_warnings)} task(s)")
+        for w in l1_warnings:
+            tid = w["task_id"]
+            title = w.get("title", "(untitled)")
+            diag_parts = []
+            for d in w["diagnostics"]:
+                diag_parts.append(f"[{d['severity']}] {d['kind']}: {d['title']}")
+            print(f"    {tid}  {title}")
+            for p in diag_parts:
+                print(f"      {p}")
+    else:
+        print(f"\n  Layer 1 warnings: none")
+
+    # Heal log (Layer 2)
+    if heal_log:
+        print(f"\n  Heal log (last 24h): {len(heal_log)} action(s)")
+        # Show up to 10 most recent
+        for entry in heal_log[:10]:
+            action = entry.get("action", "?")
+            tid = entry.get("task_id", "?")
+            ts = entry.get("created_at", 0)
+            ts_str = _fmt_ts(ts) if ts else "?"
+            print(f"    {ts_str}  {action}  {tid}")
+        if len(heal_log) > 10:
+            print(f"    ... and {len(heal_log) - 10} more")
+    else:
+        print(f"\n  Heal log (last 24h): no heal actions recorded")
+
+    print()  # trailing newline
     return 0
 
 
@@ -2826,14 +3006,25 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
         if outcome.ok:
             ok_count += 1
         if want_json:
-            print(json.dumps({
+            result = {
                 "task_id": outcome.task_id,
                 "ok": outcome.ok,
                 "reason": outcome.reason,
                 "fanout": outcome.fanout,
                 "child_ids": outcome.child_ids,
                 "new_title": outcome.new_title,
-            }))
+            }
+            # Include Layer 1 intake warnings (R3 decomposition_edge, etc.)
+            # so --json callers can programmatically detect them.
+            with kb.connect_closing() as conn:
+                all_events = kb.list_events(conn, outcome.task_id)
+            warnings = [
+                e.payload for e in all_events
+                if e.kind == "intake_warning" and isinstance(e.payload, dict)
+            ]
+            if warnings:
+                result["intake_warnings"] = warnings
+            print(json.dumps(result))
         elif outcome.ok:
             if outcome.fanout and outcome.child_ids:
                 child_summary = ", ".join(outcome.child_ids)
@@ -2851,6 +3042,22 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                     f"Specified {outcome.task_id} → todo "
                     f"(no fanout){title_suffix}"
                 )
+            # Surface Layer 1 intake warnings on the root task (R3
+            # decomposition_edge, etc.) after successful decomposition.
+            if not want_json:
+                with kb.connect_closing() as conn:
+                    all_events = kb.list_events(conn, outcome.task_id)
+                warnings = [e for e in all_events if e.kind == "intake_warning"]
+                for w in warnings:
+                    payload = w.payload or {}
+                    kind = payload.get("kind", "unknown") if isinstance(payload, dict) else "unknown"
+                    msg = payload.get("message", "") if isinstance(payload, dict) else ""
+                    if kind == "decomposition_edge":
+                        n = payload.get("unlinked_children", "?")
+                        t = payload.get("total_children", "?")
+                        msg = msg or f"{n}/{t} children have no dependency edges — did you mean to link them?"
+                    if msg:
+                        print(f"⚠  {msg}", file=sys.stderr)
         else:
             print(
                 f"kanban: decompose {outcome.task_id}: {outcome.reason}",

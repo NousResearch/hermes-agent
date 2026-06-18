@@ -1526,6 +1526,119 @@ def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
         assert kb.has_spawnable_ready(conn) is False
 
 
+def test_spawnable_ready_ids_filters_non_profiles(kanban_home, monkeypatch):
+    """``spawnable_ready_ids`` returns only the ids whose assignee maps to
+    a real Hermes profile — control-plane lanes (pulled by terminals) are
+    excluded so they can't masquerade as dispatcher-stuck work."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "daily"
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="terminal-task", assignee="orion-cc")
+        real = kb.create_task(conn, title="hermes-task", assignee="daily")
+        ids = kb.spawnable_ready_ids(conn)
+    assert ids == {real}
+
+
+def test_spawnable_ready_ids_empty_when_nothing_spawnable(kanban_home, monkeypatch):
+    """No spawnable ready work → empty set (the healthy/idle signal)."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="t1", assignee="orion-cc")
+        assert kb.spawnable_ready_ids(conn) == set()
+
+
+def test_spawnable_ready_ids_excludes_claimed(kanban_home, monkeypatch):
+    """A claimed task is no longer 'spawnable ready' — claiming it drains
+    it from the set. This is the churn signal the health telemetry watches:
+    a board where ids leave the set is being worked, not stuck."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a", assignee="daily")
+        b = kb.create_task(conn, title="b", assignee="daily")
+        assert kb.spawnable_ready_ids(conn) == {a, b}
+        # Claim one — it leaves the spawnable-ready set (claim_lock set).
+        claimed = kb.claim_task(conn, a)
+        assert claimed is not None
+        assert kb.spawnable_ready_ids(conn) == {b}
+
+
+# ── spawnable_ready_ids_for_profile ──────────────────────────────────
+
+
+def test_spawnable_ready_ids_for_profile_scopes_to_profile(kanban_home, monkeypatch):
+    """``spawnable_ready_ids_for_profile`` returns only tasks assigned to the
+    given profile — tasks for other profiles are excluded even when they're
+    spawnable-ready. This is the per-dispatcher scoping that prevents
+    cross-profile false-positive "stuck" warnings."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        t_apollo = kb.create_task(conn, title="apollo-task", assignee="apollo", allow_thin=True)
+        kb.create_task(conn, title="zeus-task", assignee="zeus", allow_thin=True)
+        kb.create_task(conn, title="athena-task", assignee="athena", allow_thin=True)
+        # Only apollo's task should appear when querying for apollo.
+        ids = kb.spawnable_ready_ids_for_profile(conn, "apollo")
+    assert ids == {t_apollo}
+
+
+def test_spawnable_ready_ids_for_profile_empty_when_no_match(kanban_home, monkeypatch):
+    """No tasks assigned to this profile → empty set (correctly idle)."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="zeus-task", assignee="zeus", allow_thin=True)
+        kb.create_task(conn, title="athena-task", assignee="athena", allow_thin=True)
+        # apollo has no tasks — correctly idle, not stuck.
+        ids = kb.spawnable_ready_ids_for_profile(conn, "apollo")
+    assert ids == set()
+
+
+def test_spawnable_ready_ids_for_profile_fallback_to_global(kanban_home, monkeypatch):
+    """When profile is empty/None, falls back to global spawnable_ready_ids
+    behavior — backward compatible with single-profile setups."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="t1", assignee="apollo", allow_thin=True)
+        t2 = kb.create_task(conn, title="t2", assignee="zeus", allow_thin=True)
+        # Empty profile → global behavior (all spawnable profiles).
+        ids_empty = kb.spawnable_ready_ids_for_profile(conn, "")
+        ids_none = kb.spawnable_ready_ids_for_profile(conn, None)
+    assert ids_empty == {t1, t2}
+    assert ids_none == {t1, t2}
+
+
+def test_spawnable_ready_ids_for_profile_excludes_claimed(kanban_home, monkeypatch):
+    """Claimed tasks are excluded from the per-profile set, same as the
+    global version — the churn signal works identically per-dispatcher."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a", assignee="apollo", allow_thin=True)
+        b = kb.create_task(conn, title="b", assignee="apollo", allow_thin=True)
+        assert kb.spawnable_ready_ids_for_profile(conn, "apollo") == {a, b}
+        claimed = kb.claim_task(conn, a)
+        assert claimed is not None
+        assert kb.spawnable_ready_ids_for_profile(conn, "apollo") == {b}
+
+
+def test_spawnable_ready_ids_for_profile_excludes_non_profiles(kanban_home, monkeypatch):
+    """Even when scoped to a specific profile, if profile_exists says that
+    profile doesn't exist, the function returns an empty set — the
+    degenerate case where the profile was deleted between task creation and
+    this tick."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    with kb.connect() as conn:
+        kb.create_task(conn, title="ghost-task", assignee="apollo", allow_thin=True)
+        ids = kb.spawnable_ready_ids_for_profile(conn, "apollo")
+    assert ids == set()
+
+
 def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []
 

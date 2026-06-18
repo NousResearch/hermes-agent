@@ -101,6 +101,18 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+
+# Layer 1 intake-guard constants (spec: ARCH_self_healing_workflow.md §2).
+# R1: minimum non-whitespace body length. Cards below this are underspecified
+# and cause workers to bounce with generic "needs review" blocks.
+BODY_MIN_NONWS_CHARS = 20
+
+# R4: keywords that signal a review/sign-off handoff. When the body contains
+# any of these AND assignee == created_by, emit a self_review intake_warning.
+_REVIEW_KEYWORDS = re.compile(
+    r"\b(?:review[- ]?required|sign[- ]?off|signoff|review|needs?\s+review)\b",
+    re.IGNORECASE,
+)
 _IS_WINDOWS = sys.platform == "win32"
 
 # A running task's claim is valid for 15 minutes by default; after that the
@@ -2072,6 +2084,7 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    allow_thin: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2096,10 +2109,34 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    **Layer 1 intake guards** (spec: ARCH_self_healing_workflow.md §2):
+
+    - **R1 (body minimum):** Rejects cards whose body has fewer than
+      ``BODY_MIN_NONWS_CHARS`` non-whitespace characters unless
+      ``allow_thin=True``. Emits an ``intake_warning`` event on
+      thin-but-allowed cards.
+    - **R2 (assignee required):** When no assignee is provided and the
+      card is not already in triage, forces status to ``triage`` instead
+      of dispatching to a worker who will bounce it. Emits an
+      ``intake_warning`` event noting the auto-triage.
+    - **R4 (self-review warning):** When the body contains review/sign-off
+      language AND ``assignee == created_by``, emits an ``intake_warning``
+      event (non-fatal — the task is still created). The read path in
+      ``kanban.py`` surfaces these to the creator.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+
+    # ── R1: body minimum guard ──────────────────────────────────────
+    _body_nonws = len(re.sub(r"\s", "", body)) if body else 0
+    if _body_nonws < BODY_MIN_NONWS_CHARS and not allow_thin:
+        raise ValueError(
+            f"body is too short ({_body_nonws} non-whitespace chars, "
+            f"minimum {BODY_MIN_NONWS_CHARS}) — add a goal, acceptance "
+            f"criteria, and references, or pass --allow-thin to bypass"
+        )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -2159,6 +2196,16 @@ def create_task(
                 "capabilities (e.g. `web`, `browser`, `terminal`)."
             )
         skills_list = cleaned
+
+    # ── R2: assignee required / auto-triage ─────────────────────────
+    # Per Zeus's decision (PLAN_self_healing_workflow.md §3 C1): force
+    # triage rather than hard-reject — a thin/unassigned card is exactly
+    # what triage is for, and hard-reject breaks legitimate "park it for
+    # a specifier" flows. Emit intake_warning so the creator sees it.
+    _auto_triaged = False
+    if assignee is None and not triage and initial_status != "blocked":
+        triage = True
+        _auto_triaged = True
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
@@ -2280,6 +2327,41 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+
+                # ── Layer 1 intake warnings ───────────────────────────
+                # These are non-fatal diagnostics recorded as events so
+                # the CLI and dashboard can surface them to the creator.
+
+                # R1: thin card allowed through via --allow-thin
+                if _body_nonws < BODY_MIN_NONWS_CHARS and allow_thin:
+                    _append_event(
+                        conn, task_id, "intake_warning",
+                        {"kind": "thin_body", "nonws_chars": _body_nonws,
+                         "minimum": BODY_MIN_NONWS_CHARS},
+                    )
+
+                # R2: auto-triaged because no assignee
+                if _auto_triaged:
+                    _append_event(
+                        conn, task_id, "intake_warning",
+                        {"kind": "auto_triage", "reason": "no_assignee"},
+                    )
+
+                # R4: self-review smell — body mentions review/sign-off
+                # but assignee == author (a profile reviewing its own work
+                # is the review-deadlock smell the self-heal spec targets).
+                if (
+                    assignee
+                    and created_by
+                    and body
+                    and _canonical_assignee(created_by) == assignee
+                    and _REVIEW_KEYWORDS.search(body)
+                ):
+                    _append_event(
+                        conn, task_id, "intake_warning",
+                        {"kind": "self_review",
+                         "assignee": assignee, "author": created_by},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -4550,6 +4632,33 @@ def decompose_triage_task(
                     {"parent": parent_id, "child": child_id},
                 )
 
+        # ── R3: decomposition edge-check ────────────────────────────
+        # When >=2 children are created and any has zero sibling-parent
+        # links, the decomposition likely forgot dependency edges — the
+        # most common cause of children dispatched before their inputs
+        # are ready.  Emit an intake_warning on the ROOT task (not each
+        # child) so the dashboard surfaces it clearly.
+        if len(children) >= 2:
+            _unlinked = [
+                idx for idx, child in enumerate(children)
+                if not child.get("parents")
+            ]
+            if _unlinked:
+                _append_event(
+                    conn, task_id, "intake_warning",
+                    {
+                        "kind": "decomposition_edge",
+                        "unlinked_children": len(_unlinked),
+                        "total_children": len(children),
+                        "unlinked_indices": _unlinked,
+                        "message": (
+                            f"{len(_unlinked)}/{len(children)} children "
+                            f"created with no dependency edges — did you "
+                            f"mean to link them?"
+                        ),
+                    },
+                )
+
         # Link the ROOT task as a child of every leaf child — i.e. the
         # root waits for the whole graph. Simpler than computing leaves:
         # link root under every child. Cycle-free because the root is
@@ -6016,6 +6125,88 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         if profile_exists(row["assignee"]):
             return True
     return False
+
+
+def spawnable_ready_ids(conn: sqlite3.Connection) -> set:
+    """Return the set of ready+assigned+unclaimed task IDs whose assignee
+    maps to a real Hermes profile (i.e. tasks the dispatcher would spawn).
+
+    Set-valued cousin of :func:`has_spawnable_ready`. The gateway health
+    telemetry watches this set churn across ticks: a task that stays in
+    the set across the whole window is genuinely stuck (nobody — this
+    dispatcher or a co-resident peer — could claim/spawn it), whereas a
+    set that churns means tasks are being claimed and the board is
+    healthy. This distinguishes a real failure (broken venv / PATH /
+    credentials, or a card the dispatcher keeps refusing) from the benign
+    cases that plagued the old "I spawned 0 this tick" check: a single
+    lingering respawn-guarded card, or the losing dispatcher in a
+    multi-dispatcher atomic-claim race.
+
+    Falls back to the legacy "any ready+assigned id" behavior if
+    ``profile_exists`` is not importable (partial install).
+    """
+    rows = conn.execute(
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = 'ready' AND assignee IS NOT NULL "
+        "    AND claim_lock IS NULL"
+    ).fetchall()
+    if not rows:
+        return set()
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        # Can't introspect — preserve legacy behavior: treat all as spawnable.
+        return {row["id"] for row in rows}
+    out = set()
+    for row in rows:
+        if profile_exists(row["assignee"]):
+            out.add(row["id"])
+    return out
+
+
+def spawnable_ready_ids_for_profile(
+    conn: sqlite3.Connection, profile: str,
+) -> set:
+    """Return spawnable-ready task IDs assigned to a specific profile.
+
+    Per-dispatcher cousin of :func:`spawnable_ready_ids`. The gateway
+    health telemetry uses this to track stuck tasks *per dispatcher*
+    rather than globally — in a multi-gateway setup each dispatcher only
+    handles tasks for its own profile, so the "stuck" signal must be
+    scoped to the tasks this dispatcher is responsible for.
+
+    Returns a set of ``(id,)`` values (plain task IDs). Also returns
+    the assignee for each task so the health warning can name which
+    profile is stuck.
+
+    Args:
+        conn: Board database connection.
+        profile: The Hermes profile this dispatcher runs as. When set,
+            only tasks whose assignee matches this profile are included.
+            When empty/None, falls back to the global
+            :func:`spawnable_ready_ids` behavior.
+    """
+    if not profile:
+        return spawnable_ready_ids(conn)
+    rows = conn.execute(
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = 'ready' AND assignee = ? "
+        "    AND claim_lock IS NULL",
+        (profile,),
+    ).fetchall()
+    # Tasks assigned to this profile are spawnable by definition
+    # (the dispatcher IS this profile). We still check profile_exists
+    # for the degenerate case where the profile was deleted between
+    # task creation and this tick.
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        return {row["id"] for row in rows}
+    out = set()
+    for row in rows:
+        if profile_exists(row["assignee"]):
+            out.add(row["id"])
+    return out
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:

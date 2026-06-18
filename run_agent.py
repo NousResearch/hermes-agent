@@ -1337,6 +1337,18 @@ class AIAgent:
         # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
         if ord(last) >= 0x1F300:
             return True
+        # Symbol ranges: Latin-1 supplements, General Punctuation,
+        # Letterlike symbols, Misc Symbols, Arrows, Math Operators,
+        # Enclosed Alphanumerics, and similar non-letter endings that
+        # signal intentional completion (e.g. ⚡, ✝, ♱, †).
+        if 0x2000 <= ord(last) <= 0x2BFF:
+            return True
+        if 0x0080 <= ord(last) <= 0x00BF:
+            return True
+        # Common chat abbreviations that signal a complete thought
+        lower_tail = stripped[-5:].lower()
+        if lower_tail.endswith((" mdr", "mdr", " xd", "xd", " lol", "lol")):
+            return True
         return False
 
     def _is_ollama_glm_backend(self) -> bool:

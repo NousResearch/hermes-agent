@@ -343,10 +343,30 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     # Try to identify our unit name and ask systemctl for its config.
     unit_name: Optional[str] = None
     try:
-        # /proc/self/cgroup gives us "0::/user.slice/.../hermes-gateway.service"
+        # /proc/self/cgroup lines vary by controller.  The "name=systemd"
+        # (or unified "0::") controller carries the full unit path; other
+        # controllers (pids, memory, …) may only show an ancestor scope
+        # like user@1000.service.  Prefer the systemd controller to avoid
+        # false "stale unit" warnings.
+        cgroup_lines: list[str] = []
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
-            for line in fh:
-                # systemd cgroup line ends with the unit name
+            cgroup_lines = fh.readlines()
+
+        # First pass: try the name=systemd (or unified 0::) controller
+        for line in cgroup_lines:
+            stripped = line.strip()
+            if stripped.startswith("0::") or "name=systemd" in stripped:
+                parts = stripped.split("/")
+                for p in reversed(parts):
+                    if p.endswith(".service"):
+                        unit_name = p
+                        break
+                if unit_name:
+                    break
+
+        # Fallback: any line with .service (preserves old behaviour)
+        if not unit_name:
+            for line in cgroup_lines:
                 if ".service" in line:
                     parts = line.strip().split("/")
                     for p in reversed(parts):

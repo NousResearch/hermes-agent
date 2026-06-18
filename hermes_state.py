@@ -772,9 +772,36 @@ class SessionDB:
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
         err = str(exc).lower()
-        return "no such module" in err and "fts5" in err
+        # "no such module: fts5" → FTS5 itself missing
+        # "no such tokenizer: trigram" → FTS5 present but trigram tokenizer
+        # requires SQLite >= 3.34 (Alibaba Cloud Linux ships 3.26).
+        if "no such module" in err and "fts5" in err:
+            return True
+        if "no such tokenizer" in err:
+            return True
+        return False
+
+    @staticmethod
+    def _is_trigram_only_error(exc: sqlite3.OperationalError) -> bool:
+        """True when only the trigram tokenizer is missing (FTS5 itself works)."""
+        err = str(exc).lower()
+        return "no such tokenizer" in err
 
     def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
+        # If only the trigram tokenizer is missing, FTS5 still works —
+        # CJK/substring search falls back to LIKE, which is acceptable.
+        if self._is_trigram_only_error(exc):
+            if not getattr(self, "_trigram_unavailable_warned", False):
+                self._trigram_unavailable_warned = True
+                logger.info(
+                    "SQLite trigram tokenizer unavailable for %s "
+                    "(requires SQLite >= 3.34, this build is %s); "
+                    "CJK/substring search will fall back to LIKE: %s",
+                    self.db_path,
+                    sqlite3.sqlite_version,
+                    exc,
+                )
+            return
         self._fts_enabled = False
         if self._fts_unavailable_warned:
             return

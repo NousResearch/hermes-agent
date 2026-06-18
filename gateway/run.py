@@ -1140,6 +1140,23 @@ def _planned_restart_notification_pending() -> bool:
     return _planned_restart_notification_path().exists()
 
 
+def _should_send_home_channel_startup_notification(
+    *,
+    chat_originated_restart_pending: bool,
+    connected_count: int,
+) -> bool:
+    """Return whether startup should broadcast an online notice to home channels.
+
+    Home-channel lifecycle pings are operator-facing: ordinary starts, boot
+    autostarts, Scheduled Task launches, service restarts, and non-chat planned
+    restarts should say "Gateway online" once a platform is connected. The one
+    exception is a chat-originated /restart, which already replies to the exact
+    initiating chat/topic via .restart_notify.json and should not also broadcast
+    to the configured home channel.
+    """
+    return connected_count > 0 and not chat_originated_restart_pending
+
+
 def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
@@ -5435,21 +5452,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
-        planned_restart_notification_pending = _planned_restart_notification_pending()
+        # A .restart_notify.json marker means the restart came from a chat
+        # command, so the precise requester gets the lifecycle reply and the
+        # home channel should not also receive a broadcast. Plain process
+        # starts, boot/Scheduled Task launches, service restarts, and non-chat
+        # planned restarts have no chat-originated marker and should notify the
+        # configured home channel once a platform is connected.
+        chat_originated_restart_pending = _restart_notification_pending()
         await self._send_restart_notification()
 
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
+        if _should_send_home_channel_startup_notification(
+            chat_originated_restart_pending=chat_originated_restart_pending,
+            connected_count=connected_count,
+        ):
+            await self._send_home_channel_startup_notifications(skip_targets=None)
+        _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared

@@ -45,6 +45,34 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     assert gateway_run._planned_restart_notification_pending() is False
 
 
+def test_home_channel_startup_notice_sent_for_plain_startup():
+    assert gateway_run._should_send_home_channel_startup_notification(
+        chat_originated_restart_pending=False,
+        connected_count=1,
+    ) is True
+
+
+def test_home_channel_startup_notice_sent_for_non_chat_planned_restart():
+    assert gateway_run._should_send_home_channel_startup_notification(
+        chat_originated_restart_pending=False,
+        connected_count=1,
+    ) is True
+
+
+def test_home_channel_startup_notice_suppressed_for_chat_originated_restart():
+    assert gateway_run._should_send_home_channel_startup_notification(
+        chat_originated_restart_pending=True,
+        connected_count=1,
+    ) is False
+
+
+def test_home_channel_startup_notice_suppressed_when_no_platform_connected():
+    assert gateway_run._should_send_home_channel_startup_notification(
+        chat_originated_restart_pending=False,
+        connected_count=0,
+    ) is False
+
+
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
 
 

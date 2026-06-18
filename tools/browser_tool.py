@@ -166,6 +166,12 @@ _SANE_PATH_DIRS = (
     "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
+# Keep this browser-tool locator local to the tool runtime path. The
+# /browser connect command has its own CDP attach/launch locator in
+# hermes_cli.browser_connect; both intentionally cover macOS app bundles,
+# but this path must stay usable when only browser tool availability and
+# runtime checks are in scope. If a third consumer appears, extract a
+# neutral shared browser locator instead of growing either side.
 _DARWIN_BROWSER_APP_SUFFIXES = (
     "Google Chrome.app/Contents/MacOS/Google Chrome",
     "Chromium.app/Contents/MacOS/Chromium",

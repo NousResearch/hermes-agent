@@ -333,17 +333,119 @@ def test_hosted_policy_locks_to_opt_data(monkeypatch):
     assert policy.can_change_path is False
 
 
+# ---------------------------------------------------------------------------
+# Streaming multipart upload (/api/files/upload-stream) — NS-501
+# ---------------------------------------------------------------------------
+
+
+def test_stream_upload_roundtrip(forced_files_client):
+    """The multipart endpoint writes raw bytes to disk and reports the entry."""
+    client, root = forced_files_client
+    file_path = root / "out" / "backup.zip"
+    payload = b"PK\x03\x04 not really a zip but binary enough \x00\x01\x02"
+
+    created = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(file_path), "overwrite": "true"},
+        files={"file": ("backup.zip", payload, "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["entry"]["path"] == str(file_path)
+    assert created.json()["locked_root"] == str(root)
+    # Bytes land verbatim — no base64 round-trip, no corruption.
+    assert file_path.read_bytes() == payload
+
+
+def test_stream_upload_rejects_oversized_without_clobbering(forced_files_client, monkeypatch):
+    """Over-limit uploads return 413 and never overwrite an existing file.
+
+    The size cap is enforced while streaming (not after buffering), and the
+    temp-file + atomic-rename design means a rejected upload leaves any
+    pre-existing file at the target path untouched.
+    """
+    client, root = forced_files_client
+    file_path = root / "out" / "big.bin"
+
+    # Seed an existing file at the target path.
+    seeded = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(file_path), "overwrite": "true"},
+        files={"file": ("big.bin", b"original-contents", "application/octet-stream")},
+    )
+    assert seeded.status_code == 200
+    assert file_path.read_bytes() == b"original-contents"
+
+    # Shrink the cap so a small payload trips it deterministically.
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 8)
+    rejected = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(file_path), "overwrite": "true"},
+        files={"file": ("big.bin", b"way too many bytes for the cap", "application/octet-stream")},
+    )
+    assert rejected.status_code == 413
+    # The original file must survive a rejected overwrite.
+    assert file_path.read_bytes() == b"original-contents"
+    # No stray temp files left behind in the directory.
+    leftovers = [p.name for p in file_path.parent.iterdir() if ".upload" in p.name]
+    assert leftovers == [], f"temp upload files leaked: {leftovers}"
+
+
+def test_stream_upload_respects_overwrite_false(forced_files_client):
+    client, root = forced_files_client
+    file_path = root / "keep.txt"
+
+    first = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(file_path), "overwrite": "true"},
+        files={"file": ("keep.txt", b"first", "text/plain")},
+    )
+    assert first.status_code == 200
+
+    conflict = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(file_path), "overwrite": "false"},
+        files={"file": ("keep.txt", b"second", "text/plain")},
+    )
+    assert conflict.status_code == 409
+    assert file_path.read_bytes() == b"first"
+
+
+def test_stream_upload_stays_under_forced_root(forced_files_client):
+    """A relative path with traversal can't escape the locked root."""
+    client, root = forced_files_client
+    escaped = client.post(
+        "/api/files/upload-stream",
+        data={"path": "../../etc/evil.txt", "overwrite": "true"},
+        files={"file": ("evil.txt", b"nope", "text/plain")},
+    )
+    assert escaped.status_code in (400, 403)
+
+
+def test_stream_upload_large_file_under_cap_succeeds(forced_files_client, monkeypatch):
+    """A multi-chunk payload (larger than the 1 MiB chunk) streams correctly."""
+    client, root = forced_files_client
+    file_path = root / "multi-chunk.bin"
+    # 2.5 MiB exercises the chunked read loop across multiple iterations.
+    payload = b"x" * (2 * 1024 * 1024 + 512 * 1024)
+
+    created = client.post(
+        "/api/files/upload-stream",
+        data={"path": str(file_path), "overwrite": "true"},
+        files={"file": ("multi-chunk.bin", payload, "application/octet-stream")},
+    )
+    assert created.status_code == 200
+    assert file_path.stat().st_size == len(payload)
+    assert file_path.read_bytes() == payload
+
+
 def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client):
     """Dangling symlinks should appear in listings with broken_link: true."""
     client, root = forced_files_client
     root.mkdir(parents=True, exist_ok=True)
 
-    # Create a valid file
     valid = root / "valid.txt"
     valid.write_text("hello")
 
-    # Create a dangling symlink whose target is also within the locked root
-    # so that _path_is_under() passes and the new broken_link code path is hit.
     broken = root / "broken_link"
     nonexistent = root / "nonexistent_target"
     broken.symlink_to(str(nonexistent))

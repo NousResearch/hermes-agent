@@ -130,12 +130,15 @@ SECURITY_CATALOG: Dict[str, Any] = {
                 "binary analysis reverse engineering",
             ],
         },
-        # ── External MCP servers (discoverable tools) ────────────────
+        # ── MCP servers (via security_tools_mcp.py stdio) ─────────────
+        # All tools below are served by scripts/security_tools_mcp.py
+        # Register in Hermes: mcp_servers.security-tools.command=python
+        #   args=[scripts/security_tools_mcp.py]
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:webclaw",
             "displayName": "Webclaw — Antibot Web Scraper",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:webclaw-mcp",
             "description": "Web extraction engine with Cloudflare bypass. Scrape, crawl, extract structured data.",
             "tags": ["recon", "scraping", "osint", "cloudflare-bypass"],
             "representativeQueries": [
@@ -148,7 +151,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mcp:nuclei",
             "displayName": "Nuclei Vulnerability Scanner (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Fast, template-based vulnerability scanner. Detects CVEs, misconfigurations, exposures.",
             "tags": ["vulnerability-scanning", "nuclei", "cve", "recon"],
             "representativeQueries": [
@@ -161,7 +164,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mcp:ffuf",
             "displayName": "FFUF Fuzzer (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Fast web fuzzer for directory/file discovery, vhost fuzzing, parameter discovery.",
             "tags": ["fuzzing", "recon", "directory-brute", "parameter-discovery"],
             "representativeQueries": [
@@ -174,7 +177,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mcp:sqlmap",
             "displayName": "SQLMap (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Automatic SQL injection detection and exploitation tool.",
             "tags": ["sqli", "injection", "database", "exploit"],
             "representativeQueries": [
@@ -187,7 +190,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mcp:nmap",
             "displayName": "Nmap Port Scanner (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Network discovery and security auditing. Port scanning, service detection, OS fingerprinting.",
             "tags": ["port-scanning", "network", "recon", "service-detection"],
             "representativeQueries": [
@@ -200,7 +203,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mpc:subfinder",
             "displayName": "Subfinder Subdomain Enumeration (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Fast passive subdomain enumeration tool using online sources.",
             "tags": ["subdomain", "enumeration", "recon", "passive"],
             "representativeQueries": [
@@ -213,7 +216,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mcp:httpx",
             "displayName": "HTTPx Prober (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Fast multi-purpose HTTP toolkit. Probe live hosts, detect technologies, take screenshots.",
             "tags": ["http", "probing", "recon", "tech-detection"],
             "representativeQueries": [
@@ -226,7 +229,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mcp:naabu",
             "displayName": "Naabu Port Scanner (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Fast port scanner optimized for internet-wide scanning.",
             "tags": ["port-scanning", "network", "recon"],
             "representativeQueries": [
@@ -238,7 +241,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
             "identifier": f"urn:ai:{DOMAIN}:mcp:katana",
             "displayName": "Katana Crawler (MCP)",
             "type": "application/mcp-server+json",
-            "url": "",
+            "url": "stdio:security-tools-mcp",
             "description": "Next-generation crawling and spidering framework.",
             "tags": ["crawling", "spider", "recon", "endpoint-discovery"],
             "representativeQueries": [

@@ -8224,7 +8224,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            # Cap generously: rich interactive cards (alert notifications with
+            # fields + table + several download links) run well past 500 chars,
+            # and a 500-char cut lands mid-URL — the agent then sees only a link
+            # prefix and (correctly) reports the URL as truncated. 4000 chars
+            # comfortably fits such cards while keeping token overhead minimal.
+            reply_snippet = event.reply_to_text[:4000]
             message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:

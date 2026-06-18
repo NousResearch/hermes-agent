@@ -262,6 +262,8 @@ FALLBACK_POST_TEXT = "[Rich text message]"
 FALLBACK_FORWARD_TEXT = "[Merged forward message]"
 FALLBACK_SHARE_CHAT_TEXT = "[Shared chat]"
 FALLBACK_INTERACTIVE_TEXT = "[Interactive message]"
+# Max card body lines to surface; rich alert cards exceed a dozen.
+_INTERACTIVE_CARD_MAX_LINES = 60
 FALLBACK_IMAGE_TEXT = "[Image]"
 FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
 # ---------------------------------------------------------------------------
@@ -279,8 +281,6 @@ _SUPPORTED_CARD_TEXT_KEYS = (
     "text",
     "content",
     "label",
-    "value",
-    "name",
     "summary",
     "subtitle",
     "description",
@@ -883,6 +883,22 @@ def _load_feishu_payload(raw_content: str) -> Dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"content": parsed}
 
 
+def _parse_card_user_dsl(payload: Any) -> Optional[Dict[str, Any]]:
+    """Return the parsed schema-2.0 card embedded in a `user_dsl` JSON string,
+    or None when absent/unparseable. CardKit 2.0 webhook events carry the real
+    card here while top-level `elements` is a lossy old-client fallback."""
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("user_dsl")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _normalize_merge_forward_message(payload: Dict[str, Any]) -> FeishuNormalizedMessage:
     title = _first_non_empty_text(
         payload.get("title"),
@@ -934,6 +950,15 @@ def _normalize_share_chat_message(payload: Dict[str, Any]) -> FeishuNormalizedMe
 
 def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -> FeishuNormalizedMessage:
     card_payload = payload.get("card") if isinstance(payload.get("card"), dict) else payload
+    # CardKit 2.0 dual-publish: Feishu ships the real schema-2.0 card as a JSON
+    # string in `user_dsl`, alongside a lossy flattened `elements`/`title`
+    # fallback for older clients. The fallback's `{tag:"text"}` nodes are
+    # dropped by the rich-block gate in _collect_text_segments, so without
+    # parsing user_dsl we only ever recover the header title. Prefer the
+    # user_dsl card (its body uses markdown/div nodes we already extract).
+    dsl_card = _parse_card_user_dsl(payload) or _parse_card_user_dsl(card_payload)
+    if dsl_card is not None:
+        card_payload = dsl_card
     title = _first_non_empty_text(
         _find_header_title(card_payload),
         payload.get("title"),
@@ -951,7 +976,10 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
 
-    text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
+    # Cap generously: rich alert cards legitimately run well past a dozen
+    # lines (header + fields + table + links + button). The old limit of 12
+    # silently truncated the trailing links/buttons.
+    text_content = "\n".join(lines[:_INTERACTIVE_CARD_MAX_LINES]).strip() or FALLBACK_INTERACTIVE_TEXT
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content=text_content,
@@ -1005,8 +1033,54 @@ def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
 
 def _collect_card_lines(payload: Any) -> List[str]:
     lines = _collect_text_segments(payload, in_rich_block=False)
-    normalized = [_normalize_feishu_text(line) for line in lines]
+    normalized = [_flatten_markdown_links(_normalize_feishu_text(line)) for line in lines]
     return _unique_lines([line for line in normalized if line])
+
+
+def _flatten_markdown_links(text: str) -> str:
+    """Rewrite markdown links ``[label](url)`` to a bare ``label: url`` form.
+
+    Card download links often carry literal parens (e.g. a build number like
+    ``report_v1.2.3(456).zip``). Wrapped in markdown ``[label](url)`` — or,
+    worse, percent-encoded to dodge the link delimiters — models tend to
+    misread the URL as malformed/truncated and either reconstruct a wrong
+    filename or refuse it. A bare labelled URL is the most reliable thing for
+    the agent to read and reproduce verbatim, and Feishu still auto-links it
+    on output.
+
+    The destination is delimited by balanced parens (CommonMark): we scan from
+    each ``](`` tracking paren depth to find the real closing paren, so an
+    inner ``(456)`` is kept as part of the URL rather than mistaken for the
+    link's end.
+    """
+    if "](" not in text:
+        return text
+    result: List[str] = []
+    pos = 0
+    for m in re.finditer(r"\[([^\]]*)\]\(", text):
+        if m.start() < pos:
+            continue
+        label = m.group(1).strip()
+        url_start = m.end()
+        depth = 1
+        j = url_start
+        while j < len(text):
+            ch = text[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if depth != 0:  # unbalanced — leave this link untouched
+            continue
+        url = text[url_start:j].strip()
+        result.append(text[pos:m.start()])
+        result.append(f"{label}: {url}" if label else url)
+        pos = j + 1  # skip past the closing ')'
+    result.append(text[pos:])
+    return "".join(result)
 
 
 def _collect_action_labels(payload: Any) -> List[str]:
@@ -1017,11 +1091,15 @@ def _collect_action_labels(payload: Any) -> List[str]:
         tag = str(item.get("tag", "") or item.get("type", "")).strip().lower()
         if tag not in {"button", "select_static", "overflow", "date_picker", "picker"}:
             continue
+        # Display label lives in `text` (a string in v1, or {"content": ...}
+        # in schema 2.0) or `label`. Never fall back to `name`/`value` — those
+        # are the control's internal id / callback payload (e.g.
+        # "Button_m6vy7xom"), not human-readable text.
+        text_field = item.get("text")
         label = _first_non_empty_text(
-            item.get("text"),
-            item.get("name"),
-            item.get("value"),
-            _find_first_text(item, keys=("text", "content", "name", "value")),
+            text_field.get("content") if isinstance(text_field, dict) else text_field,
+            item.get("label"),
+            _find_first_text(item, keys=("content", "text", "label")),
         )
         if label:
             labels.append(label)
@@ -1065,7 +1143,14 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
     for key, item in value.items():
         if key in _SKIP_TEXT_KEYS:
             continue
-        segments.extend(_collect_text_segments(item, in_rich_block=next_in_rich_block))
+        # Only descend into nested structures. Text strings are harvested
+        # exclusively via the _SUPPORTED_CARD_TEXT_KEYS allowlist above;
+        # recursing into bare string fields here would scoop up layout/style
+        # metadata (element_id, "left", "weighted", "default", color names,
+        # button name/type, ...) the moment in_rich_block is set, flooding the
+        # output with noise and pushing real content past the line cap.
+        if isinstance(item, (dict, list)):
+            segments.extend(_collect_text_segments(item, in_rich_block=next_in_rich_block))
     return segments
 
 
@@ -4707,7 +4792,20 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            return GetMessageRequest.builder().message_id(message_id).build()
+            request = GetMessageRequest.builder().message_id(message_id).build()
+            # Ask Feishu for the authoritative CardKit 2.0 card payload (incl.
+            # `user_dsl` / schema-2.0 DSL). Without this query param the GET
+            # message endpoint returns only the lossy v1 fallback — for v2
+            # cards that fallback is just an "upgrade your client" placeholder,
+            # so a fetched (quoted/parent) card loses all of its body content.
+            try:
+                queries = list(getattr(request, "queries", None) or [])
+                if not any(k == "card_msg_content_type" for k, _ in queries):
+                    queries.append(("card_msg_content_type", "user_card_content"))
+                request.queries = queries
+            except Exception:
+                logger.debug("[Feishu] could not set card_msg_content_type query", exc_info=True)
+            return request
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

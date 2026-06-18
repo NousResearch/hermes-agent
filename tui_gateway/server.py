@@ -9517,6 +9517,7 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
+            refresh=bool(params.get("refresh")),
         )
         return _ok(rid, payload)
     except Exception as e:

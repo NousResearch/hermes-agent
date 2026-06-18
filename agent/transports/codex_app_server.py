@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -28,6 +29,21 @@ from typing import Any, Optional
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+
+
+def resolve_codex_bin(codex_bin: str) -> str:
+    """Resolve a codex CLI name to an executable path before subprocess spawn.
+
+    On Windows, ``npm i -g @openai/codex`` installs ``codex.CMD``.  List-form
+    ``subprocess.run/Popen(["codex", ...])`` uses CreateProcess directly and
+    does not honor PATHEXT, so the bare name fails even when ``shutil.which``
+    finds the shim.  Resolving once here mirrors the Node-ecosystem pattern in
+    ``hermes_cli._subprocess_compat.resolve_node_command``.
+    """
+    if os.path.isabs(codex_bin) and os.path.isfile(codex_bin):
+        return codex_bin
+    resolved = shutil.which(codex_bin)
+    return resolved or codex_bin
 
 
 @dataclass
@@ -73,7 +89,7 @@ class CodexAppServerClient:
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
     ) -> None:
-        self._codex_bin = codex_bin
+        self._codex_bin = resolve_codex_bin(codex_bin)
         spawn_env = os.environ.copy()
         if env:
             spawn_env.update(env)
@@ -110,7 +126,7 @@ class CodexAppServerClient:
                 ]
             )
 
-        cmd = [codex_bin, "app-server"] + app_server_args
+        cmd = [self._codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
@@ -372,9 +388,10 @@ def check_codex_binary(
     """Verify codex CLI is installed and meets minimum version.
 
     Returns (ok, message). Used by setup wizard and runtime startup."""
+    resolved_bin = resolve_codex_bin(codex_bin)
     try:
         proc = subprocess.run(
-            [codex_bin, "--version"],
+            [resolved_bin, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -382,7 +399,7 @@ def check_codex_binary(
         )
     except FileNotFoundError:
         return False, (
-            f"codex CLI not found at {codex_bin!r}. Install with: "
+            f"codex CLI not found at {resolved_bin!r}. Install with: "
             f"npm i -g @openai/codex"
         )
     except subprocess.TimeoutExpired:

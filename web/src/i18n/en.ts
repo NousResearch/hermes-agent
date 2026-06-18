@@ -230,6 +230,8 @@ export const en: Translations = {
     newJob: "New Cron Job",
     nameOptional: "Name (optional)",
     namePlaceholder: "e.g. Daily summary",
+    modelOptional: "Model (optional)",
+    modelPlaceholder: "e.g. moonshotai/kimi-k2.6 (leaves the gateway default if empty)",
     prompt: "Prompt",
     promptPlaceholder: "What should the agent do on each run?",
     schedule: "Schedule (cron expression)",

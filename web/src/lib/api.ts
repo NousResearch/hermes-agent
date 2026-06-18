@@ -509,7 +509,7 @@ export const api = {
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
   getCronDeliveryTargets: () =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[] }, profile = "default") =>
+  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[]; model?: string }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -519,7 +519,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[] },
+    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[]; model?: string | null },
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -1878,6 +1878,7 @@ export interface CronJob {
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  model?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
   last_error?: string | null;

@@ -249,6 +249,8 @@ export interface Translations {
     newJob: string;
     nameOptional: string;
     namePlaceholder: string;
+    modelOptional?: string;
+    modelPlaceholder?: string;
     prompt: string;
     promptPlaceholder: string;
     schedule: string;

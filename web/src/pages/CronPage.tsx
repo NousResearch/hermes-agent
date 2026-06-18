@@ -211,6 +211,7 @@ export default function CronPage() {
     DEFAULT_SCHEDULE_STATE,
   );
   const [name, setName] = useState("");
+  const [model, setModel] = useState("");
   const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
   const createModalRef = useModalBehavior({
     open: createModalOpen,
@@ -229,6 +230,7 @@ export default function CronPage() {
   const [editPrompt, setEditPrompt] = useState("");
   const [editSchedule, setEditSchedule] = useState("");
   const [editName, setEditName] = useState("");
+  const [editModel, setEditModel] = useState("");
   const [editDeliver, setEditDeliver] = useState("local");
   const [editSkills, setEditSkills] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -251,6 +253,7 @@ export default function CronPage() {
       asText(job.schedule?.expr) || asText(job.schedule_display) || "",
     );
     setEditName(getJobName(job));
+    setEditModel(asText(job.model));
     setEditDeliver(asText(job.deliver) || "local");
     setEditSkills(Array.isArray(job.skills) ? job.skills.filter(Boolean) : []);
   }, []);
@@ -373,6 +376,7 @@ export default function CronPage() {
           name: name.trim() || undefined,
           deliver,
           skills: jobSkills.length > 0 ? jobSkills : undefined,
+          model: model.trim() || undefined,
         },
         createProfile,
       );
@@ -380,6 +384,7 @@ export default function CronPage() {
       setPrompt("");
       setScheduleState(DEFAULT_SCHEDULE_STATE);
       setName("");
+      setModel("");
       setDeliver("local");
       setJobSkills([]);
       setCreateModalOpen(false);
@@ -407,6 +412,7 @@ export default function CronPage() {
           name: editName.trim(),
           deliver: editDeliver,
           skills: editSkills,
+          model: editModel.trim() || null,
         },
         getJobProfile(editJob),
       );
@@ -610,6 +616,21 @@ export default function CronPage() {
                 />
               </div>
 
+              <div className="grid gap-2">
+                <Label htmlFor="cron-model">
+                  {t.cron.modelOptional ?? "Model (optional)"}
+                </Label>
+                <Input
+                  id="cron-model"
+                  placeholder={
+                    t.cron.modelPlaceholder ??
+                    "e.g. moonshotai/kimi-k2.6 (leaves the gateway default if empty)"
+                  }
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                />
+              </div>
+
               <ScheduleBuilder
                 value={scheduleState}
                 onChange={setScheduleState}
@@ -713,6 +734,21 @@ export default function CronPage() {
                   placeholder={t.cron.promptPlaceholder}
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cron-model">
+                  {t.cron.modelOptional ?? "Model (optional)"}
+                </Label>
+                <Input
+                  id="edit-cron-model"
+                  placeholder={
+                    t.cron.modelPlaceholder ??
+                    "e.g. moonshotai/kimi-k2.6 (leaves the gateway default if empty)"
+                  }
+                  value={editModel}
+                  onChange={(e) => setEditModel(e.target.value)}
                 />
               </div>
 

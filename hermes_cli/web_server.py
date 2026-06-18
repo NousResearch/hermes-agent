@@ -7046,6 +7046,7 @@ class CronJobCreate(BaseModel):
     name: str = ""
     deliver: str = "local"
     skills: Optional[List[str]] = None
+    model: str = ""
 
 
 class CronJobUpdate(BaseModel):
@@ -7218,6 +7219,7 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
             name=body.name,
             deliver=body.deliver,
             skills=body.skills,
+            model=body.model,
         )
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")

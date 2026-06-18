@@ -274,3 +274,77 @@ def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
     assert ok is False
     assert "deliver" not in order
     assert order == ["save-raise", "agent.close", "cleanup_stale"], order
+
+
+def test_run_one_job_pipe_error_during_delivery_is_non_fatal(monkeypatch):
+    """A BrokenPipeError / ConnectionResetError raised ONLY during delivery
+    (after the agent completed successfully) is non-fatal: the run is marked
+    successful with `last_delivery_error` set, matching the existing
+    delivery-error persistence semantics (tests/cron/test_jobs.py:604-611).
+
+    Regression for #47213: pipe errors raised earlier in run_job() (provider
+    / model stream faults) are real failures and still propagate; this test
+    pins the post-completion boundary.
+    """
+    marks = []
+
+    def fake_run_job(job, *, defer_agent_teardown=None):
+        return (True, "out", "final response", None)
+
+    def boom_deliver_pipe(job, content, adapters=None, loop=None):
+        raise BrokenPipeError("[Errno 32] Broken pipe")
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", boom_deliver_pipe)
+    monkeypatch.setattr(
+        s, "mark_job_run",
+        lambda jid, ok, err=None, delivery_error=None:
+            marks.append({"id": jid, "ok": ok, "err": err,
+                          "delivery_error": delivery_error}),
+    )
+
+    ok = s.run_one_job({"id": "j11", "name": "t"})
+
+    # Helper returns True — the run was processed (delivery failed, but the
+    # helper itself did not raise).
+    assert ok is True
+    # The run is marked successful; the pipe error is recorded as the
+    # delivery error only (NOT as the agent error). This matches the
+    # `last_status=ok` + `last_delivery_error=<msg>` contract from
+    # tests/cron/test_jobs.py:604-611.
+    assert len(marks) == 1
+    mark = marks[0]
+    assert mark["id"] == "j11"
+    assert mark["ok"] is True
+    assert mark["err"] is None
+    assert "BrokenPipeError" in mark["delivery_error"]
+    assert "[Errno 32] Broken pipe" in mark["delivery_error"]
+
+
+def test_run_one_job_connection_reset_during_delivery_is_non_fatal(monkeypatch):
+    """ConnectionResetError during delivery follows the same non-fatal path
+    as BrokenPipeError — verified separately because they are distinct
+    exception classes with the same intended handling."""
+    marks = []
+
+    def fake_run_job(job, *, defer_agent_teardown=None):
+        return (True, "out", "final response", None)
+
+    def boom_deliver_reset(job, content, adapters=None, loop=None):
+        raise ConnectionResetError("[Errno 104] Connection reset by peer")
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", boom_deliver_reset)
+    monkeypatch.setattr(
+        s, "mark_job_run",
+        lambda jid, ok, err=None, delivery_error=None:
+            marks.append({"id": jid, "ok": ok, "delivery_error": delivery_error}),
+    )
+
+    s.run_one_job({"id": "j12", "name": "t"})
+
+    assert len(marks) == 1
+    assert marks[0]["ok"] is True
+    assert "ConnectionResetError" in marks[0]["delivery_error"]

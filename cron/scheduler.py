@@ -3635,6 +3635,24 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             if should_deliver:
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except (BrokenPipeError, ConnectionResetError) as de:
+                    # Broken pipe / connection reset at the delivery boundary:
+                    # the agent already finished its work (run_job returned
+                    # success=True with a non-empty final_response). Only the
+                    # final-response stream to the user died. Record as a
+                    # delivery failure but keep the run successful so we do
+                    # not retry or alert on a healthy job — matching the
+                    # existing `last_delivery_error` semantics at
+                    # tests/cron/test_jobs.py:604-611. This is the
+                    # completion-vs-delivery boundary; pipe errors raised
+                    # earlier in run_job() (provider/model stream faults)
+                    # still propagate as real failures.
+                    delivery_error = f"{type(de).__name__}: {de}"
+                    logger.warning(
+                        "Job '%s': pipe error during response delivery "
+                        "(non-fatal, agent completed): %s",
+                        job["id"], delivery_error,
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)

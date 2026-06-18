@@ -47,6 +47,24 @@ _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
 
 
+@pytest.fixture(autouse=True)
+def _isolate_line_env(monkeypatch):
+    """Keep real LINE runtime env from leaking into adapter unit tests."""
+    for key in (
+        "LINE_CHANNEL_ACCESS_TOKEN",
+        "LINE_CHANNEL_SECRET",
+        "LINE_PORT",
+        "LINE_PUBLIC_URL",
+        "LINE_HOME_CHANNEL",
+        "LINE_WEBHOOK_PATH",
+        "LINE_ALLOWED_USERS",
+        "LINE_ALLOWED_GROUPS",
+        "LINE_ALLOWED_ROOMS",
+        "LINE_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # 1. Signature verification
 # ---------------------------------------------------------------------------
@@ -490,6 +508,20 @@ class TestEnvEnablement:
         monkeypatch.setenv("LINE_PUBLIC_URL", "https://my-tunnel.example.com")
         result = _env_enablement()
         assert result["public_url"] == "https://my-tunnel.example.com"
+
+    def test_seeds_home_channel_as_registry_dict(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "sec")
+        monkeypatch.setenv("LINE_HOME_CHANNEL", "Uhome")
+        result = _env_enablement()
+        assert result["home_channel"] == {"chat_id": "Uhome", "name": "LINE Home"}
+
+    def test_seeds_webhook_path(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "sec")
+        monkeypatch.setenv("LINE_WEBHOOK_PATH", "/webhook")
+        result = _env_enablement()
+        assert result["webhook_path"] == "/webhook"
 
 
 class TestStandaloneSend:

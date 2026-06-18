@@ -1526,7 +1526,10 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     if os.getenv("LINE_PUBLIC_URL"):
         seeded["public_url"] = os.environ["LINE_PUBLIC_URL"]
     if os.getenv("LINE_HOME_CHANNEL"):
-        seeded["home_channel"] = os.environ["LINE_HOME_CHANNEL"]
+        chat_id = os.environ["LINE_HOME_CHANNEL"]
+        seeded["home_channel"] = {"chat_id": chat_id, "name": "LINE Home"}
+    if os.getenv("LINE_WEBHOOK_PATH"):
+        seeded["webhook_path"] = os.environ["LINE_WEBHOOK_PATH"]
     return seeded or {}
 
 

@@ -42,6 +42,7 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from urllib.parse import urlparse
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
 # proxy, client construction, and response-shape normalizers all live in
@@ -106,6 +107,109 @@ from tools.url_safety import async_is_safe_url, normalize_url_for_request
 import sys
 
 logger = logging.getLogger(__name__)
+
+
+_X_STATUS_HOSTS = {
+    "x.com",
+    "www.x.com",
+    "twitter.com",
+    "www.twitter.com",
+    "mobile.twitter.com",
+}
+
+
+def _extract_x_status_id(url: str) -> Optional[str]:
+    """Return the status id for public X/Twitter status URLs."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if (parsed.netloc or "").lower() not in _X_STATUS_HOSTS:
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    try:
+        status_idx = parts.index("status")
+    except ValueError:
+        return None
+    if status_idx + 1 >= len(parts):
+        return None
+    status_id = parts[status_idx + 1]
+    return status_id if re.fullmatch(r"\d{5,}", status_id) else None
+
+
+def _fetch_fxtwitter_status(status_id: str) -> Dict[str, Any]:
+    api_url = f"https://api.fxtwitter.com/i/status/{status_id}"
+    with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+        response = client.get(api_url, headers={"User-Agent": "Hermes-Agent web_extract"})
+        response.raise_for_status()
+        return response.json()
+
+
+def _format_fxtwitter_result(url: str, status_id: str) -> Dict[str, Any]:
+    try:
+        payload = _fetch_fxtwitter_status(status_id)
+    except Exception as exc:
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "error": f"fxtwitter lookup failed: {exc}",
+        }
+
+    if payload.get("code") != 200 or not isinstance(payload.get("tweet"), dict):
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "error": payload.get("message") or "fxtwitter returned no tweet",
+        }
+
+    tweet = payload["tweet"]
+    author = tweet.get("author") if isinstance(tweet.get("author"), dict) else {}
+    card = tweet.get("card") if isinstance(tweet.get("card"), dict) else {}
+    media = tweet.get("media") if isinstance(tweet.get("media"), dict) else {}
+
+    lines = [
+        f"Author: {author.get('name') or ''} (@{author.get('screen_name') or ''})".strip(),
+        f"Tweet: {tweet.get('text') or ''}".strip(),
+    ]
+    if tweet.get("created_at"):
+        lines.append(f"Created: {tweet['created_at']}")
+    stats = []
+    for field in ("views", "likes", "retweets", "replies", "bookmarks", "quotes"):
+        if tweet.get(field) is not None:
+            stats.append(f"{field}: {tweet[field]}")
+    if stats:
+        lines.append("Stats: " + ", ".join(stats))
+    if card:
+        if card.get("url"):
+            lines.append(f"Card URL: {card['url']}")
+        if card.get("title"):
+            lines.append(f"Card title: {card['title']}")
+        if card.get("description"):
+            lines.append(f"Card description: {card['description']}")
+    if isinstance(tweet.get("quote"), dict):
+        quote = tweet["quote"]
+        quote_author = quote.get("author") if isinstance(quote.get("author"), dict) else {}
+        lines.append(
+            "Quote: "
+            f"{quote_author.get('name') or ''} (@{quote_author.get('screen_name') or ''}): "
+            f"{quote.get('text') or ''}"
+        )
+    media_items = media.get("all") if isinstance(media.get("all"), list) else []
+    if media_items:
+        lines.append(f"Media count: {len(media_items)}")
+
+    content = "\n".join(line for line in lines if line)
+    return {
+        "url": url,
+        "title": f"X post {status_id}",
+        "content": content,
+        "raw_content": content,
+        "error": None,
+    }
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
@@ -963,7 +1067,13 @@ async def web_extract_tool(
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
+        x_status_results: List[Dict[str, Any]] = []
         for url in normalized_urls:
+            status_id = _extract_x_status_id(url)
+            if status_id:
+                logger.info("Web extract using fxtwitter fallback: %s", url)
+                x_status_results.append(_format_fxtwitter_result(url, status_id))
+                continue
             if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",
@@ -1043,8 +1153,8 @@ async def web_extract_tool(
                 )
 
         # Merge any SSRF-blocked results back in
-        if ssrf_blocked:
-            results = ssrf_blocked + results
+        if ssrf_blocked or x_status_results:
+            results = ssrf_blocked + x_status_results + results
 
         response = {"results": results}
         

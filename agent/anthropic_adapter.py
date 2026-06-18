@@ -928,9 +928,10 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
+    # Try macOS Keychain first (covers Claude Code >=2.1.114). If that
+    # entry is stale, still check the file path before returning it.
     kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
+    if kc_creds and is_claude_code_token_valid(kc_creds):
         return kc_creds
 
     # Fall back to JSON file
@@ -950,6 +951,9 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                     }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+
+    if kc_creds:
+        return kc_creds
 
     return None
 

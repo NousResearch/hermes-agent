@@ -128,6 +128,37 @@ class TestReadClaudeCodeCredentialsPriority:
         assert creds["accessToken"] == "keychain-token"
         assert creds["source"] == "macos_keychain"
 
+    def test_stale_keychain_falls_back_to_json_file(self, tmp_path, monkeypatch):
+        json_cred_file = tmp_path / ".claude" / ".credentials.json"
+        json_cred_file.parent.mkdir(parents=True)
+        json_cred_file.write_text(json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "json-live-token",
+                "refreshToken": "json-refresh",
+                "expiresAt": 9999999999999,
+            }
+        }))
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps({
+                    "claudeAiOauth": {
+                        "accessToken": "keychain-stale-token",
+                        "refreshToken": "keychain-refresh",
+                        "expiresAt": 1,
+                    }
+                }),
+                stderr="",
+            )
+            creds = read_claude_code_credentials()
+
+        assert creds is not None
+        assert creds["accessToken"] == "json-live-token"
+        assert creds["source"] == "claude_code_credentials_file"
+
     def test_falls_back_to_json_when_keychain_returns_none(self, tmp_path, monkeypatch):
         """When Keychain has no entry, JSON file is used as fallback."""
         json_cred_file = tmp_path / ".claude" / ".credentials.json"

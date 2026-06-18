@@ -1142,6 +1142,12 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
     prompt = cron_hint + prompt
+    try:
+        from cron.date_tokens import expand_cron_date_tokens
+
+        prompt = expand_cron_date_tokens(prompt)
+    except Exception:
+        pass
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []

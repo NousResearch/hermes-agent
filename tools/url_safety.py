@@ -80,6 +80,52 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# IPv6 transition formats that tunnel a real IPv4 destination inside the v6
+# address. Without decoding them, an attacker can reach the metadata/private
+# ranges through a v6 literal the IP-class checks treat as an ordinary global
+# v6 address — e.g. ``2002:a9fe:a9fe::`` (6to4) or ``64:ff9b::169.254.169.254``
+# (NAT64) both carry 169.254.169.254 (SEC-4).
+_NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
+_6TO4_NETWORK = ipaddress.ip_network("2002::/16")
+
+
+def _embedded_ipv4(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address",
+) -> "ipaddress.IPv4Address | None":
+    """Return the IPv4 address tunnelled inside an IPv6 literal, or None.
+
+    Covers IPv4-mapped (``::ffff:x.x.x.x``), 6to4 (``2002::/16``, IPv4 in bits
+    16-48) and NAT64 (``64:ff9b::/96``, IPv4 in the low 32 bits). These formats
+    all let a v6 hostname/IP resolve to a real IPv4 destination, so the SSRF
+    checks must validate the embedded address, not the v6 wrapper.
+    """
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return None
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip in _NAT64_NETWORK:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if ip in _6TO4_NETWORK:
+        return ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)
+    return None
+
+
+def _is_always_blocked_ip(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address",
+) -> bool:
+    """True when ``ip`` — or the IPv4 it tunnels (mapped/6to4/NAT64) — is in the
+    non-negotiable cloud-metadata floor."""
+    candidates = [ip]
+    embedded = _embedded_ipv4(ip)
+    if embedded is not None:
+        candidates.append(embedded)
+    for candidate in candidates:
+        if candidate in _ALWAYS_BLOCKED_IPS or any(
+            candidate in net for net in _ALWAYS_BLOCKED_NETWORKS
+        ):
+            return True
+    return False
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -148,10 +194,11 @@ def _reset_allow_private_cache() -> None:
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
-    # IPv4-mapped IPv6 addresses (``::ffff:x.x.x.x``) should be checked
-    # by their embedded IPv4 address, not as IPv6
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        embedded_ip = ip.ipv4_mapped
+    # IPv6 literals that tunnel an IPv4 destination (``::ffff:x.x.x.x``,
+    # 6to4 ``2002::/16``, NAT64 ``64:ff9b::/96``) must be checked by their
+    # embedded IPv4 address, not as an ordinary global IPv6 address.
+    embedded_ip = _embedded_ipv4(ip)
+    if embedded_ip is not None:
         return (embedded_ip.is_private or embedded_ip.is_loopback or
                 embedded_ip.is_link_local or embedded_ip.is_reserved or
                 embedded_ip.is_multicast or embedded_ip.is_unspecified or
@@ -218,9 +265,7 @@ def is_always_blocked_url(url: str) -> bool:
             ip = None
 
         if ip is not None:
-            if ip in _ALWAYS_BLOCKED_IPS or any(
-                ip in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
+            if _is_always_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to cloud metadata address "
                     "(always-blocked floor): %s",
@@ -244,9 +289,7 @@ def is_always_blocked_url(url: str) -> bool:
                 resolved = ipaddress.ip_address(ip_str)
             except ValueError:
                 continue
-            if resolved in _ALWAYS_BLOCKED_IPS or any(
-                resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
+            if _is_always_blocked_ip(resolved):
                 logger.warning(
                     "Blocked request to cloud metadata address "
                     "(always-blocked floor): %s -> %s",
@@ -317,7 +360,7 @@ def is_safe_url(url: str) -> bool:
                 continue
 
             # Always block cloud metadata IPs and link-local, even with toggle on
-            if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
+            if _is_always_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to cloud metadata address: %s -> %s",
                     hostname, ip_str,

@@ -7,6 +7,8 @@ from tools.url_safety import (
     is_safe_url,
     is_always_blocked_url,
     _is_blocked_ip,
+    _embedded_ipv4,
+    _is_always_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
 )
@@ -549,3 +551,55 @@ class TestIPv4MappedIPv6SSRF:
             (10, 1, 6, "", ("::ffff:100.100.100.200", 0, 0, 0)),
         ]):
             assert is_safe_url("http://aliyun-metadata.internal/") is False
+
+
+class TestEmbeddedIPv4TransitionFormats:
+    """SEC-4: 6to4 (2002::/16) and NAT64 (64:ff9b::/96) tunnel a real IPv4
+    destination inside an IPv6 literal. The SSRF checks must decode and
+    validate the embedded address, not treat the wrapper as a global v6."""
+
+    @pytest.mark.parametrize("literal,embedded", [
+        ("2002:a9fe:a9fe::", "169.254.169.254"),          # 6to4 -> AWS/GCP metadata
+        ("64:ff9b::169.254.169.254", "169.254.169.254"),  # NAT64 -> metadata
+        ("2002:0a00:0001::", "10.0.0.1"),                  # 6to4 -> private
+        ("64:ff9b::127.0.0.1", "127.0.0.1"),               # NAT64 -> loopback
+        ("::ffff:10.0.0.1", "10.0.0.1"),                   # IPv4-mapped (existing)
+    ])
+    def test_decoder_extracts_embedded_ipv4(self, literal, embedded):
+        assert _embedded_ipv4(ipaddress.ip_address(literal)) == ipaddress.ip_address(embedded)
+
+    def test_genuine_global_ipv6_has_no_embedded_ipv4(self):
+        assert _embedded_ipv4(ipaddress.ip_address("2606:4700:4700::1111")) is None
+
+    @pytest.mark.parametrize("literal", [
+        "2002:a9fe:a9fe::",            # 6to4 -> 169.254.169.254
+        "64:ff9b::169.254.169.254",    # NAT64 -> 169.254.169.254
+    ])
+    def test_metadata_via_transition_format_always_blocked(self, literal):
+        assert _is_always_blocked_ip(ipaddress.ip_address(literal)) is True
+
+    @pytest.mark.parametrize("literal", [
+        "2002:0a00:0001::",     # 6to4 -> 10.0.0.1 (private)
+        "64:ff9b::127.0.0.1",   # NAT64 -> loopback
+    ])
+    def test_private_via_transition_format_blocked(self, literal):
+        assert _is_blocked_ip(ipaddress.ip_address(literal)) is True
+
+    def test_genuine_global_ipv6_not_blocked(self):
+        ip = ipaddress.ip_address("2606:4700:4700::1111")  # Cloudflare DNS
+        assert _is_blocked_ip(ip) is False
+        assert _is_always_blocked_ip(ip) is False
+
+    def test_is_safe_url_blocks_6to4_metadata_literal(self):
+        # Literal IPv6 URL — no DNS needed; the floor must catch the tunnel.
+        assert is_safe_url("http://[2002:a9fe:a9fe::]/latest/meta-data/") is False
+
+    def test_is_safe_url_blocks_nat64_metadata_literal(self):
+        assert is_safe_url("http://[64:ff9b::169.254.169.254]/") is False
+
+    def test_is_always_blocked_url_catches_resolved_nat64_metadata(self):
+        # Hostname that resolves to a NAT64-wrapped metadata IP.
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::169.254.169.254", 0, 0, 0)),
+        ]):
+            assert is_always_blocked_url("http://sneaky.example/") is True

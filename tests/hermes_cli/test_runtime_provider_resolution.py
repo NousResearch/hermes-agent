@@ -863,6 +863,135 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_named_custom_provider_uses_api_key_env_alias_from_providers_dict(monkeypatch):
+    """GH #44666: a providers: dict entry authenticating via the documented
+    `api_key_env` alias must resolve the key from env, not fall through to
+    `no-key-required`. The raw providers dict is read without the
+    config-level normalizer, so the alias has to be honored here too."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "litellm": {
+                    "base_url": "http://127.0.0.1:4000/v1",
+                    "api_key_env": "LITELLM_API_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:litellm")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://127.0.0.1:4000/v1"
+    assert resolved["api_key"] == "litellm-secret"
+
+
+def test_named_custom_provider_uses_camelcase_keyenv_from_providers_dict(monkeypatch):
+    """GH #44666 (follow-up): the raw providers: dict bypasses the config
+    normalizer's camelCase alias map, which maps both `keyEnv` and `apiKeyEnv`
+    to `key_env`. Runtime resolution must honor the camelCase `keyEnv` spelling
+    too, otherwise it falls through to `no-key-required`."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "litellm": {
+                    "base_url": "http://127.0.0.1:4000/v1",
+                    "keyEnv": "LITELLM_API_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:litellm")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "litellm-secret"
+
+
+def test_bare_custom_model_resolves_key_env_from_config(monkeypatch):
+    """GH #43586: a bare `model: { provider: custom, base_url, key_env }`
+    block (no custom_providers/providers entry) must resolve its key_env from
+    env instead of sending `no-key-required`."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MY_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "default": "zai.glm-5",
+                "provider": "custom",
+                "base_url": "https://my-gateway.example.com/v1",
+                "key_env": "MY_GATEWAY_TOKEN",
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://my-gateway.example.com/v1"
+    assert resolved["api_key"] == "gateway-secret"
+
+
+def test_bare_custom_model_resolves_api_key_env_via_direct_alias(monkeypatch):
+    """GH #43586: the direct-alias branch (explicit base_url propagated from a
+    model alias) must also honor the model block's key_env / api_key_env."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MY_GATEWAY_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "default": "zai.glm-5",
+                "provider": "custom",
+                "base_url": "https://my-gateway.example.com/v1",
+                "api_key_env": "MY_GATEWAY_TOKEN",
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="custom",
+        explicit_base_url="https://my-gateway.example.com/v1",
+    )
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "gateway-secret"
+    assert resolved["source"] == "direct-alias"
+
+
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
     """Named custom providers on one gateway must keep their own credentials and protocol."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

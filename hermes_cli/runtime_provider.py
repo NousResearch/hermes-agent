@@ -491,6 +491,31 @@ def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> No
             return
 
 
+def _resolve_entry_key_env(entry: Dict[str, Any]) -> str:
+    """Resolve a provider/model entry's API key from its ``key_env`` env-var
+    reference, reading ``os.environ`` *at request time*.
+
+    Accepts the canonical ``key_env`` plus the documented snake_case
+    ``api_key_env`` alias and the camelCase ``keyEnv`` / ``apiKeyEnv``
+    spellings, mirroring the alias map in
+    :func:`hermes_cli.config._normalize_custom_provider_entry` (canonical
+    snake_case keys win). Returns ``""`` when no env-var name is configured or
+    the named variable is unset/blank.
+
+    This closes the gap behind GH #44666 (``api_key_env`` ignored on a
+    ``providers:`` dict entry) and GH #43586 (``key_env``/``api_key_env`` on a
+    bare ``model: { provider: custom }`` block ignored): both paths used to
+    read only the literal ``api_key`` and fell through to ``no-key-required``.
+    """
+    env_name = ""
+    for field in ("key_env", "api_key_env", "keyEnv", "apiKeyEnv"):
+        candidate = str(entry.get(field, "") or "").strip()
+        if candidate:
+            env_name = candidate
+            break
+    return os.getenv(env_name, "").strip() if env_name else ""
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
@@ -540,9 +565,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
+            # Resolve the API key from the env var named by key_env /
+            # api_key_env. The raw providers: dict is read here without going
+            # through _normalize_custom_provider_entry, so the api_key_env
+            # alias was previously dropped (GH #44666) — honor it explicitly.
+            resolved_api_key = _resolve_entry_key_env(entry)
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
@@ -823,6 +850,10 @@ def _resolve_named_custom_runtime(
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
             (explicit_api_key or "").strip(),
+            # Bare `model: { provider: custom, base_url, key_env }` reaches this
+            # direct-alias branch without a custom_providers entry, so resolve
+            # the model block's own key_env / api_key_env from env (GH #43586).
+            _resolve_entry_key_env(_get_model_config()),
             # Gate env key fallbacks on authoritative hosts (#28660)
             (os.getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
             (os.getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
@@ -925,6 +956,10 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
+    # Resolve the model block's key_env / api_key_env from env at request time
+    # so a bare `provider: custom` config that authenticates via key_env isn't
+    # sent out as `no-key-required` (GH #43586).
+    cfg_key_env_value = _resolve_entry_key_env(model_cfg)
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,
@@ -1003,6 +1038,9 @@ def _resolve_openrouter_runtime(
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
+            # Honor the model block's key_env / api_key_env when targeting the
+            # configured endpoint (GH #43586) — same gate as cfg_api_key.
+            (cfg_key_env_value if use_config_base_url else ""),
             (os.getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (os.getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
             (os.getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),

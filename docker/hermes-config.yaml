@@ -1,0 +1,116 @@
+# Hermes-Agent — Deployment Config (Ollama + OpenSpace)
+# Auto-copied to data/config.yaml on first container start.
+# Edit data/config.yaml directly after first run.
+
+_config_version: 16
+
+# =============================================================================
+# Model — Ollama (local)
+# =============================================================================
+model:
+  provider: "custom"  # "ollama" is an alias for "custom" — use "custom" for auxiliary client compatibility
+  base_url: "http://host.docker.internal:11434/v1"
+  default: "gemma4:e4b-it-q8_0"
+  # Manually set context window (Ollama /v1/models may not report it)
+  context_length: 131072
+
+# =============================================================================
+# Terminal
+# =============================================================================
+terminal:
+  backend: "local"
+  cwd: "/opt/data/workspace"
+  timeout: 180
+  lifetime_seconds: 300
+
+# =============================================================================
+# Agent Behavior
+# =============================================================================
+agent:
+  max_turns: 60
+  verbose: false
+  # Local Ollama models do not support the reasoning_effort parameter
+  reasoning_effort: "none"
+
+# =============================================================================
+# Context Compression
+# =============================================================================
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+  # Use same Ollama model (no external provider needed)
+  summary_model: "gemma4:e4b-it-q8_0"
+  summary_provider: "main"
+
+# =============================================================================
+# Memory
+# =============================================================================
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  nudge_interval: 10
+  flush_min_turns: 6
+
+# =============================================================================
+# Session Reset
+# =============================================================================
+session_reset:
+  mode: both
+  idle_minutes: 1440
+  at_hour: 4
+
+# =============================================================================
+# Display
+# =============================================================================
+display:
+  tool_progress: all
+  streaming: true
+  background_process_notifications: result
+  skin: default
+  show_reasoning: false
+
+# =============================================================================
+# Gateway Platforms
+# =============================================================================
+platforms:
+
+  # OpenSpace agent access — OpenAI-compatible endpoint on :8789
+  # Connect any OpenAI-compatible frontend (OpenSpace, Open WebUI, LobeChat, etc.)
+  # at http://<host>:8789/v1
+  api_server:
+    enabled: true
+    extra:
+      host: "0.0.0.0"
+      port: 8789
+      # Hermes reports this as the model name in GET /v1/models
+      model_name: "hermes-agent"
+      # Allow calls from OpenSpace runtime (port 8788)
+      cors_origins: "http://localhost:8788,http://host.docker.internal:8788"
+      # Uncomment to require an API key for the agent access port
+      # key: "your-secret-key"
+
+  # Webhook platform — disabled by default in this OpenSpace/Ollama stack.
+  # Uncomment to enable a generic inbound webhook on :8644.
+  # webhook:
+  #   enabled: false
+  #   extra:
+  #     port: 8644
+
+# =============================================================================
+# Delegation (subagents)
+# =============================================================================
+delegation:
+  max_iterations: 50
+  default_toolsets: ["terminal", "file", "web"]
+  # Subagents inherit the Ollama endpoint from the parent
+
+# =============================================================================
+# Code Execution Sandbox
+# =============================================================================
+code_execution:
+  timeout: 300
+  max_tool_calls: 50

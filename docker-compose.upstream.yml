@@ -1,75 +1,46 @@
-# Hermes-Agent — Docker Compose (Ollama + PostgreSQL + OpenSpace)
-#
-# Default compose file for running the local stack against the published
+# Standalone compose file for running the local stack against the published
 # upstream Docker Hub Hermes image while keeping the local ./data env and config mounts.
 #
-# First-run setup:
-#   mkdir -p data
-#   cp docker/hermes-env.example data/.env
-#   # Edit data/.env if needed, then:
+# Routine refresh:
 #   docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 #
-# Services:
-#   hermes-web     — Hermes web UI on :9119
-#   hermes-gateway — Gateway: api_server :8789 (OpenSpace).
-#   postgres       — PostgreSQL :5432
-#
-# Both hermes services share the same ./data volume.
-# Bootstrap (config copy, skills sync) is idempotent — safe to run in parallel.
-#
-# OpenSpace connects to hermes via: http://localhost:8789/v1  (OpenAI-compatible)
-# Hermes web UI:                    http://localhost:9119
-# Interactive CLI (chat):           docker exec -it hermes-web hermes  (or hermes-gateway)
-#
-# Ports (host → container):
-#   9119 → 9119   Hermes Web UI
-#   8789 → 8789   OpenSpace agent access (api_server, OpenAI-compatible)
-#   5433 → 5432   PostgreSQL (host:5433 → container:5432)
+# Override HERMES_UPSTREAM_IMAGE if you want a different upstream tag:
+#   HERMES_UPSTREAM_IMAGE=docker.io/nousresearch/hermes-agent:v2026.4.23 \
+#     docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 
 x-hermes-common: &hermes-common
   image: ${HERMES_UPSTREAM_IMAGE:-docker.io/nousresearch/hermes-agent:latest}
   pull_policy: always
   restart: unless-stopped
   volumes:
-    # Runtime data (sessions, memories, skills, config) — persisted on host
     - ./data:/opt/data
-    # Deployment config template — auto-copied to data/config.yaml on first start
     - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
-    # Use the upstream image's baked-in entrypoint. Overlaying docker/entrypoint.sh
-    # from the fork can pin startup behavior and has caused drift on Windows checkouts.
+    # entrypoint.sh is NOT mounted here — the upstream image bakes in its own
+    # working entrypoint. Mounting a Windows-checked-out copy causes CRLF
+    # failures (tini: No such file or directory).
   environment:
-    # UID remapping — must match your host user to avoid permission issues
     - HERMES_UID=1000
     - HERMES_GID=1000
-    # Ollama does not require a real API key; any non-empty string satisfies the field
     - OPENAI_API_KEY=ollama
-    # Postgres DSN — available to memory plugins and skills
     - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
   env_file:
-    # User secrets — copy docker/hermes-env.example → data/.env and fill in
     - path: ./data/.env
       required: false
   extra_hosts:
-    # On Linux Docker, resolves host.docker.internal → host network
     - "host.docker.internal:host-gateway"
   depends_on:
     postgres:
       condition: service_healthy
 
 services:
-
   hermes-web:
     <<: *hermes-common
     container_name: hermes-web
-    # --insecure is required here because the upstream dashboard now guards 0.0.0.0 binds by default.
     command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
     environment:
-      # UID remapping — must match your host user to avoid permission issues
       - HERMES_UID=1000
       - HERMES_GID=1000
-      # Ollama does not require a real API key; any non-empty string satisfies the field
       - OPENAI_API_KEY=ollama
-      # Postgres DSN — available to memory plugins and skills
       - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
       - GATEWAY_HEALTH_URL=http://hermes-gateway:8789
       # Let the dashboard probe the separate gateway container instead of
@@ -84,30 +55,26 @@ services:
     ports:
       - "9119:9119"
     healthcheck:
-          test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:9119/api/status'); sys.exit(0 if r.status==200 else 1)"]
-          interval: 30s
-          timeout: 10s
-          retries: 3
-          start_period: 60s
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:9119/api/status'); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   hermes-gateway:
     <<: *hermes-common
     container_name: hermes-gateway
-    # api_server platform binds :8789 per docker/hermes-config.yaml
     command: ["gateway", "run"]
     ports:
-      - "8789:8789"     # OpenSpace agent access  (/v1 OpenAI-compatible)
+      - "8789:8789"
     environment:
       - HERMES_UID=1000
       - HERMES_GID=1000
       - OPENAI_API_KEY=ollama
       - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
-      # Allow OpenSpace runtime (port 8788) to call the agent API
       - API_SERVER_CORS_ORIGINS=http://localhost:8788,http://host.docker.internal:8788
-      # Required when binding api_server to 0.0.0.0 — used as Bearer token by OpenSpace
       - API_SERVER_KEY=${API_SERVER_KEY:-28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b216}
-      # Allow all incoming users on the gateway (no per-user allowlist needed for OpenSpace)
       - GATEWAY_ALLOW_ALL_USERS=true
-    # Wait for hermes-web's healthcheck so config bootstrap is complete before gateway reads it
     depends_on:
       postgres:
         condition: service_healthy

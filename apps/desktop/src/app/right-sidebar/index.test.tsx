@@ -1,11 +1,17 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesReadDirResult } from '@/global'
 import { getPaneStateSnapshot, setPaneOpen } from '@/store/panes'
 import { clearSessionPreviewRegistry } from '@/store/preview'
-import { $activeSessionId, $currentCwd } from '@/store/session'
+import { $activeSessionId, $connection, setCurrentCwd } from '@/store/session'
+
+import { resetProjectTreeState } from './files/use-project-tree'
 
 import { RightSidebarPane } from './index'
+
+const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
+const selectPaths = vi.fn()
 
 vi.mock('@/lib/local-preview', () => ({
   normalizeOrLocalPreviewTarget: vi.fn(async (path: string) => ({
@@ -18,19 +24,20 @@ vi.mock('@/lib/local-preview', () => ({
   }))
 }))
 
-vi.mock('./files/use-project-tree', () => ({
-  useProjectTree: () => ({
-    collapseAll: vi.fn(),
-    collapseNonce: 0,
-    data: [{ id: '/project/README.md', name: 'README.md', isDirectory: false }],
-    loadChildren: vi.fn(),
-    openState: {},
-    refreshRoot: vi.fn(),
-    rootError: null,
-    rootLoading: false,
-    setNodeOpen: vi.fn()
-  })
-}))
+function ok(entries: { name: string; path: string; isDirectory: boolean }[]): HermesReadDirResult {
+  return { entries }
+}
+
+function installBridge() {
+  ;(
+    window as unknown as {
+      hermesDesktop: {
+        readDir: typeof readDir
+        selectPaths: typeof selectPaths
+      }
+    }
+  ).hermesDesktop = { readDir, selectPaths }
+}
 
 class ResizeObserverMock {
   private callback: ResizeObserverCallback
@@ -47,7 +54,7 @@ class ResizeObserverMock {
   unobserve() {}
 }
 
-describe('RightSidebarPane preview actions', () => {
+describe('RightSidebarPane', () => {
   const originalResizeObserver = window.ResizeObserver
   const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect
 
@@ -64,25 +71,60 @@ describe('RightSidebarPane preview actions', () => {
       y: 0,
       toJSON: () => ({})
     }))
+    $connection.set(null)
     $activeSessionId.set('session-1')
-    $currentCwd.set('/project')
+    resetProjectTreeState()
+    setCurrentCwd('/repo')
     clearSessionPreviewRegistry()
     setPaneOpen('preview', false)
+    readDir.mockReset()
+    selectPaths.mockReset()
+    readDir.mockResolvedValue(ok([{ name: 'README.md', path: '/repo/README.md', isDirectory: false }]))
+    selectPaths.mockResolvedValue(['/repo-next'])
+    installBridge()
   })
 
   afterEach(() => {
     cleanup()
     window.ResizeObserver = originalResizeObserver
     Element.prototype.getBoundingClientRect = originalGetBoundingClientRect
+    $connection.set(null)
     $activeSessionId.set(null)
-    $currentCwd.set('')
+    setCurrentCwd('')
     clearSessionPreviewRegistry()
+    resetProjectTreeState()
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('refreshes the current tree without opening the folder picker', async () => {
+    const onChangeCwd = vi.fn()
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={onChangeCwd} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh tree' }).hasAttribute('disabled')).toBe(false))
+
+    readDir.mockClear()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh tree' }))
+
+    await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo'))
+    expect(selectPaths).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+
+    await waitFor(() =>
+      expect(selectPaths).toHaveBeenCalledWith({
+        defaultPath: '/repo',
+        directories: true,
+        multiple: false,
+        title: 'Change working directory'
+      })
+    )
+    await waitFor(() => expect(onChangeCwd).toHaveBeenCalledWith('/repo-next'))
   })
 
   it('opens the preview pane when a file is previewed from the file tree', async () => {
-    render(
-      <RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={vi.fn()} />
-    )
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={vi.fn()} />)
 
     fireEvent.doubleClick(await screen.findByText('README.md'))
 

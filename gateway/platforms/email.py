@@ -678,8 +678,13 @@ class EmailAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image URL as part of an email body."""
+        """Send an image URL as part of an email body.
+
+        ``metadata`` is accepted to honor the base-class contract; the
+        email body send doesn't use it.
+        """
         text = caption or ""
         text += f"\n\nImage: {image_url}"
         return await self.send(chat_id, text.strip(), reply_to)

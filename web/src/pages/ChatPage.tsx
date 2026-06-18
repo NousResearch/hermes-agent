@@ -26,7 +26,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -139,6 +139,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
+  // started a new session that ended the current PTY child), the PTY socket
+  // closes with a normal code. Before this fix the terminal just printed
+  // "[session ended]" and went dead — the only recovery was a full page
+  // refresh. `sessionEnded` flips on that clean close and renders an explicit
+  // "Start new session" affordance; clicking it bumps `reconnectNonce`, which
+  // is a dependency of the connect effect, so a fresh PTY spawns in place.
+  const [sessionEnded, setSessionEnded] = useState(false);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+  const reconnect = useCallback(() => {
+    setSessionEnded(false);
+    setBanner(null);
+    setReconnectNonce((n) => n + 1);
+  }, []);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -593,6 +607,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     ws.onopen = () => {
       setBanner(null);
+      setSessionEnded(false);
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
@@ -654,9 +669,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // Server already wrote an ANSI error frame.
         return;
       }
+      // Normal/clean exit: the agent process ended (e.g. the user typed
+      // `/exit`, or started a new session). NS-504: surface an explicit
+      // restart affordance instead of leaving a dead terminal that only a
+      // full page refresh could recover.
       term.write(
         `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
       );
+      setSessionEnded(true);
     };
 
     // Keystrokes → PTY.
@@ -724,7 +744,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile]);
+  }, [channel, resumeParam, scopedProfile, reconnectNonce]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -861,7 +881,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <ChatSidebar channel={channel} profile={scopedProfile} />
           </div>
         </div>
       </>,
@@ -894,6 +914,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
+
+          {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
+              Offer an in-place restart so the user never has to refresh the
+              whole page to get a working chat back. */}
+          {sessionEnded && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60 backdrop-blur-sm">
+              <div className="text-sm tracking-wide text-white/80">
+                Session ended.
+              </div>
+              <Button
+                onClick={reconnect}
+                prefix={<RotateCcw className="h-4 w-4" />}
+                aria-label="Start a new chat session"
+              >
+                Start new session
+              </Button>
+            </div>
+          )}
 
           <Button
             ghost
@@ -929,7 +967,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSidebar channel={channel} profile={scopedProfile} />
             </div>
           </div>
         )}

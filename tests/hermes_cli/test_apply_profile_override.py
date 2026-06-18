@@ -240,3 +240,86 @@ class TestApplyProfileOverrideHermesHomeGuard:
         assert result is not None
         assert result.endswith("coder")
         assert sys.argv == ["hermes", "--continue"]
+
+
+class TestSupervisedChildIgnoresStickyProfile:
+    """The reserved default gateway s6 slot must not follow active_profile.
+
+    Inside the Docker s6 image the ``gateway-default`` service slot runs a
+    bare ``hermes gateway run`` (no ``-p``) to mean "the root HERMES_HOME
+    profile". The run-script exports ``HERMES_S6_SUPERVISED_CHILD=1``.
+    Without a guard, ``_apply_profile_override`` would read the sticky
+    ``active_profile`` file (set by e.g. the dashboard profile switcher) and
+    redirect the reserved default gateway into that profile — producing a
+    duplicate gateway for the active profile and no real default gateway.
+    """
+
+    def test_supervised_child_does_not_follow_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """HERMES_S6_SUPERVISED_CHILD + active_profile=briefer must NOT redirect.
+
+        Reproduces the Docker/profile scoping bug: the supervised default
+        gateway is launched as bare ``hermes gateway run`` with
+        HERMES_HOME=/opt/data (the container root, whose parent is NOT
+        ``profiles``), and a sticky ``active_profile`` of another profile.
+        The reserved default slot must stay on the root profile.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Container root HERMES_HOME: parent dir is NOT "profiles", so the
+        # #22502 guard does not short-circuit — step 2 (active_profile) runs.
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "run"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(hermes_root), (
+            "Supervised default gateway must stay on the root profile, not be "
+            f"hijacked by active_profile; got {os.environ.get('HERMES_HOME')!r}"
+        )
+
+    def test_non_supervised_run_still_follows_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Without the sentinel, a normal `hermes gateway run` still honors
+        active_profile — the guard is scoped strictly to supervised children."""
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="briefer",
+            argv=["hermes", "gateway", "run"],
+        )
+
+        assert result is not None
+        assert result.endswith("briefer")
+
+    def test_supervised_named_profile_flag_still_wins(self, tmp_path, monkeypatch):
+        """A supervised named-profile slot passes ``-p <name>`` explicitly;
+        that must still resolve (the sentinel guard only skips the sticky
+        active_profile fallback, never an explicit flag)."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
+        monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        result = os.environ.get("HERMES_HOME")
+        assert result is not None
+        assert result.endswith("coder")
+

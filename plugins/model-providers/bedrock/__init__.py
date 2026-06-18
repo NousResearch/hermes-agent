@@ -11,6 +11,7 @@ class BedrockProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Bedrock model listing requires AWS SDK, not a REST call."""

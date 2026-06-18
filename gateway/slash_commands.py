@@ -394,20 +394,35 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
+        from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
+
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
 
         connected_platforms = [p.value for p in self.adapters.keys()]
 
-        # Check if there's an active agent
+        # Check if there's an active agent. Keep the sentinel distinct: a
+        # starting/pending run should not be treated as a fully usable agent for
+        # model/context display, but it still occupies the session slot.
         session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
+        agent = self._running_agents.get(session_key)
+        is_running = agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
         # Count pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
+        def _clean_str(value: Any) -> str:
+            return value.strip() if isinstance(value, str) and value.strip() else ""
+
+        def _int_value(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
         title = None
+        session_row: dict[str, Any] = {}
         # Pull token totals from the SQLite session DB rather than the
         # in-memory SessionStore.  The agent's per-turn token deltas are
         # persisted into sessions_db (run_agent.py), not into SessionEntry,
@@ -422,16 +437,91 @@ class GatewaySlashCommandsMixin:
                 title = None
             try:
                 row = self._session_db.get_session(session_entry.session_id)
-                if row:
+                if isinstance(row, dict):
+                    session_row = row
                     db_total_tokens = (
-                        (row.get("input_tokens") or 0)
-                        + (row.get("output_tokens") or 0)
-                        + (row.get("cache_read_tokens") or 0)
-                        + (row.get("cache_write_tokens") or 0)
-                        + (row.get("reasoning_tokens") or 0)
+                        _int_value(row.get("input_tokens"))
+                        + _int_value(row.get("output_tokens"))
+                        + _int_value(row.get("cache_read_tokens"))
+                        + _int_value(row.get("cache_write_tokens"))
+                        + _int_value(row.get("reasoning_tokens"))
                     )
             except Exception:
                 db_total_tokens = 0
+
+        # Resolve model/context for cockpit-style status. Prefer the live or
+        # cached agent because it carries the actual runtime route and context
+        # compressor. Fall back to persisted SessionDB metadata plus the
+        # SessionStore's last_prompt_tokens so /status remains useful between
+        # turns without making billing/account calls.
+        status_agent = agent if is_running else None
+        if status_agent is None:
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            cache = getattr(self, "_agent_cache", None)
+            if cache_lock is not None and cache is not None:
+                try:
+                    with cache_lock:
+                        cached = cache.get(session_key)
+                    if cached:
+                        status_agent = cached[0]
+                except Exception:
+                    status_agent = None
+
+        model_name = ""
+        provider_name = ""
+        base_url = ""
+        context_used = 0
+        context_total = 0
+        if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
+            model_name = _clean_str(getattr(status_agent, "model", ""))
+            provider_name = _clean_str(getattr(status_agent, "provider", ""))
+            base_url = _clean_str(getattr(status_agent, "base_url", ""))
+            ctx = getattr(status_agent, "context_compressor", None)
+            if ctx is not None:
+                context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
+                context_total = _int_value(getattr(ctx, "context_length", 0))
+
+        model_name = model_name or _clean_str(session_row.get("model"))
+        provider_name = provider_name or _clean_str(session_row.get("billing_provider"))
+        base_url = base_url or _clean_str(session_row.get("billing_base_url"))
+        context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+
+        user_config: dict[str, Any] = {}
+        if not model_name or not provider_name or not context_total:
+            try:
+                user_config = _load_gateway_config()
+            except Exception:
+                user_config = {}
+        if not model_name:
+            model_name = _resolve_gateway_model(user_config)
+        if not provider_name:
+            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+            if isinstance(model_cfg, dict):
+                provider_name = _clean_str(model_cfg.get("provider"))
+        if not context_total:
+            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+            configured_context = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
+            if isinstance(configured_context, int) and configured_context > 0:
+                context_total = configured_context
+
+        model_line = ""
+        if model_name:
+            if provider_name:
+                model_line = t("gateway.status.model_provider", model=model_name, provider=provider_name)
+            else:
+                model_line = t("gateway.status.model", model=model_name)
+
+        context_line = ""
+        if context_total:
+            pct = min(100, round((context_used / context_total) * 100)) if context_total else 0
+            context_line = t(
+                "gateway.status.context",
+                used=f"{context_used:,}",
+                total=f"{context_total:,}",
+                pct=f"{pct}",
+            )
+        elif context_used:
+            context_line = t("gateway.status.context_used", used=f"{context_used:,}")
 
         lines = [
             t("gateway.status.header"),
@@ -443,6 +533,12 @@ class GatewaySlashCommandsMixin:
         lines.extend([
             t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
+        ])
+        if model_line:
+            lines.append(model_line)
+        if context_line:
+            lines.append(context_line)
+        lines.extend([
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
             t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
@@ -2118,7 +2214,9 @@ class GatewaySlashCommandsMixin:
         stranded).
 
         ``diff`` output is truncated for chat bubbles — the full diff lives in
-        the CLI (``/skills diff <id>``) and the pending JSON file.
+        the pending JSON file under ``~/.hermes/pending/skills/``. (Note this is
+        the write-approval ``diff <id>``; the CLI also has an unrelated
+        ``hermes skills diff <name>`` that diffs a bundled skill vs stock.)
         """
         from gateway.run import _hermes_home
         from hermes_cli.write_approval_commands import handle_pending_subcommand
@@ -2156,12 +2254,14 @@ class GatewaySlashCommandsMixin:
                     "(Search/install are CLI-only.)")
 
         # Chat bubbles can't hold a full skill diff — truncate and point at
-        # the real review surfaces.
+        # the real review surface. (Note: `hermes skills diff <name>` is a
+        # *different* command — it diffs a bundled skill against its stock
+        # version — so we point at the pending JSON file, not that command.)
         if args and args[0].lower() == "diff" and len(out) > 3000:
             pending_id = args[1] if len(args) > 1 else "<id>"
             out = (out[:3000]
-                   + f"\n… (truncated — full diff: `/skills diff {pending_id}` "
-                     f"on the CLI, or ~/.hermes/pending/skills/{pending_id}.json)")
+                   + "\n… (truncated — full diff in "
+                     f"~/.hermes/pending/skills/{pending_id}.json)")
         return out
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
@@ -2488,14 +2588,29 @@ class GatewaySlashCommandsMixin:
                 # session_id for the continuation.  Write the compressed messages
                 # into the NEW session so the original history stays searchable.
                 new_session_id = tmp_agent.session_id
-                if new_session_id != session_entry.session_id:
+                rotated = new_session_id != session_entry.session_id
+                if rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
                     self._sync_telegram_topic_binding(
                         source, session_entry, reason="compress-command",
                     )
 
-                self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Only rewrite the transcript when rotation actually produced a
+                # NEW session id. If _compress_context could not rotate (e.g.
+                # _session_db unavailable, or the DB split raised), session_id
+                # is unchanged and rewrite_transcript() would DELETE the
+                # original messages and replace them with only the compressed
+                # summary — permanent data loss (#44794, #39704). In that case
+                # leave the original transcript intact.
+                if rotated:
+                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                else:
+                    logger.warning(
+                        "Manual /compress: session rotation did not occur "
+                        "(session_id unchanged) — preserving original transcript "
+                        "instead of overwriting it (#44794)."
+                    )
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
@@ -2844,6 +2959,52 @@ class GatewaySlashCommandsMixin:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions — list previous sessions for gateway chats."""
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        from hermes_cli.session_listing import (
+            format_gateway_session_listing,
+            parse_session_listing_args,
+            query_session_listing,
+        )
+
+        source = event.source
+        raw_args = event.get_command_args().strip()
+        try:
+            include_all, include_unnamed, target = parse_session_listing_args(raw_args)
+        except ValueError as exc:
+            return t("gateway.resume.parse_error", error=exc)
+
+        if target:
+            resume_event = dataclasses.replace(event, text=f"/resume {target}")
+            return await self._handle_resume_command(resume_event)
+
+        current_entry = self.session_store.get_or_create_session(source)
+        rows = query_session_listing(
+            self._session_db,
+            source=source.platform.value if source.platform else None,
+            current_session_id=current_entry.session_id,
+            include_all_sources=include_all,
+            include_unnamed=include_unnamed,
+            limit=10,
+            exclude_sources=["tool"],
+        )
+        if source.platform == Platform.MATRIX and not include_all:
+            rows = [
+                row for row in rows
+                if self._same_matrix_room(
+                    source, self._gateway_session_origin_for_id(str(row.get("id") or ""))
+                )
+            ]
+        return format_gateway_session_listing(
+            rows,
+            include_source=include_all,
+            title="Sessions" if include_unnamed else "Named Sessions",
+        )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.

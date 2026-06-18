@@ -431,6 +431,10 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      defaultsLabel: string
+      reasoning: string
+      reasoningOff: string
+      defaultsFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
       auxiliaryDesc: string
@@ -448,9 +452,13 @@ export interface Translations {
       collapse: string
       connectAnother: string
       otherProviders: string
+      disconnect: string
+      disconnectInTerminal: string
       removeConfirm: (provider: string) => string
-      removeExternal: (provider: string, command: string) => string
+      removeExternalGeneric: (provider: string) => string
       removeKeyManaged: (provider: string) => string
+      removeTerminalConfirm: (provider: string, command: string) => string
+      removeTerminalRunning: (provider: string) => string
       removedTitle: string
       removedMessage: (provider: string) => string
       failedRemove: (provider: string) => string
@@ -1142,8 +1150,6 @@ export interface Translations {
     unknown: string
     search: string
     noModels: string
-    persistGlobalSession: string
-    persistGlobal: string
     addProvider: string
     loadFailed: string
     noAuthenticatedProviders: string
@@ -1368,6 +1374,7 @@ export interface Translations {
       refresh: string
       moreActions: string
       branchNewChat: string
+      dismissError: string
       readAloudFailed: string
       preparingAudio: string
       stopReading: string
@@ -1475,6 +1482,9 @@ export interface Translations {
     regenerateFailed: string
     editFailed: string
     resumeFailed: string
+    resumeStrandedTitle: string
+    resumeStrandedBody: string
+    resumeRetry: string
     nothingToBranch: string
     branchNeedsChat: string
     sessionBusy: string

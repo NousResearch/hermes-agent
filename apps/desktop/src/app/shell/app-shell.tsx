@@ -85,6 +85,10 @@ export function AppShell({
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
   const isFullscreen = Boolean(connection?.isFullscreen) || viewportFullscreen
+  // Every secondary window (new-session scratch, subagent watch, cmd-click
+  // pop-out) is a compact side panel — none of them carry the full titlebar
+  // tool cluster. Gate on isSecondaryWindow, never the narrower new-session flag.
+  const hideTitlebarControls = isSecondaryWindow()
   const titlebarControls = titlebarControlsPosition(connection?.windowButtonPosition, isFullscreen)
   // Width Windows/Linux reserve for the OS-painted min/max/close overlay (zero
   // on macOS, where window controls sit on the left and are reported via
@@ -168,13 +172,15 @@ export function AppShell({
         } as CSSProperties
       }
     >
-      <TitlebarControls
-        browserFeedbackMinimized={browserFeedbackMinimized}
-        leftTools={leftTitlebarTools}
-        onOpenBrowserFeedback={onOpenBrowserFeedback}
-        onOpenSettings={onOpenSettings}
-        tools={titlebarTools}
-      />
+      {!hideTitlebarControls && (
+        <TitlebarControls
+          browserFeedbackMinimized={browserFeedbackMinimized}
+          leftTools={leftTitlebarTools}
+          onOpenBrowserFeedback={onOpenBrowserFeedback}
+          onOpenSettings={onOpenSettings}
+          tools={titlebarTools}
+        />
+      )}
 
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">
         <PaneShell className="min-h-0 flex-1">
@@ -195,7 +201,9 @@ export function AppShell({
             the panes' z-20 resize handles, keeping every pane resizable. */}
         {mainOverlays}
 
-        <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
+        {/* The compact pop-out drops the statusbar — it's a scratch window, not
+            the full shell. */}
+        {!isSecondaryWindow() && <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />}
       </main>
 
       {overlays}

@@ -211,10 +211,39 @@ class TestTeamsRequirements:
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
         assert check_requirements() is True
 
-    def test_alias_matches(self, monkeypatch):
+    def test_check_teams_requirements_shortcircuits_when_present(self, monkeypatch):
+        # When the SDK + aiohttp are already importable, the active lazy-
+        # installer returns True immediately without attempting an install.
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
+        called = {"ensure_and_bind": 0}
+
+        def _fake_ensure_and_bind(*_args, **_kwargs):
+            called["ensure_and_bind"] += 1
+            return True
+
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+        )
         assert check_teams_requirements() is True
+        assert called["ensure_and_bind"] == 0
+
+    def test_check_teams_requirements_lazy_installs_when_missing(self, monkeypatch):
+        # When deps are missing, the active installer delegates to
+        # ensure_and_bind("platform.teams", ...) — parity with Slack/Discord.
+        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", False)
+        seen = {}
+
+        def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
+            seen["feature"] = feature
+            return True
+
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+        )
+        assert check_teams_requirements() is True
+        assert seen["feature"] == "platform.teams"
 
     def test_validate_config_with_env(self, monkeypatch):
         monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
@@ -371,6 +400,13 @@ class TestTeamsConnect:
     @pytest.mark.anyio
     async def test_connect_fails_without_sdk(self, monkeypatch):
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
+        # Simulate the SDK being unavailable AND not installable (offline /
+        # locked-down env): the lazy-installer can't rebind the globals, so
+        # TEAMS_SDK_AVAILABLE stays False and connect() must fail.
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure_and_bind",
+            lambda *_a, **_k: False,
+        )
         adapter = TeamsAdapter(_make_config(
             client_id="id", client_secret="secret", tenant_id="tenant",
         ))

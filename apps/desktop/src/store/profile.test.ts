@@ -1,15 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { atom } from 'nanostores'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
+
+const ensureGatewayForProfile = vi.fn(async () => undefined)
+const $gateway = atom<unknown>({ id: 'live-socket' })
+
+vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForProfile }))
 vi.mock('@/hermes', () => ({
-  getProfiles: vi.fn(),
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
 }))
-
-vi.mock('@/lib/query-client', () => ({
-  queryClient: { invalidateQueries: vi.fn() }
-}))
-
+vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/lib/storage', () => ({
   arraysEqual: (a: unknown[], b: unknown[]) => a.length === b.length && a.every((value, index) => value === b[index]),
   persistBoolean: vi.fn(),
@@ -20,56 +22,116 @@ vi.mock('@/lib/storage', () => ({
   storedStringRecord: vi.fn(() => ({}))
 }))
 
-const ensureGatewayForProfile = vi.fn(async () => undefined)
+const {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profileOrder,
+  $profileScope,
+  $profiles,
+  $selectedProfileScope,
+  $showAllProfiles,
+  cycleProfile,
+  ensureGatewayProfile,
+  selectProfile
+} = await import('./profile')
+const { $connection } = await import('./session')
 
-vi.mock('@/store/gateway', () => ({
-  $gateway: atom({}),
-  ensureGatewayForProfile
-}))
+const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
+  ({ baseUrl: 'https://hermes-roy.tail.ts.net', mode: 'remote', profile: 'vps-remote', ...over }) as HermesConnection
+
+const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
+  ({ baseUrl: '', mode: 'local', profile: 'default', ...over }) as HermesConnection
+
+const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
+
+beforeEach(() => {
+  getConnection.mockReset()
+  ensureGatewayForProfile.mockClear()
+  $gateway.set({ id: 'live-socket' })
+  $profiles.set([
+    { name: 'default', path: '', is_default: true } as never,
+    { name: 'google_search_agent', path: '', is_default: false } as never,
+    { name: 'investment_agent', path: '', is_default: false } as never
+  ])
+  $profileOrder.set([])
+  $activeGatewayProfile.set('default')
+  $selectedProfileScope.set('default')
+  $showAllProfiles.set(false)
+  $newChatProfile.set(null)
+  $connection.set(localConn())
+  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  $connection.set(null)
+})
 
 describe('profile sidebar scope', () => {
-  beforeEach(async () => {
-    ensureGatewayForProfile.mockClear()
-    const profile = await import('./profile')
-    profile.$profiles.set([
-      { name: 'default', path: '', is_default: true } as never,
-      { name: 'google_search_agent', path: '', is_default: false } as never,
-      { name: 'investment_agent', path: '', is_default: false } as never
-    ])
-    profile.$profileOrder.set([])
-    profile.$activeGatewayProfile.set('default')
-    profile.$selectedProfileScope.set('default')
-    profile.$showAllProfiles.set(false)
-    profile.$newChatProfile.set(null)
-  })
-
   it('shows the selected profile history immediately without waiting for gateway connection', async () => {
-    const profile = await import('./profile')
+    selectProfile('google_search_agent')
 
-    profile.selectProfile('google_search_agent')
-
-    expect(profile.$profileScope.get()).toBe('google_search_agent')
-    expect(profile.$newChatProfile.get()).toBe('google_search_agent')
+    expect($profileScope.get()).toBe('google_search_agent')
+    expect($newChatProfile.get()).toBe('google_search_agent')
     expect(ensureGatewayForProfile).toHaveBeenCalledWith('google_search_agent')
   })
 
   it('does not let live gateway changes overwrite the browsed sidebar profile', async () => {
-    const profile = await import('./profile')
+    selectProfile('investment_agent')
+    $activeGatewayProfile.set('default')
 
-    profile.selectProfile('investment_agent')
-    profile.$activeGatewayProfile.set('default')
-
-    expect(profile.$profileScope.get()).toBe('investment_agent')
+    expect($profileScope.get()).toBe('investment_agent')
   })
 
   it('cycles from the selected sidebar profile, not the live gateway profile', async () => {
-    const profile = await import('./profile')
+    $activeGatewayProfile.set('default')
+    $selectedProfileScope.set('google_search_agent')
 
-    profile.$activeGatewayProfile.set('default')
-    profile.$selectedProfileScope.set('google_search_agent')
+    cycleProfile(1)
 
-    profile.cycleProfile(1)
+    expect($profileScope.get()).toBe('investment_agent')
+  })
+})
 
-    expect(profile.$profileScope.get()).toBe('investment_agent')
+describe('ensureGatewayProfile → $connection sync (#46651)', () => {
+  it('refreshes $connection to the remote descriptor when activating a remote pool profile', async () => {
+    getConnection.mockResolvedValue(remoteConn())
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect(getConnection).toHaveBeenCalledWith('vps-remote')
+    expect($connection.get()?.mode).toBe('remote')
+    expect($connection.get()?.profile).toBe('vps-remote')
+  })
+
+  it('resyncs $connection back to local when returning to the default profile', async () => {
+    $activeGatewayProfile.set('vps-remote')
+    $connection.set(remoteConn())
+    getConnection.mockResolvedValue(localConn())
+
+    await ensureGatewayProfile('default')
+
+    expect(getConnection).toHaveBeenCalledWith('default')
+    expect($connection.get()?.mode).toBe('local')
+  })
+
+  it('leaves the prior connection intact when the descriptor fetch fails', async () => {
+    getConnection.mockRejectedValue(new Error('backend unreachable'))
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect($connection.get()?.mode).toBe('local')
+  })
+
+  it('does not churn $connection when the target is already the active profile', async () => {
+    $activeGatewayProfile.set('vps-remote')
+    $connection.set(remoteConn())
+
+    await ensureGatewayProfile('vps-remote')
+
+    expect(getConnection).not.toHaveBeenCalled()
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect($connection.get()?.mode).toBe('remote')
   })
 })

@@ -88,7 +88,10 @@ def test_store_project_credentials_round_trip(
     sid, secret = photon_auth.load_project_credentials()
     assert sid == "sp-123"
     assert secret == "secret-key"
-    assert photon_auth.load_dashboard_project_id() == "dash-456"
+    # Post-unification the management id resolves to the Spectrum id, not the
+    # stored dashboard id — so a pre-backfill diverged install (whose old
+    # dashboard id was rewritten and now 404s) still reaches the live row.
+    assert photon_auth.load_dashboard_project_id() == "sp-123"
 
 
 def test_store_project_credentials_writes_env(tmp_hermes_home: Path) -> None:
@@ -284,7 +287,7 @@ def test_find_project_by_name_case_insensitive(monkeypatch: pytest.MonkeyPatch) 
     assert proj is not None and proj["id"] == "p2"
 
 
-def test_create_project_sends_spectrum_true(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_project_omits_spectrum_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: Dict[str, Any] = {}
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
@@ -296,7 +299,9 @@ def test_create_project_sends_spectrum_true(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     data = photon_auth.create_project("tok", name="Hermes Agent")
     assert data["id"] == "new-proj"
-    assert captured["body"]["spectrum"] is True
+    # Spectrum is always provisioned at create-time; the field was dropped
+    # from the API schema, so we must not send it.
+    assert "spectrum" not in captured["body"]
     assert captured["body"]["name"] == "Hermes Agent"
     assert captured["headers"]["Authorization"] == "Bearer tok"
     assert captured["url"].endswith("/api/projects")
@@ -309,46 +314,6 @@ def test_create_project_raises_without_id(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     with pytest.raises(RuntimeError, match="project id"):
         photon_auth.create_project("tok")
-
-
-def test_ensure_spectrum_enabled_toggles_when_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    get_calls = {"n": 0}
-    posted = {"toggle": False}
-
-    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        get_calls["n"] += 1
-        if get_calls["n"] == 1:
-            return _FakeResponse(json_body={"id": "p", "spectrum": False, "spectrumProjectId": None})
-        return _FakeResponse(json_body={"id": "p", "spectrum": True, "spectrumProjectId": "sp-1"})
-
-    def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
-        if url.endswith("/spectrum/toggle"):
-            posted["toggle"] = True
-        return _FakeResponse(json_body={"success": True})
-
-    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
-    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
-    proj = photon_auth.ensure_spectrum_enabled("tok", "p")
-    assert posted["toggle"] is True
-    assert proj["spectrumProjectId"] == "sp-1"
-
-
-def test_ensure_spectrum_enabled_skips_toggle_when_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    posted = {"toggle": False}
-
-    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body={"id": "p", "spectrum": True, "spectrumProjectId": "sp-1"})
-
-    def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
-        if url.endswith("/spectrum/toggle"):
-            posted["toggle"] = True
-        return _FakeResponse(json_body={"success": True})
-
-    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
-    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
-    proj = photon_auth.ensure_spectrum_enabled("tok", "p")
-    assert posted["toggle"] is False
-    assert proj["spectrumProjectId"] == "sp-1"
 
 
 def test_regenerate_project_secret(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -498,8 +463,8 @@ def test_credential_summary_no_secret_leak(
     assert "secret-bbbb" not in blob
     assert summary["device_token"].startswith("✓")
     assert summary["project_key"].startswith("✓")
-    assert summary["spectrum_project_id"] == "sp-uuid"
-    assert summary["dashboard_project_id"] == "dash-uuid"
+    # Unified id: dashboard id == Spectrum id, surfaced as one project id.
+    assert summary["project_id"] == "sp-uuid"
     assert summary["phone_number"].startswith("✗ missing")
     assert summary["assigned_phone_number"].startswith("✗ missing")
 

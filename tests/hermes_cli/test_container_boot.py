@@ -708,3 +708,144 @@ def test_profiles_default_subdir_is_skipped_with_warning(
     assert any(
         "profiles/default/" in record.message for record in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Dashboard-container role detection (skip reconcile on the dashboard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "container_argv",
+    [
+        # Bare subcommand (docker run ... dashboard ...).
+        ("dashboard",),
+        ("dashboard", "--host", "127.0.0.1", "--no-open"),
+        # Through s6 /init + the main-wrapper that re-execs `hermes`.
+        ("/init", "/opt/hermes/docker/main-wrapper.sh", "dashboard"),
+        (
+            "/init",
+            "/opt/hermes/docker/main-wrapper.sh",
+            "dashboard",
+            "--host",
+            "127.0.0.1",
+            "--no-open",
+        ),
+        # Wrapper that kept the explicit `hermes` argv0.
+        ("/init", "/opt/hermes/docker/main-wrapper.sh", "hermes", "dashboard"),
+    ],
+)
+def test_is_dashboard_container_true_for_dashboard_argv(
+    container_argv: tuple[str, ...],
+) -> None:
+    """A dashboard command is detected across every wrapper prefix shape."""
+    from hermes_cli.container_boot import _is_dashboard_container
+
+    assert _is_dashboard_container(container_argv) is True
+
+
+@pytest.mark.parametrize(
+    "container_argv",
+    [
+        (),  # empty (/proc/1/cmdline unreadable) — not the dashboard
+        ("gateway", "run"),
+        ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run"),
+        ("/init", "/opt/hermes/docker/main-wrapper.sh", "hermes", "gateway", "run"),
+        ("chat",),
+        # A profile literally named "dashboard" must NOT match — the token
+        # we key on is the SUBCOMMAND, and `gateway run -p dashboard` is a
+        # gateway container.
+        ("gateway", "run", "-p", "dashboard"),
+    ],
+)
+def test_is_dashboard_container_false_for_non_dashboard_argv(
+    container_argv: tuple[str, ...],
+) -> None:
+    """Gateway / other commands (and empty argv) are not the dashboard."""
+    from hermes_cli.container_boot import _is_dashboard_container
+
+    assert _is_dashboard_container(container_argv) is False
+
+
+def test_main_skips_reconcile_in_dashboard_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """main() must NOT reconcile when PID 1 argv is the dashboard command.
+
+    A running profile is seeded so that, if reconcile ran, it would create
+    the gateway-<profile> slot. Asserting the slot is absent proves the
+    skip is real, not just a log line.
+    """
+    from hermes_cli import container_boot
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "worker", state="running")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
+    monkeypatch.setattr(
+        container_boot,
+        "_read_container_argv",
+        lambda: ("/init", "/opt/hermes/docker/main-wrapper.sh", "dashboard"),
+    )
+
+    rc = container_boot.main()
+
+    assert rc == 0
+    assert not (scandir / "gateway-worker").exists()
+    assert not (scandir / "gateway-default").exists()
+    assert "skipping (dashboard container" in capsys.readouterr().out
+
+
+def test_main_reconciles_in_gateway_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """main() reconciles normally when PID 1 argv is the gateway command —
+    the dashboard skip is scoped strictly to the dashboard role."""
+    from hermes_cli import container_boot
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "worker", state="running")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
+    monkeypatch.setattr(
+        container_boot,
+        "_read_container_argv",
+        lambda: ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run"),
+    )
+
+    rc = container_boot.main()
+
+    assert rc == 0
+    # The worker slot was registered + started (prior_state running).
+    assert (scandir / "gateway-worker").exists()
+    assert not (scandir / "gateway-worker" / "down").exists()
+
+
+def test_main_ignores_removed_skip_reconcile_env_var(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The legacy HERMES_SKIP_PROFILE_RECONCILE flag is gone: setting it on a
+    gateway container must NOT suppress reconciliation. Role is decided by
+    PID 1 argv alone, so a stale flag in someone's manifest is inert."""
+    from hermes_cli import container_boot
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "worker", state="running")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
+    monkeypatch.setenv("HERMES_SKIP_PROFILE_RECONCILE", "1")
+    monkeypatch.setattr(
+        container_boot,
+        "_read_container_argv",
+        lambda: ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run"),
+    )
+
+    rc = container_boot.main()
+
+    assert rc == 0
+    # Reconcile still ran despite the stale env var.
+    assert (scandir / "gateway-worker").exists()

@@ -40,6 +40,14 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# WhatsApp JIDs: group chats (<digits>@g.us), individual users
+# (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
+# newsletter chats. These are explicit native targets the bridge accepts
+# verbatim — they must NOT fall through to home-channel resolution.
+_WHATSAPP_JID_RE = re.compile(
+    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
+    re.IGNORECASE,
+)
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -508,6 +516,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name == "email":
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
+            return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
+        # are explicit targets — pass through verbatim. E.164 '+' numbers fall
+        # through to the _PHONE_PLATFORMS handler below.
+        if _WHATSAPP_JID_RE.fullmatch(target_ref):
             return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
@@ -1885,13 +1899,16 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import tool_error
 
-registry.register(
-    name="send_message",
-    toolset="messaging",
-    schema=SEND_MESSAGE_SCHEMA,
-    handler=send_message_tool,
-    check_fn=_check_send_message,
-    emoji="📨",
-)
+# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable
+# model tool. The agent should not decide on its own to fire off cross-platform
+# messages or reactions. The send engine in this module (``_send_to_platform``,
+# ``_send_via_adapter``, ``_parse_target_ref``, the per-platform ``_send_*``
+# helpers) remains the shared transport used by:
+#   - cron delivery (cron/scheduler.py)
+#   - the ``hermes send`` CLI command (hermes_cli/send_cmd.py)
+#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
+#   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
+# Those callers import the helpers directly; none of them need the registry
+# entry.

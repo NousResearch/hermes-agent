@@ -22,6 +22,10 @@ import {
 } from '@/store/profile'
 import {
   $currentCwd,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
   $messages,
   $sessions,
   $yoloActive,
@@ -41,6 +45,8 @@ import {
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
+  setResumeExhaustedSessionId,
+  setResumeFailedSessionId,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
@@ -49,6 +55,7 @@ import {
   setYoloActive,
   workspaceCwdForNewSession
 } from '@/store/session'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { reportBackendContract } from '@/store/updates'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
@@ -413,13 +420,13 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // New chats start in the configured default project dir when set,
-      // otherwise the sticky last-used workspace (PR #37586).
-      setCurrentModel('')
-      setCurrentProvider('')
-      setCurrentReasoningEffort('')
+      // The composer's model/effort/fast is sticky UI state (persisted in
+      // localStorage) — a new chat FOLLOWS your last pick instead of snapping
+      // back to the profile default, so we deliberately don't reset it here. The
+      // profile default still owns first-run seeding and profile switches (see
+      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
+      // is cleared.
       setCurrentServiceTier('')
-      setCurrentFastMode(false)
       setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
@@ -449,11 +456,23 @@ export function useSessionActions({
         const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
         await ensureGatewayProfile(newChatProfile)
         const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
+        // The composer's model/effort/fast is sticky UI state ($currentModel,
+        // $currentProvider, $currentReasoningEffort, $currentFastMode). Ship it
+        // with every session.create so the new chat opens on whatever the picker
+        // shows — applied as per-session overrides, never written to the profile
+        // default (that lives in Settings → Model).
+        const uiModel = $currentModel.get().trim()
+        const uiProvider = $currentProvider.get().trim()
+        const uiEffort = $currentReasoningEffort.get().trim()
+        const uiFast = $currentFastMode.get()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
-          ...(newChatProfile ? { profile: newChatProfile } : {})
+          ...(newChatProfile ? { profile: newChatProfile } : {}),
+          ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
+          ...(uiEffort ? { reasoning_effort: uiEffort } : {}),
+          ...(uiFast ? { fast: true } : {})
         })
 
         const stored = created.stored_session_id ?? null
@@ -479,6 +498,9 @@ export function useSessionActions({
           // server later returns its own preview/title and supersedes this.
           upsertOptimisticSession(created, stored, null, preview?.trim() || null)
           navigate(sessionRoute(stored), { replace: true })
+          // Other windows (e.g. the main window when this is the pop-out) can't
+          // see this session until they re-pull the shared list.
+          broadcastSessionsChanged()
         }
 
         setFreshDraftReady(false)
@@ -572,6 +594,15 @@ export function useSessionActions({
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
       applyStoredSessionPreviewRuntimeInfo(storedForProfile)
+      // Optimistically clear any prior resume-failure latch for this session:
+      // we're attempting a fresh resume, so the self-heal in use-route-resume
+      // must not keep treating it as stranded. It's re-armed below only if THIS
+      // attempt fails terminally (RPC reject + REST fallback failure).
+      setResumeFailedSessionId(current => (current === storedSessionId ? null : current))
+      // Also clear the exhausted-latch: a fresh attempt (manual Retry, reconnect,
+      // reselect) gives the bounded auto-retry counter a clean cycle, so the
+      // chat view drops the error state and shows the loader again.
+      setResumeExhaustedSessionId(current => (current === storedSessionId ? null : current))
 
       if (storedForProfile) {
         setCurrentUsage(current => ({
@@ -778,13 +809,41 @@ export function useSessionActions({
           return
         }
 
-        const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+        // The gateway resume RPC failed. Try the REST transcript as a fallback
+        // so the window at least shows history. CRITICAL: this fallback must be
+        // wrapped in its own try — if it ALSO throws (wedged/unreachable backend,
+        // the common case when resume failed in the first place), an unguarded
+        // throw here skips setMessages AND leaves activeSessionId null with an
+        // empty transcript. That is the exact state the thread loader latches on
+        // forever (messagesEmpty && !activeSessionId) with no recovery path —
+        // the "open in new window stays stuck loading, even after a nap" bug.
+        try {
+          const fallback = await getSessionMessages(storedSessionId, sessionProfile)
 
-        if (!isCurrentResume()) {
-          return
+          if (!isCurrentResume()) {
+            return
+          }
+
+          setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+        } catch {
+          // Fallback also failed: nothing to paint. Leave whatever messages are
+          // already shown and fall through to arm the resume-failure latch so
+          // use-route-resume re-attempts the resume on the next render / window
+          // focus / gateway reconnect instead of stranding the loader.
         }
 
-        setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+        if (isCurrentResume() && $messages.get().length === 0) {
+          // Arm the self-heal ONLY when the window is still empty: the gateway
+          // resume rejected AND the REST fallback failed to paint a transcript.
+          // That is the exact stranded state the loader latches on
+          // (messagesEmpty && !activeSessionId), and matches $resumeFailedSessionId's
+          // documented contract. If the REST fallback DID paint history, the
+          // window is readable — arming here would needlessly auto-retry and,
+          // once retries exhaust, blank that visible transcript behind the
+          // exhausted-state error overlay (a regression vs. plain fallback success).
+          setResumeFailedSessionId(storedSessionId)
+        }
+
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {

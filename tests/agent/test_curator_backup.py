@@ -592,3 +592,62 @@ def test_restore_cron_skill_links_standalone(backup_env):
     assert report["restored"][0]["to"]["skills"] == ["narrow-a", "narrow-b"]
     assert len(report["skipped_missing"]) == 1
     assert report["skipped_missing"][0]["job_id"] == "job-gone"
+
+
+# ---------------------------------------------------------------------------
+# Rollback must not let the pre-rollback safety snapshot prune the target
+# (regression: restoring the oldest snapshot at the keep limit destroyed it)
+# ---------------------------------------------------------------------------
+
+def _three_ordered_snapshots(cb, skills, monkeypatch):
+    """Create snapshots 05-01 / 05-02 / 05-03 capturing growing trees, with
+    keep=3 so the backups dir is exactly at the retention limit. 05-01 holds
+    only 'pristine'; later snapshots add 'extra2' and 'extra3'. Leaves
+    _utc_id patched to a newest id so the rollback safety snapshot sorts
+    last. Returns the oldest snapshot id."""
+    monkeypatch.setattr(cb, "get_keep", lambda: 3)
+    plan = [
+        ("2026-05-01T00-00-00Z", ["pristine"]),
+        ("2026-05-02T00-00-00Z", ["pristine", "extra2"]),
+        ("2026-05-03T00-00-00Z", ["pristine", "extra2", "extra3"]),
+    ]
+    for snap_id, names in plan:
+        for n in names:
+            _write_skill(skills, n)
+        monkeypatch.setattr(cb, "_utc_id", lambda now=None, _i=snap_id: _i)
+        assert cb.snapshot_skills(reason=snap_id) is not None
+    monkeypatch.setattr(cb, "_utc_id", lambda now=None: "2026-05-09T00-00-00Z")
+    return "2026-05-01T00-00-00Z"
+
+
+def test_rollback_to_oldest_snapshot_at_keep_limit_succeeds(backup_env, monkeypatch):
+    """Restoring the oldest snapshot when the backups dir is at the keep limit
+    must succeed: the pre-rollback safety snapshot's prune step must not evict
+    the snapshot being restored."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    oldest = _three_ordered_snapshots(cb, skills, monkeypatch)
+
+    ok, msg, _ = cb.rollback(backup_id=oldest)
+
+    assert ok is True, f"rollback to oldest snapshot should succeed, got: {msg}"
+    # 05-01 only contained 'pristine'; a real restore reflects exactly that.
+    assert (skills / "pristine" / "SKILL.md").exists()
+    assert not (skills / "extra3").exists(), "tree was not restored to the oldest snapshot"
+
+
+def test_rollback_does_not_delete_the_snapshot_it_restores_from(backup_env, monkeypatch):
+    """The snapshot a rollback restores from must still exist afterwards — the
+    safety snapshot's prune must never delete the target."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    oldest = _three_ordered_snapshots(cb, skills, monkeypatch)
+    target_dir = skills / ".curator_backups" / oldest
+    assert target_dir.exists(), "precondition: target snapshot exists before rollback"
+
+    cb.rollback(backup_id=oldest)
+
+    assert target_dir.exists(), (
+        "the pre-rollback safety snapshot pruned away the snapshot being "
+        "restored — the oldest restore point is destroyed by restoring to it"
+    )

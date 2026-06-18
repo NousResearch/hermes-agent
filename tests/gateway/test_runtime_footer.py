@@ -70,6 +70,30 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
 
 
+def test_format_footer_provider_field():
+    out = format_runtime_footer(
+        model="gpt-5.5",
+        provider="openai-codex",
+        context_tokens=0,
+        context_length=100_000,
+        cwd="",
+        fields=("provider",),
+    )
+    assert out == "openai-codex"
+
+
+def test_format_footer_provider_model_field():
+    out = format_runtime_footer(
+        model="gpt-5.5",
+        provider="openai-codex",
+        context_tokens=20_000,
+        context_length=100_000,
+        cwd="",
+        fields=("provider_model", "context_pct"),
+    )
+    assert out == "openai-codex/gpt-5.5 · 20%"
+
+
 def test_format_footer_skips_missing_context_length():
     out = format_runtime_footer(
         model="openai/gpt-5.4",
@@ -229,6 +253,19 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+def test_build_footer_provider_model_when_configured():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["provider_model", "context_pct"]}}},
+        platform_key="telegram",
+        model="gpt-5.5",
+        provider="openai-codex",
+        context_tokens=10_000,
+        context_length=100_000,
+        cwd="",
+    )
+    assert out == "openai-codex/gpt-5.5 · 10%"
 
 
 def test_build_footer_per_platform_off_suppresses():

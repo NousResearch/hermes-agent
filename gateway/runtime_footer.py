@@ -1,6 +1,6 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
+Renders a compact footer showing runtime state (model/provider, context %, cwd) and
 appends it to the FINAL message of an agent turn when enabled.  Off by default
 to keep replies minimal.
 
@@ -10,6 +10,7 @@ Config (``~/.hermes/config.yaml``)::
       runtime_footer:
         enabled: true                       # off by default
         fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        # use provider_model to show e.g. openai-codex/gpt-5.5
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -93,6 +94,7 @@ def format_runtime_footer(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    provider: Optional[str] = None,
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
@@ -103,7 +105,20 @@ def format_runtime_footer(
     """
     parts: list[str] = []
     for field in fields:
-        if field == "model":
+        if field == "provider_model":
+            m = _model_short(model)
+            p = (provider or "").strip()
+            if p and m:
+                parts.append(f"{p}/{m}")
+            elif m:
+                parts.append(m)
+            elif p:
+                parts.append(p)
+        elif field == "provider":
+            p = (provider or "").strip()
+            if p:
+                parts.append(p)
+        elif field == "model":
             m = _model_short(model)
             if m:
                 parts.append(m)
@@ -129,6 +144,7 @@ def build_footer_line(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    provider: Optional[str] = None,
     cwd: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
@@ -142,6 +158,7 @@ def build_footer_line(
         return ""
     return format_runtime_footer(
         model=model,
+        provider=provider,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,

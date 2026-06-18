@@ -284,6 +284,15 @@ def _cwd_marker(session_id: str) -> str:
 # BaseEnvironment
 # ---------------------------------------------------------------------------
 
+# grep pattern to filter secret-bearing env vars from shell snapshots.
+# Matches env var names containing API_KEY, TOKEN, SECRET, PASSWORD, etc.
+# Used to prevent leaking .env secrets to snapshot files on disk (issue #48441).
+_SECRET_ENV_GREP = (
+    "grep -vE 'declare -x [A-Z0-9_]*"
+    "(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+    "[A-Z0-9_]*='"
+)
+
 
 class BaseEnvironment(ABC):
     """Common interface and unified execution flow for all Hermes backends.
@@ -370,7 +379,7 @@ class BaseEnvironment(ABC):
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
+            f"export -p | {_SECRET_ENV_GREP} > {_quoted_snap}\n"
             f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
             f"alias -p >> {_quoted_snap}\n"
             f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
@@ -449,9 +458,10 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls).
+        # Filter secret-bearing vars to avoid leaking credentials to disk (#48441).
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(f"export -p | {_SECRET_ENV_GREP} > {_quoted_snap} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
         parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")

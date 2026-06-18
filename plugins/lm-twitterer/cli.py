@@ -131,6 +131,8 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     post.add_argument("--live", action="store_true", help="Publish instead of dry-run")
     post.add_argument("--provider", default=None, help="Hermes provider override for generation")
     post.add_argument("--model", default=None, help="Hermes model override for generation")
+    post.add_argument("--text", default=None, help="Exact post text; skips generation")
+    post.add_argument("--media", action="append", default=[], help="Local media path to attach; repeatable")
 
     replies = subs.add_parser("replies", help="Check mentions and generate replies")
     replies.add_argument("--live", action="store_true", help="Publish instead of dry-run")
@@ -218,6 +220,8 @@ def lm_twitterer_command(args: argparse.Namespace) -> int:
                 dry_run=not bool(getattr(args, "live", False)),
                 provider=getattr(args, "provider", None),
                 model=getattr(args, "model", None),
+                text=getattr(args, "text", None),
+                media_paths=getattr(args, "media", []) or [],
             )
         )
     if command == "replies":

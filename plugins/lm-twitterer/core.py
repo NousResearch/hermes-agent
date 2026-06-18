@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,6 +92,15 @@ POST_SCHEMA = {
             "model": {
                 "type": "string",
                 "description": "Optional Hermes model override for generation, e.g. auto-free.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Optional exact post text. When set, skips generation and posts/dry-runs this text.",
+            },
+            "media_paths": {
+                "type": "array",
+                "description": "Optional local media paths to attach. Uses xurl media upload under lm-twitterer.",
+                "items": {"type": "string"},
             },
         },
     },
@@ -807,7 +817,13 @@ def _tweet_url_from_result(result: Any) -> str:
     return ""
 
 
-def _safe_post_create_tweet(post_api: Any, *, tweet_text: str, in_reply_to_tweet_id: str | None = None) -> Any:
+def _safe_post_create_tweet(
+    post_api: Any,
+    *,
+    tweet_text: str,
+    in_reply_to_tweet_id: str | None = None,
+    media_ids: Iterable[str] | None = None,
+) -> Any:
     """Create a tweet while stripping template quote/attachment defaults.
 
     twitter-openapi-python ships example/default CreateTweet variables containing
@@ -830,6 +846,18 @@ def _safe_post_create_tweet(post_api: Any, *, tweet_text: str, in_reply_to_tweet
             in_reply_to_tweet_id=str(in_reply_to_tweet_id),
             exclude_reply_user_ids=[],
         )
+    media_id_list = [str(media_id) for media_id in (media_ids or []) if str(media_id).strip()]
+    if media_id_list:
+        variables.media = twitter.PostCreateTweetRequestVariablesMedia(
+            media_entities=[
+                twitter.PostCreateTweetRequestVariablesMediaMediaEntitiesInner(
+                    media_id=media_id,
+                    tagged_users=[],
+                )
+                for media_id in media_id_list
+            ],
+            possibly_sensitive=False,
+        )
     request = twitter.PostCreateTweetRequest(
         queryId=flags["queryId"],
         variables=variables,
@@ -842,12 +870,138 @@ def _safe_post_create_tweet(post_api: Any, *, tweet_text: str, in_reply_to_tweet
     )
 
 
+def _coerce_media_paths(media_paths: Iterable[str | os.PathLike[str]] | None) -> list[Path]:
+    paths: list[Path] = []
+    for raw in media_paths or []:
+        path = Path(raw).expanduser()
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(f"media file not found: {path}")
+        paths.append(path)
+    return paths
+
+
+def _twitter_web_headers(cfg: Settings, *, content_type: str | None = None) -> dict[str, str]:
+    from twitter_openapi_python import TwitterOpenapiPython
+
+    api_key = TwitterOpenapiPython().kebab_to_upper_camel(TwitterOpenapiPython().get_header()[0])
+    headers = {
+        "authorization": api_key.get("Authorization", ""),
+        "cookie": f"auth_token={cfg.auth_token}; ct0={cfg.ct0}",
+        "x-csrf-token": cfg.ct0,
+        "x-twitter-active-user": "yes",
+        "x-twitter-auth-type": "OAuth2Session",
+        "x-twitter-client-language": str(api_key.get("ClientLanguage") or "en"),
+        "user-agent": str(api_key.get("UserAgent") or "Mozilla/5.0"),
+        "accept": "*/*",
+        "referer": "https://x.com/home",
+    }
+    if content_type:
+        headers["content-type"] = content_type
+    return headers
+
+
+def _upload_request(cfg: Settings, params: dict[str, str], *, data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    query = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        f"https://upload.x.com/i/media/upload.json?{query}",
+        data=data or b"",
+        headers={**_twitter_web_headers(cfg), **(headers or {})},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=900) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"media upload HTTP {exc.code}: {body}") from exc
+    return json.loads(body or "{}")
+
+
+def _multipart_upload_body(fields: dict[str, str], file_field: str, path: Path) -> tuple[bytes, str]:
+    boundary = f"----hermes-lm-twitterer-{int(time.time() * 1000)}"
+    crlf = bytes((13, 10))
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend(
+            [
+                f"--{boundary}".encode() + crlf,
+                f'Content-Disposition: form-data; name="{name}"'.encode() + crlf + crlf,
+                str(value).encode(),
+                crlf,
+            ]
+        )
+    chunks.extend(
+        [
+            f"--{boundary}".encode() + crlf,
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{path.name}"'.encode() + crlf,
+            b"Content-Type: application/octet-stream" + crlf + crlf,
+            path.read_bytes(),
+            crlf,
+            f"--{boundary}--".encode() + crlf,
+        ]
+    )
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def _media_type_for_path(path: Path) -> tuple[str, str]:
+    suffix = path.suffix.lower()
+    if suffix == ".mp4":
+        return "video/mp4", "tweet_video"
+    if suffix == ".png":
+        return "image/png", "tweet_image"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg", "tweet_image"
+    if suffix == ".gif":
+        return "image/gif", "tweet_gif"
+    raise ValueError(f"unsupported media type: {path.suffix}")
+
+
+def _upload_media_with_cookies(cfg: Settings, path: Path) -> str:
+    import requests
+    import tweepy
+    from tweepy_authlib import CookieSessionUserHandler
+
+    _, media_category = _media_type_for_path(path)
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("auth_token", cfg.auth_token, domain=".x.com")
+    jar.set("ct0", cfg.ct0, domain=".x.com")
+    auth = CookieSessionUserHandler(cookies=jar, screen_name=cfg.bot_screen_name or None)
+    api = tweepy.API(auth)
+    media = api.media_upload(str(path), chunked=True, media_category=media_category)
+    media_id = str(getattr(media, "media_id_string", "") or getattr(media, "media_id", ""))
+    if not media_id:
+        raise RuntimeError(f"media upload did not return media_id for {path}")
+    return media_id
+
+
+def _post_with_cookie_media(cfg: Settings, post_api: Any, tweet_text: str, media_paths: list[Path]) -> tuple[str, list[str]]:
+    media_ids = [_upload_media_with_cookies(cfg, path) for path in media_paths]
+    created = _safe_post_create_tweet(post_api, tweet_text=tweet_text, media_ids=media_ids)
+    return _tweet_url_from_result(created), media_ids
+
+
+def _find_recent_tweet_url_by_text(client: Any, cfg: Settings, tweet_text: str) -> str:
+    try:
+        user = client.get_user_api().get_user_by_screen_name(screen_name=cfg.bot_screen_name)
+        user_id = str(user.data.user.rest_id)
+        response = client.get_tweet_api().get_user_tweets(user_id=user_id, count=20)
+        needle = tweet_text[:80]
+        for tweet_id, item in _flatten_tweet_items(response.data.data).items():
+            if needle and needle in _tweet_text(item):
+                return f"https://x.com/i/web/status/{tweet_id}"
+    except Exception:
+        pass
+    return ""
+
+
 def post(
     topic: str = "",
     *,
     dry_run: bool = True,
     provider: str | None = None,
     model: str | None = None,
+    text: str | None = None,
+    media_paths: Iterable[str | os.PathLike[str]] | None = None,
     cfg: Settings | None = None,
 ) -> dict[str, Any]:
     cfg = settings_with_overrides(provider=provider, model=model, cfg=cfg)
@@ -855,27 +1009,49 @@ def post(
     topic_error = validate_public_topic(topic)
     if topic_error:
         return {"ok": False, "error": topic_error}
-    text = generate_post_text(topic, cfg)
+    media: list[Path]
+    try:
+        media = _coerce_media_paths(media_paths)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    tweet_text = (text or "").strip() or generate_post_text(topic, cfg)
     result: dict[str, Any] = {
         "ok": True,
         "dry_run": bool(dry_run),
-        "tweet_text": text,
-        "chars": len(text),
-        "generation_provider": cfg.provider or "active Hermes default",
-        "generation_model": cfg.model or "active Hermes default",
+        "tweet_text": tweet_text,
+        "chars": len(tweet_text),
+        "generation_provider": "explicit text" if (text or "").strip() else (cfg.provider or "active Hermes default"),
+        "generation_model": "explicit text" if (text or "").strip() else (cfg.model or "active Hermes default"),
     }
+    if media:
+        result["media_paths"] = [str(path) for path in media]
     if dry_run:
         result["message"] = "generated only; not posted"
         _append_log({"action": "post", **result}, cfg)
-        _remember_generated_post(text, cfg, dry_run=True, topic=topic)
+        _remember_generated_post(tweet_text, cfg, dry_run=True, topic=topic)
+        return result
+    if media:
+        try:
+            client = _twitter_client(cfg)
+            post_api = client.get_post_api()
+            url, media_ids = _post_with_cookie_media(cfg, post_api, tweet_text, media)
+            if not url:
+                url = _find_recent_tweet_url_by_text(client, cfg, tweet_text)
+        except Exception as exc:
+            result.update({"ok": False, "posted": False, "error": str(exc)})
+            _append_log({"action": "post", **result}, cfg)
+            return result
+        result.update({"posted": True, "url": url, "media_ids": media_ids})
+        _append_log({"action": "post", **result}, cfg)
+        _remember_generated_post(tweet_text, cfg, dry_run=False, topic=topic)
         return result
     client = _twitter_client(cfg)
     post_api = client.get_post_api()
-    created = _safe_post_create_tweet(post_api, tweet_text=text)
+    created = _safe_post_create_tweet(post_api, tweet_text=tweet_text)
     url = _tweet_url_from_result(created)
     result.update({"posted": True, "url": url})
     _append_log({"action": "post", **result}, cfg)
-    _remember_generated_post(text, cfg, dry_run=False, topic=topic)
+    _remember_generated_post(tweet_text, cfg, dry_run=False, topic=topic)
     return result
 
 
@@ -1167,12 +1343,17 @@ def status() -> dict[str, Any]:
 
 def handle_post(args: dict[str, Any], **_: Any) -> str:
     dry_run = bool(args.get("dry_run", True))
+    raw_media_paths = args.get("media_paths") or []
+    if isinstance(raw_media_paths, str):
+        raw_media_paths = [raw_media_paths]
     return _json(
         post(
             str(args.get("topic") or ""),
             dry_run=dry_run,
             provider=str(args.get("provider") or "") or None,
             model=str(args.get("model") or "") or None,
+            text=str(args.get("text") or "") or None,
+            media_paths=list(raw_media_paths),
         )
     )
 

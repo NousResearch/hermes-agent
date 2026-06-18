@@ -84,9 +84,14 @@ hermes lm-twitterer post "Hermes skill curation tips" --live
 
 # Pin provider/model for this run
 hermes lm-twitterer post "release notes" --provider opencode-zen --model auto-free --live
+
+# Publish reviewed text without generation, optionally with local media
+hermes lm-twitterer post --text "Reviewed release note" --media output\daily_posts\clip.mp4 --live
 ```
 
 - **Empty topic** → `LM_TWITTERER_DEFAULT_TOPIC` from `.env`.
+- **Explicit text:** `--text` skips generation and uses the reviewed text as the post body.
+- **Media:** repeat `--media <path>` to attach local images, GIFs, or videos through cookie-backed X media upload.
 - **Gateway:** `/lm-twitterer post [topic...] [--live]`
 
 ### Topic safety (`validate_public_topic`)
@@ -174,7 +179,7 @@ hermes lm-twitterer auth-edge-direct --screen-name NAME
 hermes lm-twitterer import-edge-cookies [--profile "Profile 1"]
 hermes lm-twitterer install-deps [--browser] --yes
 hermes lm-twitterer trust-llm-overrides --provider P --model M
-hermes lm-twitterer post [topic...] [--live] [--provider P] [--model M]
+hermes lm-twitterer post [topic...] [--live] [--provider P] [--model M] [--text TEXT] [--media PATH]
 hermes lm-twitterer replies [--live] [--count N] [--provider P] [--model M]
 hermes lm-twitterer mentions [--count N]
 hermes lm-twitterer whitelist list|add|remove|import-mentioned-followers

@@ -350,6 +350,125 @@ def test_post_rejects_secret_like_topic_without_calling_llm(tmp_path, monkeypatc
     assert "secret leak" in result["error"]
 
 
+def test_safe_post_create_tweet_attaches_media_ids(monkeypatch):
+    plugin = load_plugin()
+    core = plugin.core
+    captured = {}
+
+    twitter_module = types.ModuleType("twitter_openapi_python_generated")
+
+    class Variables:
+        def __init__(self):
+            self.tweet_text = ""
+            self.attachment_url = None
+            self.reply = None
+            self.media = None
+
+        @classmethod
+        def from_dict(cls, data):
+            item = cls()
+            item.media = data.get("media")
+            return item
+
+    class Features:
+        @classmethod
+        def from_dict(cls, data):
+            return cls()
+
+    class MediaEntity:
+        def __init__(self, *, media_id, tagged_users):
+            self.media_id = media_id
+            self.tagged_users = tagged_users
+
+    class Media:
+        def __init__(self, *, media_entities, possibly_sensitive):
+            self.media_entities = media_entities
+            self.possibly_sensitive = possibly_sensitive
+
+    class Request:
+        def __init__(self, *, queryId, variables, features):
+            self.queryId = queryId
+            self.variables = variables
+            self.features = features
+
+    twitter_module.PostCreateTweetRequestVariables = Variables
+    twitter_module.PostCreateTweetRequestFeatures = Features
+    twitter_module.PostCreateTweetRequestVariablesMedia = Media
+    twitter_module.PostCreateTweetRequestVariablesMediaMediaEntitiesInner = MediaEntity
+    twitter_module.PostCreateTweetRequest = Request
+
+    utils_module = types.ModuleType("twitter_openapi_python.utils")
+    utils_module.non_nullable = lambda value: value
+    utils_api_module = types.ModuleType("twitter_openapi_python.utils.api")
+    utils_api_module.get_headers = lambda flags, ct: {"ct0": ct}
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python_generated", twitter_module)
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python.utils.api", utils_api_module)
+
+    class Api:
+        def post_create_tweet(self, **kwargs):
+            captured.update(kwargs)
+            return {"ok": True}
+
+    class PostApi:
+        ct = "csrf-token"
+        api = Api()
+        flag = {"CreateTweet": {"queryId": "qid", "variables": {"media": {}}, "features": {}}}
+
+    core._safe_post_create_tweet(PostApi(), tweet_text="with media", media_ids=["123", "456"])
+
+    media = captured["post_create_tweet_request"].variables.media
+    assert media.possibly_sensitive is False
+    assert [entity.media_id for entity in media.media_entities] == ["123", "456"]
+    assert all(entity.tagged_users == [] for entity in media.media_entities)
+
+
+def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, monkeypatch):
+    plugin = load_plugin()
+    core = plugin.core
+    cfg = make_settings(core, tmp_path)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"fake-mp4")
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("LLM should not run when explicit text is supplied")
+
+    class Created:
+        class data:
+            class data:
+                class create_tweet:
+                    class tweet_results:
+                        class result:
+                            rest_id = "999"
+
+    class PostApi:
+        pass
+
+    class Client:
+        def get_post_api(self):
+            return PostApi()
+
+    uploaded = []
+
+    monkeypatch.setattr(core, "_llm_generate", _boom)
+    monkeypatch.setattr(core, "_twitter_client", lambda cfg: Client())
+    monkeypatch.setattr(core, "_upload_media_with_cookies", lambda cfg, path: uploaded.append(path.name) or "12345")
+    monkeypatch.setattr(core, "_safe_post_create_tweet", lambda post_api, *, tweet_text, media_ids=None, **kwargs: Created())
+
+    result = core.post(
+        "",
+        text="VRChat morning note はくあ #hermesagent",
+        media_paths=[str(media)],
+        dry_run=False,
+        cfg=cfg,
+    )
+
+    assert result["ok"] is True
+    assert result["posted"] is True
+    assert result["url"] == "https://x.com/i/web/status/999"
+    assert result["media_ids"] == ["12345"]
+    assert uploaded == ["clip.mp4"]
+
+
 def test_dry_run_post_is_written_to_ebbinghaus_memory_db(tmp_path):
     plugin = load_plugin()
     core = plugin.core

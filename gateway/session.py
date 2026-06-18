@@ -92,6 +92,11 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
+    # Profile this inbound message is routed to in a multiplexing gateway
+    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
+    # None => the gateway's active/default profile. Drives both session-key
+    # namespacing and the per-turn config/credential scope.
+    profile: Optional[str] = None
     
     @property
     def description(self) -> str:
@@ -135,6 +140,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.profile:
+            d["profile"] = self.profile
         return d
 
     @classmethod
@@ -153,6 +160,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            profile=data.get("profile"),
         )
     
 
@@ -802,18 +810,19 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
-    def _resolve_profile_for_key(self) -> Optional[str]:
+    def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
 
-        Phase 0: when ``multiplex_profiles`` is disabled (default), returns
-        ``None`` so keys stay in the legacy ``agent:main`` namespace —
-        byte-identical to before. When enabled, returns the active profile name
-        so this store's keys are namespaced to it. Per-source profile
-        attribution (one store serving many profiles) arrives in a later phase;
-        until then the active profile is the correct namespace.
+        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
+        keys stay in the legacy ``agent:main`` namespace — byte-identical to
+        before. When enabled, prefers the profile the inbound source was routed
+        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
+        per-credential adapter), falling back to the active profile name.
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return None
+        if source is not None and source.profile:
+            return source.profile
         try:
             from hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"
@@ -826,7 +835,7 @@ class SessionStore:
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-            profile=self._resolve_profile_for_key(),
+            profile=self._resolve_profile_for_key(source),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:

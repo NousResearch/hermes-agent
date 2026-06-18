@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import {
+  getProfiles,
+  getSessionMessages,
+  listAllProfileSessions,
+  listSessions
+} from './hermes'
+import { refreshActiveProfile } from './store/profile'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -42,6 +48,42 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent&profile=all',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('uses a longer timeout for profile listing during desktop startup', async () => {
+    api.mockResolvedValue({ profiles: [] })
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('uses a longer timeout for active profile refresh during desktop startup', async () => {
+    api
+      .mockResolvedValueOnce({ current: 'default' })
+      .mockResolvedValueOnce({ profiles: [] })
+
+    await refreshActiveProfile()
+
+    expect(api).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        path: '/api/profiles/active',
+        timeoutMs: 60_000
+      })
+    )
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        path: '/api/profiles',
         timeoutMs: 60_000
       })
     )

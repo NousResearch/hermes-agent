@@ -47,6 +47,7 @@ import type {
   ToolsetInfo
 } from '@/types/hermes'
 
+export const STARTUP_PROFILE_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
@@ -702,7 +703,8 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 
 export function getProfiles(): Promise<ProfilesResponse> {
   return window.hermesDesktop.api<ProfilesResponse>({
-    path: '/api/profiles'
+    path: '/api/profiles',
+    timeoutMs: STARTUP_PROFILE_REQUEST_TIMEOUT_MS
   })
 }
 

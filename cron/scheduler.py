@@ -42,6 +42,9 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
+# Gate chain — pre-flight checks for cron jobs
+from cron.cron_gates import check_job_gates
+
 logger = logging.getLogger(__name__)
 
 
@@ -2046,6 +2049,25 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            # ── Gate chain: pre-flight checks before running the agent ──────
+            gate_ok, gate_reason = check_job_gates(job)
+            if not gate_ok:
+                job_id = job.get("id", "?")
+                job_name = job.get("name", "?")
+                logger.info(
+                    "Job '%s' (%s): gate blocked — %s",
+                    job_id, job_name, gate_reason,
+                )
+                _silent_doc = (
+                    "# Cron Job: " + str(job_name) + "\n\n"
+                    "**Job ID:** " + str(job_id) + "\n"
+                    "**Run Time:** " + _hermes_now().strftime("%Y-%m-%d %H:%M:%S") + "\n\n"
+                    "Gate blocked: " + gate_reason + "\n"
+                )
+                save_job_output(job["id"], _silent_doc)
+                if verbose:
+                    logger.info("Job '%s': gate blocked — %s", job_id, gate_reason)
+                return True
             try:
                 success, output, final_response, error = run_job(job)
 

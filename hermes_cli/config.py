@@ -1206,14 +1206,21 @@ DEFAULT_CONFIG = {
     # - weight:          how strongly frecency boosts a match, on the picker's
     #                    0-100 static-score scale (CLI). Higher = frecency wins
     #                    ties more decisively.
-    # - max_total:       aging cap. When the summed frecency weight across all
-    #                    tracked files exceeds this, all weights are scaled down
-    #                    and files below 1 are forgotten — bounds the store.
+    # - max_entries:     hard cap on how many paths are tracked (the primary
+    #                    memory bound). When exceeded, the lowest-frecency
+    #                    entries are forgotten until the count is back at the
+    #                    cap — frequent/recent files are kept. At 4000 the
+    #                    on-disk + in-memory store stays well under a couple MB.
+    # - max_total:       secondary cap on summed weight. If a few very-hot files
+    #                    push the total over this, all weights are rescaled down
+    #                    proportionally (never dropped) — keeps weights from
+    #                    growing without limit while never wiping the store.
     "picker": {
         "frecency": {
             "enabled": True,
             "half_life_days": 1,
             "weight": 40,
+            "max_entries": 4000,
             "max_total": 10000,
         },
     },

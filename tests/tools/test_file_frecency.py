@@ -41,6 +41,7 @@ def _enable_frecency():
         "enabled": True,
         "half_life_days": 1.0,
         "weight": 40.0,
+        "max_entries": 100000,  # high so per-test small-N cases never trip aging
         "max_total": 10000.0,
     }
     ff._config_loaded = True
@@ -145,8 +146,8 @@ def test_half_life_decay(tmp_path):
 
 def test_disabled_is_noop(tmp_path):
     """When disabled, record() writes nothing and score() returns 0."""
-    ff._config_cached = {"enabled": False, "half_life_days": 1.0,
-                         "weight": 40.0, "max_total": 10000.0}
+    ff._config_cached = {"enabled": False, "half_life_days": 1.0, "weight": 40.0,
+                         "max_entries": 100000, "max_total": 10000.0}
     ff._config_loaded = True
     p = str(tmp_path / "x.py")
     open(p, "w").close()
@@ -155,19 +156,58 @@ def test_disabled_is_noop(tmp_path):
     assert ff.load_store() == {}
 
 
-def test_aging_caps_total(tmp_path):
-    """Once summed weight exceeds max_total, aging scales it back under the cap."""
-    ff._config_cached = {"enabled": True, "half_life_days": 1.0,
-                         "weight": 40.0, "max_total": 50.0}
+def test_weight_cap_rescales_without_dropping(tmp_path):
+    """The weight cap rescales summed weight under max_total but never drops
+    entries (so a flood can't collapse the store to empty)."""
+    ff._config_cached = {"enabled": True, "half_life_days": 1.0, "weight": 40.0,
+                         "max_entries": 100000, "max_total": 50.0}
     ff._config_loaded = True
     now = 1_000_000.0
-    # Hammer many distinct files at the same instant so no decay masks the cap.
     for i in range(200):
         p = str(tmp_path / f"f{i}.py")
         open(p, "w").close()
         ff.record(p, now=now)
-    total = sum(v["w"] for v in ff.load_store().values())
-    assert total <= 50.0
+    store = ff.load_store()
+    assert len(store) == 200  # nothing dropped — under the count cap
+    assert sum(v["w"] for v in store.values()) <= 50.0 + 1e-6  # weight rescaled
+
+
+def test_count_cap_is_hard_bound_no_cliff():
+    """The count cap keeps exactly max_entries even under a uniform flood that
+    the old scale-then-threshold aging would have wiped to zero."""
+    now = 1_000_000.0
+    lam = _lam(1.0)
+    data = {f"/p/{i:07d}.py": {"w": 1.0, "t": now} for i in range(200_000)}
+    ff._age(data, max_entries=4000, max_total=10000.0, now=now, lam=lam)
+    assert len(data) == 4000  # not 0 — no cliff
+
+
+def test_count_cap_evicts_lowest_frecency():
+    """When over the count cap, the lowest-frecency entries are dropped and the
+    frequent/recent ones are kept."""
+    now = 1_000_000.0
+    lam = _lam(1.0)
+    data = {}
+    for i in range(4000):  # hot: high weight, recent
+        data[f"/hot/{i}.py"] = {"w": 10.0, "t": now - 3600}
+    for i in range(4000):  # cold: low weight, old
+        data[f"/cold/{i}.py"] = {"w": 1.0, "t": now - 30 * SECONDS_PER_DAY}
+    ff._age(data, max_entries=4000, max_total=1e9, now=now, lam=lam)
+    assert len(data) == 4000
+    assert all(k.startswith("/hot/") for k in data)  # cold ones evicted
+
+
+def test_aging_caps_total(tmp_path):
+    """End-to-end: with a small count cap, the live store never exceeds it."""
+    ff._config_cached = {"enabled": True, "half_life_days": 1.0, "weight": 40.0,
+                         "max_entries": 50, "max_total": 1e9}
+    ff._config_loaded = True
+    now = 1_000_000.0
+    for i in range(200):
+        p = str(tmp_path / f"f{i}.py")
+        open(p, "w").close()
+        ff.record(p, now=now)
+    assert len(ff.load_store()) <= 50
 
 
 def test_prune_missing(tmp_path):

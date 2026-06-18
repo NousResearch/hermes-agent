@@ -78,7 +78,8 @@ SECONDS_PER_DAY = 86400.0
 _DEFAULT_ENABLED = True
 _DEFAULT_HALF_LIFE_DAYS = 1.0
 _DEFAULT_WEIGHT = 40.0       # alpha: frecency contribution on the 0-100 static scale
-_DEFAULT_MAX_TOTAL = 10000.0  # aging cap on summed weight
+_DEFAULT_MAX_ENTRIES = 4000  # hard cap on tracked paths (primary memory bound)
+_DEFAULT_MAX_TOTAL = 10000.0  # secondary cap on summed weight (rescale only)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +103,7 @@ def _frecency_config() -> Dict[str, Any]:
         "enabled": _DEFAULT_ENABLED,
         "half_life_days": _DEFAULT_HALF_LIFE_DAYS,
         "weight": _DEFAULT_WEIGHT,
+        "max_entries": _DEFAULT_MAX_ENTRIES,
         "max_total": _DEFAULT_MAX_TOTAL,
     }
     try:
@@ -119,6 +121,9 @@ def _frecency_config() -> Dict[str, Any]:
             w = block.get("weight")
             if isinstance(w, (int, float)) and w >= 0:
                 cfg["weight"] = float(w)
+            me = block.get("max_entries")
+            if isinstance(me, int) and me > 0:
+                cfg["max_entries"] = me
             mt = block.get("max_total")
             if isinstance(mt, (int, float)) and mt > 0:
                 cfg["max_total"] = float(mt)
@@ -337,20 +342,41 @@ def _decayed(weight: float, t_last: float, now: float, lam: float) -> float:
     return weight * math.exp(-lam * dt)
 
 
-def _age(data: Dict[str, Dict[str, float]], max_total: float) -> None:
-    """zoxide-style aging, in place. When summed weight exceeds ``max_total``,
-    scale all weights so the new total is ~90% of the cap, then drop entries
-    that fall below 1 (forgotten)."""
-    total = 0.0
-    for v in data.values():
-        total += v["w"]
-    if total <= max_total:
-        return
-    factor = 0.9 * max_total / total
-    for key in list(data.keys()):
-        data[key]["w"] *= factor
-        if data[key]["w"] < 1.0:
+def _age(data: Dict[str, Dict[str, float]], max_entries: int, max_total: float,
+         now: float, lam: float) -> None:
+    """Bound the store, in place. Two independent caps, neither of which can
+    wipe the store:
+
+    1. **Count cap (primary).** If more than ``max_entries`` paths are tracked,
+       drop the lowest-*frecency* entries (decayed score at ``now``) until the
+       count is back at ``max_entries``. Frecent files are kept, cold ones are
+       forgotten. This is a hard count bound, so memory can't grow without
+       limit regardless of the weight distribution.
+    2. **Weight cap (secondary).** If the summed raw weight still exceeds
+       ``max_total`` (a few very-hot files), scale all weights down
+       proportionally so the new total is ``max_total``. Unlike the old
+       scale-then-threshold scheme this never drops entries, so a uniform
+       flood can't collapse the whole store to empty — it just rescales.
+    """
+    # 1. Count cap — rank by decayed score, keep the top max_entries.
+    if max_entries > 0 and len(data) > max_entries:
+        ranked = sorted(
+            data.items(),
+            key=lambda kv: _decayed(kv[1]["w"], kv[1]["t"], now, lam),
+            reverse=True,
+        )
+        for key, _ in ranked[max_entries:]:
             del data[key]
+
+    # 2. Weight cap — proportional rescale only, never a threshold drop.
+    if max_total > 0:
+        total = 0.0
+        for v in data.values():
+            total += v["w"]
+        if total > max_total:
+            factor = max_total / total
+            for v in data.values():
+                v["w"] *= factor
 
 
 def record(path: str | Path, *, now: Optional[float] = None) -> None:
@@ -376,7 +402,7 @@ def record(path: str | Path, *, now: Optional[float] = None) -> None:
             else:
                 decayed = _decayed(entry["w"], entry["t"], t, lam)
                 data[key] = {"w": decayed + 1.0, "t": max(t, entry["t"])}
-            _age(data, cfg["max_total"])
+            _age(data, int(cfg["max_entries"]), float(cfg["max_total"]), t, lam)
             save_store(data)
             _invalidate_store_cache()
     except Exception as e:  # noqa: BLE001

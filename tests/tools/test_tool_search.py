@@ -134,6 +134,24 @@ class TestClassification:
 
 
 class TestThresholdGate:
+    def test_active_context_length_uses_configured_provider(self, monkeypatch):
+        """Tool Search's auto gate must use the provider-specific model window.
+
+        GPT-5.5 is 1.05M on the direct OpenAI API but 272K through
+        ChatGPT Codex OAuth. The auto threshold should use the active provider
+        from config.yaml, not the bare model fallback.
+        """
+        import hermes_cli.config as config_mod
+        import model_tools
+
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {"model": {"default": "gpt-5.5", "provider": "openai-codex"}},
+        )
+
+        assert model_tools._resolve_active_context_length() == 272_000
+
     def test_off_never_activates(self):
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "off"})

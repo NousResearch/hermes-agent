@@ -2287,10 +2287,42 @@ def get_model_context_length(
     # back to the 128K default before reaching the original step 4b branch.
     if is_bedrock_context:
         try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            return get_bedrock_context_length(model)
+            from agent.bedrock_adapter import (
+                get_bedrock_context_length,
+                resolve_bedrock_region,
+            )
         except ImportError:
             pass  # boto3 not installed — fall through to generic resolution
+        else:
+            # Bedrock does not expose the context window via any metadata API,
+            # so get_bedrock_context_length() probes the live endpoint (one
+            # fast, pre-inference length rejection) to read the real window.
+            # Cache the probe result per model so we pay that cost once, not
+            # every turn — keyed by base_url when present, else a synthetic
+            # bedrock:// key so display/offline paths share the entry.
+            cache_key_url = base_url or "bedrock://"
+            cached = get_cached_context_length(model, cache_key_url)
+            if cached is not None:
+                return cached
+            # Resolve region from the base_url host first, then the standard
+            # AWS region chain.  An empty region disables probing (table only).
+            region = ""
+            if base_url:
+                _m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url)
+                if _m:
+                    region = _m.group(1)
+            if not region:
+                try:
+                    region = resolve_bedrock_region()
+                except Exception:
+                    region = ""
+            ctx = get_bedrock_context_length(model, region=region, probe=bool(region))
+            if ctx and region:
+                # Only persist probe-derived values (region present); a pure
+                # table fallback shouldn't poison the cache against a later
+                # successful probe.
+                save_context_length(model, cache_key_url, ctx)
+            return ctx
 
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
         ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)

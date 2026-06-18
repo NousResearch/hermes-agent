@@ -1238,6 +1238,71 @@ class TestBedrockContextLength:
         # "anthropic.claude-3-5-sonnet" should match before "anthropic.claude-3"
         assert get_bedrock_context_length("anthropic.claude-3-5-sonnet-20240620-v1:0") == 200_000
 
+    def test_no_region_skips_probe_uses_table(self):
+        # Default call (no region) must NOT hit the network — returns the
+        # static table value.  Guards backward compatibility for callers that
+        # still invoke get_bedrock_context_length(model_id) with one arg.
+        from agent.bedrock_adapter import get_bedrock_context_length
+        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 200_000
+            mock_probe.assert_not_called()
+
+
+class TestBedrockContextProbe:
+    """Test the live context-window probe that reads the real window from
+    Bedrock's 'prompt is too long' validation error."""
+
+    def _client_raising(self, message):
+        client = MagicMock()
+        client.converse.side_effect = Exception(message)
+        return client
+
+    def test_probe_parses_real_window_from_error(self):
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        err = (
+            "An error occurred (ValidationException) when calling the Converse "
+            "operation: The model returned the following errors: prompt is too "
+            "long: 5000032 tokens > 1000000 maximum"
+        )
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            assert probe_bedrock_context_length(
+                "eu.anthropic.claude-opus-4-8", "eu-central-1") == 1_000_000
+
+    def test_probe_returns_none_on_unparseable_error(self):
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        err = "An error occurred (AccessDeniedException): not authorized"
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            assert probe_bedrock_context_length(
+                "eu.anthropic.claude-opus-4-8", "eu-central-1") is None
+
+    def test_probe_returns_none_when_client_unavailable(self):
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   side_effect=RuntimeError("boto3 missing")):
+            assert probe_bedrock_context_length("any.model", "eu-central-1") is None
+
+    def test_probe_result_beats_static_table(self):
+        # A successful probe (1M) must override the stale table value (200K
+        # via the 'anthropic.claude-opus-4' substring match).
+        from agent.bedrock_adapter import get_bedrock_context_length
+        err = "prompt is too long: 5000032 tokens > 1000000 maximum"
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            assert get_bedrock_context_length(
+                "eu.anthropic.claude-opus-4-8",
+                region="eu-central-1") == 1_000_000
+
+    def test_probe_failure_falls_back_to_table(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        err = "AccessDeniedException: nope"
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=self._client_raising(err)):
+            # opus-4-6 is in the table at 200K; probe fails → table wins.
+            assert get_bedrock_context_length(
+                "anthropic.claude-opus-4-6", region="eu-central-1") == 200_000
+
 
 # ---------------------------------------------------------------------------
 # Tool-calling capability detection

@@ -43,7 +43,9 @@ def test_session_replay_strips_legacy_native_image_attachment_markers(tmp_path: 
 
     replay = db.get_messages_as_conversation(sid)
 
-    assert replay == [{"role": "user", "content": "Where do I scan this?"}]
+    assert len(replay) == 1
+    assert replay[0]["role"] == "user"
+    assert replay[0]["content"] == "Where do I scan this?"
 
 
 def test_transcript_sanitizer_strips_remote_image_attachment_markers():

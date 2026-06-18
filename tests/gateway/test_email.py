@@ -1215,6 +1215,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID", "SASL-PLAIN")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
@@ -1242,6 +1243,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         """_fetch_new_messages must also send ID — it opens its own IMAP session."""
         adapter = self._make_adapter()
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID", "SASL-PLAIN")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
@@ -1259,10 +1261,21 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         from gateway.platforms.email import _send_imap_id
 
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID", "SASL-PLAIN")
         mock_imap.xatom.side_effect = Exception("BAD command unknown: ID")
 
         _send_imap_id(mock_imap)
         mock_imap.xatom.assert_called_once()
+
+    def test_send_imap_id_skips_when_id_not_in_capabilities(self):
+        """Servers without ID capability must not receive the ID command."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "SASL-PLAIN")
+
+        _send_imap_id(mock_imap)
+        mock_imap.xatom.assert_not_called()
 
 
 class TestConnectSmtp(unittest.TestCase):

@@ -129,8 +129,20 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     Required by 163/NetEase mailbox after LOGIN: without it, every UID
     SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects.  Other
     IMAP servers either honor it silently or reject the unknown command;
-    we swallow failures so non-supporting servers keep working.
+    we skip the command entirely when the server does not advertise the
+    ``ID`` capability so that non-supporting servers (e.g. Purelymail)
+    are not disrupted by ``BAD`` responses that desynchronize the
+    imaplib protocol parser.
     """
+    # Only send ID if the server advertises the capability (RFC 2971).
+    # ``imaplib`` populates ``capabilities`` during connection setup
+    # (``_connect`` → ``_get_capabilities``).  Sending ``xatom("ID")``
+    # on a server that replies ``BAD`` corrupts imaplib's internal
+    # command/response state, breaking all subsequent commands.
+    caps = getattr(imap, "capabilities", None)
+    if caps is not None and "ID" not in caps:
+        logger.debug("[Email] Server does not advertise ID capability, skipping.")
+        return
     try:
         try:
             from hermes_cli import __version__ as _hermes_version

@@ -133,16 +133,24 @@ def pre_title_session(
     )
     if not title:
         return
-    try:
-        session_db.set_session_title(session_id, title)
-        logger.info("Pre-title session title set: session=%s title=%r", session_id, title)
-        if title_callback is not None:
-            try:
-                title_callback(title)
-            except Exception:
-                logger.debug("Pre-title callback failed", exc_info=True)
-    except Exception as e:
-        logger.debug("Failed to set pre-title: %s", e, exc_info=True)
+    # Persisting the title to the session DB is best-effort: a uniqueness
+    # conflict (same title already used by another session — e.g. "Friendly
+    # Greeting" appearing in a 寒暄 thread a month apart) raises ValueError
+    # from SessionDB.set_session_title. We must not let that abort the
+    # side-effects that the caller (Discord thread rename) depends on —
+    # the rename does not need the DB write to succeed. Split the two
+    # concerns: log the DB failure, but always invoke the callback.
+    if session_db is not None:
+        try:
+            session_db.set_session_title(session_id, title)
+            logger.info("Pre-title session title set: session=%s title=%r", session_id, title)
+        except Exception as e:
+            logger.debug("Pre-title: set_session_title failed (%s: %s); continuing to invoke callback", type(e).__name__, e)
+    if title_callback is not None:
+        try:
+            title_callback(title)
+        except Exception:
+            logger.debug("Pre-title callback failed", exc_info=True)
 
 
 def maybe_pre_title(

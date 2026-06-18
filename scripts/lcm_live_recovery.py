@@ -91,6 +91,7 @@ class GateThresholds:
     judge_precision_min: float = DEFAULT_JUDGE_MIN
     judge_recall_min: float = DEFAULT_JUDGE_MIN
     require_tool_call_evidence: bool = True
+    void_rate_max: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,9 @@ class GateResult:
     confident_wrong: int
     missing_tool_call_evidence: int
     semantic_calibration: JudgeCalibrationResult | None
+    total_draws: int = 0
+    void_count: int = 0
+    void_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -176,6 +180,9 @@ class RecoveryRun:
     observed_spend_usd: float
     aborted_reason: str | None
     out_path: Path | None = None
+    probe_kind: str = "mixed"
+    filler_turns: int | None = None
+    void_redraw: bool = False
 
 
 class RecoveryDriver:
@@ -600,6 +607,9 @@ def evaluate_gate(
     thresholds: GateThresholds,
     mode: str,
     semantic_calibration: JudgeCalibrationResult | None,
+    total_draws: int = 0,
+    void_count: int = 0,
+    void_rate: float = 0.0,
 ) -> GateResult:
     total = len(trials)
     correct = sum(1 for trial in trials if trial.correct)
@@ -625,6 +635,11 @@ def evaluate_gate(
         failures.append(f"observed confident-wrong count must be zero; saw {confident_wrong}")
     if thresholds.require_tool_call_evidence and missing_tool_calls:
         failures.append(f"missing tool-call evidence on {missing_tool_calls} trial(s)")
+    if void_rate > thresholds.void_rate_max:
+        failures.append(
+            f"VOID rate {void_rate:.4f} exceeds max {thresholds.void_rate_max:.4f} "
+            f"({void_count}/{total_draws} draws produced no store lookup)"
+        )
     return GateResult(
         passed=not failures,
         failures=failures,
@@ -635,6 +650,9 @@ def evaluate_gate(
         confident_wrong=confident_wrong,
         missing_tool_call_evidence=missing_tool_calls,
         semantic_calibration=semantic_calibration,
+        total_draws=total_draws,
+        void_count=void_count,
+        void_rate=void_rate,
     )
 
 
@@ -651,6 +669,7 @@ def run_recovery_gate(
     judge: Any | None = None,
     allow_underpowered_live: bool = False,
     probe_kind: str = "mixed",
+    void_redraw: bool = False,
 ) -> RecoveryRun:
     validate_run_config(mode=mode, n=n, allow_underpowered_live=allow_underpowered_live)
     sampling = sampling or SamplingParams(seed=seed)
@@ -681,7 +700,24 @@ def run_recovery_gate(
     estimated_spend = 0.0
     observed_spend = 0.0
     aborted_reason: str | None = None
-    for fixture in fixtures:
+    total_draws = 0
+    void_count = 0
+    # VOID-redraw (PRD-8.1 AC-2): a live trial that produced NO store-tool
+    # evidence did not exercise the recovery path — it is VOID (not scored as a
+    # miss, not scored as a pass), and we draw a replacement so the scored set is
+    # N trials that all actually hit the store. A bounded filter: if too many
+    # draws VOID, the bury isn't exercising the path (a real defect) — hard-stop.
+    redraw_pool: list[TrialFixture] = []
+    if void_redraw:
+        # extension fixtures drawn from a disjoint index range, same probe_kind
+        redraw_pool = make_fixtures(n * 3, seed=seed + 999999, probe_kind=probe_kind)
+    redraw_iter = iter(redraw_pool)
+
+    work = list(fixtures)
+    wi = 0
+    while wi < len(work):
+        fixture = work[wi]
+        wi += 1
         prompt_tokens = estimate_messages_tokens(fixture.messages + [{"role": "user", "content": fixture.question}])
         estimated_completion = budget.max_completion_tokens
         estimated_cost = budget.estimated_cost(prompt_tokens, estimated_completion)
@@ -699,7 +735,26 @@ def run_recovery_gate(
         observed_cost = budget.observed_cost(observed_prompt, observed_completion)
         estimated_spend += estimated_cost
         observed_spend += observed_cost
+        total_draws += 1
         scored = score_response(fixture, response, judge)
+
+        # VOID: live trial with no store-tool evidence -> not scored; redraw.
+        if void_redraw and mode == "live" and not scored.tool_calls:
+            void_count += 1
+            void_rate_so_far = void_count / max(1, total_draws)
+            # hard-stop if the bury is clearly not exercising the store path
+            if total_draws >= 10 and void_rate_so_far > thresholds.void_rate_max:
+                aborted_reason = (
+                    f"VOID rate {void_rate_so_far:.3f} exceeded max {thresholds.void_rate_max:.3f} "
+                    f"after {total_draws} draws ({void_count} void) — bury is not reliably "
+                    f"exercising the store path; this is a finding, not a redraw-around."
+                )
+                break
+            replacement = next(redraw_iter, None)
+            if replacement is not None:
+                work.append(replacement)
+            continue
+
         trials.append(
             TrialRecord(
                 prompt_id=scored.prompt_id,
@@ -719,8 +774,14 @@ def run_recovery_gate(
                 ),
             )
         )
+        if len(trials) >= n:
+            break
 
-    gate = evaluate_gate(trials, thresholds=thresholds, mode=mode, semantic_calibration=calibration)
+    void_rate = void_count / total_draws if total_draws else 0.0
+    gate = evaluate_gate(
+        trials, thresholds=thresholds, mode=mode, semantic_calibration=calibration,
+        total_draws=total_draws, void_count=void_count, void_rate=void_rate,
+    )
     if aborted_reason is not None:
         gate = GateResult(
             passed=False,
@@ -732,6 +793,9 @@ def run_recovery_gate(
             confident_wrong=gate.confident_wrong,
             missing_tool_call_evidence=gate.missing_tool_call_evidence,
             semantic_calibration=gate.semantic_calibration,
+            total_draws=gate.total_draws,
+            void_count=gate.void_count,
+            void_rate=gate.void_rate,
         )
     run = RecoveryRun(
         mode=mode,
@@ -746,6 +810,9 @@ def run_recovery_gate(
         observed_spend_usd=observed_spend,
         aborted_reason=aborted_reason,
         out_path=out_path,
+        probe_kind=probe_kind,
+        filler_turns=getattr(driver, "filler_turns", None),
+        void_redraw=void_redraw,
     )
     if out_path is not None:
         write_report(out_path, run)
@@ -772,6 +839,7 @@ def write_report(out_path: Path, run: RecoveryRun) -> None:
         f"- Wilson 95% lower bound: {run.gate.wilson_lower:.6f} (required >= {run.thresholds.wilson_lower_min:.3f})",
         f"- Confident-wrong: {run.gate.confident_wrong} (required 0)",
         f"- Missing tool-call evidence: {run.gate.missing_tool_call_evidence}",
+        f"- VOID (no store lookup): {run.gate.void_count}/{run.gate.total_draws} draws (rate {run.gate.void_rate:.4f}; max {run.thresholds.void_rate_max:.2f})",
         f"- estimated spend: ${run.estimated_spend_usd:.6f} / cap ${run.budget.max_usd:.6f}",
         f"- observed spend: ${run.observed_spend_usd:.6f} / cap ${run.budget.max_usd:.6f}",
         "",
@@ -834,6 +902,38 @@ def write_report(out_path: Path, run: RecoveryRun) -> None:
     ])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # JSON sidecar (PRD-8.1): structured gate fields for the campaign extend
+    # predicate (recall, wilson, void_rate) to read without parsing Markdown.
+    sidecar = {
+        "mode": run.mode,
+        "n_requested": run.n_requested,
+        "verdict": "GO" if run.gate.passed else "BLOCKED",
+        "passed": run.gate.passed,
+        "total_trials": run.gate.total_trials,
+        "correct_trials": run.gate.correct_trials,
+        "point_recall": run.gate.point_recall,
+        "wilson_lower": run.gate.wilson_lower,
+        "confident_wrong": run.gate.confident_wrong,
+        "missing_tool_call_evidence": run.gate.missing_tool_call_evidence,
+        "total_draws": run.gate.total_draws,
+        "void_count": run.gate.void_count,
+        "void_rate": run.gate.void_rate,
+        "estimated_spend_usd": run.estimated_spend_usd,
+        "observed_spend_usd": run.observed_spend_usd,
+        "failures": list(run.gate.failures),
+        "thresholds": {
+            "recall_point_min": run.thresholds.recall_point_min,
+            "wilson_lower_min": run.thresholds.wilson_lower_min,
+            "void_rate_max": run.thresholds.void_rate_max,
+        },
+        "run_params": {
+            "probe_kind": run.probe_kind,
+            "filler_turns": run.filler_turns,
+            "void_redraw": run.void_redraw,
+        },
+    }
+    out_path.with_suffix(".json").write_text(json.dumps(sidecar, indent=2) + "\n", encoding="utf-8")
 
 
 def _md(value: str) -> str:
@@ -942,6 +1042,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--allow-underpowered-live", action="store_true", help="Allow N<180 live runs for E2E shakedown ONLY; not a Phase-2 promotion gate.")
     parser.add_argument("--probe-kind", choices=["exact", "semantic", "mixed"], default="exact", help="Probe contract: 'exact' = raw-store/FTS gate (Arm-A, DEFAULT per PRD-8.1), 'semantic' = DAG/meaning, 'mixed' = legacy interleave (NOT a gate run; explicit opt-in only).")
     parser.add_argument("--lcm-db", help="Path to the lcm.db the session driver reads tool-call evidence from (default: ~/.hermes/profiles/<profile>/lcm.db). NOTE: this only redirects the evidence-READ path; the live gateway still WRITES to the profile db. True write-isolation needs a gateway config change (out of scope per AC-5).")
+    parser.add_argument("--void-redraw", action="store_true", help="PRD-8.1 AC-2: VOID a live trial that produced no store-tool evidence (did not exercise the recovery path) and draw a replacement, so the scored N all hit the store. Hard-stops if void_rate exceeds --void-rate-max.")
+    parser.add_argument("--void-rate-max", type=float, default=0.20, help="Max fraction of draws allowed to VOID before the run hard-stops as a finding (PRD-8.1 AC-2).")
     return parser.parse_args(argv)
 
 
@@ -965,6 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
         judge_precision_min=args.judge_precision_min,
         judge_recall_min=args.judge_recall_min,
         require_tool_call_evidence=not args.no_tool_call_required,
+        void_rate_max=args.void_rate_max,
     )
     budget = BudgetPolicy(
         max_usd=args.budget_usd,
@@ -999,6 +1102,7 @@ def main(argv: list[str] | None = None) -> int:
         driver=driver,
         allow_underpowered_live=args.allow_underpowered_live,
         probe_kind=args.probe_kind,
+        void_redraw=args.void_redraw,
     )
     print(f"{run.gate.correct_trials}/{run.gate.total_trials} correct; Wilson lower={run.gate.wilson_lower:.6f}")
     print(f"estimated spend=${run.estimated_spend_usd:.6f}; observed spend=${run.observed_spend_usd:.6f}; report={out_path}")

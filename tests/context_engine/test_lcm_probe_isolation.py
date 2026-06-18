@@ -11,6 +11,8 @@ recovery and on an honest abstention.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from scripts import lcm_live_recovery as armA
@@ -111,3 +113,87 @@ def test_detector_empty_answer_is_not_confident_wrong():
     correct, cw = armB.score_semantic_recovery("", "Ada Lovelace", OWNERS)
     assert correct is False
     assert cw is False
+
+
+# ---- Arm A: VOID-redraw + void_rate reporting (C1 / AC-2) --------------------
+
+class _NoLookupDriver(armA.RecoveryDriver):
+    """Live-mode driver that NEVER produces a store tool call -> every trial VOID."""
+    def run_trial(self, fixture, sampling):
+        return armA.DriverResponse(answer=fixture.expected_answer, tool_calls=[], usage={"prompt_tokens": 10, "completion_tokens": 4})
+
+
+class _IntermittentLookupDriver(armA.RecoveryDriver):
+    """Produces a lookup on a fixed fraction of trials; the rest VOID."""
+    def __init__(self, lookup_every: int):
+        self.lookup_every = lookup_every
+        self.calls = 0
+    def run_trial(self, fixture, sampling):
+        self.calls += 1
+        if self.calls % self.lookup_every == 0:
+            return armA.DriverResponse(
+                answer=fixture.expected_answer,
+                tool_calls=[{"name": "lcm_grep", "arguments": {"q": fixture.expected_answer}}],
+                usage={"prompt_tokens": 10, "completion_tokens": 4},
+            )
+        return armA.DriverResponse(answer=fixture.expected_answer, tool_calls=[], usage={"prompt_tokens": 10, "completion_tokens": 4})
+
+
+def test_void_redraw_hard_stops_when_all_trials_void(tmp_path):
+    # 100% VOID -> must hard-stop as a finding, not silently redraw forever.
+    run = armA.run_recovery_gate(
+        mode="live",
+        n=180,
+        out_path=tmp_path / "voidall.md",
+        seed=4242,
+        thresholds=armA.GateThresholds(min_trials=1, wilson_lower_min=0.0, void_rate_max=0.20),
+        budget=armA.BudgetPolicy(max_usd=1000.0),
+        driver=_NoLookupDriver(),
+        probe_kind="exact",
+        void_redraw=True,
+        allow_underpowered_live=True,
+    )
+    assert not run.gate.passed
+    assert run.gate.void_rate > 0.20
+    assert any("VOID" in f for f in run.gate.failures)
+    # it must NOT have run away — bounded by the hard-stop
+    assert run.gate.total_draws < 60
+
+
+def test_void_redraw_reaches_n_when_lookups_recover(tmp_path):
+    # 50% lookup -> redraw should still assemble a full scored N, void_rate ~0.5
+    # but because void_rate > max it still fails the gate (correctly surfaced).
+    run = armA.run_recovery_gate(
+        mode="live",
+        n=20,
+        out_path=tmp_path / "voidhalf.md",
+        seed=4242,
+        thresholds=armA.GateThresholds(min_trials=1, wilson_lower_min=0.0, void_rate_max=0.60),
+        budget=armA.BudgetPolicy(max_usd=1000.0),
+        driver=_IntermittentLookupDriver(lookup_every=2),
+        probe_kind="exact",
+        void_redraw=True,
+        allow_underpowered_live=True,
+    )
+    # every scored trial has a tool call
+    assert all(t.tool_calls for t in run.trials)
+    assert run.gate.void_count > 0
+    assert run.gate.total_draws > run.gate.total_trials
+
+
+def test_json_sidecar_written_with_void_and_run_params(tmp_path):
+    out = tmp_path / "sidecar.md"
+    armA.run_recovery_gate(
+        mode="dry-run",
+        n=12,
+        out_path=out,
+        seed=4242,
+        budget=armA.BudgetPolicy(max_usd=10.0),
+        probe_kind="exact",
+    )
+    sidecar = out.with_suffix(".json")
+    assert sidecar.exists()
+    data = json.loads(sidecar.read_text())
+    assert "point_recall" in data and "wilson_lower" in data
+    assert "void_rate" in data and "total_draws" in data
+    assert data["run_params"]["probe_kind"] == "exact"

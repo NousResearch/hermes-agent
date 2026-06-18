@@ -100,9 +100,11 @@ def test_follows_compression_tip_when_parent_retains_messages(db):
     db.append_message("cont", role="assistant", content="post-compression reply")
     # Force deterministic ordering so the continuation's started_at is clearly
     # at/after the parent's ended_at (the get_compression_tip discriminator).
-    db._conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (base, base + 50))
-    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont'", (base + 100,))
-    db._conn.commit()
+    conn = db._conn
+    assert conn is not None
+    conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (base, base + 50))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont'", (base + 100,))
+    conn.commit()
 
     assert db.resolve_resume_session_id("root") == "cont"
 
@@ -116,9 +118,11 @@ def test_compression_tip_not_confused_with_delegation_child(db):
     db.append_message("conv", role="user", content="parent turn")
     db.create_session("subagent", source="cli", parent_session_id="conv")
     db.append_message("subagent", role="assistant", content="delegated work")
-    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'conv'", (base,))
-    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'subagent'", (base + 100,))
-    db._conn.commit()
+    conn = db._conn
+    assert conn is not None
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'conv'", (base,))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'subagent'", (base + 100,))
+    conn.commit()
 
     assert db.resolve_resume_session_id("conv") == "conv"
 

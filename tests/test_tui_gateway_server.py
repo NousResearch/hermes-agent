@@ -973,12 +973,14 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     db.end_session("parent_root", "compression")
     db.create_session("cont_tip", source="tui", parent_session_id="parent_root")
     db.append_message("cont_tip", role="assistant", content="post-compression reply")
-    db._conn.execute(
+    conn = db._conn
+    assert conn is not None
+    conn.execute(
         "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'parent_root'",
         (base, base + 50),
     )
-    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,))
-    db._conn.commit()
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont_tip'", (base + 100,))
+    conn.commit()
 
     captured = {}
 

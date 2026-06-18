@@ -1581,6 +1581,11 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Desktop: show kawaii faces in the thinking/status bar during tool
+        # execution and reasoning.  Preserves TUI heritage in the desktop UI.
+        # When True, the gateway emits a dedicated "kawaii.face" SSE event
+        # alongside thinking.delta, which the desktop renders in its status bar.
+        "desktop_kawaii_faces": False,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

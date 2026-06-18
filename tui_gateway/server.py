@@ -2866,6 +2866,27 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         _emit("tool.complete", sid, payload)
 
 
+# ── Kawaii faces for desktop ─────────────────────────────────────────────
+# When display.desktop_kawaii_faces is enabled, the thinking_callback also
+# emits a dedicated "kawaii.face" SSE event carrying the kaomoji face
+# extracted from the spinner text.  The desktop renders this in its status
+# bar, preserving the TUI heritage in the desktop UI.
+
+_KAWAII_FACE_RE = __import__("re").compile(r"^\s*([^(]*\([^)]+\))")
+
+
+def _thinking_with_kawaii(sid: str, text: str):
+    """Emit thinking.delta + optional kawaii.face event."""
+    _emit("thinking.delta", sid, {"text": text})
+    try:
+        if (_load_cfg().get("display") or {}).get("desktop_kawaii_faces"):
+            m = _KAWAII_FACE_RE.match(text or "")
+            if m:
+                _emit("kawaii.face", sid, {"face": m.group(1).strip()})
+    except Exception:
+        pass
+
+
 def _on_tool_progress(
     sid: str,
     event_type: str,
@@ -3058,7 +3079,7 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "thinking_callback": lambda text: _thinking_with_kawaii(sid, text),
         "reasoning_callback": lambda text: _emit(
             "reasoning.delta",
             sid,

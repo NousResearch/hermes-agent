@@ -1,5 +1,6 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
+import asyncio
 import os
 import json
 import shutil
@@ -4955,6 +4956,65 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
+
+    def test_resolve_chat_argv_async_uses_worker_thread(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["node", "dist/entry.js"], "/tmp/ui-tui", {"NODE_ENV": "production"})
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            captured["thread_fn"] = fn
+            captured["thread_args"] = args
+            captured["thread_kwargs"] = kwargs
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+        monkeypatch.setattr(self.ws_module.asyncio, "to_thread", fake_to_thread)
+
+        argv, cwd, env = asyncio.run(
+            self.ws_module._resolve_chat_argv_async(
+                resume="sess-42",
+                sidecar_url="ws://127.0.0.1:9119/api/pub?channel=abc",
+                profile="worker",
+            )
+        )
+
+        assert callable(captured["thread_fn"])
+        assert captured["thread_args"] == ()
+        assert captured["thread_kwargs"] == {
+            "resume": "sess-42",
+            "sidecar_url": "ws://127.0.0.1:9119/api/pub?channel=abc",
+            "profile": "worker",
+        }
+        assert argv == ["node", "dist/entry.js"]
+        assert cwd == "/tmp/ui-tui"
+        assert env == {"NODE_ENV": "production"}
+        assert captured["resume"] == "sess-42"
+        assert captured["sidecar_url"] == "ws://127.0.0.1:9119/api/pub?channel=abc"
+        assert captured["profile"] == "worker"
+
+    def test_pty_ws_resolves_argv_through_async_wrapper(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_resolve_async(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["/bin/sh", "-c", "printf async-resolve-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv_async", fake_resolve_async)
+
+        with self.client.websocket_connect(self._url(resume="sess-99")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured["resume"] == "sess-99"
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(

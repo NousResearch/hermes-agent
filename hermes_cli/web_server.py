@@ -10572,7 +10572,12 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
-# (State is initialised in _lifespan on app startup — see above.)
+# (Channel state is initialised in _lifespan on app startup — see above.)
+#
+# Serializes chat-argv resolution so concurrent /api/pty connections don't
+# trigger overlapping ``npm install`` / ``npm run build`` work.  Process-wide
+# (not per-app), so it stays a module-level lock rather than app.state.
+_chat_argv_lock = asyncio.Lock()
 
 
 def _resolve_chat_argv(
@@ -10687,6 +10692,30 @@ def _build_gateway_ws_url() -> Optional[str]:
         qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
 
     return f"ws://{netloc}/api/ws?{qs}"
+
+
+async def _resolve_chat_argv_async(
+    resume: Optional[str] = None,
+    sidecar_url: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> tuple[list[str], Optional[str], Optional[dict]]:
+    """Resolve chat argv without blocking the dashboard event loop.
+
+    ``_resolve_chat_argv`` may run ``npm install`` / ``npm run build`` through
+    ``_make_tui_argv``.  Keep that synchronous work off the WebSocket event
+    loop so reverse proxies and existing dashboard connections can continue
+    to exchange keepalives while the TUI launch command is prepared.  The
+    async lock preserves the previous one-build-at-a-time behavior when
+    multiple browser tabs connect at once without occupying worker threads
+    while queued connections wait.
+    """
+    async with _chat_argv_lock:
+        return await asyncio.to_thread(
+            _resolve_chat_argv,
+            resume=resume,
+            sidecar_url=sidecar_url,
+            profile=profile,
+        )
 
 
 def _build_sidecar_url(channel: str) -> Optional[str]:
@@ -10819,7 +10848,7 @@ async def pty_ws(ws: WebSocket) -> None:
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(
+        argv, cwd, env = await _resolve_chat_argv_async(
             resume=resume, sidecar_url=sidecar_url, profile=profile
         )
     except HTTPException as exc:

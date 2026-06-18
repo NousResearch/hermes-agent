@@ -7,7 +7,7 @@ import type { FrameEvent } from '@hermes/ink'
 
 import { TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
-import { setupGracefulExit } from './lib/gracefulExit.js'
+import { setupGracefulExit, startParentWatchdog } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
@@ -109,6 +109,20 @@ if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
 }
 
 process.on('beforeExit', () => stopMemoryMonitor())
+
+// Detect orphaned processes (#38425). When the parent process exits (terminal
+// closed, desktop app quit), the TUI can be reparented to PID 1 and enter a
+// tight busy-loop at ~100% CPU. The watchdog listens for stdin pipe closure
+// (immediate, event-driven) and falls back to ppid polling every 30 s.
+const stopParentWatchdog = startParentWatchdog(reason => {
+  recordParentLifecycle(`orphan-detected: ${reason} → killing gateway and exiting`)
+  process.stderr.write(`hermes-tui: orphaned (${reason}); exiting\n`)
+  resetTerminalModes()
+  gw.kill('orphan-detected')
+  process.exit(130)
+})
+
+process.on('beforeExit', () => stopParentWatchdog())
 
 const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
   import('@hermes/ink'),

@@ -195,6 +195,29 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _append_platform_message_id_context(
+    text: str,
+    *,
+    platform: Any,
+    message_id: Any,
+) -> str:
+    """Append current platform message metadata to the user turn.
+
+    This intentionally modifies the current user message rather than the
+    system/session prompt so per-message IDs do not bust the prompt cache.
+    """
+    if _gateway_platform_value(platform) != "feishu":
+        return text
+    normalized = re.sub(r"\s+", " ", str(message_id or "").strip())
+    if not normalized:
+        return text
+    footer = f"[Feishu message_id: {normalized}]"
+    body = str(text or "").rstrip()
+    if body.endswith(footer):
+        return body
+    return f"{body}\n\n{footer}" if body else footer
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
@@ -8269,6 +8292,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
+        message_text = _append_platform_message_id_context(
+            message_text,
+            platform=source.platform,
+            message_id=event.message_id or source.message_id,
+        )
         return message_text
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:

@@ -36,6 +36,16 @@ def _source() -> SessionSource:
     )
 
 
+def _feishu_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_123",
+        chat_name="Feishu DM",
+        chat_type="dm",
+        user_name="Alice",
+    )
+
+
 @pytest.mark.asyncio
 async def test_reply_prefix_injected_when_text_absent_from_history():
     runner = _make_runner()
@@ -157,3 +167,56 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_message_id_appended_to_user_turn_tail():
+    runner = _make_runner()
+    source = _feishu_source()
+    event = MessageEvent(text="hello", source=source, message_id="om_123")
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "hello\n\n[Feishu message_id: om_123]"
+
+
+@pytest.mark.asyncio
+async def test_feishu_message_id_footer_stays_after_reply_context():
+    runner = _make_runner()
+    source = _feishu_source()
+    event = MessageEvent(
+        text="follow-up",
+        source=source,
+        message_id="om_reply",
+        reply_to_message_id="om_parent",
+        reply_to_text="parent message",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith('[Replying to: "parent message"]')
+    assert result.endswith("[Feishu message_id: om_reply]")
+
+
+@pytest.mark.asyncio
+async def test_non_feishu_message_id_not_appended():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(text="hello", source=source, message_id="telegram-1")
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "hello"

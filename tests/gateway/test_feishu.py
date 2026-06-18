@@ -1654,6 +1654,8 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter.handle_message.await_args.args[0]
         self.assertEqual(event.text, "A\nB")
         self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertEqual(event.message_id, "om_2")
+        self.assertEqual(event.source.message_id, "om_2")
 
     @patch.dict(
         os.environ,
@@ -1757,6 +1759,8 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
         self.assertEqual(event.media_urls, ["/tmp/a.png", "/tmp/b.png"])
+        self.assertEqual(event.message_id, "om_p2")
+        self.assertEqual(event.source.message_id, "om_p2")
         self.assertIn("第一张", event.text)
         self.assertIn("第二张", event.text)
 

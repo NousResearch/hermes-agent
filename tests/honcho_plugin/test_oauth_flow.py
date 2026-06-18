@@ -68,6 +68,7 @@ class _FakeAS(BaseHTTPRequestHandler):
         }
         if grant_type == "authorization_code":
             body["config"] = {
+                "peerName": "lyra",
                 "environment": "production",
                 "hosts": {"hermes": {"saveMessages": True, "recallMode": "hybrid"}},
             }
@@ -203,6 +204,8 @@ def test_cli_flow_stores_tokens_without_applying_config(tmp_path, fake_as):
     assert host["saveMessages"] is False
     assert "recallMode" not in host
     assert "environment" not in saved
+    # consent peer name still surfaced (seeds the CLI wizard prompt) despite no merge
+    assert cred.consent_peer_name == "lyra"
 
 
 # ── Desktop "Connect" button path: background launcher, status, dispatch ──

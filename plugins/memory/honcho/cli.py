@@ -660,6 +660,9 @@ def cmd_setup(args) -> None:
                 return
             hermes_host["apiKey"] = cred.access_token
             hermes_host["oauth"] = cred.oauth_block()
+            # Default the peer prompt to the name entered at consent.
+            if cred.consent_peer_name:
+                hermes_host["peerName"] = cred.consent_peer_name
             print("  Authorized — token saved. Let's finish configuring.\n")
         else:
             current_key = cfg.get("apiKey", "")

@@ -70,6 +70,8 @@ class OAuthCredential:
     token_endpoint: str
     scope: str = "write"
     token_type: str = "Bearer"
+    # Transient consent peer name — set only on a fresh grant, never persisted.
+    consent_peer_name: str | None = None
 
     @classmethod
     def from_host_block(cls, block: dict[str, Any]) -> "OAuthCredential | None":
@@ -290,8 +292,10 @@ def install_grant(
 
     raw = _read_config(path)
     granted_config = grant.get("config")
-    if apply_config and isinstance(granted_config, dict):
-        _deep_merge(raw, granted_config)
+    if isinstance(granted_config, dict):
+        cred.consent_peer_name = granted_config.get("peerName")
+        if apply_config:
+            _deep_merge(raw, granted_config)
     _expiry_cache[(str(path), host)] = (cred.expires_at, cred.access_token)
     hosts = raw.setdefault("hosts", {})
     block = hosts.setdefault(host, {})

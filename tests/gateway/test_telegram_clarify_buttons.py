@@ -148,7 +148,8 @@ class TestTelegramSendClarify:
     @pytest.mark.asyncio
     async def test_long_choice_rendered_in_body_not_truncated(self):
         """Long choice text appears in full in the message body;
-        button labels stay short numeric (1, 2, …)."""
+        button labels include option numbers plus compact previews while
+        callback_data stays short."""
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 102
@@ -166,9 +167,18 @@ class TestTelegramSendClarify:
         kwargs = adapter._bot.send_message.call_args[1]
         # The full long choice text appears in the message body
         assert long_choice in kwargs["text"]
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        # Button labels include a compact option preview; callbacks remain
+        # short (cl:<id>:<idx>) to stay under Telegram's 64-byte payload cap.
+
+    def test_clarify_button_labels_show_option_preview_and_truncate(self):
+        assert TelegramAdapter._clarify_button_label(0, "alpha") == "1. alpha"
+        label = TelegramAdapter._clarify_button_label(1, "x" * 200)
+        assert label.startswith("2. ")
+        assert label.endswith("…")
+        assert len(label) <= 40
+
+    def test_clarify_button_label_normalizes_whitespace(self):
+        assert TelegramAdapter._clarify_button_label(2, "  beta\n gamma  ") == "3. beta gamma"
 
     @pytest.mark.asyncio
     async def test_html_escapes_question(self):

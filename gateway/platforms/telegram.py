@@ -406,6 +406,21 @@ class TelegramAdapter(BasePlatformAdapter):
             value = min(value, max_value)
         return value
 
+    @staticmethod
+    def _clarify_button_label(index: int, choice: object, *, max_len: int = 40) -> str:
+        """Build a readable Telegram inline-button label for a clarify choice.
+
+        Telegram caps callback payload size, not button text, but long labels are
+        heavily truncated on mobile.  Include the option number plus a compact
+        preview so the buttons are usable without relying on the plain-text list.
+        """
+        label = " ".join(str(choice).split()) or "Option"
+        prefix = f"{index + 1}. "
+        available = max(1, max_len - len(prefix))
+        if len(label) > available:
+            label = label[: max(1, available - 1)].rstrip() + "…"
+        return f"{prefix}{label}"
+
     @property
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
@@ -3357,8 +3372,8 @@ class TelegramAdapter(BasePlatformAdapter):
             if choices:
                 # Render full option text in the message body so mobile
                 # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
+                # inline button labels.  Buttons include option numbers plus
+                # compact previews while callback_data stays short.
                 option_lines = "\n".join(
                     f"{i + 1}. {_html.escape(str(c))}"
                     for i, c in enumerate(choices)
@@ -3379,7 +3394,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 for idx in range(len(choices)):
                     rows.append([
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            self._clarify_button_label(idx, choices[idx]),
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])

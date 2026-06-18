@@ -160,6 +160,77 @@ class TestFeishuMessageNormalization(unittest.TestCase):
         )
 
 
+class TestFeishuClarifyCardBuilders(unittest.TestCase):
+    """Tests for Feishu interactive card builder methods for clarify prompts."""
+
+    def test_build_clarify_card_creates_correct_structure(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        card = FeishuAdapter._build_clarify_card(
+            question="What is your favorite color?",
+            choices=["Red", "Blue", "Green"],
+            clarify_id="abc123",
+        )
+
+        self.assertEqual(card["config"]["wide_screen_mode"], True)
+        self.assertEqual(
+            card["header"]["title"]["content"],
+            "❓ Clarification Needed",
+        )
+        self.assertEqual(card["header"]["template"], "blue")
+        self.assertEqual(len(card["elements"]), 2)
+        # First element is markdown with the question and options
+        self.assertEqual(card["elements"][0]["tag"], "markdown")
+        self.assertIn("What is your favorite color?", card["elements"][0]["content"])
+        self.assertIn("1. Red", card["elements"][0]["content"])
+        self.assertIn("2. Blue", card["elements"][0]["content"])
+        self.assertIn("3. Green", card["elements"][0]["content"])
+        # Second element is the action group with buttons
+        self.assertEqual(card["elements"][1]["tag"], "action")
+        actions = card["elements"][1]["actions"]
+        self.assertEqual(len(actions), 4)  # 3 choices + 1 Other
+        # Check first choice button
+        self.assertEqual(actions[0]["text"]["content"], "1")
+        self.assertEqual(actions[0]["value"]["hermes_clarify_action"], "choose")
+        self.assertEqual(actions[0]["value"]["clarify_id"], "abc123")
+        self.assertEqual(actions[0]["value"]["choice_index"], 0)
+        # Check last button is "Other"
+        self.assertEqual(actions[3]["text"]["content"], "✏️ Other (type answer)")
+        self.assertEqual(actions[3]["value"]["hermes_clarify_action"], "other")
+
+    def test_build_clarify_card_single_choice(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        card = FeishuAdapter._build_clarify_card(
+            question="Proceed?",
+            choices=["Yes"],
+            clarify_id="xyz789",
+        )
+
+        actions = card["elements"][1]["actions"]
+        self.assertEqual(len(actions), 2)  # 1 choice + 1 Other
+        self.assertEqual(actions[0]["value"]["choice_index"], 0)
+        self.assertEqual(actions[0]["value"]["clarify_id"], "xyz789")
+
+    def test_build_resolved_clarify_card(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        card = FeishuAdapter._build_resolved_clarify_card(choice="Option 1")
+        self.assertEqual(card["header"]["title"]["content"], "✅ Answered: Option 1")
+        self.assertEqual(card["header"]["template"], "green")
+        self.assertEqual(
+            card["elements"][0]["content"],
+            "**You selected:** Option 1",
+        )
+
+    def test_build_clarify_awaiting_text_card(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        card = FeishuAdapter._build_clarify_awaiting_text_card()
+        self.assertEqual(card["header"]["title"]["content"], "✏️ Type Your Answer")
+        self.assertEqual(card["header"]["template"], "blue")
+
+
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",

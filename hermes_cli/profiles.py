@@ -142,6 +142,72 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return False
 
 
+def _read_bundled_manifest(manifest_file: Path) -> dict[str, str]:
+    if not manifest_file.exists():
+        return {}
+    try:
+        entries: dict[str, str] = {}
+        for line in manifest_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                name, _, hash_value = line.partition(":")
+                entries[name.strip()] = hash_value.strip()
+            else:
+                entries[line] = ""
+        return entries
+    except (OSError, IOError):
+        return {}
+
+
+def _prune_cloned_bundled_manifest(skills_dir: Path) -> None:
+    manifest_file = skills_dir / ".bundled_manifest"
+    if not manifest_file.exists():
+        return
+
+    manifest = _read_bundled_manifest(manifest_file)
+    if not manifest:
+        return
+
+    live_names: set[str] = set()
+    for skill_md in skills_dir.rglob("SKILL.md"):
+        if is_excluded_skill_path(skill_md):
+            continue
+        try:
+            content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+        except OSError:
+            live_names.add(skill_md.parent.name)
+            continue
+        in_frontmatter = False
+        name = skill_md.parent.name
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if stripped == "---":
+                if in_frontmatter:
+                    break
+                in_frontmatter = True
+                continue
+            if in_frontmatter and stripped.startswith("name:"):
+                value = stripped.split(":", 1)[1].strip().strip("\"'")
+                if value:
+                    name = value
+                    break
+        live_names.add(name)
+
+    pruned = {name: hash_value for name, hash_value in manifest.items() if name in live_names}
+    if pruned == manifest:
+        return
+
+    if pruned:
+        manifest_file.write_text(
+            "\n".join(f"{name}:{hash_value}" for name, hash_value in sorted(pruned.items())) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        manifest_file.unlink(missing_ok=True)
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
@@ -1096,7 +1162,9 @@ def create_profile(
             # same agent capabilities as the source profile.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
-                shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+                dest_skills = profile_dir / "skills"
+                shutil.copytree(source_skills, dest_skills, symlinks=True, dirs_exist_ok=True)
+                _prune_cloned_bundled_manifest(dest_skills)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

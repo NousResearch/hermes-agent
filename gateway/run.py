@@ -9724,6 +9724,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
 
+        if command:
+            logger.info(
+                "slash command: platform=%s user=%s chat=%s command=/%s args=%r",
+                source.platform.value if hasattr(source.platform, "value") else str(source.platform),
+                source.user_name or source.user_id or "unknown",
+                source.chat_id or "unknown",
+                canonical or command,
+                event.get_command_args().strip(),
+            )
+
         # Expand alias quick commands before built-in dispatch so targets like
         # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
         # Preserve built-in precedence; aliases only need early handling when

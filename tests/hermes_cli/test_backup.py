@@ -110,6 +110,13 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_git_for_windows(self):
+        """git/ (Git for Windows installation) must be excluded — ~9,500 files, 390 MB."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("git/usr/bin/git.exe"))
+        assert _should_exclude(Path("git/mingw64/bin/git.exe"))
+        assert _should_exclude(Path("git/usr/share/vim/vim92/syntax/c.vim"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state
@@ -271,6 +278,36 @@ class TestBackup:
             names = zf.namelist()
             agent_files = [n for n in names if "hermes-agent" in n]
             assert agent_files == [], f"hermes-agent files leaked into backup: {agent_files}"
+
+    def test_excludes_git_for_windows(self, tmp_path, monkeypatch):
+        """Backup does NOT include git/ (Git for Windows installation)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        # Simulate Git for Windows installation
+        git_dir = hermes_home / "git"
+        git_dir.mkdir()
+        (git_dir / "usr").mkdir()
+        (git_dir / "usr" / "bin").mkdir()
+        (git_dir / "usr" / "bin" / "git.exe").write_text("fake")
+        (git_dir / "mingw64").mkdir()
+        (git_dir / "mingw64" / "bin").mkdir()
+        (git_dir / "mingw64" / "bin" / "git.exe").write_text("fake")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            git_files = [n for n in names if n.startswith("git/")]
+            assert git_files == [], f"git/ files leaked into backup: {git_files}"
 
     def test_includes_nested_hermes_agent_in_skills(self, tmp_path, monkeypatch):
         """Backup includes skills/.../hermes-agent/ but NOT root hermes-agent/."""

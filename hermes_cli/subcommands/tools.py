@@ -73,6 +73,22 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         help="Platform to apply to (default: cli)",
     )
 
+    # hermes tools diagnose [--platform cli] [--json]
+    tools_diag_p = tools_sub.add_parser(
+        "diagnose",
+        help="Diagnose the resolved model-facing tool surface",
+    )
+    tools_diag_p.add_argument(
+        "--platform",
+        default="cli",
+        help="Platform to diagnose (default: cli)",
+    )
+    tools_diag_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable diagnostics JSON",
+    )
+
     # hermes tools post-setup <key>
     tools_postsetup_p = tools_sub.add_parser(
         "post-setup",

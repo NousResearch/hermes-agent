@@ -12836,6 +12836,10 @@ def cmd_tools(args):
         from hermes_cli.tools_config import tools_disable_enable_command
 
         tools_disable_enable_command(args)
+    elif action == "diagnose":
+        from hermes_cli.tools_config import tools_diagnose_command
+
+        tools_diagnose_command(args)
     elif action == "post-setup":
         from hermes_cli.tools_config import run_post_setup_command
 

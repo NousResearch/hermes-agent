@@ -2,7 +2,7 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from hermes_cli.tools_config import tools_disable_enable_command
+from hermes_cli.tools_config import build_tools_diagnostics, tools_disable_enable_command
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -174,6 +174,39 @@ class TestToolsList:
         out = capsys.readouterr().out
         assert "github" in out
         assert "create_issue" in out
+
+
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+
+class TestToolsDiagnose:
+
+    def test_build_diagnostics_reports_visible_and_disabled_tools(self):
+        config = {"platform_toolsets": {"cli": ["file"]}}
+
+        diag = build_tools_diagnostics(config, "cli")
+
+        assert diag["platform"] == "cli"
+        assert "file" in diag["enabled_toolsets"]
+        assert "read_file" in diag["tools_visible"]
+        assert {
+            "tool": "terminal",
+            "toolset": "terminal",
+            "reason": "toolset disabled",
+        } in diag["filtered"]
+
+    def test_build_diagnostics_reports_memory_provider_status(self):
+        config = {
+            "memory": {"provider": "mnemosyne"},
+            "platform_toolsets": {"cli": ["file"]},
+        }
+
+        diag = build_tools_diagnostics(config, "cli")
+
+        assert diag["provider_tools"]["memory"]["provider"] == "mnemosyne"
+        assert diag["provider_tools"]["memory"]["schemas"] >= 1
+        assert diag["provider_tools"]["memory"]["injected"] == 0
+        assert diag["provider_tools"]["memory"]["skipped_reason"] == "toolset disabled"
 
 
 # ── Validation ───────────────────────────────────────────────────────────────

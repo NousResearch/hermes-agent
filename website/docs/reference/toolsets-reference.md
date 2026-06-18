@@ -38,6 +38,9 @@ toolsets:
 
 ```bash
 hermes tools                            # curses UI to enable/disable per platform
+hermes tools list --platform cli        # show saved enabled/disabled toolsets
+hermes tools diagnose --platform cli    # explain the resolved model-facing tool surface
+hermes tools diagnose --json            # machine-readable diagnostics
 ```
 
 Or in-session:

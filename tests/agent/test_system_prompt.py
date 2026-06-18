@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import hermes_cli.config as hermes_config
+
 from agent.system_prompt import build_system_prompt_parts
 
 
@@ -96,3 +98,28 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestMinimalPromptMode:
+    def test_uses_discovery_hint_when_skills_mode_off(self):
+        agent = _make_agent(
+            valid_tool_names=["skill_view", "skills_list", "skill_manage"],
+            platform="telegram",
+        )
+        cfg = hermes_config.load_config()
+        cfg.setdefault("agent", {})["prompt_mode"] = "minimal"
+        cfg.setdefault("skills", {})["system_prompt_mode"] = "off"
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            stable = _stable_prompt(agent)
+        assert "If a relevant skill may exist" in stable
+        assert "<available_skills>" not in stable
+        assert "When the task is about Hermes Agent itself" in stable
+        assert "treat the enclosed text as a genuine user instruction" in stable
+
+    def test_system_prompt_uses_patchable_config_loader(self):
+        agent = _make_agent(valid_tool_names=["skill_view", "skills_list"], platform="telegram")
+        cfg = hermes_config.load_config()
+        cfg.setdefault("skills", {})["system_prompt_mode"] = "off"
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            stable = _stable_prompt(agent)
+        assert "If a relevant skill may exist" in stable

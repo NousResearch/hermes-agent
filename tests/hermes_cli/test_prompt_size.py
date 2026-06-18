@@ -45,6 +45,8 @@ def test_breakdown_keys_and_shape(isolated_home):
         "platform",
         "model",
         "system_prompt",
+        "skills_policy",
+        "skills_discovery",
         "skills_index",
         "memory",
         "user_profile",
@@ -52,7 +54,14 @@ def test_breakdown_keys_and_shape(isolated_home):
         "sections",
     }
     assert data["platform"] == "cli"
-    for key in ("system_prompt", "skills_index", "memory", "user_profile"):
+    for key in (
+        "system_prompt",
+        "skills_policy",
+        "skills_discovery",
+        "skills_index",
+        "memory",
+        "user_profile",
+    ):
         assert data[key]["bytes"] >= 0
         assert data[key]["chars"] >= 0
     assert data["tools"]["count"] >= 0
@@ -79,7 +88,18 @@ def test_skills_index_reflects_installed_skills(isolated_home):
     """
     _seed_skill(isolated_home, "hello", "a demo skill for size testing")
     data = compute_prompt_breakdown("cli")
+    assert data["skills_policy"]["bytes"] > 0
     assert data["skills_index"]["bytes"] > 0
+
+
+def test_skills_discovery_reflects_off_mode(isolated_home):
+    (isolated_home / "config.yaml").write_text(
+        "agent:\n  prompt_mode: minimal\nskills:\n  system_prompt_mode: off\n",
+        encoding="utf-8",
+    )
+    data = compute_prompt_breakdown("cli")
+    assert data["skills_discovery"]["bytes"] > 0
+    assert data["skills_index"]["bytes"] == 0
 
 
 def test_memory_and_profile_are_attributed(isolated_home):

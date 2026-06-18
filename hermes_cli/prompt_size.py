@@ -1,9 +1,10 @@
 """Prompt-size diagnostic: ``hermes prompt-size``.
 
 Reports a byte/char breakdown of the system prompt the agent would build for
-a fresh session — system prompt total, the ``<available_skills>`` index,
-memory + user profile, and tool-schema JSON. Lets users see where their fixed
-prompt budget goes (issue #34667) without parsing a saved session JSON by hand.
+a fresh session — system prompt total, the skills policy/discovery block,
+the optional ``<available_skills>`` index, memory + user profile, and
+tool-schema JSON. Lets users see where their fixed prompt budget goes
+(issue #34667) without parsing a saved session JSON by hand.
 
 The diagnostic builds a real inspection agent (so the numbers match what
 actually ships on the wire) but never makes a network call: it passes dummy
@@ -19,6 +20,10 @@ from typing import Any, Dict, List, Tuple
 
 # The skills index is wrapped in this tag pair inside the stable tier.
 _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
+
+
+def _measure_text_block(text: str) -> Dict[str, int]:
+    return {"chars": len(text), "bytes": _bytes(text)}
 
 
 def _bytes(s: str) -> int:
@@ -52,11 +57,14 @@ def _build_inspection_agent(platform: str) -> Any:
 def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     """Return a dict of prompt-size measurements for a fresh session.
 
-    Keys: ``system_prompt`` (chars/bytes), ``skills_index``, ``memory``,
-    ``user_profile``, ``tools`` (count + json bytes), and ``sections`` (a list
-    of (label, chars, bytes) for the three prompt tiers).
+    Keys: ``system_prompt`` (chars/bytes), ``skills_policy``,
+    ``skills_discovery``, ``skills_index``, ``memory``, ``user_profile``,
+    ``tools`` (count + json bytes), and ``sections`` (a list of
+    (label, chars, bytes) for the three prompt tiers).
     """
     from agent.system_prompt import build_system_prompt, build_system_prompt_parts
+    from agent.prompt_builder import build_skills_discovery_prompt, build_skills_policy_prompt
+    from hermes_cli.config import load_config
 
     agent = _build_inspection_agent(platform)
 
@@ -67,14 +75,27 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     context = parts.get("context", "")
     volatile = parts.get("volatile", "")
 
-    # Skills index — the <available_skills> block (the largest single block
-    # when many skills are installed). Measured inside the stable tier.
+    cfg = load_config()
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent"), dict) else {}
+    prompt_mode_raw = agent_cfg.get("prompt_mode", "standard")
+    prompt_mode = str("standard" if prompt_mode_raw is None else prompt_mode_raw).strip().lower()
+
     skills_match = _SKILLS_BLOCK_RE.search(stable)
     skills_index = skills_match.group(0) if skills_match else ""
 
-    # Memory + user profile live in the volatile tier. We re-derive their
-    # blocks directly from the memory store so the numbers are attributable
-    # even though they're joined into ``volatile``.
+    skills_policy_candidate = build_skills_policy_prompt(prompt_mode=prompt_mode)
+    skills_discovery_candidate = build_skills_discovery_prompt()
+    skills_policy = ""
+    skills_discovery = ""
+    if skills_index:
+        if skills_policy_candidate and skills_policy_candidate in stable:
+            skills_policy = skills_policy_candidate
+    else:
+        if skills_discovery_candidate and skills_discovery_candidate in stable:
+            skills_discovery = skills_discovery_candidate
+        elif skills_policy_candidate and skills_policy_candidate in stable:
+            skills_policy = skills_policy_candidate
+
     memory_block = ""
     user_block = ""
     store = getattr(agent, "_memory_store", None)
@@ -87,7 +108,6 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Tool-schema JSON — the other half of the fixed per-call payload.
     tools = getattr(agent, "tools", None) or []
     tools_json = json.dumps(tools, ensure_ascii=False)
 
@@ -101,9 +121,11 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
         "platform": platform,
         "model": getattr(agent, "model", "") or "",
         "system_prompt": {"chars": len(full), "bytes": _bytes(full)},
-        "skills_index": {"chars": len(skills_index), "bytes": _bytes(skills_index)},
-        "memory": {"chars": len(memory_block), "bytes": _bytes(memory_block)},
-        "user_profile": {"chars": len(user_block), "bytes": _bytes(user_block)},
+        "skills_policy": _measure_text_block(skills_policy),
+        "skills_discovery": _measure_text_block(skills_discovery),
+        "skills_index": _measure_text_block(skills_index),
+        "memory": _measure_text_block(memory_block),
+        "user_profile": _measure_text_block(user_block),
         "tools": {"count": len(tools), "json_bytes": _bytes(tools_json)},
         "sections": sections,
     }
@@ -122,9 +144,13 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     lines.append(f"  System prompt total : {sp['bytes']:>8,} B  ({_fmt_kb(sp['bytes'])}, {sp['chars']:,} chars)")
     lines.append("")
     lines.append("  Major blocks:")
+    pol = data["skills_policy"]
+    disc = data["skills_discovery"]
     si = data["skills_index"]
     mem = data["memory"]
     up = data["user_profile"]
+    lines.append(f"    skills policy      : {pol['bytes']:>8,} B  ({_fmt_kb(pol['bytes'])})")
+    lines.append(f"    skills discovery   : {disc['bytes']:>8,} B  ({_fmt_kb(disc['bytes'])})")
     lines.append(f"    skills index       : {si['bytes']:>8,} B  ({_fmt_kb(si['bytes'])})")
     lines.append(f"    memory             : {mem['bytes']:>8,} B  ({_fmt_kb(mem['bytes'])})")
     lines.append(f"    user profile       : {up['bytes']:>8,} B  ({_fmt_kb(up['bytes'])})")

@@ -2100,19 +2100,25 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model accepts the Anthropic Fast Mode ``speed`` param.
 
     This gates the *speed=fast request parameter*, which Anthropic supports on
-    Opus 4.6 only (Opus 4.7 explicitly 400s). It is deliberately NOT a general
-    "is this a fast model" check: for Opus 4.8 the fast offering is a SEPARATE
-    model id (``…-opus-4.8-fast``) selected via the model field, not the speed
-    parameter — see ``agent.anthropic_adapter._supports_fast_mode`` and its
-    test. Keep this in lock-step with that adapter gate so the UI never shows a
-    Fast toggle that the runtime would silently drop.
+    Opus 4.8 (research preview) and Opus 4.7 (deprecated, removed 2026-07-24);
+    Opus 4.6 lost fast mode 2026-06-29. It is deliberately NOT a general "is this
+    a fast model" check: the separate ``…-opus-4.8-fast`` model id already bakes
+    in fast inference via the model field, so the speed param must NOT be added
+    on top — that ``-fast`` suffix is excluded here. Keep this in lock-step with
+    ``agent.anthropic_adapter._supports_fast_mode`` so the UI never shows a Fast
+    toggle that the runtime would silently drop.
     """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     if not base.startswith("claude-"):
         return False
-    # Only Opus 4.6 supports the speed=fast parameter at present.
-    return "opus-4-6" in base or "opus-4.6" in base
+    if base.endswith("-fast"):
+        return False  # ``-opus-4.8-fast`` alias is fast via the model field
+    # Opus 4.8 and Opus 4.7 support the speed=fast parameter.
+    return any(
+        v in base
+        for v in ("opus-4-8", "opus-4.8", "opus-4-7", "opus-4.7")
+    )
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:

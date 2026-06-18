@@ -43,6 +43,7 @@ const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-e
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
+const { readClipboardImagePng } = require('./clipboard-image.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
@@ -5731,12 +5732,12 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
-  if (!image || image.isEmpty()) {
+  const png = readClipboardImagePng(clipboard, nativeImage)
+  if (!png) {
     return ''
   }
 
-  return writeComposerImage(image.toPNG(), '.png')
+  return writeComposerImage(png, '.png')
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>

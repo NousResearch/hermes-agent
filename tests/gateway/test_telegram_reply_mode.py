@@ -369,20 +369,21 @@ class TestDMTopicFallbackReplyToMode:
         assert result == {"message_thread_id": 42}
 
     def test_thread_kwargs_returns_full_when_first(self):
-        """reply_to_mode='first' returns thread_id (reply anchor in send kwargs)."""
+        """reply_to_mode='first' returns None for DM topic fallback — Bot API
+        rejects message_thread_id in private chats; reply anchor provides routing."""
         result = TelegramAdapter._thread_kwargs_for_send(
             "100", "42", self.DM_TOPIC_METADATA,
             reply_to_message_id=12345, reply_to_mode="first",
         )
-        assert result == {"message_thread_id": 42}
+        assert result == {"message_thread_id": None}
 
     def test_thread_kwargs_no_mode_backward_compat(self):
-        """Without reply_to_mode, behavior is unchanged."""
+        """Without reply_to_mode, DM topic fallback omits message_thread_id."""
         result = TelegramAdapter._thread_kwargs_for_send(
             "100", "42", self.DM_TOPIC_METADATA,
             reply_to_message_id=12345,
         )
-        assert result == {"message_thread_id": 42}
+        assert result == {"message_thread_id": None}
 
     # -- send() integration test --
 

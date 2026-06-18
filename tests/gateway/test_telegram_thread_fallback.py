@@ -571,7 +571,11 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
 
 @pytest.mark.asyncio
 async def test_send_uses_reply_fallback_for_hermes_dm_topics():
-    """Hermes-created Telegram DM topics route with thread id plus reply anchor."""
+    """Hermes-created Telegram DM topics route with reply anchor only.
+
+    message_thread_id is omitted because the Bot API rejects it in private
+    chats; the reply_to_message_id anchor alone provides DM topic routing.
+    """
     adapter = _make_adapter()
     call_log = []
 
@@ -593,7 +597,7 @@ async def test_send_uses_reply_fallback_for_hermes_dm_topics():
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert "direct_messages_topic_id" not in call_log[0]
 
 
@@ -682,7 +686,11 @@ async def test_created_private_topic_thread_not_found_fails_without_root_fallbac
 
 @pytest.mark.asyncio
 async def test_send_uses_metadata_reply_fallback_for_streaming_dm_topics():
-    """Metadata-only sends still stay in Hermes-created Telegram DM topics."""
+    """Metadata-only sends still stay in Hermes-created Telegram DM topics.
+
+    message_thread_id is omitted (None) for DM topic fallback — the Bot API
+    rejects it in private chats; reply_to_message_id provides routing.
+    """
     adapter = _make_adapter()
     call_log = []
 
@@ -704,7 +712,7 @@ async def test_send_uses_metadata_reply_fallback_for_streaming_dm_topics():
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert "direct_messages_topic_id" not in call_log[0]
 
 
@@ -733,7 +741,7 @@ async def test_send_reply_fallback_applies_to_every_chunk_for_dm_topics():
     assert result.success is True
     assert len(call_log) > 1
     assert all(call["reply_to_message_id"] == 462 for call in call_log)
-    assert all(call["message_thread_id"] == 20197 for call in call_log)
+    assert all(call["message_thread_id"] is None for call in call_log)
     assert all("direct_messages_topic_id" not in call for call in call_log)
 
 
@@ -766,7 +774,7 @@ async def test_send_model_picker_uses_metadata_reply_fallback_for_dm_topics():
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert "direct_messages_topic_id" not in call_log[0]
 
 
@@ -823,7 +831,7 @@ async def test_send_dm_topic_reply_not_found_fails_closed():
     assert result.success is False
     assert result.retryable is False
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert len(call_log) == 1
 
 
@@ -871,7 +879,7 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
@@ -902,7 +910,7 @@ async def test_animation_dm_topic_reply_not_found_retry_drops_thread_id():
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
@@ -934,7 +942,7 @@ async def test_media_group_dm_topic_reply_not_found_retry_drops_thread_id(tmp_pa
     )
 
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
@@ -968,7 +976,7 @@ async def test_send_image_url_dm_topic_reply_not_found_retry_drops_thread_id(mon
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
@@ -1028,9 +1036,9 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
 
     assert result.success is True
     assert call_log[0]["reply_to_message_id"] == 462
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert call_log[1]["reply_to_message_id"] == 462
-    assert call_log[1]["message_thread_id"] == 20197
+    assert call_log[1]["message_thread_id"] is None
     assert call_log[2]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[2]
     assert "direct_messages_topic_id" not in call_log[2]
@@ -1074,7 +1082,7 @@ async def test_slash_confirm_private_topic_callback_followup_sends_thread_and_re
     await adapter._handle_callback_query(SimpleNamespace(callback_query=Query()), SimpleNamespace())
 
     assert call_log
-    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["message_thread_id"] is None
     assert call_log[0]["reply_to_message_id"] == 462
 
 

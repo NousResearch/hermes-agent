@@ -687,7 +687,13 @@ class TelegramAdapter(BasePlatformAdapter):
                         "direct_messages_topic_id": int(direct_topic_id),
                     }
                 return {}
-            return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+            # Private-chat DM topic fallback with a reply anchor: omit
+            # message_thread_id — the Bot API rejects it in private chats,
+            # and the reply_to_message_id anchor alone provides routing.
+            # Previously media sends included message_thread_id here, the API
+            # rejected it, the retry stripped both thread_id AND the reply
+            # anchor, and media landed in the root chat instead of the topic.
+            return {"message_thread_id": None}
         direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
         if direct_topic_id is not None:
             return {

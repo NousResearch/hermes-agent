@@ -223,6 +223,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const toolEntries = Object.entries(info.tools).sort()
   const toolsTotal = flat(info.tools).length
 
+  // MCP headline counts *connected* servers, not configured-but-disabled ones,
+  // so it matches the classic CLI banner (`sum(s.connected)` in
+  // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
+  const mcpServers = info.mcp_servers ?? []
+  const mcpConnected = mcpServers.filter(s => s.connected).length
+
   const toolsBody = () => {
     const shown = toolEntries.slice(0, TOOLSETS_MAX)
     const overflow = toolEntries.length - TOOLSETS_MAX
@@ -376,10 +382,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         )}
 
         {/* ── MCP Servers (collapsed by default) ── */}
-        {info.mcp_servers && info.mcp_servers.length > 0 && (
+        {mcpServers.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <CollapseToggle
-              count={info.mcp_servers.length}
+              count={mcpConnected}
               onToggle={() => setMcpOpen(v => !v)}
               open={mcpOpen}
               suffix="connected"
@@ -395,7 +401,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text color={t.color.text}>
           {toolsTotal} tools{' · '}
           {skillsTotal} skills
-          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
+          {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
           {' · '}
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>

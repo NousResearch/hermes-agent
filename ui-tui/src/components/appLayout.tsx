@@ -105,7 +105,7 @@ const TranscriptPane = memo(function TranscriptPane({
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
+              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && !ui.compact && (
                 <Box marginTop={1}>
                   <Text color={ui.theme.color.border}>───</Text>
                 </Box>

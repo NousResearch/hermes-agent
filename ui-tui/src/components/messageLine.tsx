@@ -7,6 +7,7 @@ import { hasLeadGap } from '../domain/blockLayout.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { shouldUseChatCard } from '../lib/chatLayout.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
@@ -17,12 +18,20 @@ import {
   stripAnsi
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
+import type { ActiveTool, DetailsMode, Msg, Role, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
+import { SplitBorder } from './splitBorder.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
+
+const CHAT_CARD_COLOR: Record<Role, (t: Theme) => string> = {
+  user: t => t.color.accent,
+  assistant: t => t.color.border,
+  system: t => t.color.muted,
+  tool: t => t.color.warn
+}
 
 // Collapse threshold for long system messages (system prompt etc.)
 const SYSTEM_COLLAPSE_CHARS = 400
@@ -127,7 +136,7 @@ export const MessageLine = memo(function MessageLine({
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
 
-  const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails)
+  const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails, compact)
 
   const content = (() => {
     if (msg.kind === 'slash') {
@@ -194,7 +203,17 @@ export const MessageLine = memo(function MessageLine({
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
 
-  return (
+  // Phase 1 of the OpenCode parity: only the user message gets the
+  // SplitBorder card. Assistant / tool / system / trail messages stay
+  // borderless — matches the OpenCode TUI, which wraps the user input
+  // in a left-rule card (┃ accent) and leaves the assistant stream
+  // unframed. The card is suppressed in compact mode and on narrow
+  // terminals (< CHAT_CARD_BREAKPOINT cols) so the layout collapses
+  // to the same density as the previous behavior.
+  const useCard = shouldUseChatCard(cols, compact) && msg.role === 'user'
+  const cardColor = CHAT_CARD_COLOR[msg.role](t)
+
+  const card = (
     <Box
       flexDirection="column"
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
@@ -215,7 +234,7 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
-      {showResponseSeparator && (
+      {showResponseSeparator && !shouldUseChatCard(cols, compact) && (
         <Box marginBottom={1}>
           <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
             <Text color={t.color.border}>└─ </Text>
@@ -237,10 +256,12 @@ export const MessageLine = memo(function MessageLine({
       </Box>
     </Box>
   )
+
+  return useCard ? <SplitBorder color={cardColor}>{card}</SplitBorder> : card
 })
 
-export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
-  msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
+export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean, compact = false): boolean =>
+  !compact && msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
 
 interface MessageLineProps {
   cols: number

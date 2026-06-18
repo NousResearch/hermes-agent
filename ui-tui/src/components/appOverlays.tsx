@@ -30,7 +30,7 @@ export function PromptZone({
 
   if (overlay.approval) {
     return (
-      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" flexShrink={0} paddingX={1} >
         <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
       </Box>
     )
@@ -45,7 +45,7 @@ export function PromptZone({
     const onClose = () => patchOverlayState({ billing: null })
 
     return (
-      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" flexShrink={0} paddingX={1} >
         <BillingOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
       </Box>
     )
@@ -62,7 +62,7 @@ export function PromptZone({
     const onCancel = () => patchOverlayState({ confirm: null })
 
     return (
-      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" flexShrink={0} paddingX={1} >
         <ConfirmPrompt onCancel={onCancel} onConfirm={onConfirm} req={req} t={theme} />
       </Box>
     )
@@ -70,7 +70,7 @@ export function PromptZone({
 
   if (overlay.clarify) {
     return (
-      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" flexShrink={0} paddingX={1} >
         <ClarifyPrompt
           cols={cols}
           onAnswer={onClarifyAnswer}
@@ -84,7 +84,7 @@ export function PromptZone({
 
   if (overlay.sudo) {
     return (
-      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" flexShrink={0} paddingX={1} >
         <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
       </Box>
     )
@@ -92,7 +92,7 @@ export function PromptZone({
 
   if (overlay.secret) {
     return (
-      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" flexShrink={0} paddingX={1} >
         <MaskedPrompt
           cols={cols}
           icon="🔑"
@@ -200,7 +200,7 @@ export function FloatingOverlays({
 
       {overlay.pager && (
         <FloatBox color={theme.color.border}>
-          <Box flexDirection="column" paddingX={1} paddingY={1}>
+          <Box flexDirection="column" paddingX={1} >
             {overlay.pager.title && (
               <Box justifyContent="center" marginBottom={1}>
                 <Text bold color={theme.color.primary}>

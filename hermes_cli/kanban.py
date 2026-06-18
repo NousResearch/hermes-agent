@@ -36,9 +36,11 @@ from hermes_cli.profiles import get_active_profile_name
 _STATUS_ICONS = {
     "todo":     "◻",
     "ready":    "▶",
+    "needs_rework": "↩",
     "running":  "●",
     "scheduled":"⏱",
     "blocked":  "⊘",
+    "review":   "◇",
     "done":     "✓",
     "archived": "—",
 }
@@ -522,6 +524,28 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("--max-len", type=int, default=None,
                            help="Trim the stored comment body to this many characters")
 
+    p_request_rework = sub.add_parser(
+        "request-rework",
+        help="Append reviewer feedback and mark a linked target needs_rework",
+    )
+    p_request_rework.add_argument("target_task_id")
+    p_request_rework.add_argument(
+        "feedback",
+        nargs="+",
+        help="Actionable feedback for the implementation task",
+    )
+    p_request_rework.add_argument(
+        "--reviewer-task",
+        dest="reviewer_task_id",
+        required=True,
+        help="Reviewer task linked to the target task",
+    )
+    p_request_rework.add_argument(
+        "--author",
+        default=None,
+        help="Author name (default: active profile)",
+    )
+
     # --- attach / attachments / attach-rm ---
     p_attach = sub.add_parser("attach", help="Attach a local file to a task")
     p_attach.add_argument("task_id")
@@ -972,6 +996,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "attach":   _cmd_attach,
             "attachments": _cmd_attachments,
             "attach-rm": _cmd_attach_rm,
+            "request-rework": _cmd_request_rework,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
@@ -1950,6 +1975,38 @@ def _cmd_attach_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_request_rework(args: argparse.Namespace) -> int:
+    feedback = " ".join(args.feedback).strip()
+    if not feedback:
+        print("kanban request-rework: feedback is required", file=sys.stderr)
+        return 2
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        mode = str((cfg.get("kanban") or {}).get("review_loop_mode", "human")).strip().lower()
+    except Exception:
+        mode = "human"
+    if mode != "agent":
+        print(
+            "kanban request-rework requires kanban.review_loop_mode=agent; "
+            "default human mode preserves blocked/unblock as the human gate",
+            file=sys.stderr,
+        )
+        return 2
+    author = args.author or _profile_author()
+    with kb.connect_closing() as conn:
+        kb.request_rework_task(
+            conn,
+            args.target_task_id,
+            feedback=feedback,
+            reviewer_task_id=args.reviewer_task_id,
+            author=author,
+        )
+    print(f"Rework requested for {args.target_task_id}")
+    return 0
+
+
 def _worker_run_id_for(task_id: str) -> Optional[int]:
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return None
@@ -2517,7 +2574,17 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in (
+        "triage",
+        "todo",
+        "scheduled",
+        "ready",
+        "needs_rework",
+        "running",
+        "blocked",
+        "review",
+        "done",
+    ):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")

@@ -838,6 +838,68 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _review_loop_mode() -> str:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        mode = str(kanban_cfg.get("review_loop_mode", "human")).strip().lower()
+        return mode or "human"
+    except Exception:
+        return "human"
+
+
+def _check_kanban_rework_mode() -> bool:
+    """Expose rework requests only to opted-in Kanban agent loops."""
+    return _check_kanban_mode() and _review_loop_mode() == "agent"
+
+
+def _handle_request_rework(args: dict, **kw) -> str:
+    """Request actionable rework on a linked implementation task."""
+    mode = _review_loop_mode()
+    if mode != "agent":
+        return tool_error(
+            "kanban_request_rework requires kanban.review_loop_mode: agent; "
+            "default human mode preserves blocked/unblock as the human gate"
+        )
+    target_task_id = args.get("target_task_id") or args.get("task_id")
+    if not target_task_id:
+        return tool_error("target_task_id is required")
+    feedback = args.get("feedback") or args.get("reason")
+    if not feedback or not str(feedback).strip():
+        return tool_error("feedback is required")
+    reviewer_task_id = args.get("reviewer_task_id") or os.environ.get("HERMES_KANBAN_TASK")
+    if not reviewer_task_id:
+        return tool_error(
+            "reviewer_task_id is required when not running inside a kanban worker"
+        )
+    reviewer_task_id = str(reviewer_task_id)
+    ownership_error = _enforce_worker_task_ownership(reviewer_task_id)
+    if ownership_error:
+        return ownership_error
+    board = args.get("board")
+    author = os.environ.get("HERMES_PROFILE") or "worker"
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            kb.request_rework_task(
+                conn,
+                str(target_task_id),
+                feedback=str(feedback),
+                reviewer_task_id=reviewer_task_id,
+                author=author,
+            )
+            return _ok(task_id=str(target_task_id), reviewer_task_id=reviewer_task_id)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_request_rework: {e}")
+    except Exception as e:
+        logger.exception("kanban_request_rework failed")
+        return tool_error(f"kanban_request_rework: {e}")
+
+
 def _handle_attach(args: dict, **kw) -> str:
     """Attach an inline (base64) file to a task.
 
@@ -1397,8 +1459,8 @@ KANBAN_LIST_SCHEMA = {
             "status": {
                 "type": "string",
                 "enum": [
-                    "triage", "todo", "ready", "running",
-                    "blocked", "done", "archived",
+                    "triage", "todo", "scheduled", "ready", "needs_rework",
+                    "running", "blocked", "review", "done", "archived",
                 ],
                 "description": "Optional task status filter.",
             },
@@ -1711,6 +1773,38 @@ KANBAN_ATTACHMENTS_SCHEMA = {
     },
 }
 
+KANBAN_REQUEST_REWORK_SCHEMA = {
+    "name": "kanban_request_rework",
+    "description": (
+        "Request actionable rework on a linked implementation task without "
+        "using blocked as a review loop. Only succeeds when "
+        "kanban.review_loop_mode is 'agent'; human mode keeps blocked/unblock "
+        "as the human gate."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target_task_id": {
+                "type": "string",
+                "description": "Implementation task that should be marked needs_rework.",
+            },
+            "feedback": {
+                "type": "string",
+                "description": "Actionable reviewer feedback to append to the target task.",
+            },
+            "reviewer_task_id": {
+                "type": "string",
+                "description": (
+                    "Reviewer task id. Defaults to HERMES_KANBAN_TASK from "
+                    "the env and must be linked to the target task."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["target_task_id", "feedback"],
+    },
+}
+
 KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
@@ -1993,6 +2087,15 @@ registry.register(
     handler=_handle_attachments,
     check_fn=_check_kanban_mode,
     emoji="📎",
+)
+
+registry.register(
+    name="kanban_request_rework",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_REWORK_SCHEMA,
+    handler=_handle_request_rework,
+    check_fn=_check_kanban_rework_mode,
+    emoji="↩",
 )
 
 registry.register(

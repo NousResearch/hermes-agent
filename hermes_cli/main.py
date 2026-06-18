@@ -15136,9 +15136,14 @@ def main():
         cmd_chat(args)
         return
 
-    # Execute the command
+    # Execute the command.  Subcommand handlers conventionally return a
+    # shell-style status code (0/None on success, non-zero on failure).  The
+    # console entrypoint must propagate non-zero codes so scripts/CI can tell a
+    # rejected command from a successful one.
     if hasattr(args, "func"):
-        args.func(args)
+        rc = args.func(args)
+        if isinstance(rc, int) and rc != 0:
+            raise SystemExit(rc)
     else:
         parser.print_help()
 

@@ -148,7 +148,8 @@ def _conn(board: Optional[str] = None):
 # tasks into ``todo`` and makes the dashboard look like the Scheduled column
 # disappeared.
 BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
+    "triage", "todo", "scheduled", "ready", "needs_rework", "running",
+    "blocked", "review", "done",
 ]
 
 
@@ -852,6 +853,14 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
+            elif s == "needs_rework":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Cannot set status to 'needs_rework' directly; use "
+                        "request-rework with linked reviewer feedback"
+                    ),
+                )
             elif s == "ready":
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
@@ -1211,6 +1220,16 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         continue
                     elif s == "scheduled":
                         ok = kanban_db.schedule_task(conn, tid)
+                    elif s == "needs_rework":
+                        entry.update(
+                            ok=False,
+                            error=(
+                                "Cannot set status to 'needs_rework' directly; "
+                                "use request-rework with linked reviewer feedback"
+                            ),
+                        )
+                        results.append(entry)
+                        continue
                     elif s in {"todo", "triage"}:
                         ok = _set_status_direct(conn, tid, s)
                     else:
@@ -2308,6 +2327,7 @@ class OrchestrationSettingsBody(BaseModel):
     default_assignee: Optional[str] = None
     auto_decompose: Optional[bool] = None
     auto_promote_children: Optional[bool] = None
+    review_loop_mode: Optional[str] = None
 
 
 @router.get("/orchestration")
@@ -2324,6 +2344,9 @@ def get_orchestration_settings():
     explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
     auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
     auto_promote_children = bool(kanban_cfg.get("auto_promote_children", True))
+    review_loop_mode = str(kanban_cfg.get("review_loop_mode", "human") or "human").strip().lower()
+    if review_loop_mode not in {"human", "agent"}:
+        review_loop_mode = "human"
 
     # Resolve fallbacks the same way the decomposer does.
     resolved_orch = explicit_orch
@@ -2347,6 +2370,7 @@ def get_orchestration_settings():
         "default_assignee": explicit_default,
         "auto_decompose": auto_decompose,
         "auto_promote_children": auto_promote_children,
+        "review_loop_mode": review_loop_mode,
         "resolved_orchestrator_profile": resolved_orch,
         "resolved_default_assignee": resolved_default,
         "active_profile": active_default,
@@ -2414,6 +2438,15 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 
     if payload.auto_promote_children is not None:
         kanban_section["auto_promote_children"] = bool(payload.auto_promote_children)
+
+    if payload.review_loop_mode is not None:
+        mode = str(payload.review_loop_mode or "").strip().lower()
+        if mode not in {"human", "agent"}:
+            raise HTTPException(
+                status_code=400,
+                detail="review_loop_mode must be 'human' or 'agent'",
+            )
+        kanban_section["review_loop_mode"] = mode
 
     try:
         save_config(cfg)

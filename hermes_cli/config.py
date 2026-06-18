@@ -2799,6 +2799,12 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Review-loop mode. "human" preserves the historical contract:
+        # review feedback that needs changes is handed off via completion or
+        # comments and a human/orchestrator decides what to requeue. "agent"
+        # enables the constrained kanban_request_rework/request-rework path
+        # that marks linked implementation cards needs_rework for dispatch.
+        "review_loop_mode": "human",
         # Profile assigned to the root/orchestration task after Triage
         # decomposition. When unset, falls back to the default profile (the
         # one `hermes` launches with no -p flag). This does not control the

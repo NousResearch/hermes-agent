@@ -355,3 +355,77 @@ def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
     assert result == {"result": ["ready"]}
     assert init_calls == ["session-1"]
     assert not background_started.is_set()
+
+
+def test_honcho_reference_document_metadata_detects_content_of_preamble():
+    """Telegram/Discord injected [Content of ...] text files are also reference documents."""
+    metadata = HonchoMemoryProvider._reference_document_metadata(
+        "[Content of Untitled document.txt]:\nExternal report text"
+    )
+
+    assert metadata == {
+        "hermes_kind": "reference_document",
+        "reasoning_disabled": True,
+        "filename": "Untitled document.txt",
+    }
+
+
+def test_honcho_sync_turn_disables_reasoning_for_uploaded_text_documents():
+    """Text-document uploads are reference material, not user autobiographical facts."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    session = SimpleNamespace(messages=[])
+
+    def add_message(role, content, **kwargs):
+        session.messages.append({"role": role, "content": content, **kwargs})
+
+    session.add_message = add_message
+
+    class RecordingManager:
+        def __init__(self):
+            self.flushed = False
+
+        def get_or_create(self, session_key):
+            return session
+
+        def _flush_session(self, session_obj):
+            self.flushed = True
+
+    manager = RecordingManager()
+    provider._config = cfg
+    provider._manager = manager
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    uploaded = "[The user sent a text document: 'research.md'. Its content has been included below.]\n# Research"
+    provider.sync_turn(uploaded, "Recibido")
+    provider._sync_thread.join(timeout=1)
+
+    assert manager.flushed is True
+    user_msg = session.messages[0]
+    assert user_msg["role"] == "user"
+    assert user_msg["configuration"] == {"reasoning": {"enabled": False}}
+    assert user_msg["metadata"]["hermes_kind"] == "reference_document"
+    assert user_msg["metadata"]["filename"] == "research.md"
+    assert session.messages[1]["role"] == "assistant"
+    assert "configuration" not in session.messages[1]
+
+
+def test_honcho_sync_turn_respects_save_messages_false():
+    """saveMessages=false should prevent conversation turn persistence entirely."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    cfg.save_messages = False
+
+    class FailingManager:
+        def get_or_create(self, session_key):  # pragma: no cover - should not be called
+            raise AssertionError("sync should not touch Honcho when saveMessages=false")
+
+    provider._config = cfg
+    provider._manager = FailingManager()
+    provider._session_key = "test-session"
+    provider._session_initialized = True
+
+    provider.sync_turn("hello", "world")
+
+    assert provider._sync_thread is None

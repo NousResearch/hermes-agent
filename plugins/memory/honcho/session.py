@@ -437,7 +437,12 @@ class HonchoSessionManager:
         honcho_messages = []
         for msg in new_messages:
             peer = user_peer if msg["role"] == "user" else assistant_peer
-            honcho_messages.append(peer.message(msg["content"]))
+            message_kwargs = {}
+            if msg.get("metadata") is not None:
+                message_kwargs["metadata"] = msg["metadata"]
+            if msg.get("configuration") is not None:
+                message_kwargs["configuration"] = msg["configuration"]
+            honcho_messages.append(peer.message(msg["content"], **message_kwargs))
 
         try:
             honcho_session.add_messages(honcho_messages)

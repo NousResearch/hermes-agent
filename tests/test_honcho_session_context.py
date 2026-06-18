@@ -19,10 +19,24 @@ class _FakeContext:
 class _RecordingHonchoSession:
     def __init__(self):
         self.calls = []
+        self.added_messages = []
 
     def context(self, **kwargs):
         self.calls.append(kwargs)
         return _FakeContext()
+
+    def add_messages(self, messages):
+        self.added_messages.extend(messages)
+
+
+class _RecordingPeer:
+    def __init__(self, peer_id):
+        self.id = peer_id
+        self.message_calls = []
+
+    def message(self, content, **kwargs):
+        self.message_calls.append({"content": content, **kwargs})
+        return {"peer_id": self.id, "content": content, **kwargs}
 
 
 def _manager_with_cached_session(*, ai_observe_others=True):
@@ -92,4 +106,34 @@ def test_session_context_user_alias_uses_user_self_observer_when_ai_cannot_obser
             "peer_target": "chris",
             "peer_perspective": "chris",
         }
+    ]
+
+
+def test_flush_session_forwards_message_metadata_and_configuration():
+    mgr, fake = _manager_with_cached_session(ai_observe_others=True)
+    session = mgr._cache["test-session"]
+    mgr._peers_cache["chris"] = _RecordingPeer("chris")
+    mgr._peers_cache["hermes"] = _RecordingPeer("hermes")
+
+    session.add_message(
+        "user",
+        "[The user sent a text document: 'research.md'.]",
+        metadata={"hermes_kind": "reference_document"},
+        configuration={"reasoning": {"enabled": False}},
+    )
+    session.add_message("assistant", "Recibido")
+
+    assert mgr._flush_session(session) is True
+
+    assert fake.added_messages == [
+        {
+            "peer_id": "chris",
+            "content": "[The user sent a text document: 'research.md'.]",
+            "metadata": {"hermes_kind": "reference_document"},
+            "configuration": {"reasoning": {"enabled": False}},
+        },
+        {
+            "peer_id": "hermes",
+            "content": "Recibido",
+        },
     ]

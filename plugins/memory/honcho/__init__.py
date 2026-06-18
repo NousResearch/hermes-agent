@@ -884,6 +884,48 @@ class HonchoMemoryProvider(MemoryProvider):
     # discarded on read so we don't inject context for a stale conversational
     # pivot after a gap of trivial-prompt turns.
     _STALE_RESULT_MULTIPLIER = 2
+    # Telegram/document ingestion prepends external text files into the user
+    # turn as bracketed reference material.  These are not autobiographical
+    # utterances by the user; if synced to Honcho with normal reasoning enabled,
+    # the deriver can turn report recommendations into user preferences.  Cover
+    # both gateway preambles observed in the wild:
+    #   [The user sent a text document: 'file.txt'. ...]
+    #   [Content of file.txt]:
+    # Keep this deliberately narrow to avoid suppressing normal messages that
+    # merely mention files.
+    _REFERENCE_DOCUMENT_RES = (
+        re.compile(
+            r"^\s*\[The user sent a text document:\s*['\"](?P<filename>[^'\"]+)['\"]\.",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^\s*\[Content of\s+(?P<filename>[^\]\r\n:]+)\]:",
+            re.IGNORECASE,
+        ),
+    )
+
+    @classmethod
+    def _reference_document_metadata(cls, content: str) -> dict[str, Any] | None:
+        """Return Honcho metadata for an attached reference document, if any."""
+        text = content or ""
+        match = None
+        for pattern in cls._REFERENCE_DOCUMENT_RES:
+            match = pattern.match(text)
+            if match:
+                break
+        if not match:
+            return None
+        return {
+            "hermes_kind": "reference_document",
+            "reasoning_disabled": True,
+            "filename": match.group("filename").strip("'\" "),
+        }
+
+    @staticmethod
+    def _reasoning_disabled_configuration() -> dict[str, Any]:
+        """Honcho v3 message configuration that prevents derivation."""
+        return {"reasoning": {"enabled": False}}
+
     # Cap on the empty-streak backoff so a persistently silent backend
     # eventually settles on a ceiling instead of unbounded widening.
     _BACKOFF_MAX = 8
@@ -901,6 +943,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 "%.1fs — treating as dead", age, timeout * self._STALE_THREAD_MULTIPLIER,
             )
             return False
+
         return True
 
     def _effective_cadence(self) -> int:
@@ -1212,15 +1255,26 @@ class HonchoMemoryProvider(MemoryProvider):
             self._start_session_init_background()
             return
 
+        if self._config and not getattr(self._config, "save_messages", True):
+            logger.debug("Honcho sync_turn skipped: saveMessages=false")
+            return
+
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        reference_metadata = self._reference_document_metadata(clean_user_content)
+        reference_kwargs = None
+        if reference_metadata:
+            reference_kwargs = {
+                "metadata": reference_metadata,
+                "configuration": self._reasoning_disabled_configuration(),
+            }
 
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
                 for chunk in self._chunk_message(clean_user_content, msg_limit):
-                    session.add_message("user", chunk)
+                    session.add_message("user", chunk, **(reference_kwargs or {}))
                 for chunk in self._chunk_message(clean_assistant_content, msg_limit):
                     session.add_message("assistant", chunk)
                 self._manager._flush_session(session)
@@ -1233,6 +1287,7 @@ class HonchoMemoryProvider(MemoryProvider):
             target=_sync, daemon=True, name="honcho-sync"
         )
         self._sync_thread.start()
+
 
     def on_memory_write(
         self,

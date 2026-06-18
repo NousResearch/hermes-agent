@@ -91,7 +91,7 @@ import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runti
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
-import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
+import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -169,6 +169,7 @@ export const Thread: FC<{
   loading?: ThreadLoadingState
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => Promise<void> | void
+  onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
@@ -180,18 +181,19 @@ export const Thread: FC<{
   loading,
   onBranchInNewChat,
   onCancel,
+  onDismissError,
   onRestoreToMessage,
   sessionId = null,
   sessionKey
 }) => {
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
+      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />,
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
       UserMessage: () => <UserMessage onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, onRestoreToMessage, sessionId]
+    [cwd, gateway, onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, sessionId]
   )
 
   const emptyPlaceholder = intro ? (
@@ -245,9 +247,13 @@ const CenteredThreadSpinner: FC = () => {
   )
 }
 
-const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
+const AssistantMessage: FC<{
+  onBranchInNewChat?: (messageId: string) => void
+  onDismissError?: (messageId: string) => void
+}> = ({ onBranchInNewChat, onDismissError }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
+  const { t } = useI18n()
 
   // PERF: this component must NOT subscribe to the streaming text. Every
   // selector here returns a value that stays referentially stable across
@@ -306,10 +312,20 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
         )}
         <MessagePrimitive.Error>
           <ErrorPrimitive.Root
-            className="mt-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
+            className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
             role="alert"
           >
-            <ErrorPrimitive.Message />
+            <ErrorPrimitive.Message className="min-w-0 flex-1" />
+            {onDismissError && (
+              <TooltipIconButton
+                className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
+                onClick={() => onDismissError(messageId)}
+                side="top"
+                tooltip={t.assistant.thread.dismissError}
+              >
+                <XIcon className="size-3.5" />
+              </TooltipIconButton>
+            )}
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>

@@ -437,6 +437,65 @@ export interface AnalyticsTotals {
   total_sessions: number
 }
 
+export type WorkQueueSource = 'action' | 'cron' | 'email' | 'ignition' | 'manual' | 'messaging' | 'qbo' | 'session' | string
+export type WorkQueueStatus = 'archived' | 'blocked' | 'done' | 'failed' | 'needs_review' | 'running' | 'scheduled' | 'snoozed' | string
+export type WorkQueuePriority = 'high' | 'low' | 'normal' | 'urgent' | string
+
+export interface WorkQueueItem {
+  actions: string[]
+  actor?: null | string
+  client_name?: null | string
+  created_at: string
+  derived?: boolean
+  detail?: string
+  due_at?: null | string
+  id: string
+  metadata?: Record<string, unknown>
+  priority: WorkQueuePriority
+  session_id?: null | string
+  snoozed_until?: null | string
+  source: WorkQueueSource
+  source_url?: null | string
+  status: WorkQueueStatus
+  summary?: string
+  title: string
+  updated_at: string
+}
+
+export interface WorkQueueResponse {
+  items: WorkQueueItem[]
+}
+
+export interface WorkQueueItemCreatePayload {
+  actions?: string[]
+  actor?: string
+  client_name?: string
+  detail?: string
+  due_at?: string
+  priority?: string
+  session_id?: string
+  source?: string
+  source_url?: string
+  status?: string
+  summary?: string
+  title: string
+}
+
+export interface WorkQueueItemPatchPayload {
+  actions?: string[]
+  actor?: string
+  client_name?: string
+  detail?: string
+  due_at?: string
+  priority?: string
+  session_id?: string
+  snoozed_until?: string
+  source_url?: string
+  status?: string
+  summary?: string
+  title?: string
+}
+
 export interface CronJob {
   deliver?: null | string
   enabled: boolean

@@ -77,7 +77,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -92,7 +92,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, Field
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -7130,6 +7130,326 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
         if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
             return name
     return None
+
+
+# ---------------------------------------------------------------------------
+# Work queue endpoints — canonical cockpit read model for desktop.
+# ---------------------------------------------------------------------------
+
+_WORK_QUEUE_DIRNAME = "work_queue"
+_WORK_QUEUE_ITEMS_FILE = "items.json"
+
+
+class WorkQueueItemCreate(BaseModel):
+    title: str
+    summary: Optional[str] = None
+    detail: Optional[str] = None
+    source: str = "manual"
+    status: str = "needs_review"
+    priority: str = "normal"
+    actor: Optional[str] = None
+    client_name: Optional[str] = None
+    source_url: Optional[str] = None
+    session_id: Optional[str] = None
+    due_at: Optional[str] = None
+    actions: List[str] = Field(default_factory=list)
+
+
+class WorkQueueItemPatch(BaseModel):
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    detail: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    actor: Optional[str] = None
+    client_name: Optional[str] = None
+    source_url: Optional[str] = None
+    session_id: Optional[str] = None
+    due_at: Optional[str] = None
+    snoozed_until: Optional[str] = None
+    actions: Optional[List[str]] = None
+
+
+def _model_patch_dict(model: BaseModel) -> Dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(exclude_unset=True)
+    return model.dict(exclude_unset=True)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _work_queue_file() -> Path:
+    return get_hermes_home() / _WORK_QUEUE_DIRNAME / _WORK_QUEUE_ITEMS_FILE
+
+
+def _load_manual_work_items() -> List[Dict[str, Any]]:
+    path = _work_queue_file()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _log.exception("Failed to read work queue items")
+        return []
+    items = data.get("items") if isinstance(data, dict) else data
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _save_manual_work_items(items: List[Dict[str, Any]]) -> None:
+    path = _work_queue_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"items": items}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _work_item(
+    *,
+    id: str,
+    source: str,
+    status: str,
+    priority: str,
+    title: str,
+    summary: str = "",
+    detail: str = "",
+    created_at: Optional[str] = None,
+    updated_at: Optional[str] = None,
+    due_at: Optional[str] = None,
+    actor: Optional[str] = None,
+    client_name: Optional[str] = None,
+    source_url: Optional[str] = None,
+    session_id: Optional[str] = None,
+    actions: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    derived: bool = True,
+) -> Dict[str, Any]:
+    now = _utc_now_iso()
+    return {
+        "id": id,
+        "source": source,
+        "status": status,
+        "priority": priority,
+        "title": title,
+        "summary": summary,
+        "detail": detail,
+        "created_at": created_at or updated_at or now,
+        "updated_at": updated_at or created_at or now,
+        "due_at": due_at,
+        "actor": actor,
+        "client_name": client_name,
+        "source_url": source_url,
+        "session_id": session_id,
+        "actions": actions or ["open", "archive"],
+        "metadata": metadata or {},
+        "derived": derived,
+    }
+
+
+def _cron_work_items() -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    try:
+        cron_jobs_list: List[Dict[str, Any]] = []
+        for profile in _cron_profile_dicts():
+            name = str(profile.get("name") or "")
+            if not name:
+                continue
+            try:
+                cron_jobs_list.extend(_call_cron_for_profile(name, "list_jobs", True))
+            except Exception:
+                _log.exception("Work queue failed to list cron jobs for profile %s", name)
+        for job in cron_jobs_list:
+            job_id = str(job.get("id") or job.get("name") or "")
+            if not job_id:
+                continue
+            name = str(job.get("name") or job.get("prompt") or job_id)
+            state = str(job.get("state") or ("disabled" if job.get("enabled") is False else "scheduled"))
+            last_status = str(job.get("last_status") or "")
+            last_error = str(job.get("last_error") or "")
+            profile_name = str(job.get("profile") or "default")
+            if last_error or last_status == "error" or state == "error":
+                items.append(_work_item(
+                    id=f"cron:failed:{profile_name}:{job_id}", source="cron", status="failed", priority="high",
+                    title=f"Cron failed: {name}", summary=last_error or "Last cron run failed.", detail=json.dumps(job, indent=2, default=str),
+                    updated_at=job.get("last_run_at") or job.get("updated_at"), due_at=job.get("next_run_at"),
+                    source_url=f"/cron?job={urllib.parse.quote(job_id)}", actions=["open", "archive"], metadata={"job_id": job_id, "profile": profile_name},
+                ))
+            elif state in {"paused", "disabled"} or job.get("enabled") is False:
+                items.append(_work_item(
+                    id=f"cron:paused:{profile_name}:{job_id}", source="cron", status="blocked", priority="normal",
+                    title=f"Cron paused: {name}", summary="This scheduled job is not currently running.", detail=json.dumps(job, indent=2, default=str),
+                    updated_at=job.get("updated_at") or job.get("last_run_at"), due_at=job.get("next_run_at"),
+                    source_url=f"/cron?job={urllib.parse.quote(job_id)}", actions=["open", "archive"], metadata={"job_id": job_id, "profile": profile_name},
+                ))
+    except Exception:
+        _log.exception("Failed to build cron work queue items")
+    return items
+
+
+def _session_work_items() -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            sessions = db.list_sessions_rich(limit=20, offset=0, min_message_count=0, order_by_last_active=True)
+        finally:
+            db.close()
+        now = time.time()
+        for session in sessions:
+            last_active = float(session.get("last_active") or session.get("started_at") or 0)
+            if session.get("ended_at") is None and last_active and now - last_active < 300:
+                sid = str(session.get("id") or "")
+                if not sid:
+                    continue
+                title = str(session.get("title") or session.get("preview") or sid)
+                items.append(_work_item(
+                    id=f"session:running:{sid}", source="session", status="running", priority="normal",
+                    title=f"Running session: {title}", summary=str(session.get("preview") or "Hermes session active in the last 5 minutes."),
+                    updated_at=datetime.fromtimestamp(last_active, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                    source_url=f"/{urllib.parse.quote(sid)}", session_id=sid, actions=["open"], metadata={"session": session},
+                ))
+    except Exception:
+        _log.exception("Failed to build session work queue items")
+    return items
+
+
+def _action_work_items() -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    names = sorted(set(_ACTION_LOG_FILES) | set(_ACTION_PROCS) | set(_ACTION_RESULTS))
+    for name in names:
+        proc = _ACTION_PROCS.get(name)
+        result = _ACTION_RESULTS.get(name)
+        if proc is not None:
+            exit_code = proc.poll()
+            if exit_code is None:
+                items.append(_work_item(
+                    id=f"action:running:{name}", source="action", status="running", priority="normal",
+                    title=f"Action running: {name.replace('-', ' ')}", summary="Desktop action is still running.",
+                    detail="\n".join(_tail_lines(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], 80)), actions=["open"], metadata={"action": name},
+                ))
+            elif exit_code != 0:
+                items.append(_work_item(
+                    id=f"action:failed:{name}", source="action", status="failed", priority="high",
+                    title=f"Action failed: {name.replace('-', ' ')}", summary=f"Exited with code {exit_code}.",
+                    detail="\n".join(_tail_lines(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], 80)), actions=["open", "archive"], metadata={"action": name, "exit_code": exit_code},
+                ))
+        elif result and result.get("exit_code") not in (None, 0):
+            items.append(_work_item(
+                id=f"action:failed:{name}", source="action", status="failed", priority="high",
+                title=f"Action failed: {name.replace('-', ' ')}", summary=f"Exited with code {result.get('exit_code')}.",
+                detail="\n".join(_tail_lines(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], 80)), actions=["open", "archive"], metadata={"action": name, **result},
+            ))
+    return items
+
+
+def _derived_work_items() -> List[Dict[str, Any]]:
+    return [*_cron_work_items(), *_session_work_items(), *_action_work_items()]
+
+
+def _is_derived_override(item: Dict[str, Any]) -> bool:
+    return bool(item.get("derived")) and item.get("source") != "manual"
+
+
+def _all_work_items() -> List[Dict[str, Any]]:
+    manual = _load_manual_work_items()
+    derived = _derived_work_items()
+    overrides = {str(item.get("id")): item for item in manual if _is_derived_override(item)}
+    derived_ids = {str(item.get("id")) for item in derived}
+
+    items = [item for item in manual if not _is_derived_override(item)]
+    for item in derived:
+        item_id = str(item.get("id") or "")
+        override = overrides.get(item_id)
+        if override:
+            if override.get("status") == "archived":
+                continue
+            merged = {**item, **override, "id": item_id, "derived": True, "metadata": {**item.get("metadata", {}), **override.get("metadata", {})}}
+            items.append(merged)
+        else:
+            items.append(item)
+
+    # Preserve derived overrides whose underlying source is no longer active so
+    # completed/snoozed decisions remain visible until archived.
+    for item_id, override in overrides.items():
+        if item_id not in derived_ids and override.get("status") != "archived":
+            items.append(override)
+    return sorted(items, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+
+
+@app.get("/api/work-queue")
+async def list_work_queue(status: Optional[str] = None, source: Optional[str] = None):
+    items = _all_work_items()
+    if status:
+        allowed = {part.strip() for part in status.split(",") if part.strip()}
+        items = [item for item in items if item.get("status") in allowed]
+    if source:
+        allowed = {part.strip() for part in source.split(",") if part.strip()}
+        items = [item for item in items if item.get("source") in allowed]
+    return {"items": items}
+
+
+@app.post("/api/work-queue/items")
+async def create_work_queue_item(body: WorkQueueItemCreate):
+    now = _utc_now_iso()
+    item = _work_item(
+        id=f"manual:{secrets.token_urlsafe(12)}", source=body.source, status=body.status, priority=body.priority,
+        title=body.title, summary=body.summary or "", detail=body.detail or "", created_at=now, updated_at=now,
+        due_at=body.due_at, actor=body.actor, client_name=body.client_name, source_url=body.source_url,
+        session_id=body.session_id, actions=body.actions or ["open", "archive", "snooze", "mark_done"], derived=False,
+    )
+    items = _load_manual_work_items()
+    items.append(item)
+    _save_manual_work_items(items)
+    return item
+
+
+def _upsert_manual_patch(item_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+    items = _load_manual_work_items()
+    now = _utc_now_iso()
+    for item in items:
+        if item.get("id") == item_id:
+            item.update({k: v for k, v in patch.items() if v is not None})
+            item["updated_at"] = now
+            _save_manual_work_items(items)
+            return item
+
+    base = next((item for item in _derived_work_items() if item.get("id") == item_id), None)
+    if base:
+        item = {**base, **{k: v for k, v in patch.items() if v is not None}, "id": item_id, "derived": True, "updated_at": now}
+        item.setdefault("created_at", base.get("created_at") or now)
+    else:
+        item = {
+            "id": item_id,
+            "source": "derived",
+            "status": "needs_review",
+            "priority": "normal",
+            "title": item_id,
+            "summary": "",
+            "detail": "",
+            "created_at": now,
+            "updated_at": now,
+            "derived": True,
+            **{k: v for k, v in patch.items() if v is not None},
+        }
+    items.append(item)
+    _save_manual_work_items(items)
+    return item
+
+
+@app.patch("/api/work-queue/items/{item_id:path}")
+async def patch_work_queue_item(item_id: str, body: WorkQueueItemPatch):
+    return _upsert_manual_patch(item_id, _model_patch_dict(body))
+
+
+@app.post("/api/work-queue/items/{item_id:path}/archive")
+async def archive_work_queue_item(item_id: str):
+    return _upsert_manual_patch(item_id, {"status": "archived"})
+
+
+@app.post("/api/work-queue/items/{item_id:path}/snooze")
+async def snooze_work_queue_item(item_id: str, body: WorkQueueItemPatch):
+    until = body.snoozed_until or body.due_at
+    return _upsert_manual_patch(item_id, {"status": "snoozed", "snoozed_until": until})
 
 
 @app.get("/api/cron/jobs")

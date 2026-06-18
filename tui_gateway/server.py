@@ -1302,6 +1302,23 @@ _INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 _INDICATOR_DEFAULT = "kaomoji"
 
 
+def _sync_tool_preview_length(cfg: dict) -> None:
+    try:
+        display = cfg.get("display") if isinstance(cfg, dict) else {}
+        if not isinstance(display, dict):
+            display = {}
+        raw = display.get("tool_preview_length", 0)
+        try:
+            value = int(raw) if raw else 0
+        except (TypeError, ValueError):
+            value = 0
+        from agent.display import set_tool_preview_max_len
+
+        set_tool_preview_max_len(value)
+    except Exception:
+        pass
+
+
 def _load_cfg() -> dict:
     global _cfg_cache, _cfg_mtime, _cfg_path
     try:
@@ -1317,7 +1334,9 @@ def _load_cfg() -> dict:
         mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
-                return copy.deepcopy(_cfg_cache)
+                data = copy.deepcopy(_cfg_cache)
+                _sync_tool_preview_length(data)
+                return data
         if p.exists():
             with open(p, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
@@ -1327,6 +1346,7 @@ def _load_cfg() -> dict:
             _cfg_cache = copy.deepcopy(data)
             _cfg_mtime = mtime
             _cfg_path = p
+        _sync_tool_preview_length(data)
         return data
     except Exception:
         pass
@@ -1347,6 +1367,7 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = path.stat().st_mtime
         except Exception:
             _cfg_mtime = None
+    _sync_tool_preview_length(cfg)
 
 
 def _cwd_for_session_key(session_key: str) -> str:
@@ -2598,7 +2619,7 @@ def _tool_ctx(name: str, args: dict) -> str:
     try:
         from agent.display import build_tool_preview
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        return build_tool_preview(name, args) or ""
     except Exception:
         return ""
 

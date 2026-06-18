@@ -980,6 +980,30 @@ def test_config_roundtrip(server, tmp_path):
     assert server._load_cfg()["model"] == "test/model"
 
 
+def test_config_load_syncs_tui_tool_preview_length(server, tmp_path):
+    import yaml
+    from agent.display import get_tool_preview_max_len, set_tool_preview_max_len
+
+    server._hermes_home = tmp_path
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"display": {"tool_preview_length": 200}}),
+        encoding="utf-8",
+    )
+    set_tool_preview_max_len(0)
+
+    try:
+        assert server._load_cfg()["display"]["tool_preview_length"] == 200
+        assert get_tool_preview_max_len() == 200
+
+        command = "x" * 120
+        assert server._tool_ctx("terminal", {"command": command}) == command
+    finally:
+        set_tool_preview_max_len(0)
+
+
 # ── _cli_exec_blocked ────────────────────────────────────────────────
 
 

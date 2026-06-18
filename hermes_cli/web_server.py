@@ -1149,7 +1149,9 @@ def _media_serve_roots() -> list[Path]:
     allowlist.
     """
     home = get_hermes_home()
-    roots = [home / "images", home / "screenshots", home / "cache"]
+    roots = [home / "images", home / "screenshots", home / "cache",
+             home / "image_cache", home / "audio_cache", home / "document_cache",
+             home / "video_cache", home / "browser_screenshots"]
     out: list[Path] = []
     for root in roots:
         try:
@@ -2907,6 +2909,11 @@ async def get_profiles_sessions(
     # newest cron sessions can't starve the recents page.
     source_filter = source or None
     exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
+    # Desktop sidebar classifies api_server as a messaging-platform source and
+    # therefore excludes it from the main session list via SIDEBAR_EXCLUDED_SOURCES.
+    # Strip it server-side so Desktop sessions (source=api_server) always appear
+    # in the sidebar alongside local sessions, regardless of client version.
+    exclude_list = [s for s in exclude_list if s != 'api_server']
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 500)

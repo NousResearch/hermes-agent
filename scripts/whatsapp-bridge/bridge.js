@@ -678,12 +678,13 @@ app.post('/typing', async (req, res) => {
     return res.status(503).json({ error: 'Not connected' });
   }
 
-  const { chatId } = req.body;
+  const { chatId, state } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
+  const presence = state === 'paused' ? 'paused' : 'composing';
   try {
-    await sock.sendPresenceUpdate('composing', chatId);
-    res.json({ success: true });
+    await sock.sendPresenceUpdate(presence, chatId);
+    res.json({ success: true, state: presence });
   } catch (err) {
     res.json({ success: false });
   }

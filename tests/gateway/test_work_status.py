@@ -5,7 +5,14 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome, SendResult
 from gateway.session import SessionSource
-from gateway.work_status import WorkStatusConfig, WorkStatusHandle, fallback_status_text, resolve_work_status_config
+from gateway.work_status import (
+    WorkStatusConfig,
+    WorkStatusHandle,
+    fallback_status_text,
+    infer_status_mode,
+    interpret_status_request,
+    resolve_work_status_config,
+)
 
 
 class DummyAdapter(BasePlatformAdapter):
@@ -91,12 +98,21 @@ def test_fallback_status_uses_reply_context_for_short_followups():
     ev = event("do this")
     ev.reply_to_text = "Investigate the busy Telegram keyboard and make it modular"
     text = fallback_status_text(ev)
-    assert text.startswith("📌 Working from reply:")
+    assert text.startswith("📌 [Research] From reply:")
     assert "busy Telegram keyboard" in text
 
 
 def test_fallback_status_for_short_message_is_not_prefixed_with_work_on():
-    assert fallback_status_text(event("Test")) == "📌 Working: Test"
+    assert fallback_status_text(event("Test")) == "📌 [Verify] Run tests"
+
+
+def test_status_mode_replaces_working_prefix_with_request_interpretation():
+    text = fallback_status_text(event("Our pinned message is dumb. Replace Working with the mode and summarize the request interpretation."))
+    assert text == "📌 [Debug] Investigate pinned message code"
+    assert "Working:" not in text
+    assert infer_status_mode("Can you explain what broke?") == "Ask"
+    assert infer_status_mode("Plan the migration") == "Plan"
+    assert interpret_status_request("Our pinned message is dumb", "Debug") == "Investigate pinned message code"
 
 
 @pytest.mark.asyncio
@@ -118,7 +134,7 @@ async def test_start_and_finish_work_status_pins_then_edits_unpins_and_deletes(m
     handle = await adapter._start_work_status(event(), None, "session-1", lambda: gen["value"])
     assert handle is not None
     assert handle.pinned is True
-    assert adapter.sent[0][1].startswith("📌 Working:")
+    assert adapter.sent[0][1].startswith("📌 [Build]")
     assert adapter.pinned == [("42", handle.message_id, {"notify": False})]
 
     await adapter._finish_work_status(

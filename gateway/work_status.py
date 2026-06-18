@@ -229,6 +229,95 @@ def compact_source_text(event: Any) -> str:
     return current
 
 
+def infer_status_mode(source: str, event: Any | None = None) -> str:
+    """Infer a compact human-facing work mode for the live status card."""
+    message_type = getattr(getattr(event, "message_type", None), "value", "") if event is not None else ""
+    text = " ".join(str(source or "").lower().split())
+    if message_type and message_type not in {"text", "message"}:
+        text = f"{message_type} {text}"
+    if not text:
+        return "Ask"
+    if "?" in text or re.search(r"\b(what|why|how|which|should i|can you explain|do you know|is it|are we)\b", text):
+        return "Ask"
+    if re.search(r"\b(debug|bug|fix|broken|error|fail(?:ed|ing)?|traceback|crash|issue|stuck|not working|dumb|wrong|regression|troubleshoot)\b", text):
+        return "Debug"
+    if re.search(r"\b(plan|strategy|design|sop|architecture|outline|roadmap|proposal|approach)\b", text):
+        return "Plan"
+    if re.search(r"\b(verify|test|check|confirm|status|inspect|audit|review)\b", text):
+        return "Verify"
+    if re.search(r"\b(research|search|find|look up|investigate|compare|analyze|summari[sz]e)\b", text):
+        return "Research"
+    if re.search(r"\b(build|create|add|implement|expand|update|change|modify|write|patch|replace|install|configure|enable)\b", text):
+        return "Build"
+    return "Task"
+
+
+def _clean_request_interpretation(source: str, *, max_len: int = 92) -> str:
+    """Normalize user/reply text into a short request-interpretation summary."""
+    text = re.sub(r"\s+", " ", str(source or "")).strip(" \t\n\r`*_>")
+    text = re.sub(r"^(please|pls|can you|could you|would you)\s+", "", text, flags=re.I)
+    text = re.sub(r"\b(i think|maybe|probably)\b", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" .:-")
+    if len(text) > max_len:
+        text = text[: max_len - 3].rstrip(" ,;:-") + "..."
+    return text
+
+
+def interpret_status_request(source: str, mode: str) -> str:
+    """Convert raw user wording into a short action-oriented status summary."""
+    cleaned = _clean_request_interpretation(source, max_len=180)
+    lowered = cleaned.lower()
+
+    # Common complaint/fix phrasing should become an investigation target, not
+    # a quote of the user's frustration. Example: "pinned message is dumb" ->
+    # "Investigate pinned message code".
+    if mode == "Debug":
+        if re.search(r"\bpinned (message|status|work[- ]?status|summary)\b", lowered):
+            return "Investigate pinned message code"
+        if re.search(r"\b(work[- ]?status|status card|live status)\b", lowered):
+            return "Investigate work-status code"
+        if re.search(r"\b(gateway|telegram)\b", lowered):
+            return "Investigate Telegram gateway behavior"
+
+    if mode == "Plan":
+        target = re.sub(r"\b(plan|strategy|design|outline|roadmap|proposal|approach)\b", "", cleaned, flags=re.I)
+        target = _clean_request_interpretation(target, max_len=72)
+        return f"Plan {target}" if target else "Plan implementation approach"
+
+    if mode == "Ask":
+        return cleaned if cleaned.endswith("?") else f"Answer: {cleaned}"
+
+    if mode == "Verify":
+        if lowered in {"test", "tests"}:
+            return "Run tests"
+        target = re.sub(r"\b(verify|test|check|confirm|status|inspect|audit|review)\b", "", cleaned, flags=re.I)
+        target = _clean_request_interpretation(target, max_len=72)
+        return f"Verify {target}" if target else "Verify current state"
+
+    if mode == "Research":
+        target = re.sub(r"\b(research|search|find|look up|investigate|compare|analyze|summari[sz]e)\b", "", cleaned, flags=re.I)
+        target = _clean_request_interpretation(target, max_len=72)
+        return f"Research {target}" if target else "Research request context"
+
+    if mode == "Build":
+        target = re.sub(r"\b(build|create|add|implement|expand|update|change|modify|write|patch|replace|install|configure|enable)\b", "", cleaned, flags=re.I)
+        target = _clean_request_interpretation(target, max_len=72)
+        verb = "Update" if re.search(r"\b(update|change|modify|patch|replace|expand)\b", lowered) else "Build"
+        return f"{verb} {target}" if target else f"{verb} requested change"
+
+    return cleaned
+
+
+def format_status_text(mode: str, summary: str, *, from_reply: bool = False) -> str:
+    """Render the status text users see in pins/messages."""
+    mode = re.sub(r"[^A-Za-z0-9 /_-]", "", str(mode or "Task")).strip() or "Task"
+    summary = _clean_request_interpretation(summary) or "review incoming request"
+    prefix = f"📌 [{mode}]"
+    if from_reply:
+        return f"{prefix} From reply: {summary}"
+    return f"{prefix} {summary}"
+
+
 def fallback_status_text(event: Any) -> str:
     """Deterministic non-AI status text."""
     current = " ".join((getattr(event, "text", None) or "").split())
@@ -236,17 +325,12 @@ def fallback_status_text(event: Any) -> str:
     source = compact_source_text(event)
     if not source:
         message_type = getattr(getattr(event, "message_type", None), "value", None) or "message"
-        return f"📌 Working: review incoming {message_type} request"
+        return format_status_text("Ask", f"review incoming {message_type} request")
 
-    source = re.sub(r"\s+", " ", source).strip(" \t\n\r`*_>")
-    source = re.sub(r"^(please|pls|can you|could you|would you)\s+", "", source, flags=re.I)
-    source = re.sub(r"\b(i think|maybe|probably)\b", "", source, flags=re.I)
-    source = re.sub(r"\s+", " ", source).strip(" .:-")
-    if len(source) > 90:
-        source = source[:87].rstrip(" ,;:-") + "..."
-    if reply_to_text and (not current or len(current) <= 24):
-        return f"📌 Working from reply: {source}"
-    return f"📌 Working: {source}"
+    from_reply = bool(reply_to_text and (not current or len(current) <= 24))
+    mode = infer_status_mode(source, event)
+    summary = interpret_status_request(source, mode)
+    return format_status_text(mode, summary, from_reply=from_reply)
 
 
 def sanitize_status_label(label: str, *, max_len: int = 110) -> str:
@@ -277,9 +361,9 @@ async def maybe_ai_status_text(config: WorkStatusConfig, event: Any) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "Write a concise task label for a temporary live work status. "
-                        "Describe the assistant's likely next action, not the user's literal wording. "
-                        "Do not quote the request. No markdown. Max 110 characters."
+                        "Write a concise request-interpretation summary for a temporary live status card. "
+                        "Describe what the assistant should do, not the user's literal wording. "
+                        "Return only the summary text: no mode tag, no markdown, max 92 characters."
                     ),
                 },
                 {"role": "user", "content": f"Current request:\n{source[:1400]}"},
@@ -288,14 +372,14 @@ async def maybe_ai_status_text(config: WorkStatusConfig, event: Any) -> str:
             max_tokens=80,
             timeout=12.0,
         )
-        label = sanitize_status_label(extract_content_or_reasoning(response))
+        label = sanitize_status_label(extract_content_or_reasoning(response), max_len=92)
         if not label:
             return fallback
         normal_label = re.sub(r"\W+", "", label).lower()
         normal_source = re.sub(r"\W+", "", source).lower()
         if normal_label and (normal_label in normal_source or normal_source in normal_label):
             return fallback
-        return f"📌 Working: {label}"
+        return format_status_text(infer_status_mode(source, event), label)
     except Exception:
         logger.debug("AI work-status summary failed; using fallback", exc_info=True)
         return fallback

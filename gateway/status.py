@@ -515,11 +515,20 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    reset_platforms: bool = False,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """Persist gateway runtime health information for diagnostics/status.
+
+    When *reset_platforms* is ``True``, the ``platforms`` dict is wiped
+    before applying any per-platform updates.  This prevents stale fatal
+    errors from a previous gateway run (e.g. a token-conflict lock) from
+    persisting into a fresh startup.
+    """
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
+    if reset_platforms:
+        payload["platforms"] = {}
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]

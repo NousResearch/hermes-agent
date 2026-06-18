@@ -5002,7 +5002,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            write_runtime_status(
+                gateway_state="starting", exit_reason=None, reset_platforms=True,
+            )
         except Exception:
             pass
 

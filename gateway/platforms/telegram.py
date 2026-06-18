@@ -583,6 +583,37 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
 
+    @classmethod
+    def _status_message_cache_key(
+        cls,
+        chat_id: str,
+        status_key: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> tuple:
+        """Return the cache key for editable status/progress bubbles.
+
+        Telegram message IDs are scoped by chat *and* topic. Reusing a status
+        bubble id across DM-topic/forum lanes makes Telegram reject edits with
+        "Message to edit not found" when the same status_key appears in a
+        different thread.
+        """
+        direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
+        if direct_topic_id is not None:
+            return (str(chat_id), f"direct-topic:{direct_topic_id}", str(status_key))
+        thread_id = cls._metadata_thread_id(metadata)
+        if thread_id is not None:
+            return (str(chat_id), f"thread:{thread_id}", str(status_key))
+        return (str(chat_id), str(status_key))
+
+    @staticmethod
+    def _looks_like_stale_edit_target(error: Exception) -> bool:
+        err = str(error).lower()
+        return (
+            "message to edit not found" in err
+            or "message not found" in err
+            or "message_id_invalid" in err
+        )
+
     @staticmethod
     def _looks_like_private_chat_id(chat_id: str) -> bool:
         try:
@@ -2143,7 +2174,7 @@ class TelegramAdapter(BasePlatformAdapter):
         message in place. If the edit fails (message deleted, too old, etc.)
         we drop the cached id and send fresh.
         """
-        key = (str(chat_id), str(status_key))
+        key = self._status_message_cache_key(chat_id, status_key, metadata)
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
             result = await self.edit_message(
@@ -2210,6 +2241,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
+                # Stale/deleted status bubbles are expected in Telegram. Let
+                # the caller clear its cache and send fresh without logging a
+                # scary traceback or retrying the same dead message id.
+                if self._looks_like_stale_edit_target(fmt_err):
+                    logger.debug(
+                        "[%s] Stale Telegram edit target %s: %s",
+                        self.name,
+                        message_id,
+                        fmt_err,
+                    )
+                    return SendResult(success=False, error=str(fmt_err))
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 logger.warning(
                     "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
@@ -2228,6 +2270,14 @@ class TelegramAdapter(BasePlatformAdapter):
             # "Message is not modified" — content identical, treat as success
             if "not modified" in err_str:
                 return SendResult(success=True, message_id=message_id)
+            if self._looks_like_stale_edit_target(e):
+                logger.debug(
+                    "[%s] Stale Telegram edit target %s: %s",
+                    self.name,
+                    message_id,
+                    e,
+                )
+                return SendResult(success=False, error=str(e))
             # Reactive split-and-deliver: parse_mode formatting can inflate
             # the payload past the limit even when the raw text was under
             # (e.g. MarkdownV2 escapes).  Same fix as the pre-flight path.

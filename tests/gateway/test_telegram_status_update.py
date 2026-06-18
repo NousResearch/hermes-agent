@@ -160,3 +160,44 @@ async def test_distinct_chat_ids_do_not_collide(adapter):
     adapter.edit_message.assert_not_awaited()
     assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
     assert adapter._status_message_ids[("chat-2", "lifecycle")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_distinct_thread_ids_do_not_collide(adapter):
+    """Same chat/status in different Telegram topics must get distinct bubbles."""
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="100"),
+        SendResult(success=True, message_id="200"),
+    ]
+
+    await adapter.send_or_update_status(
+        "chat-1", "lifecycle", "topic one", metadata={"thread_id": "111"},
+    )
+    await adapter.send_or_update_status(
+        "chat-1", "lifecycle", "topic two", metadata={"thread_id": "222"},
+    )
+
+    assert adapter.send.await_count == 2
+    adapter.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_message_not_found_is_quiet_cache_miss(monkeypatch, caplog):
+    """Stale Telegram edit targets should fail quietly so callers can send fresh."""
+    _install_fake_telegram(monkeypatch)
+    from gateway.platforms.telegram import TelegramAdapter
+    from telegram.error import BadRequest
+
+    a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    a._bot = MagicMock()
+    a._bot.edit_message_text = AsyncMock(
+        side_effect=BadRequest("Message to edit not found")
+    )
+
+    with caplog.at_level("WARNING"):
+        result = await a.edit_message("123", "456", "stale", finalize=True)
+
+    assert result.success is False
+    assert "message to edit not found" in result.error.lower()
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+    assert "MarkdownV2 edit failed" not in caplog.text

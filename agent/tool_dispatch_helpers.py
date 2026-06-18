@@ -321,6 +321,16 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table)."""
+    # OpenAI-style chat APIs require ``tool.content`` to be a **string**
+    # (or, for vision adapters, a list of content parts).  A raw Python
+    # dict/object is invalid wire format and causes HTTP 400 on strict
+    # providers (OpenAI, GLM, Minimax, DeepSeek, …).  Coerce non-string
+    # results to a JSON string so the message is always API-safe.
+    if content is not None and not isinstance(content, (str, list)):
+        try:
+            content = json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            content = str(content)
     return {
         "role": "tool",
         "name": name,

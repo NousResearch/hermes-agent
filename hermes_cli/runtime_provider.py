@@ -1263,7 +1263,11 @@ def _resolve_explicit_runtime(
     if pconfig and pconfig.auth_type == "api_key":
         env_url = ""
         if pconfig.base_url_env_var:
-            env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+            from hermes_cli.config import get_env_value
+            env_url = (
+                get_env_value(pconfig.base_url_env_var)
+                or os.getenv(pconfig.base_url_env_var, "")
+            ).strip().rstrip("/")
 
         base_url = explicit_base_url
         if not base_url:

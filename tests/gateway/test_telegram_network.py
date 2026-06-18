@@ -674,3 +674,87 @@ class TestDiscoverFallbackIps:
 
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Keep-alive transport builder
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Regression coverage for the slow-proxy keep-alive bug: httpx (and therefore
+# PTB's HTTPXRequest) defaults to keepalive_expiry=5.0, which on a CONNECT
+# proxy with a 5–10 s upstream TLS handshake means every cross-turn reply
+# triggers a fresh handshake.  build_telegram_httpx_transport raises the
+# expiry to 5 minutes and bounds the pool so dead connections can't
+# accumulate.
+
+import socket as _socket
+
+
+class TestBuildTelegramHttpxTransport:
+    def test_default_limits_apply_keepalive_policy(self):
+        transport = tnet.build_telegram_httpx_transport()
+        pool = transport._pool
+        assert pool._max_connections == tnet._MAX_CONNECTIONS
+        assert pool._max_keepalive_connections == tnet._MAX_KEEPALIVE_CONNECTIONS
+        assert pool._keepalive_expiry == tnet._KEEPALIVE_EXPIRY
+
+    def test_keepalive_expiry_is_long_enough_to_span_idle_turns(self):
+        """The whole point of this fix: idle gaps between user turns must
+        not exhaust keepalive_expiry.  httpx's 5 s default is too short;
+        anything under a couple of minutes still forces re-handshakes
+        during normal "walk away, come back" usage."""
+        transport = tnet.build_telegram_httpx_transport()
+        assert transport._pool._keepalive_expiry >= 300.0
+
+    def test_default_socket_options_enable_tcp_keepalive(self):
+        transport = tnet.build_telegram_httpx_transport()
+        opts = transport._pool._socket_options or []
+        # SO_KEEPALIVE is always present, regardless of platform.
+        assert (_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1) in opts
+
+    def test_proxy_url_is_threaded_through(self):
+        transport = tnet.build_telegram_httpx_transport(proxy_url="http://127.0.0.1:7890")
+        # httpx's AsyncHTTPTransport stores the proxy on the underlying pool;
+        # accept either attribute name to be future-proof across versions.
+        proxy = getattr(transport._pool, "_proxy_url", None) or getattr(
+            transport._pool, "_proxy", None
+        )
+        assert proxy is not None
+
+    def test_extra_kwargs_override_defaults(self):
+        # ``http2=False`` is the httpx default; this just asserts the kwarg
+        # path is wired up without raising.
+        transport = tnet.build_telegram_httpx_transport(
+            extra_kwargs={"http2": False, "verify": True}
+        )
+        assert transport is not None
+
+
+class TestFallbackTransportInheritsKeepalivePolicy:
+    """The fallback transport must apply the same keep-alive policy as the
+    direct/proxy paths — otherwise stickying onto a fallback IP regresses to
+    the original 5-second keepalive_expiry default."""
+
+    def test_primary_transport_uses_long_keepalive(self, monkeypatch):
+        # Force a deterministic build so we don't depend on the live proxy env.
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+        monkeypatch.delenv("ALL_PROXY", raising=False)
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("all_proxy", raising=False)
+        monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
+        # Stub _detect_macos_system_proxy so CI macOS runners with a system
+        # proxy don't surprise us.
+        from gateway.platforms import base as _base
+        monkeypatch.setattr(_base, "_detect_macos_system_proxy", lambda: "")
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        primary_pool = transport._primary._pool
+        assert primary_pool._keepalive_expiry == tnet._KEEPALIVE_EXPIRY
+        assert primary_pool._max_connections == tnet._MAX_CONNECTIONS
+
+        for fallback in transport._fallbacks.values():
+            pool = fallback._pool
+            assert pool._keepalive_expiry == tnet._KEEPALIVE_EXPIRY
+            assert pool._max_keepalive_connections == tnet._MAX_KEEPALIVE_CONNECTIONS

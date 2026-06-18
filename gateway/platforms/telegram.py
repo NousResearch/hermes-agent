@@ -84,6 +84,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
+    build_telegram_httpx_transport,
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
@@ -2067,13 +2068,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                # Build our own AsyncHTTPTransport so the keep-alive policy
+                # is the same as the fallback path.  httpx's default
+                # keepalive_expiry of 5 s is too short on networks where
+                # the upstream TLS handshake to api.telegram.org is slow
+                # (HTTP CONNECT proxies that exit through a distant POP);
+                # without this every cross-turn reply pays a fresh
+                # handshake and surfaces as the "typing indicator appears
+                # 10+ seconds late" symptom.
+                request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={
+                        "transport": build_telegram_httpx_transport(proxy_url=proxy_url)
+                    },
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={
+                        "transport": build_telegram_httpx_transport(proxy_url=proxy_url)
+                    },
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                # Direct (no proxy, no fallback IPs) — still benefit from
+                # keep-alive tuning and TCP socket options so transient
+                # network blips don't leave half-open sockets in the pool.
+                request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={"transport": build_telegram_httpx_transport()},
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={"transport": build_telegram_httpx_transport()},
+                )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()

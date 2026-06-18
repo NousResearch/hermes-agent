@@ -5,6 +5,25 @@ api.telegram.org resolves to an endpoint that is unreachable from the current
 host. The transport keeps the logical request host and TLS SNI as
 api.telegram.org while retrying the TCP connection against one or more fallback
 IPv4 addresses.
+
+It also owns construction of the underlying ``httpx.AsyncHTTPTransport`` used
+for every Telegram API call — direct, proxied, or fallback-IP — so that the
+keep-alive policy is consistent across paths.  Out of the box, ``httpx``
+(and therefore PTB's ``HTTPXRequest``) uses ``keepalive_expiry=5.0``, which
+means an idle connection is retired after 5 seconds.  On networks where the
+TLS handshake to ``api.telegram.org`` is slow (for example, an HTTP CONNECT
+proxy that tunnels traffic through a distant exit node, where upstream TLS
+costs 5–10 seconds), every reply sent more than 5 seconds after the previous
+one would trigger a fresh handshake — surfacing as the "typing indicator
+appears 10+ seconds late, then sometimes snappy" symptom.  The same setups
+also leak hundreds of CLOSE_WAIT sockets against the proxy port: the proxy
+half-closes idle long-poll connections after Telegram's getUpdates timeout,
+but httpx never notices because nothing is reading from the socket, so the
+pool keeps growing until the process restarts.
+
+``build_telegram_httpx_transport`` raises the keep-alive expiry to 10 minutes,
+caps the per-origin pool, and enables TCP keepalive socket options so the
+kernel detects half-open sockets at the transport layer.
 """
 
 from __future__ import annotations
@@ -13,13 +32,47 @@ import asyncio
 import ipaddress
 import logging
 import socket
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
+
+# httpx.Limits / TCP keepalive defaults for Telegram traffic.
+#
+# Rationale (see module docstring): httpx's default keepalive_expiry of 5.0
+# seconds is far too short when the transport-level TLS handshake costs
+# multiple seconds, and the default pool sizing lets dead sockets accumulate.
+_MAX_CONNECTIONS = 100
+_MAX_KEEPALIVE_CONNECTIONS = 10
+_KEEPALIVE_EXPIRY = 600.0  # seconds — 10 minutes
+#
+# Why these three numbers:
+#   * max_connections=100 — the total pool size, including in-flight
+#     requests.  PTB's default is 512; we keep it generous because the
+#     send path can spike: a single user reply can spawn sendChatAction
+#     refreshes (every 2 s while the agent thinks), the actual
+#     sendMessage, optional editMessageText for streaming updates, plus
+#     concurrent media uploads.  Setting this too low triggers
+#     "Pool timeout: All connections in the connection pool are
+#     occupied" under burst load.
+#   * max_keepalive_connections=10 — the number of *idle* sockets we
+#     hold open for reuse between requests.  This is the knob that
+#     actually controls the resident TLS-tunnel footprint: dead
+#     connections can't accumulate beyond this cap, but a transient
+#     burst can still scale up to max_connections without backpressure.
+#   * keepalive_expiry=600s — see below; long enough to span normal
+#     "ask, walk away, come back" usage so the same TLS tunnel is
+#     reused across idle gaps.
+
+# TCP keepalive timings (seconds).  Linux exposes all three; macOS exposes
+# TCP_KEEPALIVE (= idle); Windows is best-effort via SO_KEEPALIVE only.
+# We feature-detect at runtime so the helper degrades gracefully.
+_TCP_KEEPIDLE = 60
+_TCP_KEEPINTVL = 30
+_TCP_KEEPCNT = 3
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
@@ -49,6 +102,79 @@ def _resolve_proxy_url(target_hosts=None) -> str | None:
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
 
 
+def _telegram_socket_options() -> list[tuple[int, int, int]]:
+    """Return TCP keepalive socket options for the current platform.
+
+    The base SO_KEEPALIVE flag works everywhere; the per-connection timings
+    (idle / interval / count) are Linux-specific, with a partial macOS
+    equivalent.  Anything we can't detect is silently skipped — httpx accepts
+    any iterable of ``(level, optname, value)`` triples.
+    """
+    options: list[tuple[int, int, int]] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+
+    # Linux
+    keepidle = getattr(socket, "TCP_KEEPIDLE", None)
+    if keepidle is not None:
+        options.append((socket.IPPROTO_TCP, keepidle, _TCP_KEEPIDLE))
+    else:
+        # macOS calls it TCP_KEEPALIVE; same semantics as Linux TCP_KEEPIDLE.
+        keepalive_idle = getattr(socket, "TCP_KEEPALIVE", None)
+        if keepalive_idle is not None:
+            options.append((socket.IPPROTO_TCP, keepalive_idle, _TCP_KEEPIDLE))
+
+    keepintvl = getattr(socket, "TCP_KEEPINTVL", None)
+    if keepintvl is not None:
+        options.append((socket.IPPROTO_TCP, keepintvl, _TCP_KEEPINTVL))
+
+    keepcnt = getattr(socket, "TCP_KEEPCNT", None)
+    if keepcnt is not None:
+        options.append((socket.IPPROTO_TCP, keepcnt, _TCP_KEEPCNT))
+
+    return options
+
+
+def _telegram_httpx_limits() -> httpx.Limits:
+    return httpx.Limits(
+        max_connections=_MAX_CONNECTIONS,
+        max_keepalive_connections=_MAX_KEEPALIVE_CONNECTIONS,
+        keepalive_expiry=_KEEPALIVE_EXPIRY,
+    )
+
+
+def build_telegram_httpx_transport(
+    *,
+    proxy_url: Optional[str] = None,
+    extra_kwargs: Optional[dict[str, Any]] = None,
+) -> httpx.AsyncHTTPTransport:
+    """Construct an ``AsyncHTTPTransport`` tuned for Telegram traffic.
+
+    Caller-supplied ``extra_kwargs`` win over our defaults so tests and power
+    users can still override individual knobs (e.g. ``http2=True``,
+    ``verify=False``).  The base policy is:
+
+    * ``limits`` with a 10-minute keep-alive expiry and a bounded pool, so
+      idle connections survive cross-turn gaps but a transient burst can't
+      grow the pool unbounded.
+    * TCP keepalive socket options so half-open sockets dropped silently by
+      a CONNECT proxy are detected at the kernel layer (and the in-pool
+      socket is retired) instead of triggering a fresh TLS handshake on
+      the next request.
+    * Optional ``proxy`` wiring — ``HTTPS_PROXY``-style env vars are picked
+      up by callers via :func:`resolve_proxy_url`; only an explicit URL is
+      threaded through here so ``httpx`` doesn't read the environment a
+      second time and disagree with our ``NO_PROXY`` evaluation.
+    """
+    kwargs: dict[str, Any] = {
+        "limits": _telegram_httpx_limits(),
+        "socket_options": _telegram_socket_options(),
+    }
+    if proxy_url:
+        kwargs["proxy"] = proxy_url
+    if extra_kwargs:
+        kwargs.update(extra_kwargs)
+    return httpx.AsyncHTTPTransport(**kwargs)
+
+
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """Retry Telegram Bot API requests via fallback IPs while preserving TLS/SNI.
 
@@ -61,11 +187,20 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
-        if proxy_url and "proxy" not in transport_kwargs:
-            transport_kwargs["proxy"] = proxy_url
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        # Caller may have already supplied ``proxy`` (or set it via env) — let
+        # that win.  Same for ``limits`` / ``socket_options`` so power users
+        # can still override the defaults.
+        explicit_proxy = transport_kwargs.pop("proxy", None) or proxy_url
+        self._primary = build_telegram_httpx_transport(
+            proxy_url=explicit_proxy,
+            extra_kwargs=transport_kwargs or None,
+        )
         self._fallbacks = {
-            ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
+            ip: build_telegram_httpx_transport(
+                proxy_url=explicit_proxy,
+                extra_kwargs=transport_kwargs or None,
+            )
+            for ip in self._fallback_ips
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()

@@ -151,7 +151,11 @@ RUN cd web && npm run build && \
 # fail to load.  See tools/lazy_deps.py.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
+    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules && \
+    # The /opt/hermes directory itself must be writable so that a
+    # second container sharing this path (WebUI) can run
+    # ``uv pip install /opt/hermes[all]`` which writes hermes_agent.egg-info/.
+    chown hermes:hermes /opt/hermes
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services

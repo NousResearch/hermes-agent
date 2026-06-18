@@ -6,6 +6,7 @@ Filesystem-only, so every action works before ``kanban init`` and must ignore th
 from __future__ import annotations
 
 import argparse
+import os
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
@@ -48,6 +49,18 @@ def _board_slug_arg(args: argparse.Namespace, cmd: str, *, must_exist: bool) -> 
     return normed, 0
 
 
+def _activate_board(args: argparse.Namespace, slug: str) -> None:
+    """Persist ``slug`` and, for a local CLI/TUI invocation, update its session pin.
+
+    ``run_slash`` explicitly disables the process-global update for gateway
+    requests. Dashboard and transfer callers continue to use the persistence-only
+    ``kanban_db.set_current_board`` helper, preserving their context isolation.
+    """
+    kb.set_current_board(slug)
+    if getattr(args, "_kanban_update_process_env", True):
+        os.environ["HERMES_KANBAN_BOARD"] = slug
+
+
 def _cmd_boards_list(args: argparse.Namespace) -> int:
     boards = kb.list_boards(include_archived=bool(getattr(args, "all", False)))
     current = kb.get_current_board()
@@ -84,7 +97,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
           f"  Display name: {meta.get('name', '')}\n"
           f"  DB path:      {meta['db_path']}")
     if getattr(args, "switch", False):
-        kb.set_current_board(meta["slug"])
+        _activate_board(args, meta["slug"])
         print(f"  Switched to {meta['slug']!r}.")
     else:
         print(f"  Use `hermes kanban boards switch {meta['slug']}` to make it current.")
@@ -112,12 +125,13 @@ def _cmd_boards_switch(args: argparse.Namespace) -> int:
     normed, rc = _board_slug_arg(args, "switch", must_exist=False)
     if rc:
         return rc
+    assert normed is not None
     if not kb.board_exists(normed):
         return _err(
             f"kanban boards switch: board {normed!r} does not exist. "
             f"Create it with `hermes kanban boards create {normed}`."
         )
-    kb.set_current_board(normed)
+    _activate_board(args, normed)
     print(f"Active board is now {normed!r}.")
     return 0
 
@@ -186,6 +200,8 @@ def _cmd_boards_import(args: argparse.Namespace) -> int:
         res = kanban_transfer.import_board(args.archive, args.as_slug, activate=args.switch)
     except (OSError, ValueError) as exc:
         return _err(f"kanban boards import: {exc}")
+    if res["activated"] and getattr(args, "_kanban_update_process_env", True):
+        os.environ["HERMES_KANBAN_BOARD"] = res["board"]
     if _json_out(args, res):
         return 0
     print(f"Imported board {res['board']!r} ({res['name']}).")

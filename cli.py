@@ -1857,6 +1857,94 @@ def _detect_light_mode() -> bool:
     return result
 
 
+# =============================================================================
+# Mouse reporting leak guard (Level-1 fix)
+# =============================================================================
+#
+# Problem:
+#   Some terminals (notably Konsole on Plasma/Wayland, and some configurations
+#   of other X11/Wayland terminals) enable global bracketed mouse reporting.
+#   When Hermes (prompt_toolkit) starts, raw sequences such as
+#     \e[?1000h \e[?1003h \e[<...M
+#   leak into stdin. The result is spam of characters like ";83;30M" or random
+#   letters/symbols every time the user moves the mouse or clicks anything.
+#
+#   This does NOT affect well-behaved terminals (Kitty, Alacritty, Foot, etc.),
+#   but breaks the TUI experience on the affected ones.
+#
+# Scope of this patch (Level 1):
+#   - Detect known-vulnerable environments early (before prompt_toolkit grabs
+#     the tty).
+#   - Emit the standard disable sequences for modes 1000/1002/1003/1005/1006.
+#   - Never re-enable mouse reporting on exit (user wants mouse to keep
+#     working in other TUIs).
+#
+# This is deliberately conservative: we only disable when we see the problematic
+# signals. A future Level-2 change could make mouse actually functional inside
+# Hermes on Konsole if desired.
+#
+# See also the "Input Glitches" section in the hermes-agent skill.
+
+def _should_disable_mouse_reporting() -> bool:
+    """Return True if we are in a terminal known to leak mouse reporting codes."""
+    try:
+        # Strongest signal: Konsole versions expose this.
+        if os.environ.get("KONSOLE_VERSION"):
+            return True
+
+        term = (os.environ.get("TERM") or "").lower()
+        if "konsole" in term:
+            return True
+
+        # Common problematic case: Plasma on Wayland.
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or "").lower()
+
+        if session_type == "wayland" and ("plasma" in desktop or "kde" in desktop):
+            return True
+
+        # Some users run konsole-like behavior even with TERM=xterm-color.
+        if ("plasma" in desktop or "kde" in desktop) and term.startswith("xterm"):
+            return True
+
+        # Generic Plasma desktop (belt + suspenders).
+        if "plasma" in desktop or "kde" in desktop:
+            return True
+    except Exception:
+        # Detection must never crash the TUI.
+        return False
+    return False
+
+
+def _disable_mouse_reporting() -> None:
+    """Send VT sequences to turn off all common mouse reporting / tracking modes.
+
+    We deliberately do not restore them on exit.
+    """
+    if not (sys.stdout.isatty() and sys.stdin.isatty()):
+        return
+    try:
+        # Disable:
+        #   1000  X10 mouse tracking
+        #   1002  Button-event tracking
+        #   1003  Any-event tracking (biggest spam source)
+        #   1006  SGR extended coordinate mode
+        #   1005  UTF-8 extended mode (legacy)
+        sys.stdout.write(
+            "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l"
+        )
+        sys.stdout.flush()
+    except Exception:
+        # Best-effort only. Do not fail the session.
+        pass
+
+
+def _disable_mouse_reporting_if_leaky() -> None:
+    """Entry point called very early in TUI startup."""
+    if _should_disable_mouse_reporting():
+        _disable_mouse_reporting()
+
+
 # Light-mode equivalents of skin colors that are unreadable on cream
 # Terminal.app backgrounds.  Used by _SkinAwareAnsi to remap colors
 # at resolution time when light mode is detected.
@@ -11610,6 +11698,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # don't risk re-querying mid-render.
         try:
             _detect_light_mode()
+        except Exception:
+            pass
+
+        # Level-1 fix for mouse-reporting leak (Konsole + Plasma Wayland, etc.)
+        # Some terminals enable bracketed mouse reporting globally. When Hermes
+        # (prompt_toolkit) starts, raw \e[?1000h / \e[M... sequences get injected
+        # as garbage input. We detect the known-leaky environments and send the
+        # disable sequence *before* any further TUI work.
+        # This keeps mouse working in other TUIs while stopping the spam in Hermes.
+        try:
+            _disable_mouse_reporting_if_leaky()
         except Exception:
             pass
         # Push the entire TUI to the bottom of the terminal so the banner,

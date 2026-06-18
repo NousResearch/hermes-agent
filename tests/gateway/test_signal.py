@@ -101,6 +101,44 @@ class TestSignalConfigLoading:
         assert os.environ.get("SIGNAL_REQUIRE_MENTION") == "true"
         assert os.environ.get("SIGNAL_FREE_RESPONSE_GROUPS") == "group-a,group-b"
 
+    def test_yaml_bridges_signal_mention_aliases(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "signal:\n"
+            "  mention_aliases:\n"
+            "    - hermes\n"
+            "    - agent\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SIGNAL_MENTION_ALIASES", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("SIGNAL_MENTION_ALIASES") == "hermes,agent"
+
+    def test_yaml_does_not_override_signal_mention_aliases_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "signal:\n"
+            "  mention_aliases:\n"
+            "    - hermes\n"
+            "    - agent\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SIGNAL_MENTION_ALIASES", "operator")
+
+        load_gateway_config()
+
+        assert os.environ.get("SIGNAL_MENTION_ALIASES") == "operator"
+
     def test_yaml_does_not_override_signal_require_mention_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

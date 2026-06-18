@@ -1334,6 +1334,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["SIGNAL_FREE_RESPONSE_GROUPS"] = str(frc)
+                if "mention_aliases" in signal_cfg and not os.getenv("SIGNAL_MENTION_ALIASES"):
+                    aliases = signal_cfg["mention_aliases"]
+                    if isinstance(aliases, list):
+                        aliases = ",".join(str(v) for v in aliases)
+                    os.environ["SIGNAL_MENTION_ALIASES"] = str(aliases)
 
             # DingTalk settings → env vars: migrated to the dingtalk plugin's
             # apply_yaml_config_fn hook (plugins/platforms/dingtalk/adapter.py).

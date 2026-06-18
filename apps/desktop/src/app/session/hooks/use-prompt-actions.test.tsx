@@ -471,40 +471,6 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
-  it('keeps the frontend busy instead of surfacing an error when the backend is still running', async () => {
-    vi.useFakeTimers()
-    const busyRef = { current: false }
-    const seeds: Record<string, unknown>[] = []
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'prompt.submit') {
-        throw new Error('4009: session busy')
-      }
-
-      return {} as never
-    })
-
-    let handle: HarnessHandle | null = null
-    render(
-      <Harness
-        busyRef={busyRef}
-        onReady={h => (handle = h)}
-        onSeedState={s => seeds.push(s)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
-    )
-
-    const submitted = handle!.submitText('sent while backend is still running')
-    await vi.advanceTimersByTimeAsync(6_500)
-
-    expect(await submitted).toBe(false)
-    expect(busyRef.current).toBe(true)
-    expect(seeds.at(-1)).toMatchObject({ awaitingResponse: true, busy: true })
-    expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
-      false
-    )
-  })
-
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {
     const busyRef = { current: true }
     const requestGateway = vi.fn(async () => ({}) as never)

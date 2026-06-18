@@ -314,3 +314,108 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     assert "WORKSPACE_PATCHED" in (workspace / "target.py").read_text()
     # And the decoy copy is untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+
+
+# ── Issue #48552: in-process file tools expand ~ via the PROCESS HOME, not the
+# profile HOME, so cron jobs running inside a gateway (Docker/systemd/s6) whose
+# HOME differs from the interactive session's HOME resolve ``~`` to the wrong
+# directory and file ops fail. The terminal tool already routes HOME through
+# ``hermes_constants.get_subprocess_home``; the file tools must agree with it so
+# ``~`` points at the same place in-process as it does in a terminal subprocess.
+
+
+def test_expand_user_honors_profile_home_when_override_present(monkeypatch):
+    """A leading ``~`` expands to the profile HOME the terminal tool would use.
+
+    This is the core of the bug: under a gateway the file tool must NOT use the
+    raw process HOME for ``~``. We pin the helper to the same contract as
+    ``get_subprocess_home`` by faking an override and asserting ``~`` lands on it.
+    """
+    monkeypatch.setattr(ft, "_effective_home", lambda: "/opt/data/profiles/coder/home")
+
+    assert ft._expand_user("~") == "/opt/data/profiles/coder/home"
+    assert ft._expand_user("~/scratch/saber-docs/notes.md") == (
+        "/opt/data/profiles/coder/home/scratch/saber-docs/notes.md"
+    )
+
+
+def test_expand_user_falls_back_to_stdlib_on_host(monkeypatch):
+    """When no override applies (host install) behaviour is unchanged.
+
+    ``get_subprocess_home`` returns None on host installs; the helper must then
+    be byte-for-byte ``os.path.expanduser`` so we introduce zero behaviour change
+    for the common case.
+    """
+    monkeypatch.setattr(ft, "_effective_home", lambda: None)
+
+    assert ft._expand_user("~/x.txt") == os.path.expanduser("~/x.txt")
+    assert ft._expand_user("~") == os.path.expanduser("~")
+
+
+def test_expand_user_named_account_keeps_stdlib_semantics(monkeypatch):
+    """``~otheruser`` names a specific account and must not be profile-scoped.
+
+    Only the current-user form (``~`` / ``~/...``) redirects to the profile HOME;
+    ``~root/x`` must still defer to stdlib so a named account resolves correctly.
+    """
+    monkeypatch.setattr(ft, "_effective_home", lambda: "/opt/data/profiles/coder/home")
+
+    # Whatever stdlib does with ~root (resolve or leave verbatim), we match it —
+    # we must NOT join it onto the profile home.
+    assert ft._expand_user("~root/x") == os.path.expanduser("~root/x")
+    assert not ft._expand_user("~root/x").startswith("/opt/data/profiles/coder/home")
+
+
+def test_expand_user_non_tilde_paths_untouched(monkeypatch):
+    """Absolute and relative non-tilde paths pass through verbatim."""
+    monkeypatch.setattr(ft, "_effective_home", lambda: "/opt/data/profiles/coder/home")
+
+    assert ft._expand_user("/etc/hosts") == "/etc/hosts"
+    assert ft._expand_user("relative/sub/file.txt") == "relative/sub/file.txt"
+    assert ft._expand_user("") == ""
+
+
+def test_resolve_path_for_task_tilde_uses_profile_home(monkeypatch):
+    """End-to-end: the path resolver honours the profile HOME for ``~`` paths.
+
+    This is the user-visible failure in #48552 — ``write_file('~/x')`` inside a
+    cron job must resolve under the profile HOME, not the gateway's HOME.
+    """
+    monkeypatch.setattr(ft, "_effective_home", lambda: "/opt/data/profiles/coder/home")
+
+    resolved = ft._resolve_path_for_task("~/scratch/notes.md", task_id="default")
+
+    assert resolved == Path("/opt/data/profiles/coder/home/scratch/notes.md")
+
+
+def test_resolve_path_for_task_tilde_host_fallback_unchanged(monkeypatch):
+    """On host installs the resolver's ``~`` handling is identical to before."""
+    monkeypatch.setattr(ft, "_effective_home", lambda: None)
+
+    resolved = ft._resolve_path_for_task("~/scratch/notes.md", task_id="default")
+
+    assert resolved == Path("~/scratch/notes.md").expanduser().resolve()
+
+
+def test_effective_home_matches_get_subprocess_home_under_profile(monkeypatch, tmp_path):
+    """Value-truth: ``_effective_home`` returns the SAME HOME the terminal tool
+    would use, exercised through the real ``get_subprocess_home`` (no mock of the
+    boundary under test).
+
+    Mirrors the bug's environment: a profile whose ``{HERMES_HOME}/home`` exists
+    and ``TERMINAL_HOME_MODE=profile`` (the isolation a gateway cron wants).
+    """
+    import hermes_constants
+
+    hermes_home = tmp_path / "profiles" / "coder"
+    profile_home = hermes_home / "home"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "gateway_home"))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+    # Clear any context-local override so the env vars above are authoritative.
+    monkeypatch.setattr(hermes_constants, "get_hermes_home_override", lambda: None)
+
+    assert ft._effective_home() == str(profile_home)
+    # And the raw process HOME would have produced the WRONG answer (the bug):
+    assert ft._effective_home() != os.path.expanduser("~")

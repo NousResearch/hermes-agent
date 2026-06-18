@@ -78,6 +78,58 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
+def _effective_home() -> str | None:
+    """Return the HOME that ``~`` should expand to for in-process file tools.
+
+    In-process file tools historically expanded ``~`` with stdlib
+    ``os.path.expanduser``, which reads the *process* ``HOME``. When Hermes runs
+    under a gateway (Docker/systemd/s6) the gateway process ``HOME`` often
+    differs from the interactive session's ``HOME`` — in profile mode the session
+    wrapper sets ``HOME={HERMES_HOME}/home``. A cron job running in-process then
+    resolved ``~`` against the gateway's ``HOME`` and wrote to the wrong place
+    (issue #48552).
+
+    The terminal tool already normalises subprocess ``HOME`` via
+    ``hermes_constants.get_subprocess_home``. We reuse that exact contract so
+    ``~`` points at the same directory in-process as it does in a terminal
+    subprocess. Returns ``None`` when no override applies (the common host-install
+    case), signalling the caller to fall back to stdlib ``expanduser`` — i.e. zero
+    behaviour change off the gateway/profile path.
+    """
+    try:
+        from hermes_constants import get_subprocess_home
+
+        return get_subprocess_home(dict(os.environ))
+    except Exception:
+        # Never let HOME resolution raise out of a file op; degrade to stdlib.
+        return None
+
+
+def _expand_user(path: str) -> str:
+    """``os.path.expanduser`` that honours the profile HOME (issue #48552).
+
+    Only the *current-user* tilde form (``~`` or ``~/...``) is redirected to the
+    profile HOME returned by :func:`_effective_home`. A named-account form
+    (``~otheruser/...``) names a specific account and is left to stdlib so it
+    resolves correctly. Non-tilde paths pass through untouched.
+
+    When :func:`_effective_home` returns ``None`` (host install, no override) the
+    result is byte-for-byte ``os.path.expanduser(path)``.
+    """
+    if not path or not path.startswith("~"):
+        return path
+    # Named-account form (~user/...) — not ours to redirect; defer to stdlib.
+    if len(path) > 1 and path[1] not in ("/", os.sep):
+        return os.path.expanduser(path)
+    home = _effective_home()
+    if not home:
+        return os.path.expanduser(path)
+    if path == "~":
+        return home
+    # path starts with "~/" (or "~\\" on Windows) — splice in the profile HOME.
+    return os.path.join(home, path[2:])
+
+
 def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
     instead of the main repository root.
@@ -238,8 +290,11 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
+
+    ``~`` is expanded via :func:`_expand_user` so it honours the profile HOME the
+    terminal tool uses, not the raw process HOME (issue #48552).
     """
-    p = Path(filepath).expanduser()
+    p = Path(_expand_user(filepath))
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()

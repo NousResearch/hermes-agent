@@ -55,7 +55,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@hermes/shared": "file:../shared",
-    "@icons-pack/react-simple-icons": "^13.13.0",
+    "@icons-pack/react-simple-icons": "=13.11.1",
     "@nanostores/react": "^1.1.0",
     "@nous-research/ui": "^0.13.0",
     "@radix-ui/react-slot": "^1.2.4",

@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ 停止しました。エージェントはまだ開始していません — このセッションを続行できます。"
     stopped:               "⚡ 停止しました。このセッションを続行できます。"
     no_active:             "停止できるアクティブなタスクはありません。"
+    shutting_down:             "⚠️ ゲートウェイをシャットダウン中 — 現在のタスクは中断されます。"
+    restarting_notification:   "⚠️ ゲートウェイを再起動中 — 現在のタスクは中断されます。再起動後にメッセージを送信すると、前回の中断地点から再開を試みます。"
+    restarted_ok:              "♻ ゲートウェイが正常に再起動されました。セッションを続行します。"
 
   title:
     db_unavailable:        "セッションデータベースは利用できません。"

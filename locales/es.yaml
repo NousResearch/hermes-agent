@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ Detenido. El agente aún no había comenzado — puedes continuar esta sesión."
     stopped:               "⚡ Detenido. Puedes continuar esta sesión."
     no_active:             "No hay ninguna tarea activa que detener."
+    shutting_down:             "⚠️ Gateway apagándose — Tu tarea actual será interrumpida."
+    restarting_notification:   "⚠️ Gateway reiniciándose — Tu tarea actual será interrumpida. Envía cualquier mensaje después del reinicio e intentaré reanudar desde donde lo dejaste."
+    restarted_ok:              "♻ Gateway reiniciado correctamente. Tu sesión continúa."
 
   title:
     db_unavailable:        "Base de datos de sesiones no disponible."

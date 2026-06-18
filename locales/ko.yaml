@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."
     stopped:               "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
     no_active:             "중지할 활성 작업이 없습니다."
+    shutting_down:             "⚠️ 게이트웨이 종료 중 — 현재 작업이 중단됩니다."
+    restarting_notification:   "⚠️ 게이트웨이 재시작 중 — 현재 작업이 중단됩니다. 재시작 후 메시지를 보내면 이전 중단 지점부터 재개를 시도합니다."
+    restarted_ok:              "♻ 게이트웨이가 성공적으로 재시작되었습니다. 세션을 계속합니다."
 
   title:
     db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."

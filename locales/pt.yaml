@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ Parado. O agente ainda não tinha começado — podes continuar esta sessão."
     stopped:               "⚡ Parado. Podes continuar esta sessão."
     no_active:             "Não há nenhuma tarefa ativa para parar."
+    shutting_down:             "⚠️ Gateway a desligar — A tua tarefa atual será interrompida."
+    restarting_notification:   "⚠️ Gateway a reiniciar — A tua tarefa atual será interrompida. Envia qualquer mensagem após o reinício e tentarei retomar de onde paraste."
+    restarted_ok:              "♻ Gateway reiniciado com sucesso. A tua sessão continua."
 
   title:
     db_unavailable:        "Base de dados de sessões indisponível."

@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ Gestop. Die agent het nog nie begin nie — jy kan met hierdie sessie voortgaan."
     stopped:               "⚡ Gestop. Jy kan met hierdie sessie voortgaan."
     no_active:             "Geen aktiewe taak om te stop nie."
+    shutting_down:             "⚠️ Gateway besig om af te skakel — Jou huidige taak sal onderbreek word."
+    restarting_notification:   "⚠️ Gateway besig om te herbegin — Jou huidige taak sal onderbreek word. Stuur enige boodskap na herbegin en ek sal probeer voortgaan waar jy opgehou het."
+    restarted_ok:              "♻ Gateway suksesvol herbegin. Jou sessie gaan voort."
 
   title:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."

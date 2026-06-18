@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ Fermato. L'agente non era ancora partito — puoi continuare questa sessione."
     stopped:               "⚡ Fermato. Puoi continuare questa sessione."
     no_active:             "Nessuna attività attiva da fermare."
+    shutting_down:             "⚠️ Gateway in fase di spegnimento — Il tuo task corrente verrà interrotto."
+    restarting_notification:   "⚠️ Gateway in fase di riavvio — Il tuo task corrente verrà interrotto. Invia un messaggio dopo il riavvio e proverò a riprendere da dove avevi lasciato."
+    restarted_ok:              "♻ Gateway riavviato con successo. La tua sessione continua."
 
   title:
     db_unavailable:        "Database delle sessioni non disponibile."

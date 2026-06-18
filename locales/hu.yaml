@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
     stopped:               "⚡ Leállítva. Folytathatod ezt a munkamenetet."
     no_active:             "Nincs leállítható aktív feladat."
+    shutting_down:             "⚠️ Gateway leállítása — Az aktuális feladat megszakításra kerül."
+    restarting_notification:   "⚠️ Gateway újraindítása — Az aktuális feladat megszakításra kerül. Az újraindítás után küldj bármilyen üzenetet, és megpróbálom folytatni, ahol abbahagytad."
+    restarted_ok:              "♻ Gateway sikeresen újraindítva. A munkamenet folytatódik."
 
   title:
     db_unavailable:        "A munkamenet-adatbázis nem érhető el."

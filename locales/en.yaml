@@ -296,6 +296,9 @@ gateway:
     stopped_pending:       "⚡ Stopped. The agent hadn't started yet — you can continue this session."
     stopped:               "⚡ Stopped. You can continue this session."
     no_active:             "No active task to stop."
+    shutting_down:             "⚠️ Gateway shutting down — Your current task will be interrupted."
+    restarting_notification:   "⚠️ Gateway restarting — Your current task will be interrupted. Send any message after restart and I'll try to resume where you left off."
+    restarted_ok:              "♻ Gateway restarted successfully. Your session continues."
 
   title:
     db_unavailable:        "Session database not available."

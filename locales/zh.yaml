@@ -284,6 +284,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     stopped_pending:       "⚡ 已停止。代理尚未启动 — 你可以继续此会话。"
     stopped:               "⚡ 已停止。你可以继续此会话。"
     no_active:             "没有可停止的活跃任务。"
+    shutting_down:             "⚠️ 网关正在关闭 — 你当前的任务将被中断。"
+    restarting_notification:   "⚠️ 网关正在重启 — 你当前的任务将被中断。重启后发送任意消息，我会尝试从上次中断处继续。"
+    restarted_ok:              "♻ 网关已成功重启。你的会话继续。"
 
   title:
     db_unavailable:        "会话数据库不可用。"

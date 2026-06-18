@@ -85,6 +85,13 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         help="Force re-authentication for an OAuth-based MCP server",
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+    mcp_login_p.add_argument(
+        "-t",
+        "--timeout",
+        type=float,
+        default=None,
+        help="OAuth connection timeout in seconds (overrides config connect_timeout, default: 30)",
+    )
 
     # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
     mcp_sub.add_parser(

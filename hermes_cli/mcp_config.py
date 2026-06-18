@@ -709,9 +709,24 @@ def cmd_mcp_login(args):
     print()
     _info(f"Starting OAuth flow for '{name}'...")
 
+    # Resolve the connection timeout: CLI --timeout takes priority, then
+    # the server's config connect_timeout, then the 30s default.
+    cli_timeout = getattr(args, "timeout", None)
+    if cli_timeout is not None:
+        connect_timeout = float(cli_timeout)
+    else:
+        connect_timeout = float(server_config.get("connect_timeout", 30))
+    if connect_timeout < 30:
+        _warning(
+            f"connect_timeout={connect_timeout}s is below the 30s minimum "
+            f"needed for OAuth flows; using 30s."
+        )
+        connect_timeout = 30.0
+    _info(f"  (Timeout: {connect_timeout:.0f}s — use --timeout to override)")
+
     # Probe triggers the OAuth flow (browser redirect + callback capture).
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(name, server_config, connect_timeout=connect_timeout)
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +
         # tools/list WITHOUT auth, so the probe lists tools even when the

@@ -4142,6 +4142,64 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
         logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
 
 
+def _profile_has_own_codex_oauth_state(auth_store: Dict[str, Any]) -> bool:
+    """True when this store has its OWN ``providers.openai-codex`` block.
+
+    Distinguishes a profile that genuinely shadows the root Codex grant from
+    one that only *reads* root via ``_load_provider_state``'s fallback. Only
+    the latter needs the refresh write-through below. Mirrors
+    ``_profile_has_own_xai_oauth_state`` (#43589) for openai-codex.
+    """
+    providers = auth_store.get("providers")
+    return isinstance(providers, dict) and isinstance(providers.get("openai-codex"), dict)
+
+
+def _write_through_codex_oauth_to_global_root(state: Dict[str, Any]) -> None:
+    """Persist a rotated openai-codex OAuth ``state`` into the global-root auth.json.
+
+    Best-effort write-through for the multi-profile rotation hazard (mirrors
+    the xAI fix #43589): openai-codex rotates the refresh_token on every
+    refresh, so when a profile session refreshes a grant it resolved from the
+    root fallback, the rotated chain must land back in root. Otherwise root
+    keeps a now-revoked refresh token and every other profile reading the
+    stale root grant dies with ``refresh_token_reused`` once its access token
+    expires.
+
+    Only updates ``providers.openai-codex`` in the root store; never touches
+    the profile store (the caller already saved that). Swallows all errors — a
+    failed write-through degrades to the pre-existing behavior (root stale),
+    it must never break the profile's own successful save.
+    """
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        # Classic mode (profile == root); the profile save already hit root.
+        return
+    # Seat belt: under pytest, refuse to write the real user's
+    # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
+    # (mirrors the read-side guard in _load_global_auth_store). Uses the
+    # unmodified HOME env, not Path.home() which fixtures may monkeypatch.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return
+            except Exception:
+                return
+    try:
+        if global_path.exists():
+            global_store = _load_auth_store(global_path)
+        else:
+            global_store = {}
+        if not isinstance(global_store, dict):
+            return
+        _store_provider_state(global_store, "openai-codex", dict(state), set_active=False)
+        _save_auth_store(global_store, global_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("openai-codex OAuth: write-through to global root failed: %s", exc)
+
+
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any],
     *,

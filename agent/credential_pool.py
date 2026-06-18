@@ -26,13 +26,16 @@ from hermes_cli.auth import (
     _auth_store_lock,
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
+    _global_auth_file_path,
     _load_auth_store,
     _load_provider_state,
+    _profile_has_own_codex_oauth_state,
     _resolve_kimi_base_url,
     _resolve_zai_base_url,
     _save_auth_store,
     _save_provider_state,
     _store_provider_state,
+    _write_through_codex_oauth_to_global_root,
     read_credential_pool,
     write_credential_pool,
 )
@@ -797,6 +800,14 @@ class CredentialPool:
         if entry.source not in {"device_code", "loopback_pkce"}:
             return
         try:
+            # When an openai-codex grant was resolved from the global-root
+            # fallback (this profile has no own providers.openai-codex block)
+            # and the runtime rotated it, the rotated chain must be written
+            # back to root too — otherwise root keeps a revoked refresh token
+            # and every other profile reading root's stale grant dies with
+            # ``refresh_token_reused``. Mirrors the xAI write-through (#43589).
+            # Captured here so we can fire it after the profile save below.
+            codex_write_through_state: Optional[Dict[str, Any]] = None
             with _auth_store_lock():
                 auth_store = _load_auth_store()
                 if self.provider == "nous":
@@ -823,6 +834,13 @@ class CredentialPool:
                     _store_provider_state(auth_store, "nous", state, set_active=False)
 
                 elif self.provider == "openai-codex":
+                    # Profile-mode + no own openai-codex block ⇒ this grant was
+                    # resolved from the root fallback; the rotated chain must be
+                    # written through to root after the profile save (#43589).
+                    write_through_to_root = (
+                        _global_auth_file_path() is not None
+                        and not _profile_has_own_codex_oauth_state(auth_store)
+                    )
                     state = _load_provider_state(auth_store, "openai-codex")
                     if not isinstance(state, dict):
                         return
@@ -835,6 +853,8 @@ class CredentialPool:
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
                     _store_provider_state(auth_store, "openai-codex", state, set_active=False)
+                    if write_through_to_root:
+                        codex_write_through_state = state
 
                 elif self.provider == "xai-oauth":
                     state = _load_provider_state(auth_store, "xai-oauth")
@@ -854,6 +874,19 @@ class CredentialPool:
                     return
 
                 _save_auth_store(auth_store)
+                # Best-effort write-through of the rotated openai-codex grant to
+                # the global root (#43589). Swallow all errors: a failed root
+                # write must never break the profile's own successful save.
+                if codex_write_through_state is not None:
+                    try:
+                        _write_through_codex_oauth_to_global_root(
+                            codex_write_through_state
+                        )
+                    except Exception as wexc:  # pragma: no cover - best effort
+                        logger.debug(
+                            "openai-codex OAuth: write-through to global root failed: %s",
+                            wexc,
+                        )
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 

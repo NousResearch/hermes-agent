@@ -10,6 +10,7 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
@@ -533,6 +534,29 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.clearNotice(ev.payload?.key)
 
         return
+      case 'billing.step_up.verification': {
+        // The billing step-up device flow runs in the headless gateway, so it
+        // can't open a browser or print the URL where the user sees it. Surface
+        // the link here (clickable/copyable in the transcript) and best-effort
+        // open it via the TUI process's own opener. This event arrives while the
+        // billing.step_up RPC is still polling (and may even outlive the RPC's
+        // 120s timeout), so the link — not the RPC result — is the source of truth.
+        const url = ev.payload.verification_url
+        const code = ev.payload.user_code
+
+        if (!url) {
+          return
+        }
+
+        sys('💳 Open this link to grant terminal billing access:')
+        sys(url)
+        if (code) {
+          sys(`If prompted, enter code: ${code}`)
+        }
+        void openExternalUrl(url)
+
+        return
+      }
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 

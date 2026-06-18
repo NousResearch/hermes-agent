@@ -7528,6 +7528,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     canonical = _cmd_def.name if _cmd_def else command
                     break
 
+        # Log every recognized slash command so model switches, session
+        # resets, and other state changes appear in gateway.log (#48240).
+        if canonical and is_gateway_known_command(canonical):
+            logger.info(
+                "slash command: /%s platform=%s user=%s chat=%s args=%r",
+                canonical,
+                source.platform.value if source.platform else "",
+                source.user_id,
+                source.chat_id,
+                event.get_command_args().strip(),
+            )
+
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
                 return self._telegram_topic_root_new_message()

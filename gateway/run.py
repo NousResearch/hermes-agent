@@ -4977,8 +4977,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
+        # Avoid zombie deadlock: kill -0 returns success on zombies (the PID
+        # still occupies the process table), causing the watcher to loop
+        # forever.  Check /proc/PID/status for State:Z and bail.  Also cap
+        # the wait at 120 s (600 * 0.2s) as a safety net.
         shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
+            f"n=0; deadline=600; "
+            f"while [ $n -lt $deadline ] && kill -0 {current_pid} 2>/dev/null; do "
+            f"  grep -qs '^State:.*Z' /proc/{current_pid}/status 2>/dev/null && break; "
+            f"  n=$((n + 1)); sleep 0.2; "
+            f"done; "
             f"{cmd} gateway restart"
         )
         # Same marker scrub as the Windows watcher above: this watcher runs

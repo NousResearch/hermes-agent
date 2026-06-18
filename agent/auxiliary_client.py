@@ -3728,10 +3728,18 @@ def resolve_provider_client(
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:
         # falling through to Codex with no model is a stale-constant trap).
+        _first_try = True
         for try_fn in (_try_custom_endpoint, _resolve_api_key_provider):
             client, default = try_fn()
             if client is not None:
-                final_model = _normalize_resolved_model(model or default, provider)
+                # When falling back to a different provider (e.g. Gemini),
+                # use that provider's default model — not the original model
+                # meant for the custom endpoint. Otherwise we'd send
+                # "ark-code-latest" to Gemini's API and get a 404.
+                if _first_try:
+                    final_model = _normalize_resolved_model(model or default, provider)
+                else:
+                    final_model = _normalize_resolved_model(default, provider)
                 _cbase = str(getattr(client, "base_url", "") or "")
                 # ``client.api_key`` may be a callable (Azure Foundry Entra
                 # bearer provider). Pass empty string for the wrapper-detection
@@ -3741,6 +3749,7 @@ def resolve_provider_client(
                 client = _wrap_if_needed(client, final_model, _cbase, _ckey)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
+            _first_try = False
         logger.warning("resolve_provider_client: custom/main requested "
                        "but no endpoint credentials found")
         return None, None

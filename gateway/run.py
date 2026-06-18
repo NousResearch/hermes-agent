@@ -15103,6 +15103,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 
+                # Redact credentials from the command before displaying it
+                # in the approval prompt — Tirith's findings are already
+                # redacted, but the raw command string still leaks secrets
+                # to the chat platform (#48456).
+                from agent.redact import redact_sensitive_text
+
+                cmd = redact_sensitive_text(cmd, force=True)
+
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
                 # false positives from MagicMock auto-attribute creation in tests.

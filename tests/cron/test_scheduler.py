@@ -7,9 +7,92 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _resolve_effective_cron_runtime,
+)
+from cron.jobs import create_job, get_job, mark_job_run
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestCronEffectiveRuntimeAudit:
+    def test_job_model_is_hard_pin_over_env_and_config(self, monkeypatch):
+        job = {
+            "id": "audit-job",
+            "model": "claude-opus-4-8",
+            "provider": "anthropic",
+        }
+        cfg = {"model": {"default": "claude-fable-5"}}
+        monkeypatch.setenv("HERMES_MODEL", "gpt-env-should-not-win")
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "provider": "anthropic",
+                "api_key": "test-key",
+                "base_url": "https://api.anthropic.com",
+                "api_mode": "anthropic_messages",
+            },
+        ):
+            model, runtime, audit = _resolve_effective_cron_runtime(job, cfg)
+
+        assert model == "claude-opus-4-8"
+        assert runtime["provider"] == "anthropic"
+        assert audit["job_config_model"] == "claude-opus-4-8"
+        assert audit["effective_agent_model"] == "claude-opus-4-8"
+        assert audit["model_source"] == "job.model"
+        assert audit["hard_pinned"] is True
+        assert audit["base_url_class"] == "anthropic"
+
+    def test_unpinned_model_records_config_source(self, monkeypatch):
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+        job = {"id": "audit-job"}
+        cfg = {"model": {"default": "gpt-5.5", "provider": "openai-codex"}}
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "provider": "openai-codex",
+                "api_key": "test-key",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_mode": "codex_responses",
+            },
+        ):
+            model, _runtime, audit = _resolve_effective_cron_runtime(job, cfg)
+
+        assert model == "gpt-5.5"
+        assert audit["model_source"] == "config.model.default"
+        assert audit["hard_pinned"] is False
+        assert audit["effective_provider"] == "openai-codex"
+        assert audit["api_mode"] == "codex_responses"
+
+    def test_mark_job_run_persists_runtime_audit(self, tmp_path, monkeypatch):
+        from cron import jobs as jobs_mod
+
+        monkeypatch.setattr(jobs_mod, "HERMES_DIR", tmp_path)
+        monkeypatch.setattr(jobs_mod, "CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr(jobs_mod, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", tmp_path / "cron" / "output")
+
+        job = create_job("hello", "every 60m", name="audit")
+        runtime_info = {
+            "job_config_model": "claude-opus-4-8",
+            "effective_agent_model": "claude-opus-4-8",
+            "effective_provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "base_url_class": "anthropic",
+            "hard_pinned": True,
+        }
+        mark_job_run(job["id"], True, runtime_info=runtime_info)
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["last_runtime"] == runtime_info
 
 
 class TestResolveOrigin:

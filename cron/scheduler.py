@@ -30,7 +30,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -111,6 +111,131 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _cron_model_from_config(cfg: dict, current: str = "") -> tuple[str, str]:
+    """Return (model, source) from config.yaml, preserving an existing value."""
+    model_cfg = (cfg or {}).get("model", {})
+    if isinstance(model_cfg, str):
+        return (model_cfg.strip() or current, "config.model" if model_cfg.strip() else "unset")
+    if isinstance(model_cfg, dict):
+        value = str(model_cfg.get("default") or model_cfg.get("model") or current or "").strip()
+        source = "config.model.default" if model_cfg.get("default") else "config.model.model" if model_cfg.get("model") else "unset"
+        return value, source
+    return current, "unset"
+
+
+def _base_url_class(base_url: str) -> str:
+    text = (base_url or "").strip().lower()
+    if not text:
+        return "unset"
+    if "localhost" in text or "127.0.0.1" in text or "::1" in text:
+        return "loopback"
+    if "openrouter.ai" in text:
+        return "openrouter"
+    if "anthropic.com" in text:
+        return "anthropic"
+    if "openai.com" in text or "chatgpt.com" in text:
+        return "openai"
+    return "remote"
+
+
+def _format_runtime_audit_md(audit: dict[str, Any] | None) -> str:
+    """Render a compact, secret-free runtime audit block for cron output."""
+    if not audit:
+        return ""
+    lines = ["## Runtime Audit", ""]
+    for key in (
+        "job_config_model",
+        "effective_agent_model",
+        "model_source",
+        "job_config_provider",
+        "effective_provider",
+        "api_mode",
+        "base_url_class",
+        "fallback_reason",
+        "hard_pinned",
+    ):
+        value = audit.get(key)
+        if value is None or value == "":
+            value = "null"
+        lines.append(f"- **{key}:** `{value}`")
+    return "\n".join(lines) + "\n\n"
+
+
+def _resolve_effective_cron_runtime(job: dict, cfg: dict) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Resolve and audit the runtime a cron job will actually use.
+
+    Job-level ``model`` is a hard pin: if present, it is passed through to
+    AIAgent unchanged and config/env defaults may not replace it. Unpinned jobs
+    use HERMES_MODEL then config.yaml. The returned audit is persisted on the
+    job record and embedded in the run output so later failures can be tied to
+    the exact provider/model/base_url/api_mode used.
+    """
+    job_model = str(job.get("model") or "").strip()
+    env_model = str(os.getenv("HERMES_MODEL") or "").strip()
+
+    if job_model:
+        model = job_model
+        model_source = "job.model"
+    elif env_model:
+        model = env_model
+        model_source = "HERMES_MODEL"
+    else:
+        model, model_source = _cron_model_from_config(cfg)
+
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+    from hermes_cli.auth import AuthError
+
+    requested_provider = job.get("provider")
+    runtime_kwargs: dict[str, Any] = {"requested": requested_provider}
+    if job.get("base_url"):
+        runtime_kwargs["explicit_base_url"] = job.get("base_url")
+
+    fallback_reason = ""
+    try:
+        runtime = resolve_runtime_provider(**runtime_kwargs)
+    except AuthError as auth_exc:
+        fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
+        fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+        runtime = None
+        for entry in fb_list:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                fb_kwargs = {"requested": entry.get("provider")}
+                if entry.get("base_url"):
+                    fb_kwargs["explicit_base_url"] = entry["base_url"]
+                if entry.get("api_key"):
+                    fb_kwargs["explicit_api_key"] = entry["api_key"]
+                runtime = resolve_runtime_provider(**fb_kwargs)
+                fallback_reason = f"primary auth failed; using fallback provider {entry.get('provider')}"
+                logger.info("Job '%s': fallback resolved to %s", job.get("id"), runtime.get("provider"))
+                break
+            except Exception as fb_exc:
+                logger.debug("Job '%s': fallback %s failed: %s", job.get("id"), entry.get("provider"), fb_exc)
+        if runtime is None:
+            raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+    except Exception as exc:
+        message = format_runtime_provider_error(exc)
+        raise RuntimeError(message) from exc
+
+    audit = {
+        "job_config_model": job_model or None,
+        "effective_agent_model": model,
+        "model_source": model_source,
+        "job_config_provider": str(job.get("provider") or "").strip() or None,
+        "effective_provider": str(runtime.get("provider") or "").strip() or None,
+        "api_mode": str(runtime.get("api_mode") or "").strip() or None,
+        "base_url_class": _base_url_class(str(runtime.get("base_url") or "")),
+        "fallback_reason": fallback_reason or None,
+        "hard_pinned": bool(job_model),
+    }
+    return model, runtime, audit
+
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -150,6 +275,11 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+
+# Per-job runtime audit captured by run_job() and persisted by tick(). Kept
+# outside the return tuple for backward compatibility with existing tests/tools
+# that unpack (success, output, final_response, error).
+_LAST_RUNTIME_AUDIT: dict[str, dict[str, Any]] = {}
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1577,9 +1707,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
-
-        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
+        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing.
         _cfg = {}
         try:
             import yaml
@@ -1588,14 +1716,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
-                _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        model, runtime, runtime_audit = _resolve_effective_cron_runtime(job, _cfg)
+        _LAST_RUNTIME_AUDIT[job_id] = runtime_audit
+        logger.info(
+            "Job '%s': effective cron runtime model=%r source=%s provider=%r api_mode=%r base_url_class=%s hard_pinned=%s fallback=%r",
+            job_id,
+            runtime_audit.get("effective_agent_model"),
+            runtime_audit.get("model_source"),
+            runtime_audit.get("effective_provider"),
+            runtime_audit.get("api_mode"),
+            runtime_audit.get("base_url_class"),
+            runtime_audit.get("hard_pinned"),
+            runtime_audit.get("fallback_reason"),
+        )
 
         # Apply IPv4 preference if configured.
         try:
@@ -1640,49 +1776,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
-
-        from hermes_cli.runtime_provider import (
-            resolve_runtime_provider,
-            format_runtime_provider_error,
-        )
-        from hermes_cli.auth import AuthError
-        try:
-            # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
-            # already prefers persisted config over stale shell/env overrides when
-            # no explicit provider is requested. Passing the env var here short-
-            # circuits that precedence and can resurrect old providers (for
-            # example DeepSeek) for cron jobs that do not pin provider/model.
-            runtime_kwargs = {
-                "requested": job.get("provider"),
-            }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
-            runtime = resolve_runtime_provider(**runtime_kwargs)
-        except AuthError as auth_exc:
-            # Primary provider auth failed — try fallback chain before giving up.
-            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
-            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
-            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
-            runtime = None
-            for entry in fb_list:
-                if not isinstance(entry, dict):
-                    continue
-                try:
-                    fb_kwargs = {"requested": entry.get("provider")}
-                    if entry.get("base_url"):
-                        fb_kwargs["explicit_base_url"] = entry["base_url"]
-                    if entry.get("api_key"):
-                        fb_kwargs["explicit_api_key"] = entry["api_key"]
-                    runtime = resolve_runtime_provider(**fb_kwargs)
-                    logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
-                    break
-                except Exception as fb_exc:
-                    logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
-            if runtime is None:
-                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
-        except Exception as exc:
-            message = format_runtime_provider_error(exc)
-            raise RuntimeError(message) from exc
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
@@ -1873,13 +1966,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
+        runtime_audit_md = _format_runtime_audit_md(_LAST_RUNTIME_AUDIT.get(job_id))
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
-## Prompt
+{runtime_audit_md}## Prompt
 
 {prompt}
 
@@ -1895,13 +1989,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
+        runtime_audit_md = _format_runtime_audit_md(_LAST_RUNTIME_AUDIT.get(job_id))
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
-## Prompt
+{runtime_audit_md}## Prompt
 
 {prompt}
 
@@ -2080,12 +2175,20 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                runtime_info = _LAST_RUNTIME_AUDIT.pop(job["id"], None)
+                if runtime_info is None:
+                    mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                else:
+                    mark_job_run(job["id"], success, error, delivery_error=delivery_error, runtime_info=runtime_info)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+                runtime_info = _LAST_RUNTIME_AUDIT.pop(job["id"], None)
+                if runtime_info is None:
+                    mark_job_run(job["id"], False, str(e))
+                else:
+                    mark_job_run(job["id"], False, str(e), runtime_info=runtime_info)
                 return False
 
         # Partition due jobs: those with a per-job workdir mutate

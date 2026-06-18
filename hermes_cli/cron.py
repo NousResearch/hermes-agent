@@ -134,6 +134,13 @@ def cron_list(show_all: bool = False):
         delivery_err = job.get("last_delivery_error")
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+        last_runtime = job.get("last_runtime") or {}
+        if isinstance(last_runtime, dict) and last_runtime:
+            model = last_runtime.get("effective_agent_model") or "?"
+            provider = last_runtime.get("effective_provider") or "?"
+            source = last_runtime.get("model_source") or "?"
+            pinned = " pinned" if last_runtime.get("hard_pinned") else ""
+            print(f"    Runtime:   {provider} / {model} ({source}{pinned})")
 
         print()
 

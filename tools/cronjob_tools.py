@@ -445,6 +445,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "next_run_at": job.get("next_run_at"),
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
+        "last_runtime": job.get("last_runtime"),
         "last_delivery_error": job.get("last_delivery_error"),
         "enabled": job.get("enabled", True),
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),

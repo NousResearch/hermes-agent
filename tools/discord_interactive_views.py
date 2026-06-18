@@ -296,18 +296,13 @@ if discord is not None:
                 )
                 return
 
-            self.resolved = True
-            self._disable_all()
-
             action = option.get("action", "return")
 
             # ── Modal path ──────────────────────────────────────────────
+            # Send the modal FIRST — this consumes the interaction response.
+            # Buttons stay enabled so the user can retry if they dismiss
+            # the modal. Disabling + resolving happens in on_submit().
             if action == "modal":
-                # Defer resolved + disable until modal actually submits.
-                # If the user dismisses the modal, the prompt stays active
-                # and can be re-attempted (or a different option chosen).
-                self.resolved = False
-                self._disable_all()
                 modal_spec = option.get("modal", {})
                 modal = InteractivePromptModal(
                     prompt_id=self.prompt_id,
@@ -315,14 +310,11 @@ if discord is not None:
                     modal_spec=modal_spec,
                     original_view=self,
                 )
-                # Disable buttons while modal is open (prevents double-submit)
-                self._disable_all()
-                try:
-                    await interaction.response.edit_message(view=self)
-                except Exception:
-                    pass
                 await interaction.response.send_modal(modal)
                 return
+
+            self.resolved = True
+            self._disable_all()
 
             # ── Return (default) path ──────────────────────────────────
             embed = None
@@ -674,6 +666,11 @@ if discord is not None:
                     self.prompt_id,
                     exc,
                 )
+
+            # Mark the original prompt as resolved and disable buttons.
+            if self.original_view is not None:
+                self.original_view.resolved = True
+                self.original_view._disable_all()
 
             # Acknowledge the modal submission.
             try:

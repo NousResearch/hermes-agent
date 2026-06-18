@@ -61,6 +61,22 @@ def test_strip_leading_message_timestamps_removes_multiple_prefixes_and_prefers_
     assert embedded_ts == _epoch(2026, 4, 27, 15, 54, 44)
 
 
+def test_strip_leading_message_timestamps_handles_multiword_zone_name():
+    # strftime("%Z") yields a spaced, descriptive zone name on Windows
+    # ("Pacific Daylight Time") when no timezone is configured. The strip must
+    # still recognise a prefix the module itself formatted, and must not spill
+    # the match into the following "[sender]" segment.
+    content = (
+        "[Tue 2026-04-28 13:40:53 Pacific Daylight Time] "
+        "[Example User] hello"
+    )
+
+    stripped, embedded_ts = strip_leading_message_timestamps(content, tz=BERLIN)
+
+    assert stripped == "[Example User] hello"
+    assert embedded_ts == _epoch(2026, 4, 28, 13, 40, 53)
+
+
 def test_coerce_message_timestamp_accepts_datetime_and_epoch():
     dt = datetime(2026, 4, 28, 13, 40, 53, tzinfo=BERLIN)
 

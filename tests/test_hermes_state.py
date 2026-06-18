@@ -178,17 +178,30 @@ class TestSessionLifecycle:
         update_token_counts uses COALESCE(model, ?) (first-writer-wins), so
         the dashboard kept showing the original model after a switch (#34850).
         update_session_model sets the column unconditionally.
+
+        It also clears the persisted system_prompt so the next turn rebuilds
+        the prompt with the new Model/Provider values (#48173).
         """
         db.create_session(session_id="s1", source="telegram",
                           model="xiaomi/mimo-v2.5-pro")
+        # Simulate a persisted system prompt with the old model header.
+        db.update_system_prompt("s1",
+                                "Model: xiaomi/mimo-v2.5-pro\n"
+                                "Provider: xiaomi\nYou are helpful.")
+        session = db.get_session("s1")
+        assert session["model"] == "xiaomi/mimo-v2.5-pro"
+        assert "xiaomi/mimo-v2.5-pro" in session["system_prompt"]
+
         # Token updates never change the model once set.
         db.update_token_counts("s1", input_tokens=10, output_tokens=5,
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
 
-        # Explicit switch overwrites it.
+        # Explicit switch overwrites model AND clears stale system_prompt.
         db.update_session_model("s1", "xiaomi/mimo-v2.5")
-        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+        session = db.get_session("s1")
+        assert session["model"] == "xiaomi/mimo-v2.5"
+        assert session["system_prompt"] is None
 
         # And a subsequent token update does NOT revert it (COALESCE no-ops
         # because the column is now non-NULL).

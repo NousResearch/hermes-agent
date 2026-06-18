@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.skills_sync import (
     _get_bundled_dir,
     _read_manifest,
@@ -13,6 +15,7 @@ from tools.skills_sync import (
     _discover_bundled_skills,
     _compute_relative_dest,
     _dir_hash,
+    _rmtree_writable,
     sync_skills,
     reset_bundled_skill,
     restore_official_optional_skill,
@@ -1188,3 +1191,60 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestRmtreeWritableScopeGuard:
+    """_rmtree_writable must never remove SKILLS_DIR itself or escape it.
+
+    Defense-in-depth for the catastrophic data-loss class in #48200: every
+    caller passes a skill dir or its ``.bak`` sibling under SKILLS_DIR, but a
+    degenerate ``dest`` collapsing to SKILLS_DIR (and its ``.bak`` landing in
+    HERMES_HOME) must abort rather than wipe the skills root / HERMES_HOME.
+    """
+
+    def test_removes_skill_dir_inside_skills(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        target = skills_dir / "mlops" / "axolotl"
+        target.mkdir(parents=True)
+        (target / "SKILL.md").write_text("x")
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            _rmtree_writable(target)
+        assert not target.exists()
+        assert skills_dir.exists()
+
+    def test_removes_bak_sibling_inside_skills(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        bak = skills_dir / "mlops" / "axolotl.bak"
+        bak.mkdir(parents=True)
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            _rmtree_writable(bak)
+        assert not bak.exists()
+
+    def test_refuses_skills_root_itself(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        (skills_dir / "keep").mkdir(parents=True)
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            with pytest.raises(ValueError, match="outside the skills directory"):
+                _rmtree_writable(skills_dir)
+        assert (skills_dir / "keep").exists()  # nothing was wiped
+
+    def test_refuses_bak_sibling_in_hermes_home(self, tmp_path):
+        # dest==SKILLS_DIR -> backup = SKILLS_DIR.with_suffix('.bak') lands
+        # next to skills/ inside HERMES_HOME. Must be refused.
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        outside = tmp_path / "skills.bak"
+        outside.mkdir()
+        (outside / "important").write_text("secret")
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            with pytest.raises(ValueError, match="outside the skills directory"):
+                _rmtree_writable(outside)
+        assert (outside / "important").exists()
+
+    def test_refuses_hermes_home_parent(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        with patch("tools.skills_sync.SKILLS_DIR", skills_dir):
+            with pytest.raises(ValueError, match="outside the skills directory"):
+                _rmtree_writable(tmp_path)  # the HERMES_HOME-equivalent root
+        assert tmp_path.exists()

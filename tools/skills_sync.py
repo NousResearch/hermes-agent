@@ -670,8 +670,25 @@ def _rmtree_writable(path: Path) -> None:
     (``r-xr-xr-x``).  Removing a child requires write permission on its
     parent directory, so the retry handler makes the failing path **and its
     parent** writable before re-attempting.  See #34860, #34972.
+
+    Safety: refuses to remove ``SKILLS_DIR`` itself or any path outside it.
+    Every caller passes a skill directory or its ``.bak`` sibling under
+    ``SKILLS_DIR``, but a degenerate ``dest`` — e.g. a bundled layout whose
+    relative path collapses to ``.`` so ``dest == SKILLS_DIR`` — must never
+    escalate into wiping the skills root or all of ``HERMES_HOME``. A
+    ``..``-traversal can't happen here (``_compute_relative_dest`` uses
+    ``Path.relative_to``), so guarding the root boundary is sufficient.
+    Defense-in-depth for #48200.
     """
     import stat
+
+    resolved = Path(path).resolve()
+    skills_root = SKILLS_DIR.resolve()
+    if resolved == skills_root or skills_root not in resolved.parents:
+        raise ValueError(
+            f"_rmtree_writable refusing to remove a path outside the skills "
+            f"directory: {str(path)!r} (skills dir: {skills_root})"
+        )
 
     def _on_error(func, fpath, exc_info):
         # Unlinking a child requires the parent dir to be writable, so chmod

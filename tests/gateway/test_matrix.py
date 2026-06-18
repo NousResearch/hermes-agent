@@ -2875,6 +2875,408 @@ class TestMatrixLinkSanitization:
 
 
 # ---------------------------------------------------------------------------
+# Matrix HTML Sanitizer (_MatrixHTMLSanitizer)
+# ---------------------------------------------------------------------------
+
+class TestMatrixHTMLSanitizer:
+    """Unit tests for _MatrixHTMLSanitizer class directly."""
+
+    def setup_method(self):
+        from gateway.platforms.matrix import _MatrixHTMLSanitizer
+        self.sanitizer = _MatrixHTMLSanitizer()
+
+    # --- Allowed tags preserved ---
+
+    def test_allowed_heading_tags(self):
+        result = self.sanitizer.sanitize("<h1>Title</h1><h2>Sub</h2><h6>Small</h6>")
+        assert "<h1>Title</h1>" in result
+        assert "<h2>Sub</h2>" in result
+        assert "<h6>Small</h6>" in result
+
+    def test_allowed_text_formatting(self):
+        result = self.sanitizer.sanitize("<b>bold</b> <strong>strong</strong> <i>italic</i> <em>em</em>")
+        assert "<b>bold</b>" in result
+        assert "<strong>strong</strong>" in result
+        assert "<i>italic</i>" in result
+        assert "<em>em</em>" in result
+
+    def test_allowed_code_elements(self):
+        result = self.sanitizer.sanitize("<code>inline</code> <pre>block</pre>")
+        assert "<code>inline</code>" in result
+        assert "<pre>block</pre>" in result
+
+    def test_allowed_block_elements(self):
+        result = self.sanitizer.sanitize("<blockquote>Quote</blockquote> <hr> <br> <p>Para</p>")
+        assert "<blockquote>Quote</blockquote>" in result
+        assert "<hr" in result  # self-closing
+        assert "<br" in result  # self-closing
+        assert "<p>Para</p>" in result
+
+    def test_allowed_lists(self):
+        result = self.sanitizer.sanitize("<ul><li>One</li><li>Two</li></ul><ol><li>First</li></ol>")
+        assert "<ul>" in result
+        assert "<li>One</li>" in result
+        assert "<ol>" in result
+
+    def test_allowed_tables(self):
+        result = self.sanitizer.sanitize("<table><thead><tr><th>H</th></tr></thead><tbody><tr><td>C</td></tr></tbody></table>")
+        assert "<table>" in result
+        assert "<thead>" in result
+        assert "<th>H</th>" in result
+        assert "<td>C</td>" in result
+
+    def test_allowed_span_div(self):
+        result = self.sanitizer.sanitize("<span>text</span> <div>block</div>")
+        assert "<span>text</span>" in result
+        assert "<div>block</div>" in result
+
+    def test_allowed_strikethrough(self):
+        result = self.sanitizer.sanitize("<u>underline</u> <s>strike</s> <strike>strike2</strike> <del>deleted</del>")
+        assert "<u>underline</u>" in result
+        assert "<s>strike</s>" in result
+        assert "<strike>strike2</strike>" in result
+        assert "<del>deleted</del>" in result
+
+    # --- Allowed attributes preserved ---
+
+    def test_allowed_href_on_anchor(self):
+        result = self.sanitizer.sanitize('<a href="https://example.com">Link</a>')
+        assert 'href="https://example.com"' in result
+        assert "Link" in result
+
+    def test_allowed_alt_on_code(self):
+        """alt attribute is allowed on code elements (pre/code blocks)."""
+        result = self.sanitizer.sanitize('<code alt="python">code</code>')
+        assert 'alt="python"' in result
+
+    # --- Disallowed tags stripped ---
+
+    def test_script_tag_stripped(self):
+        result = self.sanitizer.sanitize('<script>alert(1)</script>Safe')
+        assert "<script>" not in result
+        assert "Safe" in result
+        # script content ("alert(1)") becomes text content and is html-escaped
+        assert "&lt;" in result or "alert" in result  # text is escaped
+
+    def test_iframe_tag_stripped(self):
+        result = self.sanitizer.sanitize('<iframe src="http://evil.com"></iframe>Safe')
+        assert "<iframe" not in result
+        assert "Safe" in result
+
+    def test_img_tag_stripped(self):
+        result = self.sanitizer.sanitize('<img src="x" onerror="alert(1)">Safe')
+        assert "<img" not in result
+        assert "onerror" not in result
+        assert "Safe" in result
+
+    def test_embed_object_video_audio_stripped(self):
+        for tag in ["embed", "object", "video", "audio", "source", "track"]:
+            result = self.sanitizer.sanitize(f"<{tag} src='x'></{tag}>Safe")
+            assert f"<{tag}" not in result
+            assert "Safe" in result
+
+    def test_form_input_button_stripped(self):
+        for tag in ["form", "input", "button", "select", "textarea", "option"]:
+            result = self.sanitizer.sanitize(f"<{tag}>Unsafe</{tag}>Safe")
+            assert f"<{tag}" not in result
+            assert "Safe" in result
+
+    def test_style_link_meta_stripped(self):
+        for tag in ["style", "link", "meta", "base", "title", "head", "html", "body"]:
+            result = self.sanitizer.sanitize(f"<{tag}>Unsafe</{tag}>Safe")
+            assert f"<{tag}" not in result
+            assert "Safe" in result
+
+    def test_svg_math_stripped(self):
+        for tag in ["svg", "math", "foreignobject"]:
+            result = self.sanitizer.sanitize(f"<{tag}>Unsafe</{tag}>Safe")
+            assert f"<{tag}" not in result
+            assert "Safe" in result
+
+    def test_nested_tag_stripping(self):
+        """Disallowed tag inside allowed tag should be handled."""
+        result = self.sanitizer.sanitize("<p>Safe<script>alert(1)</script>More safe</p>")
+        assert "<p>Safe" in result
+        assert "More safe</p>" in result
+        assert "<script>" not in result
+
+    # --- Disallowed attributes stripped ---
+
+    def test_onclick_attribute_stripped(self):
+        result = self.sanitizer.sanitize('<a href="http://safe.com" onclick="alert(1)">Link</a>')
+        assert "onclick" not in result
+        assert 'href="http://safe.com"' in result
+
+    def test_onerror_attribute_stripped(self):
+        result = self.sanitizer.sanitize('<img src="x" onerror="alert(1)">')
+        assert "onerror" not in result
+
+    def test_onload_attribute_stripped(self):
+        result = self.sanitizer.sanitize('<body onload="alert(1)">')
+        assert "onload" not in result
+
+    def test_style_attribute_stripped(self):
+        result = self.sanitizer.sanitize('<p style="color: red">Text</p>')
+        assert "style" not in result
+        assert "<p>Text</p>" in result
+
+    def test_class_attribute_stripped(self):
+        result = self.sanitizer.sanitize('<div class="evil">Text</div>')
+        assert "class" not in result
+        assert "<div>Text</div>" in result
+
+    def test_id_attribute_stripped(self):
+        result = self.sanitizer.sanitize('<p id="unique">Text</p>')
+        assert "id" not in result
+        assert "<p>Text</p>" in result
+
+    def test_data_attributes_stripped(self):
+        result = self.sanitizer.sanitize('<div data-x="1" data-y="2">Text</div>')
+        assert "data-x" not in result
+        assert "data-y" not in result
+        assert "<div>Text</div>" in result
+
+    def test_all_event_handlers_stripped(self):
+        handlers = ["onclick", "onerror", "onload", "onmouseover", "onfocus", "onblur", "onchange", "onsubmit"]
+        for h in handlers:
+            result = self.sanitizer.sanitize(f'<a href="http://x.com" {h}="alert(1)">Link</a>')
+            assert h not in result, f"{h} should be stripped"
+            assert 'href="http://x.com"' in result
+
+    # --- Dangerous URL schemes stripped ---
+
+    def test_javascript_scheme_stripped(self):
+        result = self.sanitizer.sanitize('<a href="javascript:alert(1)">Click</a>')
+        assert 'href="javascript:' not in result
+        # Empty href or no href
+        assert "<a>Click</a>" in result or '<a href="">Click</a>' in result
+
+    def test_data_scheme_stripped(self):
+        result = self.sanitizer.sanitize('<a href="data:text/html,<script>">Click</a>')
+        assert 'href="data:' not in result
+        assert "<a>Click</a>" in result or '<a href="">Click</a>' in result
+
+    def test_vbscript_scheme_stripped(self):
+        result = self.sanitizer.sanitize('<a href="vbscript:msgbox(1)">Click</a>')
+        assert 'href="vbscript:' not in result
+        assert "<a>Click</a>" in result or '<a href="">Click</a>' in result
+
+    def test_case_insensitive_scheme_filtering(self):
+        for scheme in ["JAVASCRIPT", "JavaScript", "Data", "DATA", "VBScript", "VbScRiPt"]:
+            result = self.sanitizer.sanitize(f'<a href="{scheme}:alert(1)">Click</a>')
+            assert f'href="{scheme}:' not in result or 'href=""' in result
+
+    def test_safe_urls_preserved(self):
+        for url in ["https://example.com", "http://example.com", "mailto:test@example.com", "tel:+1234567890", "#anchor", "/relative/path", "//cdn.example.com/file.js"]:
+            result = self.sanitizer.sanitize(f'<a href="{url}">Link</a>')
+            assert f'href="{url}"' in result, f"Safe URL {url} should be preserved"
+
+    # --- HTML entity handling ---
+
+    def test_entities_preserved(self):
+        result = self.sanitizer.sanitize("&lt;script&gt; &amp; &quot; &apos; &#x3C;script&#x3E;")
+        # Entities are decoded then re-encoded by the parser
+        assert "&lt;" in result
+        assert "&amp;" in result
+        assert "&quot;" in result
+        # &#x3C; becomes < then gets escaped to &lt;
+        assert "&lt;" in result  # both original &lt; and converted &#x3C; end up as &lt;
+
+    def test_text_content_escaped(self):
+        result = self.sanitizer.sanitize("<p>A &lt; B &gt; C</p>")
+        # Text content is html-escaped
+        assert "<p>" in result
+        assert "A &lt; B &gt; C" in result
+
+    # --- Entity-encoded bypass attempts ---
+
+    def test_hex_encoded_javascript_blocked(self):
+        result = self.sanitizer.sanitize('<a href="&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;:alert(1)">Click</a>')
+        # Entity is decoded by parser, then scheme checked
+        assert 'href="javascript:' not in result
+
+    def test_decimal_encoded_data_blocked(self):
+        result = self.sanitizer.sanitize('<a href="&#100;&#97;&#116;&#97;:text">Click</a>')
+        assert 'href="data:' not in result
+
+    # --- Self-closing tags ---
+
+    def test_self_closing_br_hr(self):
+        result = self.sanitizer.sanitize("<p>Line 1<br>Line 2<hr>Line 3</p>")
+        assert "<br" in result
+        assert "<hr" in result
+        assert "<p>Line 1" in result
+
+    def test_self_closing_img_stripped(self):
+        result = self.sanitizer.sanitize("<p>Text<img src=x onerror=alert(1)>More</p>")
+        assert "<img" not in result
+        assert "onerror" not in result
+        assert "<p>Text" in result
+
+    # --- Malformed HTML handling ---
+
+    def test_unclosed_tags_handled(self):
+        result = self.sanitizer.sanitize("<b>Bold <i>Italic</b>")
+        # Parser should handle gracefully
+        assert "<b>" in result
+        assert "</b>" in result
+
+    def test_mismatched_tags_handled(self):
+        result = self.sanitizer.sanitize("<b>Bold</i>")
+        assert "<b>" in result
+        assert "</b>" in result or "</i>" in result  # parser may fix or drop
+
+    # --- Integration: run sanitize twice is idempotent ---
+
+    def test_idempotent(self):
+        html = '<a href="javascript:alert(1)" onclick="evil" style="color:red"><script>alert(1)</script>Click</a>'
+        result1 = self.sanitizer.sanitize(html)
+        result2 = self.sanitizer.sanitize(result1)
+        assert result1 == result2
+
+
+# ---------------------------------------------------------------------------
+# Markdown library path integration (_markdown_to_html with sanitizer)
+# ---------------------------------------------------------------------------
+
+class TestMatrixMarkdownToHtmlWithSanitizer:
+    """Integration tests for _markdown_to_html (markdown library path) using the sanitizer."""
+
+    def setup_method(self):
+        from gateway.platforms.matrix import MatrixAdapter
+        from gateway.config import PlatformConfig
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test",
+            extra={"homeserver": "https://matrix.example.org", "user_id": "@bot:ex.org"},
+        )
+        self.adapter = MatrixAdapter(config)
+
+    def test_javascript_link_blocked_in_markdown(self):
+        result = self.adapter._markdown_to_html("[Click](javascript:alert(1))")
+        assert 'href="javascript:' not in result
+        assert "<a>Click</a>" in result or '<a href="">Click</a>' in result
+
+    def test_data_link_blocked_in_markdown(self):
+        result = self.adapter._markdown_to_html("[Click](data:text/html,<script>)")
+        assert 'href="data:' not in result
+
+    def test_vbscript_link_blocked_in_markdown(self):
+        result = self.adapter._markdown_to_html("[Click](vbscript:msgbox(1))")
+        assert 'href="vbscript:' not in result
+
+    def test_img_tag_stripped_in_markdown_output(self):
+        # The markdown library doesn't generate <img> from markdown syntax,
+        # but if someone injects raw HTML in markdown, it should be stripped
+        result = self.adapter._markdown_to_html("<img src=x onerror=alert(1)>")
+        assert "<img" not in result
+        assert "onerror" not in result
+
+    def test_script_tag_stripped_in_markdown_output(self):
+        # Raw script tag in markdown becomes text content (escaped)
+        result = self.adapter._markdown_to_html("<script>alert(1)</script>")
+        assert "<script>" not in result
+        # Content becomes text and is html-escaped
+        assert "alert" in result or "&lt;" in result
+
+    def test_iframe_tag_stripped_in_markdown_output(self):
+        result = self.adapter._markdown_to_html('<iframe src="http://evil.com"></iframe>')
+        assert "<iframe" not in result
+
+    def test_style_attribute_stripped_in_markdown_output(self):
+        result = self.adapter._markdown_to_html('<p style="color:red">Text</p>')
+        assert "style" not in result
+        # Raw HTML in markdown gets wrapped; style stripped from inner <p>
+        assert "Text" in result
+
+    def test_onclick_attribute_stripped_in_markdown_output(self):
+        result = self.adapter._markdown_to_html('<a href="http://safe.com" onclick="alert(1)">Link</a>')
+        assert "onclick" not in result
+        assert 'href="http://safe.com"' in result
+
+    def test_safe_markdown_preserved(self):
+        result = self.adapter._markdown_to_html("**Bold** and *italic* and `code`")
+        assert "<strong>Bold</strong>" in result or "<b>Bold</b>" in result
+        assert "<em>italic</em>" in result or "<i>italic</i>" in result
+        assert "<code>code</code>" in result
+
+    def test_links_preserved_in_markdown(self):
+        result = self.adapter._markdown_to_html("[Link](https://example.com)")
+        assert 'href="https://example.com"' in result
+        assert "Link" in result
+
+    def test_code_blocks_preserved(self):
+        result = self.adapter._markdown_to_html("```python\ndef hello():\n    pass\n```")
+        assert "<pre><code" in result
+        assert "language-python" in result
+
+    def test_headers_preserved(self):
+        result = self.adapter._markdown_to_html("# H1\n## H2\n### H3")
+        assert "<h1>H1</h1>" in result
+        assert "<h2>H2</h2>" in result
+        assert "<h3>H3</h3>" in result
+
+    def test_lists_preserved(self):
+        result = self.adapter._markdown_to_html("- One\n- Two\n\n1. First\n2. Second")
+        assert "<ul>" in result
+        assert "<ol>" in result
+        assert result.count("<li>") == 4
+
+    def test_blockquote_preserved(self):
+        result = self.adapter._markdown_to_html("> Quote\n> continued")
+        assert "<blockquote>" in result
+
+    def test_table_preserved(self):
+        result = self.adapter._markdown_to_html("| H1 | H2 |\n|---|---|\n| C1 | C2 |")
+        assert "<table>" in result
+        assert "<th>H1</th>" in result
+        assert "<td>C1</td>" in result
+
+    def test_strikethrough_preserved(self):
+        result = self.adapter._markdown_to_html("~~deleted~~")
+        assert "<del>deleted</del>" in result
+
+    def test_horizontal_rule_preserved(self):
+        result = self.adapter._markdown_to_html("---")
+        assert "<hr" in result
+
+    def test_complex_document_sanitized(self):
+        """Full realistic document with mixed safe/unsafe content."""
+        text = """## Summary
+
+**Bold** and *italic* with `code`.
+
+[Safe Link](https://example.com)
+[Unsafe Link](javascript:alert(1))
+
+```bash
+echo hello
+```
+
+1. Step one
+2. Step two
+
+<img src=x onerror=alert(1)>
+<script>steal()</script>
+<p style=\"color:red\">styled</p>
+"""
+        result = self.adapter._markdown_to_html(text)
+        # Safe content preserved
+        assert "<h2>" in result
+        assert "<strong>" in result or "<b>" in result
+        assert 'href="https://example.com"' in result
+        assert "<pre><code" in result
+        assert "<ol>" in result
+        assert "<li>" in result
+        # Unsafe content stripped
+        assert 'href="javascript:' not in result
+        assert "<img" not in result
+        assert "<script>" not in result
+        # style attribute should be stripped (check for style= not the word "style")
+        assert 'style="' not in result and "style='" not in result
+
+
+# ---------------------------------------------------------------------------
 # Reactions
 # ---------------------------------------------------------------------------
 

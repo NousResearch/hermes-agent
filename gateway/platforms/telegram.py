@@ -81,6 +81,8 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
+    _reply_anchor_for_event,
+    _thread_metadata_for_source,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -6788,10 +6790,31 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Show immediate Telegram activity when message processing begins.
+
+        BasePlatformAdapter also runs a continuous typing refresh loop, but it is
+        scheduled as a background task. Fire one scoped chat-action here so
+        Telegram clients show the "typing" bubble immediately in the current
+        topic/thread, then optionally add the in-progress reaction when enabled.
+        """
+        chat_id = getattr(event.source, "chat_id", None)
+        if chat_id:
+            try:
+                metadata = _thread_metadata_for_source(
+                    event.source,
+                    _reply_anchor_for_event(event),
+                )
+                await self.send_typing(chat_id, metadata=metadata)
+            except Exception:
+                # Typing is best-effort and must never block the agent.
+                logger.debug(
+                    "[%s] Failed to send processing-start typing indicator",
+                    self.name,
+                    exc_info=True,
+                )
+
         if not self._reactions_enabled():
             return
-        chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
             await self._set_reaction(chat_id, message_id, "\U0001f440")

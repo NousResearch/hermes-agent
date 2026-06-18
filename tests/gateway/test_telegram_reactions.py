@@ -18,10 +18,15 @@ def _make_adapter(**extra_env):
     adapter.config = PlatformConfig(enabled=True, token="fake-token")
     adapter._bot = AsyncMock()
     adapter._bot.set_message_reaction = AsyncMock()
+    adapter._bot.send_chat_action = AsyncMock()
     return adapter
 
 
-def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
+def _make_event(
+    chat_id: str = "123",
+    message_id: str = "456",
+    thread_id: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text="hello",
         message_type=MessageType.TEXT,
@@ -31,6 +36,7 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
             chat_type="private",
             user_id="42",
             user_name="TestUser",
+            thread_id=thread_id,
         ),
         message_id=message_id,
     )
@@ -123,6 +129,23 @@ async def test_set_reaction_handles_api_error_gracefully(monkeypatch):
 
 
 # ── on_processing_start ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_on_processing_start_sends_immediate_typing_in_thread(monkeypatch):
+    """Processing start should immediately scope typing to the Telegram thread."""
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    event = _make_event(chat_id="-100123", thread_id="1")
+
+    await adapter.on_processing_start(event)
+
+    adapter._bot.send_chat_action.assert_awaited_once_with(
+        chat_id=-100123,
+        action="typing",
+        message_thread_id=1,
+    )
+    adapter._bot.set_message_reaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio

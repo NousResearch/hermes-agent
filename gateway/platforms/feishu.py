@@ -395,6 +395,9 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # When True: send as interactive card (supports streaming PATCH edits).
+    # When False: send as post/text (proper rendering, no streaming edits).
+    use_card_streaming: bool = True
 
 
 @dataclass
@@ -1419,6 +1422,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # is almost certain.
     _SPLIT_THRESHOLD = 4000
 
+    @property
+    def SUPPORTS_MESSAGE_EDITING(self) -> bool:
+        """Feishu supports editing both interactive cards and Post messages.
+        Always return True to enable streaming."""
+        return True
+
     # =========================================================================
     # Lifecycle — init / settings / connect / disconnect
     # =========================================================================
@@ -1575,6 +1584,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            use_card_streaming=_to_boolean(
+                extra.get("use_card_streaming", os.getenv("FEISHU_USE_CARD_STREAMING", "true"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1607,6 +1619,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._use_card_streaming = settings.use_card_streaming
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1767,9 +1780,42 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_runner = None
             self._webhook_site = None
 
-    # =========================================================================
-    # Outbound — send / edit / send_image / send_voice / …
-    # =========================================================================
+    @staticmethod
+    def _sanitize_for_card_md(text: str) -> str:
+        """Convert unsupported markdown syntax to lark_md-supported equivalents.
+
+        Lark card markdown (lark_md) supports: bold, italic, inline code,
+        strikethrough, links, unordered/ordered lists.
+        It does NOT support: headings (#), blockquotes (>), horizontal rules (---).
+
+        This method strips or converts those to keep the card readable.
+        """
+        lines = text.split('\n')
+        result: list[str] = []
+        for line in lines:
+            # Headers: ### text → **text**
+            if m := re.match(r'^#{1,6}\s+(.+)$', line):
+                result.append(f'**{m.group(1)}**')
+            # Blockquotes: > text → *italic text*
+            elif m := re.match(r'^>\s?(.*)$', line):
+                result.append(f'*{m.group(1)}*')
+            # Horizontal rules: ---, ***, ___
+            elif re.match(r'^[-*_]{3,}\s*$', line):
+                result.append('')  # skip — just a blank line
+            else:
+                result.append(line)
+        return '\n'.join(result)
+
+    @staticmethod
+    def _card_payload(markdown_content: str) -> str:
+        """Wrap markdown text in an interactive card for streaming-friendly editing.
+        No header — just a clean markdown element so it looks like a regular message.
+        Sanitizes content for lark_md-compatible syntax first."""
+        sanitized = FeishuAdapter._sanitize_for_card_md(markdown_content)
+        return json.dumps({
+            "config": {"wide_screen_mode": True},
+            "elements": [{"tag": "markdown", "content": sanitized}],
+        }, ensure_ascii=False)
 
     async def send(
         self,
@@ -1778,7 +1824,19 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Feishu message."""
+        """Send a Feishu message.
+
+        When use_card_streaming=True (default): sends as interactive card so
+        subsequent edits via edit_message() can stream updates via PATCH.
+        When use_card_streaming=False: sends as post/text with full markdown
+        rendering (headings, blockquotes, tables), but cannot be edited.
+
+        During streaming (reply_to is set), post mode messages are suppressed
+        — they would create partial content that can't be edited. Instead,
+        content accumulates in the stream consumer and is sent as a single
+        complete message when the final response is available.
+
+        Falls back to plain text if the primary send path fails."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -1788,36 +1846,32 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
-                try:
+                if self._use_card_streaming:
+                    payload = self._card_payload(chunk)
+                    msg_type = "interactive"
+                else:
+                    msg_type, payload = self._build_outbound_payload(chunk)
+
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type=msg_type,
+                    payload=payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if not self._response_succeeded(response):
+                    # Fallback: try the other format if primary fails
+                    if self._use_card_streaming:
+                        logger.warning("[Feishu] Card send failed; falling back to markdown post")
+                        fallback_msg_type, fallback_payload = self._build_outbound_payload(chunk)
+                    else:
+                        logger.warning("[Feishu] Post send failed; falling back to card")
+                        fallback_payload = self._card_payload(chunk)
+                        fallback_msg_type = "interactive"
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type=msg_type,
-                        payload=payload,
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type=fallback_msg_type,
+                        payload=fallback_payload,
                         reply_to=reply_to,
                         metadata=metadata,
                     )
@@ -1836,26 +1890,23 @@ class FeishuAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent message.
+
+        Post messages are updated via SDK message.update (Feishu API supports
+        editing both post and interactive messages)."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        content = self.format_message(content)
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            if self._use_card_streaming:
+                msg_type = "interactive"
+                payload = self._card_payload(self.format_message(content))
+            else:
+                msg_type, payload = self._build_outbound_payload(self.format_message(content))
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
-                fallback_body = self._build_update_message_body(
-                    msg_type="text",
-                    content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
-                )
-                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
-                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
-                result = self._finalize_send_result(fallback_response, "update failed")
             if result.success:
                 result.message_id = message_id
             return result

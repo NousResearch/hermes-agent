@@ -965,6 +965,81 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
 # ---------------------------------------------------------------------------
 
 
+def _extract_feishu_forward_body(item: Dict[str, Any], nested_type: str) -> str:
+    """Extract text content from a single entry inside a merge_forward message.
+
+    Feishu merge_forward entries use two distinct layouts:
+
+    1. **Event-content layout** (flat dict from the webhook ``content`` field):
+       ``{"msg_type": "text", "text": "hello"}``
+
+    2. **API-response layout** (nested ``body.content`` from ``im.v1.message.get``):
+       ``{"msg_type": "text", "body": {"content": "{\\"text\\":\\"hello\\"}"}}``
+       where ``body.content`` is itself a JSON string that must be double-parsed.
+
+    We handle both, preferring the flatter layout when available.
+    """
+    # --- Try API-response nested layout first ---
+    body_obj = item.get("body")
+    if isinstance(body_obj, dict):
+        raw_body_content = body_obj.get("content")
+        if isinstance(raw_body_content, str) and raw_body_content:
+            inner = _load_feishu_payload(raw_body_content)
+            if nested_type == "post":
+                parsed = parse_feishu_post_payload(inner)
+                return parsed.text_content
+            return _first_non_empty_text(
+                inner.get("text"),
+                inner.get("summary"),
+                inner.get("preview"),
+                _find_first_text(inner, keys=("text", "content", "summary", "preview", "title")),
+            ) or ""
+
+    # --- Fallback: flat / event-content layout ---
+    if nested_type == "post":
+        return parse_feishu_post_payload(item.get("content") or item).text_content
+
+    return _first_non_empty_text(
+        item.get("text"),
+        item.get("summary"),
+        item.get("preview"),
+        item.get("content"),
+        _find_first_text(item, keys=("text", "content", "summary", "preview", "title")),
+    ) or ""
+
+
+def _extract_feishu_forward_sender(item: Dict[str, Any]) -> str:
+    """Return a human-readable sender label from a merge_forward entry.
+
+    Handles both the flat event layout (``sender_name``) and the API-response
+    layout (``sender.sender_id.open_id`` / ``sender.sender_id.user_id``).
+    """
+    # Flat layout
+    flat = _first_non_empty_text(
+        item.get("sender_name"),
+        item.get("user_name"),
+        item.get("name"),
+    )
+    if flat:
+        return flat
+
+    # API-response layout: sender is a dict
+    sender_obj = item.get("sender")
+    if isinstance(sender_obj, dict):
+        sender_id = sender_obj.get("sender_id") or {}
+        return _first_non_empty_text(
+            sender_id.get("open_id"),
+            sender_id.get("user_id"),
+            sender_id.get("union_id"),
+        ) or ""
+
+    # Last resort: item["sender"] might be a plain string
+    sender_val = item.get("sender")
+    if isinstance(sender_val, str) and sender_val:
+        return sender_val
+    return ""
+
+
 def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
     candidates: List[Any] = []
     for key in ("messages", "items", "message_list", "records", "content"):
@@ -978,24 +1053,9 @@ def _collect_forward_entries(payload: Dict[str, Any]) -> List[str]:
             if text:
                 entries.append(f"- {text}")
             continue
-        sender = _first_non_empty_text(
-            item.get("sender_name"),
-            item.get("user_name"),
-            item.get("sender"),
-            item.get("name"),
-        )
+        sender = _extract_feishu_forward_sender(item)
         nested_type = str(item.get("message_type", "") or item.get("msg_type", "")).strip().lower()
-        if nested_type == "post":
-            body = parse_feishu_post_payload(item.get("content") or item).text_content
-        else:
-            body = _first_non_empty_text(
-                item.get("text"),
-                item.get("summary"),
-                item.get("preview"),
-                item.get("content"),
-                _find_first_text(item, keys=("text", "content", "summary", "preview", "title")),
-            )
-        body = _normalize_feishu_text(body)
+        body = _normalize_feishu_text(_extract_feishu_forward_body(item, nested_type))
         if sender and body:
             entries.append(f"- {sender}: {body}")
         elif body:

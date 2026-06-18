@@ -110,6 +110,71 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Sprint recap\n- Alice: Please review PR-128\n- Bob: Ship it",
         )
 
+    def test_normalize_merge_forward_api_response_layout(self):
+        """merge_forward with nested body.content (API-response layout)."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="merge_forward",
+            raw_content=json.dumps(
+                {
+                    "title": "Design sync",
+                    "message_list": [
+                        {
+                            "msg_type": "text",
+                            "body": {"content": json.dumps({"text": "New mockups are ready"})},
+                            "sender": {
+                                "sender_id": {"open_id": "ou_alice", "user_id": "uid_alice"},
+                                "sender_type": "user",
+                            },
+                        },
+                        {
+                            "msg_type": "text",
+                            "body": {"content": json.dumps({"text": "LGTM"})},
+                            "sender": {
+                                "sender_id": {"open_id": "ou_bob", "user_id": "uid_bob"},
+                                "sender_type": "user",
+                            },
+                        },
+                    ],
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.relation_kind, "merge_forward")
+        # Sender names fall back to open_id when no display name is available
+        self.assertIn("ou_alice: New mockups are ready", normalized.text_content)
+        self.assertIn("ou_bob: LGTM", normalized.text_content)
+
+    def test_normalize_merge_forward_mixed_layouts(self):
+        """merge_forward mixing flat and nested entries gracefully."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="merge_forward",
+            raw_content=json.dumps(
+                {
+                    "title": "Mixed",
+                    "message_list": [
+                        # Flat layout
+                        {"sender_name": "Charlie", "text": "Flat entry"},
+                        # API-response layout
+                        {
+                            "msg_type": "text",
+                            "body": {"content": json.dumps({"text": "Nested entry"})},
+                            "sender": {
+                                "sender_id": {"open_id": "ou_dana"},
+                                "sender_type": "user",
+                            },
+                        },
+                    ],
+                }
+            ),
+        )
+
+        self.assertIn("Charlie: Flat entry", normalized.text_content)
+        self.assertIn("ou_dana: Nested entry", normalized.text_content)
+
     def test_normalize_share_chat_exposes_summary_and_metadata(self):
         from gateway.platforms.feishu import normalize_feishu_message
 

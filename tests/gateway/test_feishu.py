@@ -504,6 +504,17 @@ class TestAdapterModule(unittest.TestCase):
         self.assertIsNone(settings.ws_ping_interval)
         self.assertIsNone(settings.ws_ping_timeout)
 
+    def test_load_settings_accepts_custom_video_transcode_timeout(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "video_transcode_timeout_seconds": 45,
+            }
+        )
+
+        self.assertEqual(settings.video_transcode_timeout_seconds, 45)
+
     def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
         import sys
         from types import ModuleType
@@ -2439,6 +2450,354 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(captured["upload_request"].request_body.file_type, "mp4")
         self.assertEqual(captured["message_request"].request_body.msg_type, "media")
         self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_video_123"}')
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_normalizes_unsupported_format_to_mp4_when_ffmpeg_available(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_video_123"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["message_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_video_msg"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        def _fake_ffmpeg_run(cmd, stdout=None, stderr=None, timeout=None, check=None):
+            Path(cmd[-1]).write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".webm", delete=False) as tmp:
+            tmp.write(b"webm")
+            video_path = tmp.name
+
+        try:
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("gateway.platforms.feishu.shutil.which", return_value="/usr/bin/ffmpeg"),
+                patch("gateway.platforms.feishu.subprocess.run", side_effect=_fake_ffmpeg_run) as run_mock,
+            ):
+                result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
+        finally:
+            os.unlink(video_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["upload_request"].request_body.file_type, "mp4")
+        self.assertTrue(captured["upload_request"].request_body.file_name.endswith(".mp4"))
+        self.assertEqual(captured["message_request"].request_body.msg_type, "media")
+        run_mock.assert_called_once()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_falls_back_to_file_when_ffmpeg_transcode_fails(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_video_fallback"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["message_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_video_file"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".webm", delete=False) as tmp:
+            tmp.write(b"webm")
+            video_path = tmp.name
+
+        try:
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("gateway.platforms.feishu.shutil.which", return_value="/usr/bin/ffmpeg"),
+                patch(
+                    "gateway.platforms.feishu.subprocess.run",
+                    return_value=SimpleNamespace(returncode=1),
+                ),
+            ):
+                result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
+        finally:
+            os.unlink(video_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["upload_request"].request_body.file_type, "stream")
+        self.assertEqual(captured["message_request"].request_body.msg_type, "file")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_falls_back_to_file_when_ffmpeg_outputs_zero_byte_mp4(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_video_fallback"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["message_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_video_file"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        def _fake_ffmpeg_run(_cmd, stdout=None, stderr=None, timeout=None, check=None):
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".webm", delete=False) as tmp:
+            tmp.write(b"webm")
+            video_path = tmp.name
+
+        try:
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("gateway.platforms.feishu.shutil.which", return_value="/usr/bin/ffmpeg"),
+                patch("gateway.platforms.feishu.subprocess.run", side_effect=_fake_ffmpeg_run),
+            ):
+                result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
+        finally:
+            os.unlink(video_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["upload_request"].request_body.file_type, "stream")
+        self.assertEqual(captured["message_request"].request_body.msg_type, "file")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_falls_back_to_file_when_ffmpeg_is_unavailable(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_video_fallback"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["message_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_video_file"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".3gp", delete=False) as tmp:
+            tmp.write(b"3gp")
+            video_path = tmp.name
+
+        try:
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("gateway.platforms.feishu.shutil.which", return_value=None),
+                patch("gateway.platforms.feishu.subprocess.run") as run_mock,
+            ):
+                result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
+        finally:
+            os.unlink(video_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["upload_request"].request_body.file_type, "stream")
+        self.assertEqual(captured["message_request"].request_body.msg_type, "file")
+        run_mock.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_supported_mp4_bypasses_normalization(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_video_123"),
+                )
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["message_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_video_msg"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".mp4", delete=False) as tmp:
+            tmp.write(b"\x00\x00\x00\x18ftypmp42")
+            video_path = tmp.name
+
+        try:
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("gateway.platforms.feishu.shutil.which") as which_mock,
+                patch("gateway.platforms.feishu.subprocess.run") as run_mock,
+            ):
+                result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
+        finally:
+            os.unlink(video_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["upload_request"].request_body.file_type, "mp4")
+        self.assertEqual(captured["message_request"].request_body.msg_type, "media")
+        which_mock.assert_not_called()
+        run_mock.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_video_fallback_preserves_caption_and_thread_metadata(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _FileAPI:
+            def create(self, request):
+                captured["upload_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(file_key="file_video_fallback"),
+                )
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["reply_request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_video_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    file=_FileAPI(),
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".mkv", delete=False) as tmp:
+            tmp.write(b"mkv")
+            video_path = tmp.name
+
+        try:
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("gateway.platforms.feishu.shutil.which", return_value=None),
+            ):
+                result = asyncio.run(
+                    adapter.send_video(
+                        chat_id="oc_chat",
+                        video_path=video_path,
+                        caption="clip caption",
+                        reply_to="om_parent",
+                        metadata={"thread_id": "omt-thread"},
+                    )
+                )
+        finally:
+            os.unlink(video_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["upload_request"].request_body.file_type, "stream")
+        self.assertEqual(captured["reply_request"].request_body.msg_type, "post")
+        self.assertTrue(captured["reply_request"].request_body.reply_in_thread)
+        self.assertIn("clip caption", captured["reply_request"].request_body.content)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_voice_uploads_opus_and_sends_audio_message(self):

@@ -57,6 +57,9 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -200,6 +203,7 @@ _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
 _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
+_FEISHU_VIDEO_TRANSCODE_TIMEOUT_SECONDS = 120
 # ---------------------------------------------------------------------------
 # TTL, rate-limit and webhook security constants
 # ---------------------------------------------------------------------------
@@ -390,6 +394,7 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    video_transcode_timeout_seconds: int = _FEISHU_VIDEO_TRANSCODE_TIMEOUT_SECONDS
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -1568,6 +1573,15 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            video_transcode_timeout_seconds=_coerce_required_int(
+                extra.get("video_transcode_timeout_seconds")
+                or os.getenv(
+                    "HERMES_FEISHU_VIDEO_TRANSCODE_TIMEOUT_SECONDS",
+                    str(_FEISHU_VIDEO_TRANSCODE_TIMEOUT_SECONDS),
+                ),
+                default=_FEISHU_VIDEO_TRANSCODE_TIMEOUT_SECONDS,
+                min_value=1,
+            ),
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
@@ -1605,6 +1619,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._video_transcode_timeout_seconds = settings.video_transcode_timeout_seconds
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
 
@@ -2091,14 +2106,40 @@ class FeishuAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send a video file to Feishu."""
-        return await self._send_uploaded_file_message(
-            chat_id=chat_id,
-            file_path=video_path,
-            reply_to=reply_to,
-            metadata=metadata,
-            caption=caption,
-            outbound_message_type="media",
-        )
+        resolved_path = video_path
+        resolved_name: Optional[str] = None
+        temporary_mp4_path: Optional[str] = None
+        if Path(video_path).suffix.lower() not in _FEISHU_MEDIA_UPLOAD_EXTENSIONS:
+            normalized = await asyncio.to_thread(
+                self._normalize_outbound_video_to_mp4,
+                video_path,
+            )
+            if normalized is not None:
+                temporary_mp4_path, resolved_name = normalized
+                resolved_path = temporary_mp4_path
+
+        try:
+            return await self._send_uploaded_file_message(
+                chat_id=chat_id,
+                file_path=resolved_path,
+                file_name=resolved_name,
+                reply_to=reply_to,
+                metadata=metadata,
+                caption=caption,
+                outbound_message_type="media",
+            )
+        finally:
+            if temporary_mp4_path:
+                try:
+                    os.unlink(temporary_mp4_path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.debug(
+                        "[Feishu] Failed to clean up temporary transcoded video %s",
+                        temporary_mp4_path,
+                        exc_info=True,
+                    )
 
     async def send_image_file(
         self,
@@ -4501,6 +4542,76 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
+
+    def _normalize_outbound_video_to_mp4(self, video_path: str) -> Optional[tuple[str, str]]:
+        """Best-effort normalize unsupported outbound videos to MP4 for native Feishu media send."""
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            return None
+
+        stem = Path(video_path).stem or "video"
+        fd, temp_mp4_path = tempfile.mkstemp(prefix="feishu-video-", suffix=".mp4")
+        os.close(fd)
+
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-i",
+            video_path,
+            "-movflags",
+            "+faststart",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            temp_mp4_path,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=self._video_transcode_timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "[Feishu] Timed out transcoding %s to mp4 after %ss; falling back to file send",
+                video_path,
+                self._video_transcode_timeout_seconds,
+            )
+            try:
+                os.unlink(temp_mp4_path)
+            except OSError:
+                pass
+            return None
+        except OSError:
+            logger.warning(
+                "[Feishu] Failed to invoke ffmpeg for %s; falling back to file send",
+                video_path,
+                exc_info=True,
+            )
+            try:
+                os.unlink(temp_mp4_path)
+            except OSError:
+                pass
+            return None
+
+        if result.returncode != 0 or not os.path.exists(temp_mp4_path) or os.path.getsize(temp_mp4_path) <= 0:
+            logger.warning(
+                "[Feishu] ffmpeg could not normalize %s to mp4 (returncode=%s); falling back to file send",
+                video_path,
+                result.returncode,
+            )
+            try:
+                os.unlink(temp_mp4_path)
+            except OSError:
+                pass
+            return None
+
+        return temp_mp4_path, f"{stem}.mp4"
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:

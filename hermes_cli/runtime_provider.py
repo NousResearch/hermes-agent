@@ -1396,7 +1396,11 @@ def _resolve_explicit_runtime(
         if pconfig.base_url_env_var:
             env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
 
-        base_url = env_url or pconfig.inference_base_url
+        # Vertex's registry inference_base_url is only a placeholder (no
+        # project_id/location), so it can never serve a real request — don't
+        # seed base_url with it, or it would shadow the real SA/ADC-derived URL
+        # resolved below.
+        base_url = env_url if provider == "vertex" else (env_url or pconfig.inference_base_url)
         if not base_url:
             if provider in {"kimi-coding", "kimi-coding-cn"}:
                 creds = resolve_api_key_provider_credentials(provider)
@@ -1409,12 +1413,16 @@ def _resolve_explicit_runtime(
         base_url = explicit_base_url or base_url
 
         api_key = explicit_api_key
-        if not api_key:
+        # Vertex still needs the SA/ADC-derived URL (project_id + location) even
+        # when an explicit --api-key is supplied, since the registry default is
+        # only a placeholder — so resolve creds when either the key OR the base
+        # URL is missing.
+        if not api_key or (provider == "vertex" and not base_url):
             if provider == "vertex":
                 creds = resolve_vertex_runtime_credentials()
             else:
                 creds = resolve_api_key_provider_credentials(provider)
-            api_key = creds.get("api_key", "")
+            api_key = api_key or creds.get("api_key", "")
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
 

@@ -306,6 +306,26 @@ class TestResolveProvider:
         with pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto")
 
+    def test_auto_does_not_select_vertex_from_google_application_credentials(self, monkeypatch):
+        # GOOGLE_APPLICATION_CREDENTIALS is a generic GCP SDK variable, very
+        # commonly exported for non-inference tooling (bq, gsutil, GKE workload
+        # identity). It must NOT auto-select Vertex for inference. As with the
+        # copilot test, disable Bedrock's boto3 credential-chain fallback so
+        # this exercises the specific behavior, not the Bedrock tail.
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.has_aws_credentials",
+            lambda env=None: False,
+        )
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/Users/dev/keys/gcp-sa.json")
+        with pytest.raises(AuthError, match="No inference provider configured"):
+            resolve_provider("auto")
+
+    def test_auto_detects_vertex_from_vertex_credentials_path(self, monkeypatch):
+        # The dedicated VERTEX_CREDENTIALS_PATH alias is an explicit opt-in and
+        # SHOULD auto-select Vertex.
+        monkeypatch.setenv("VERTEX_CREDENTIALS_PATH", "/Users/dev/keys/vertex-sa.json")
+        assert resolve_provider("auto") == "vertex"
+
 
 # =============================================================================
 # API Key Provider Status tests
@@ -482,7 +502,7 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_external_process_provider_credentials("copilot-acp")
 
         assert creds["provider"] == "copilot-acp"
-        assert creds["api_key"] == "***"
+        assert creds["api_key"] == "copilot-acp"
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
@@ -688,7 +708,7 @@ class TestRuntimeProviderResolution:
 
         assert result["provider"] == "copilot-acp"
         assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "***"
+        assert result["api_key"] == "copilot-acp"
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]

@@ -229,6 +229,43 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_vertex_explicit_api_key_uses_creds_url(monkeypatch):
+    """`hermes run --api-key=... --provider=vertex` (no --base-url) must resolve
+    the real SA/ADC URL (project_id + location), not the registry placeholder.
+
+    Regression: previously the placeholder inference_base_url was truthy and
+    shadowed the creds-derived URL, and supplying --api-key skipped credential
+    resolution entirely, so the request went to a project/location-less URL.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "resolve_vertex_runtime_credentials",
+        lambda: {
+            "provider": "vertex",
+            "api_key": "sa-access-token",
+            "base_url": (
+                "https://aiplatform.googleapis.com/v1beta1/projects/"
+                "my-proj/locations/global/endpoints/openapi"
+            ),
+            "source": "vertex_adapter",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="vertex",
+        explicit_api_key="explicit-key",
+    )
+
+    assert resolved["provider"] == "vertex"
+    # Explicit --api-key is preserved...
+    assert resolved["api_key"] == "explicit-key"
+    # ...but the base URL comes from the resolved creds, not the placeholder.
+    assert "projects/my-proj/locations/global" in resolved["base_url"]
+    assert resolved["base_url"].rstrip("/") != "https://aiplatform.googleapis.com/v1beta1"
+
+
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(

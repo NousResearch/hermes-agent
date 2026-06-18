@@ -62,11 +62,18 @@ from hermes_cli.config import (
     recommended_update_command_for_method,
     redact_key,
 )
-from gateway.status import get_running_pid, read_runtime_status
+from gateway.status import (
+    get_running_pid,
+    get_runtime_status_running_pid,
+    read_runtime_status,
+)
 from utils import env_var_enabled
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import (
+        FastAPI, File, Form, HTTPException, Request, UploadFile,
+        WebSocket, WebSocketDisconnect,
+    )
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -78,7 +85,10 @@ except ImportError:
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+        from fastapi import (
+            FastAPI, File, Form, HTTPException, Request, UploadFile,
+            WebSocket, WebSocketDisconnect,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
@@ -678,6 +688,7 @@ class TelegramOnboardingStart(BaseModel):
 
 class TelegramOnboardingApply(BaseModel):
     allowed_user_ids: List[str]
+    profile: Optional[str] = None
 
 
 class AudioTranscriptionRequest(BaseModel):
@@ -1481,6 +1492,74 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     }
 
 
+# Stream uploads to disk in fixed-size chunks. The legacy JSON endpoint above
+# buffers the whole file as a base64 data URL in a JSON body, which (a) inflates
+# the payload ~33%, (b) holds the entire file (plus its decoded copy) in memory,
+# and (c) reliably trips upstream proxy body-size/timeout limits with a 502 on
+# large backup archives (NS-501). This multipart endpoint reads the request body
+# in 1 MiB chunks straight to a temp file, enforces the size cap as it goes, and
+# atomically renames into place — constant memory, no base64 inflation.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+@app.post("/api/files/upload-stream")
+async def upload_managed_file_stream(
+    request: Request,
+    file: UploadFile = File(...),
+    path: str = Form(...),
+    overwrite: bool = Form(True),
+):
+    policy, target, display_path = _resolve_managed_path(path, request, for_write=True)
+    if target.exists() and target.is_dir():
+        raise HTTPException(status_code=409, detail="A directory already exists at that path")
+    if target.exists() and not overwrite:
+        raise HTTPException(status_code=409, detail="File already exists")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create parent directory: {exc}")
+
+    # Write to a sibling temp file first so a partial/aborted upload never
+    # clobbers an existing file, then atomically rename into place.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent)
+    )
+    tmp_path = Path(tmp_name)
+    total = 0
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MANAGED_FILE_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="File is too large")
+                out.write(chunk)
+        os.replace(tmp_path, target)
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    except PermissionError:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+    finally:
+        await file.close()
+
+    return {
+        "ok": True,
+        "entry": _managed_file_entry(policy, target),
+        "path": display_path,
+        **_managed_response_meta(policy),
+    }
+
+
 @app.post("/api/files/mkdir")
 async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
@@ -1609,145 +1688,174 @@ async def fs_default_cwd():
 
 
 @app.get("/api/status")
-async def get_status():
-    current_ver, latest_ver = check_config_version()
+async def get_status(profile: Optional[str] = None):
+    status_scope = None
+    requested_profile = (profile or "").strip()
+    # Plain /api/status stays the machine-level public liveness probe. The
+    # dashboard adds ?profile= when its management switcher targets another
+    # profile, so its gateway badge reflects the selected profile.
+    #
+    # Use the config-only (contextvar) scope, NOT _profile_scope: this handler
+    # awaits the remote-health probe, and _profile_scope swaps process-global
+    # skills-module attributes that a concurrent request would cross-restore
+    # across that await. Status only resolves get_hermes_home() at call time
+    # (config/env/gateway state), which the task-local contextvar covers.
+    if requested_profile and requested_profile.lower() != "current":
+        status_scope = _config_profile_scope(requested_profile)
+        status_scope.__enter__()
 
-    # --- Gateway liveness detection ---
-    # Try local PID check first (same-host).  If that fails and a remote
-    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
-    # dashboard works when the gateway runs in a separate container.
-    gateway_pid = get_running_pid()
-    gateway_running = gateway_pid is not None
-    remote_health_body: dict | None = None
-
-    if not gateway_running and _GATEWAY_HEALTH_URL:
-        loop = asyncio.get_running_loop()
-        alive, remote_health_body = await loop.run_in_executor(
-            None, _probe_gateway_health
-        )
-        if alive:
-            gateway_running = True
-            # PID from the remote container (display only — not locally valid)
-            if remote_health_body:
-                gateway_pid = remote_health_body.get("pid")
-
-    gateway_state = None
-    gateway_platforms: dict = {}
-    gateway_exit_reason = None
-    gateway_updated_at = None
-    configured_gateway_platforms: set[str] | None = None
     try:
-        from gateway.config import load_gateway_config
+        current_ver, latest_ver = check_config_version()
+        # --- Gateway liveness detection ---
+        # Try local PID check first (same-host).  If that fails and a remote
+        # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
+        # dashboard works when the gateway runs in a separate container.
+        gateway_pid = get_running_pid()
+        gateway_running = gateway_pid is not None
+        remote_health_body: dict | None = None
 
-        gateway_config = load_gateway_config()
-        configured_gateway_platforms = {
-            platform.value for platform in gateway_config.get_connected_platforms()
-        }
-    except Exception:
-        configured_gateway_platforms = None
-
-    # Prefer the detailed health endpoint response (has full state) when the
-    # local runtime status file is absent or stale (cross-container).
-    runtime = read_runtime_status()
-    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
-        runtime = remote_health_body
-
-    if runtime:
-        gateway_state = runtime.get("gateway_state")
-        gateway_platforms = runtime.get("platforms") or {}
-        if configured_gateway_platforms is not None:
-            gateway_platforms = {
-                key: value
-                for key, value in gateway_platforms.items()
-                if key in configured_gateway_platforms
-            }
-        gateway_exit_reason = runtime.get("exit_reason")
-        gateway_updated_at = runtime.get("updated_at")
-        if not gateway_running:
-            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
-            gateway_platforms = {}
-        elif gateway_running and remote_health_body is not None:
-            # The health probe confirmed the gateway is alive, but the local
-            # runtime status file may be stale (cross-container).  Override
-            # stopped/None state so the dashboard shows the correct badge.
-            if gateway_state in {None, "stopped"}:
-                gateway_state = "running"
-
-    # If there was no runtime info at all but the health probe confirmed alive,
-    # ensure we still report the gateway as running (no shared volume scenario).
-    if gateway_running and gateway_state is None and remote_health_body is not None:
-        gateway_state = "running"
-
-    active_sessions = 0
-    try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            sessions = db.list_sessions_rich(limit=50)
-            now = time.time()
-            active_sessions = sum(
-                1 for s in sessions
-                if s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+        if not gateway_running and _GATEWAY_HEALTH_URL:
+            loop = asyncio.get_running_loop()
+            alive, remote_health_body = await loop.run_in_executor(
+                None, _probe_gateway_health
             )
-        finally:
-            db.close()
-    except Exception:
-        pass
+            if alive:
+                gateway_running = True
+                # PID from the remote container (display only — not locally valid)
+                if remote_health_body:
+                    gateway_pid = remote_health_body.get("pid")
 
-    # Dashboard auth gate (Phase 7): surface whether the gate is engaged
-    # and which providers are registered so ``hermes status`` and the
-    # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
-    # "loopback only — no auth gate" with no extra round trips.
-    auth_required = bool(getattr(app.state, "auth_required", False))
-    auth_providers: list[str] = []
-    try:
-        from hermes_cli.dashboard_auth import list_providers as _list_providers
-        auth_providers = [p.name for p in _list_providers()]
-    except Exception:
-        # Module not importable yet (early startup) — leave as [].
-        pass
+        gateway_state = None
+        gateway_platforms: dict = {}
+        gateway_exit_reason = None
+        gateway_updated_at = None
+        configured_gateway_platforms: set[str] | None = None
+        try:
+            from gateway.config import load_gateway_config
 
-    # Always-public liveness + auth-gate shape. Safe for external uptime
-    # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
-    # bootstrap, and anyone who can curl the host — i.e. exactly the audience
-    # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
-    status = {
-        "version": __version__,
-        "release_date": __release_date__,
-        "config_version": current_ver,
-        "latest_config_version": latest_ver,
-        "can_update_hermes": not _dashboard_local_update_managed_externally(),
-        "gateway_running": gateway_running,
-        "gateway_state": gateway_state,
-        "gateway_platforms": gateway_platforms,
-        "gateway_exit_reason": gateway_exit_reason,
-        "gateway_updated_at": gateway_updated_at,
-        "active_sessions": active_sessions,
-        "auth_required": auth_required,
-        "auth_providers": auth_providers,
-    }
+            gateway_config = load_gateway_config()
+            configured_gateway_platforms = {
+                platform.value for platform in gateway_config.get_connected_platforms()
+            }
+        except Exception:
+            configured_gateway_platforms = None
 
-    # Absolute host paths, the gateway PID, and the internal gateway health
-    # URL are deployment recon a liveness probe never needs. ``/api/status``
-    # is in ``PUBLIC_API_PATHS`` so it bypasses dashboard auth; on a
-    # network-exposed (gated) bind that means *any* unauthenticated caller
-    # reaches it, and leaking host metadata there contradicts the allowlist's
-    # own contract ("version, gateway state, active session count, and the
-    # dashboard auth-gate shape. No bodies, no session content, no secrets").
-    # Surface this detail only on a loopback / ``--insecure`` bind, where the
-    # dashboard is local-only and the caller is already inside the trust
-    # envelope — the same loopback/gated split ``should_require_auth`` draws.
-    if not auth_required:
-        status.update({
-            "hermes_home": str(get_hermes_home()),
-            "config_path": str(get_config_path()),
-            "env_path": str(get_env_path()),
-            "gateway_pid": gateway_pid,
-            "gateway_health_url": _GATEWAY_HEALTH_URL,
-        })
+        # Prefer the detailed health endpoint response (has full state) when the
+        # local runtime status file is absent or stale (cross-container).
+        local_runtime = read_runtime_status()
+        runtime = local_runtime
+        if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+            runtime = remote_health_body
+        # The runtime-status PID fallback validates liveness with a local
+        # os.kill() probe, so it must only run against the LOCAL status file —
+        # never the remote health body, whose PID belongs to another host and
+        # is display-only. (Running os.kill on a remote PID is both wrong and
+        # trips the test live-system guard.)
+        if not gateway_running and local_runtime is not None:
+            runtime_pid = get_runtime_status_running_pid(local_runtime)
+            if runtime_pid is not None:
+                gateway_running = True
+                gateway_pid = runtime_pid
 
-    return status
+        if runtime:
+            gateway_state = runtime.get("gateway_state")
+            gateway_platforms = runtime.get("platforms") or {}
+            if configured_gateway_platforms is not None:
+                gateway_platforms = {
+                    key: value
+                    for key, value in gateway_platforms.items()
+                    if key in configured_gateway_platforms
+                }
+            gateway_exit_reason = runtime.get("exit_reason")
+            gateway_updated_at = runtime.get("updated_at")
+            if not gateway_running:
+                gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
+                gateway_platforms = {}
+            elif gateway_running and remote_health_body is not None:
+                # The health probe confirmed the gateway is alive, but the local
+                # runtime status file may be stale (cross-container).  Override
+                # stopped/None state so the dashboard shows the correct badge.
+                if gateway_state in {None, "stopped"}:
+                    gateway_state = "running"
+
+        # If there was no runtime info at all but the health probe confirmed alive,
+        # ensure we still report the gateway as running (no shared volume scenario).
+        if gateway_running and gateway_state is None and remote_health_body is not None:
+            gateway_state = "running"
+
+        active_sessions = 0
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                sessions = db.list_sessions_rich(limit=50)
+                now = time.time()
+                active_sessions = sum(
+                    1 for s in sessions
+                    if s.get("ended_at") is None
+                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                )
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+        # Dashboard auth gate (Phase 7): surface whether the gate is engaged
+        # and which providers are registered so ``hermes status`` and the
+        # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
+        # "loopback only — no auth gate" with no extra round trips.
+        auth_required = bool(getattr(app.state, "auth_required", False))
+        auth_providers: list[str] = []
+        try:
+            from hermes_cli.dashboard_auth import list_providers as _list_providers
+            auth_providers = [p.name for p in _list_providers()]
+        except Exception:
+            # Module not importable yet (early startup) — leave as [].
+            pass
+
+        # Always-public liveness + auth-gate shape. Safe for external uptime
+        # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
+        # bootstrap, and anyone who can curl the host — i.e. exactly the audience
+        # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
+        status = {
+            "version": __version__,
+            "release_date": __release_date__,
+            "config_version": current_ver,
+            "latest_config_version": latest_ver,
+            "can_update_hermes": not _dashboard_local_update_managed_externally(),
+            "gateway_running": gateway_running,
+            "gateway_state": gateway_state,
+            "gateway_platforms": gateway_platforms,
+            "gateway_exit_reason": gateway_exit_reason,
+            "gateway_updated_at": gateway_updated_at,
+            "active_sessions": active_sessions,
+            "auth_required": auth_required,
+            "auth_providers": auth_providers,
+        }
+
+        # Absolute host paths, the gateway PID, and the internal gateway health
+        # URL are deployment recon a liveness probe never needs. ``/api/status``
+        # is in ``PUBLIC_API_PATHS`` so it bypasses dashboard auth; on a
+        # network-exposed (gated) bind that means *any* unauthenticated caller
+        # reaches it, and leaking host metadata there contradicts the allowlist's
+        # own contract ("version, gateway state, active session count, and the
+        # dashboard auth-gate shape. No bodies, no session content, no secrets").
+        # Surface this detail only on a loopback / ``--insecure`` bind, where the
+        # dashboard is local-only and the caller is already inside the trust
+        # envelope — the same loopback/gated split ``should_require_auth`` draws.
+        if not auth_required:
+            status.update({
+                "hermes_home": str(get_hermes_home()),
+                "config_path": str(get_config_path()),
+                "env_path": str(get_env_path()),
+                "gateway_pid": gateway_pid,
+                "gateway_health_url": _GATEWAY_HEALTH_URL,
+            })
+
+        return status
+    finally:
+        if status_scope is not None:
+            status_scope.__exit__(*sys.exc_info())
 
 
 _WINDOWS_11_MIN_BUILD = 22000
@@ -2095,6 +2203,7 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
 # report liveness and exit code without shelling out to ``ps``.
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
+_ACTION_COMMANDS: Dict[str, Tuple[str, ...]] = {}
 
 # ``name`` → completed synthetic action result for actions the server handled
 # without spawning a subprocess (for example, unsupported Docker updates).
@@ -2114,6 +2223,7 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
         if not message.endswith("\n"):
             log_file.write(b"\n")
     _ACTION_PROCS.pop(name, None)
+    _ACTION_COMMANDS.pop(name, None)
     _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
 
 
@@ -2154,6 +2264,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     # fd per spawned action.
     log_file.close()
     _ACTION_RESULTS.pop(name, None)
+    _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc
     return proc
 
@@ -2172,7 +2283,15 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:] if n > 0 else lines
 
 
-def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
+def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
+    return _profile_cli_args(profile) + ["gateway", verb]
+
+
+def _gateway_display_command(profile: Optional[str], verb: str) -> str:
+    return " ".join(["hermes", *_gateway_subcommand(profile, verb)])
+
+
+def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
     """Spawn ``hermes gateway restart``, reusing an in-flight restart.
 
     Multiple dashboard paths can request a restart in quick succession
@@ -2183,16 +2302,20 @@ def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
 
     Returns ``(proc, reused)``.
     """
+    subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
-        return existing, True
-    return _spawn_hermes_action(["gateway", "restart"], "gateway-restart"), False
+        existing_command = _ACTION_COMMANDS.get("gateway-restart")
+        if existing_command is None or existing_command == tuple(subcommand):
+            return existing, True
+        raise RuntimeError("gateway restart already in progress for another profile")
+    return _spawn_hermes_action(subcommand, "gateway-restart"), False
 
 
-def _restart_gateway_after_webhook_enable() -> dict[str, Any]:
+def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict[str, Any]:
     """Best-effort gateway restart after enabling the webhook platform."""
     try:
-        proc, reused = _spawn_gateway_restart()
+        proc, reused = _spawn_gateway_restart(profile)
     except Exception as exc:
         _log.exception("Failed to auto-restart gateway after enabling webhooks")
         return {
@@ -2212,10 +2335,12 @@ def _restart_gateway_after_webhook_enable() -> dict[str, Any]:
 
 
 @app.post("/api/gateway/restart")
-async def restart_gateway():
+async def restart_gateway(profile: Optional[str] = None):
     """Kick off a ``hermes gateway restart`` in the background."""
     try:
-        proc, _reused = _spawn_gateway_restart()
+        proc, _reused = _spawn_gateway_restart(profile)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
@@ -2635,6 +2760,7 @@ async def get_action_status(name: str, lines: int = 200):
                 pass
             _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
             _ACTION_PROCS.pop(name, None)
+            _ACTION_COMMANDS.pop(name, None)
 
     return {
         "name": name,
@@ -4346,12 +4472,15 @@ def _messaging_platform_payload(
     scoped: bool = False,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
-    gateway_running = get_running_pid() is not None
     runtime_platforms = runtime.get("platforms") if runtime else {}
     runtime_platform = (
         runtime_platforms.get(platform_id, {})
         if isinstance(runtime_platforms, dict)
         else {}
+    )
+    gateway_running = (
+        get_running_pid() is not None
+        or get_runtime_status_running_pid(runtime) is not None
     )
     env_vars = []
 
@@ -4415,14 +4544,36 @@ def _messaging_platform_payload(
     state = (
         runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
     )
+    runtime_gateway_state = runtime.get("gateway_state") if isinstance(runtime, dict) else None
+    runtime_gateway_error = runtime.get("exit_reason") if isinstance(runtime, dict) else None
     if not enabled:
         state = "disabled"
     elif not configured:
         state = "not_configured"
     elif gateway_running and not state:
         state = "pending_restart"
+    elif (
+        not gateway_running
+        and not state
+        and runtime_gateway_state == "startup_failed"
+    ):
+        state = "startup_failed"
     elif not gateway_running and not state:
         state = "gateway_stopped"
+
+    error_code = (
+        runtime_platform.get("error_code")
+        if isinstance(runtime_platform, dict)
+        else None
+    )
+    error_message = (
+        runtime_platform.get("error_message")
+        if isinstance(runtime_platform, dict)
+        else None
+    )
+    if state == "startup_failed":
+        error_code = error_code or "startup_failed"
+        error_message = error_message or runtime_gateway_error
 
     return {
         "id": platform_id,
@@ -4433,16 +4584,8 @@ def _messaging_platform_payload(
         "configured": configured,
         "gateway_running": gateway_running,
         "state": state,
-        "error_code": (
-            runtime_platform.get("error_code")
-            if isinstance(runtime_platform, dict)
-            else None
-        ),
-        "error_message": (
-            runtime_platform.get("error_message")
-            if isinstance(runtime_platform, dict)
-            else None
-        ),
+        "error_code": error_code,
+        "error_message": error_message,
         "updated_at": (
             runtime_platform.get("updated_at")
             if isinstance(runtime_platform, dict)
@@ -4732,7 +4875,7 @@ async def get_telegram_onboarding_status(pairing_id: str):
     )
 
 
-def _restart_gateway_after_telegram_onboarding() -> dict[str, Any]:
+def _restart_gateway_after_telegram_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
     """Best-effort gateway restart after saving Telegram QR onboarding.
 
     The QR flow naturally pulls users into Telegram on another device. If the
@@ -4741,7 +4884,7 @@ def _restart_gateway_after_telegram_onboarding() -> dict[str, Any]:
     restart failures so the UI can fall back to the existing manual banner.
     """
     try:
-        proc, reused = _spawn_gateway_restart()
+        proc, reused = _spawn_gateway_restart(profile)
     except Exception as exc:
         _log.exception("Failed to auto-restart gateway after Telegram onboarding")
         return {
@@ -4762,7 +4905,7 @@ def _restart_gateway_after_telegram_onboarding() -> dict[str, Any]:
 
 @app.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
 async def apply_telegram_onboarding(
-    pairing_id: str, body: TelegramOnboardingApply
+    pairing_id: str, body: TelegramOnboardingApply, profile: Optional[str] = None
 ):
     allowed_user_ids = []
     seen = set()
@@ -4798,10 +4941,14 @@ async def apply_telegram_onboarding(
                 detail="Telegram setup is not ready yet.",
             )
 
+    effective_profile = body.profile or profile
     try:
-        save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
-        save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
-        _write_platform_enabled("telegram", True)
+        with _profile_scope(effective_profile):
+            save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
+            save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
+            _write_platform_enabled("telegram", True)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -4814,7 +4961,7 @@ async def apply_telegram_onboarding(
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
 
-    restart_result = _restart_gateway_after_telegram_onboarding()
+    restart_result = _restart_gateway_after_telegram_onboarding(effective_profile)
 
     return {
         "ok": True,
@@ -4842,6 +4989,8 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         env_on_disk = load_env()
         runtime = read_runtime_status()
         return {
+            "env_path": str(get_env_path()),
+            "gateway_start_command": _gateway_display_command(profile, "start"),
             "platforms": [
                 _messaging_platform_payload(
                     entry, env_on_disk, runtime, scoped=scoped_dir is not None
@@ -7802,9 +7951,11 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 
 
 @app.post("/api/gateway/start")
-async def start_gateway():
+async def start_gateway(profile: Optional[str] = None):
     try:
-        proc = _spawn_hermes_action(["gateway", "start"], "gateway-start")
+        proc = _spawn_hermes_action(_gateway_subcommand(profile, "start"), "gateway-start")
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn gateway start")
         raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}")
@@ -7812,9 +7963,11 @@ async def start_gateway():
 
 
 @app.post("/api/gateway/stop")
-async def stop_gateway():
+async def stop_gateway(profile: Optional[str] = None):
     try:
-        proc = _spawn_hermes_action(["gateway", "stop"], "gateway-stop")
+        proc = _spawn_hermes_action(_gateway_subcommand(profile, "stop"), "gateway-stop")
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn gateway stop")
         raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")
@@ -8346,7 +8499,7 @@ def _profile_cli_args(profile: Optional[str]) -> List[str]:
     profile (no args, legacy behavior).
     """
     requested = (profile or "").strip()
-    if not requested or requested.lower() == "current":
+    if not requested or requested.lower() in {"current", "default"}:
         return []
     from hermes_cli import profiles as profiles_mod
     _resolve_profile_dir(requested)
@@ -9430,6 +9583,40 @@ def _profile_scope(profile: Optional[str]):
             _skill_mgr.SKILLS_DIR = old_mgr_skills_dir
             if token is not None:
                 reset_hermes_home_override(token)
+
+
+@contextmanager
+def _config_profile_scope(profile: Optional[str]):
+    """Await-safe, config-only profile scope for handlers that ``await``.
+
+    Unlike ``_profile_scope`` this touches ONLY the context-local
+    ``set_hermes_home_override`` contextvar — it does NOT swap the
+    process-global ``skills_tool``/``skill_manager`` module attributes.
+    Those globals are shared across all event-loop tasks, so holding them
+    across an ``await`` lets a concurrent skills request restore THIS
+    request's profile dir on its ``finally`` (cross-contamination). The
+    contextvar override is task-local and survives an ``await`` cleanly,
+    which is all endpoints that resolve ``get_hermes_home()`` at call time
+    (config, env, gateway status) actually need.
+
+    None/""/"current" means the dashboard's own profile — no override.
+    """
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        yield None
+        return
+
+    from hermes_constants import (
+        set_hermes_home_override,
+        reset_hermes_home_override,
+    )
+
+    profile_dir = _resolve_profile_dir(requested)
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        yield profile_dir
+    finally:
+        reset_hermes_home_override(token)
 
 
 class SkillToggle(BaseModel):

@@ -31,7 +31,7 @@ def _captured_context_cwd(agent):
     """The cwd build_system_prompt_parts hands to build_context_files_prompt."""
     captured = {}
 
-    def fake_context_files(cwd=None, skip_soul=False):
+    def fake_context_files(cwd=None, skip_soul=False, context_length=None):
         captured["cwd"] = cwd
         return ""
 

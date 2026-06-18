@@ -684,10 +684,25 @@ class S6ServiceManager:
         # start`, etc. See `_gateway_command_inner` for the matching
         # guard.
         lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
+        # ``--replace`` makes the supervised gateway authoritative for its
+        # profile's HERMES_HOME. Without it, a gateway started OUTSIDE s6
+        # (a stray ``hermes gateway run`` from a shell, an agent action, or
+        # the Open WebUI helper) grabs the per-HERMES_HOME PID lock first;
+        # the supervised slot then execs a bare ``gateway run``, hits the
+        # "Another gateway instance is already running" guard, exits
+        # non-zero, and s6 restarts it — a restart loop that floods the
+        # log and never binds (NS-505). ``--replace``
+        # instead reaps the stale holder (hardened takeover path: marker +
+        # SIGTERM→SIGKILL-with-confirmation + scoped-lock cleanup, see
+        # gateway/run.py) so s6 always wins. The HERMES_S6_SUPERVISED_CHILD
+        # sentinel above prevents the run→start→run redirect recursion.
+        # Each profile is scoped to its own HERMES_HOME and s6 guarantees a
+        # single supervised instance per slot, so there is no legitimate
+        # supervised sibling for ``--replace`` to clobber.
         if profile == "default":
-            gateway_cmd = "hermes gateway run"
+            gateway_cmd = "hermes gateway run --replace"
         else:
-            gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run"
+            gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run --replace"
         # Skip the drop when already non-root (setgroups() lacks CAP_SETGID →
         # s6 boot-loop).
         lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')

@@ -41,7 +41,7 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply } = await import('./updates')
+const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply, reportBackendContract } = await import('./updates')
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -92,6 +92,61 @@ describe('maybeNotifyUpdateAvailable', () => {
   it('does nothing when already up to date', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('reportBackendContract', () => {
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    vi.useRealTimers()
+  })
+
+  it('dismisses the toast when the backend meets the contract', () => {
+    reportBackendContract(2)
+    expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('warns when the backend is behind (or reports no contract)', () => {
+    reportBackendContract(undefined)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    reportBackendContract(1)
+    expect(notifySpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('stays quiet on later session opens once the user closed it', () => {
+    reportBackendContract(1)
+    lastToast().onDismiss() // user closes it → cooldown starts
+    notifySpy.mockClear()
+
+    // Opening another pre-existing session re-runs the check within cooldown.
+    reportBackendContract(1)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('reminds again after the cooldown elapses', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    reportBackendContract(1)
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    vi.setSystemTime(25 * 60 * 60 * 1000) // > 24h cooldown
+    reportBackendContract(1)
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the snooze once the backend catches up, so a regression warns again', () => {
+    reportBackendContract(1)
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    reportBackendContract(2) // backend updated → satisfied, snooze cleared
+    reportBackendContract(1) // a later regression must warn immediately
+    expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })
 

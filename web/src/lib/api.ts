@@ -60,10 +60,11 @@ export function getManagementProfile(): string {
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
 // _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// pairing, telegram onboarding, cron (which has its own per-job profile
-// params), profiles themselves — is machine-global or self-scoped and must
-// NOT be rewritten.
+// pairing, cron (which has its own per-job profile params), profiles
+// themselves — is machine-global or self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
+  "/api/status",
+  "/api/gateway",
   "/api/analytics",
   "/api/skills",
   "/api/tools/toolsets",
@@ -71,6 +72,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/env",
   "/api/mcp",
   "/api/messaging/platforms",
+  "/api/messaging/telegram/onboarding",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",
@@ -409,12 +411,21 @@ export const api = {
     fetchJSON<ManagedFileReadResponse>(
       `/api/files/read?path=${encodeURIComponent(path)}`,
     ),
-  uploadFile: (path: string, dataUrl: string, overwrite = true) =>
-    fetchJSON<ManagedFileWriteResponse>("/api/files/upload", {
+  uploadFile: (path: string, file: File, overwrite = true) => {
+    // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
+    // the browser adds the multipart boundary automatically. Sending the file
+    // as base64 JSON (the old path) inflated the body ~33%, buffered the whole
+    // file in memory, and 502'd on large backup archives behind the proxy
+    // (NS-501).
+    const form = new FormData();
+    form.append("path", path);
+    form.append("overwrite", String(overwrite));
+    form.append("file", file, file.name);
+    return fetchJSON<ManagedFileWriteResponse>("/api/files/upload-stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, data_url: dataUrl, overwrite }),
-    }),
+      body: form,
+    });
+  },
   createDirectory: (path: string) =>
     fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
       method: "POST",
@@ -771,7 +782,7 @@ export const api = {
 
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
-    fetchJSON<{ platforms: MessagingPlatform[] }>("/api/messaging/platforms"),
+    fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
     fetchJSON<{ ok: boolean; platform: string }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
@@ -801,7 +812,7 @@ export const api = {
     ),
   applyTelegramOnboarding: (
     pairingId: string,
-    body: { allowed_user_ids: string[] },
+    body: { allowed_user_ids: string[]; profile?: string },
   ) =>
     fetchJSON<TelegramOnboardingApplyResponse>(
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
@@ -1339,7 +1350,7 @@ export interface MessagingPlatform {
   gateway_running: boolean;
   /**
    * "connected" | "disabled" | "not_configured" | "pending_restart" |
-   * "gateway_stopped" | "disconnected" | "fatal" | string
+   * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string
    */
   state: string;
   error_code: string | null;
@@ -1347,6 +1358,12 @@ export interface MessagingPlatform {
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
   env_vars: MessagingPlatformEnvVar[];
+}
+
+export interface MessagingPlatformsResponse {
+  env_path: string;
+  gateway_start_command: string;
+  platforms: MessagingPlatform[];
 }
 
 export interface MessagingPlatformUpdate {

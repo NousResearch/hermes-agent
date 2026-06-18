@@ -1763,7 +1763,82 @@ def test_init_session_fires_reset_hook(monkeypatch):
         server._sessions.pop(sid, None)
 
 
-def test_session_title_queues_when_db_row_not_ready(monkeypatch):
+def test_session_title_creates_row_and_sets_immediately_when_not_ready(monkeypatch):
+    """An explicit /title before the first message must persist NOW, not queue.
+
+    Regression: the desktop deferred the DB row to the first prompt, so a
+    /title typed before any message only stashed ``pending_title`` and relied
+    on a post-turn apply block. When that turn never landed under the session
+    key, the title was silently lost and the sidebar fell back to the message
+    preview. The handler now creates the row up front (mirroring the messaging
+    gateway) so an explicit /title takes effect immediately.
+    """
+    state = {"row": None, "title": None, "ensured": False}
+
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return state["title"]
+
+        def get_session(self, _key):
+            return state["row"]
+
+        def set_session_title(self, _key, title):
+            # Mirrors SessionDB: UPDATE affects 0 rows until the row exists.
+            if state["row"] is None:
+                return False
+            state["title"] = title
+            return True
+
+    fake_db = _FakeDB()
+
+    def _fake_ensure_row(_session):
+        # The real _ensure_session_db_row does an INSERT OR IGNORE.
+        state["ensured"] = True
+        state["row"] = {"id": "session-key", "title": None}
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
+    server._sessions["sid"] = _session(pending_title=None)
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_ensure_session_db_row", _fake_ensure_row)
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
+    try:
+        set_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "my-custom-name"},
+            }
+        )
+
+        # No longer queued — the row is created and the title set immediately.
+        assert set_resp["result"]["pending"] is False
+        assert set_resp["result"]["title"] == "my-custom-name"
+        assert state["ensured"] is True, "the row must be created up front"
+        assert state["title"] == "my-custom-name"
+        assert server._sessions["sid"]["pending_title"] is None
+
+        # A subsequent read reflects the persisted title.
+        get_resp = server.handle_request(
+            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert get_resp["result"]["title"] == "my-custom-name"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_falls_back_to_queue_when_row_create_fails(monkeypatch):
+    """If row creation can't take (DB down / racing writer), keep the queue.
+
+    The post-turn apply block is still the recovery path, so a /title that
+    can't persist up front must not be dropped — it falls back to
+    ``pending_title`` exactly as before.
+    """
+
     class _FakeDB:
         def get_session_title(self, _key):
             return None
@@ -1774,8 +1849,22 @@ def test_session_title_queues_when_db_row_not_ready(monkeypatch):
         def set_session_title(self, _key, _title):
             return False
 
+    fake_db = _FakeDB()
+
+    def _fake_ensure_row(_session):
+        # Simulate a persist that didn't take — row still absent.
+        pass
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_session_db(_session):
+        yield fake_db
+
     server._sessions["sid"] = _session(pending_title=None)
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_get_db", lambda: fake_db)
+    monkeypatch.setattr(server, "_ensure_session_db_row", _fake_ensure_row)
+    monkeypatch.setattr(server, "_session_db", _fake_session_db)
     try:
         set_resp = server.handle_request(
             {

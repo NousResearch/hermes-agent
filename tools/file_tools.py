@@ -1478,7 +1478,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, code_file=True)
-        result_dict = result.to_dict()
+        result_dict = result.to_dict(densify=True)
 
         if count >= 3:
             result_dict["_warning"] = (

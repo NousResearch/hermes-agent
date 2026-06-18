@@ -24,6 +24,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -44,6 +45,7 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
+from hermes_constants import get_hermes_home
 
 
 def _ra():
@@ -491,6 +493,76 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     return joined
 
 
+def _normalize_prompt_for_duplicate_check(text: str | None) -> str:
+    """Whitespace-normalize prompt text for conservative duplicate checks."""
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _read_profile_prompt_file(filename: str) -> str:
+    """Read a prompt file from the active Hermes home, returning ``""`` on miss."""
+    try:
+        path = get_hermes_home() / filename
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""
+
+
+def _base_prompt_contains_loaded_soul(base_system_prompt: str) -> bool:
+    """Return True when the stable system prompt already contains SOUL.md."""
+    base_norm = _normalize_prompt_for_duplicate_check(base_system_prompt)
+    soul = _read_profile_prompt_file("SOUL.md")
+    soul_norm = _normalize_prompt_for_duplicate_check(soul)
+    if soul_norm and soul_norm in base_norm:
+        return True
+
+    # Fallback for tests, generated prompts, or profile overrides where the
+    # exact SOUL.md bytes are not available but the canonical soul marker is.
+    return "# Hermes Agent Soul" in base_system_prompt and "J.A.R.V.I.S." in base_system_prompt
+
+
+def should_append_ephemeral_system_prompt(
+    base_system_prompt: str | None,
+    ephemeral_system_prompt: str | None,
+) -> bool:
+    """Decide whether an API-call-time system prompt should be appended.
+
+    ``agent.system_prompt`` is often synced from ``persona.md`` for runtime
+    continuity. The stable prompt may already load the profile's full
+    ``SOUL.md`` identity, so blindly appending the synced persona creates a
+    second identity layer on every request. Keep custom ephemeral prompts,
+    but skip exact duplicates and the common ``SOUL.md`` + ``persona.md``
+    Jarvis duplication.
+    """
+    ephemeral_norm = _normalize_prompt_for_duplicate_check(ephemeral_system_prompt)
+    if not ephemeral_norm:
+        return False
+
+    base = base_system_prompt or ""
+    base_norm = _normalize_prompt_for_duplicate_check(base)
+    if ephemeral_norm in base_norm:
+        return False
+
+    persona = _read_profile_prompt_file("persona.md")
+    persona_norm = _normalize_prompt_for_duplicate_check(persona)
+    if persona_norm and ephemeral_norm == persona_norm:
+        return not _base_prompt_contains_loaded_soul(base)
+
+    return True
+
+
+def build_effective_system_prompt(
+    base_system_prompt: str | None,
+    ephemeral_system_prompt: str | None = None,
+) -> str:
+    """Join stable and ephemeral system prompts, suppressing duplicates."""
+    base = (base_system_prompt or "").strip()
+    if not should_append_ephemeral_system_prompt(base, ephemeral_system_prompt):
+        return base
+    return (base + "\n\n" + (ephemeral_system_prompt or "")).strip()
+
+
 def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
@@ -529,6 +601,8 @@ def format_tools_for_system_message(agent: Any) -> str:
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
+    "build_effective_system_prompt",
     "invalidate_system_prompt",
     "format_tools_for_system_message",
+    "should_append_ephemeral_system_prompt",
 ]

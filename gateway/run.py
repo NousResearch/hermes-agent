@@ -5920,6 +5920,165 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return "default"
 
+    # ── Telegram profile routing ─────────────────────────────────────────
+    def _profile_router_state_path(self) -> Path:
+        return _hermes_home / "gateway_profile_routes.json"
+
+    def _load_profile_router_state(self) -> dict:
+        path = self._profile_router_state_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            logger.debug("Could not load profile router state", exc_info=True)
+        return {}
+
+    def _save_profile_router_state(self, state: dict) -> None:
+        path = self._profile_router_state_path()
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            logger.warning("Could not save profile router state", exc_info=True)
+
+    def _available_profile_map(self) -> dict[str, Path]:
+        try:
+            from hermes_cli.profiles import list_profiles
+            return {p.name: Path(p.path) for p in list_profiles() if p.name and Path(p.path).exists()}
+        except Exception:
+            return {self._active_profile_name(): _hermes_home}
+
+    def _profile_route_for_key(self, session_key: str) -> str | None:
+        routes = self._load_profile_router_state().get("routes") or {}
+        value = routes.get(session_key)
+        return value if isinstance(value, str) and value else None
+
+    def _profile_route_session_id(self, session_key: str, profile: str) -> str | None:
+        sessions = self._load_profile_router_state().get("sessions") or {}
+        value = sessions.get(f"{session_key}::{profile}")
+        return value if isinstance(value, str) and value else None
+
+    def _set_profile_route_session_id(self, session_key: str, profile: str, session_id: str) -> None:
+        state = self._load_profile_router_state()
+        sessions = state.setdefault("sessions", {})
+        sessions[f"{session_key}::{profile}"] = session_id
+        self._save_profile_router_state(state)
+
+    def _clear_profile_route_session_id(self, session_key: str, profile: str) -> None:
+        state = self._load_profile_router_state()
+        sessions = state.setdefault("sessions", {})
+        sessions.pop(f"{session_key}::{profile}", None)
+        self._save_profile_router_state(state)
+
+    async def _handle_profiles_command(self, event: MessageEvent) -> str:
+        profiles = self._available_profile_map()
+        session_key = self._session_key_for_source(event.source)
+        active = self._profile_route_for_key(session_key) or self._active_profile_name()
+        lines = ["Reachable Hermes profiles:"]
+        for name in sorted(profiles):
+            marker = "*" if name == active else " "
+            lines.append(f"{marker} {name}")
+        lines.append("\nUse `/use <profile>` or one-shot `@profile your prompt`. `/use off` returns to this gateway's launch profile.")
+        return "\n".join(lines)
+
+    async def _handle_profile_route_command(self, event: MessageEvent) -> str:
+        raw = (event.get_command_args() or "").strip()
+        session_key = self._session_key_for_source(event.source)
+        launch = self._active_profile_name()
+        current = self._profile_route_for_key(session_key) or launch
+        if not raw:
+            return (
+                f"Active routed profile for this chat: `{current}`\n"
+                f"Launch profile: `{launch}`\n"
+                "Use `/profiles` to list profiles or `/use <profile>` to switch."
+            )
+        target = raw.split()[0].strip().lower()
+        if target in {"off", "clear", "default-launch", "launch"}:
+            state = self._load_profile_router_state()
+            routes = state.setdefault("routes", {})
+            routes.pop(session_key, None)
+            self._save_profile_router_state(state)
+            return f"Profile routing cleared. This chat now uses launch profile `{launch}`."
+        profiles = self._available_profile_map()
+        if target not in profiles:
+            return f"Unknown profile `{target}`. Use `/profiles` to list available profiles."
+        state = self._load_profile_router_state()
+        routes = state.setdefault("routes", {})
+        if target == launch:
+            routes.pop(session_key, None)
+        else:
+            routes[session_key] = target
+        self._save_profile_router_state(state)
+        return f"This chat now routes through Hermes profile `{target}`. Use `/use off` to return to `{launch}`."
+
+    def _parse_one_shot_profile_route(self, text: str) -> tuple[str, str] | None:
+        match = re.match(r"^@([a-z0-9][a-z0-9_-]{0,63})\s+(.+)$", (text or "").strip(), re.DOTALL)
+        if not match:
+            return None
+        return match.group(1).lower(), match.group(2).strip()
+
+    async def _route_message_to_profile_cli(
+        self,
+        event: MessageEvent,
+        profile: str,
+        prompt: str,
+        *,
+        one_shot: bool = False,
+    ) -> Optional[str]:
+        profiles = self._available_profile_map()
+        home = profiles.get(profile)
+        if home is None:
+            return f"Unknown profile `{profile}`. Use `/profiles` to list available profiles."
+        launch = self._active_profile_name()
+        if profile == launch and not one_shot:
+            return None
+        session_key = self._session_key_for_source(event.source)
+        resume_id = None if one_shot else self._profile_route_session_id(session_key, profile)
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(home)
+        env.setdefault("HERMES_SESSION_SOURCE", "telegram-profile-router")
+        repo_root = Path(__file__).resolve().parents[1]
+        argv = [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "--quiet", "--source", "telegram"]
+        if resume_id:
+            argv[4:4] = ["--resume", resume_id]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(repo_root),
+                env=env,
+            )
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=1800)
+        except asyncio.TimeoutError:
+            return f"Profile `{profile}` did not finish within 30 minutes."
+        except Exception as exc:
+            logger.warning("Profile route failed for %s: %s", profile, exc)
+            return f"Profile route to `{profile}` failed: {exc}"
+        stdout = stdout_b.decode(errors="replace").strip()
+        stderr = stderr_b.decode(errors="replace").strip()
+        if proc.returncode != 0:
+            detail = stderr or stdout or f"exit code {proc.returncode}"
+            return f"Profile `{profile}` returned an error:\n{detail[-3500:]}"
+        session_id = None
+        for line in (stderr.splitlines() + stdout.splitlines()):
+            if line.startswith("session_id:"):
+                session_id = line.split(":", 1)[1].strip()
+                break
+        body_lines = []
+        for line in stdout.splitlines():
+            if line.startswith("session_id:"):
+                continue
+            if line.startswith("↻ Resumed session "):
+                continue
+            body_lines.append(line)
+        if session_id and not one_shot:
+            self._set_profile_route_session_id(session_key, profile, session_id)
+        body = "\n".join(body_lines).strip()
+        return body or f"Profile `{profile}` completed without text output."
+
     # ── Kanban board watchers ───────────────────────────────────────────
     # The kanban notifier/dispatcher watcher loops + their helpers live in
     # GatewayKanbanWatchersMixin (gateway/kanban_watchers.py). They use only
@@ -7306,8 +7465,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
                     return await self._handle_commands_command(event)
-                if _cmd_def_inner.name == "profile":
-                    return await self._handle_profile_command(event)
+                if _cmd_def_inner.name in {"profile", "profiles", "use"}:
+                    if _cmd_def_inner.name == "profiles":
+                        return await self._handle_profiles_command(event)
+                    return await self._handle_profile_route_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
                 if _cmd_def_inner.name == "version":
@@ -7566,9 +7727,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
+
+        if canonical == "profiles":
+            return await self._handle_profiles_command(event)
+
+        if canonical == "use":
+            return await self._handle_profile_route_command(event)
         
         if canonical == "profile":
-            return await self._handle_profile_command(event)
+            return await self._handle_profile_route_command(event)
 
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
@@ -7933,6 +8100,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        # Telegram profile router: `/use <profile>` persists a profile for this
+        # chat; `@profile prompt` performs a one-shot route.  Routed turns use
+        # the CLI entrypoint with HERMES_HOME bound to the target profile so
+        # profile config, memory, skills, MCP, and state stay isolated.
+        if source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT:
+            _profile_prompt = self._parse_one_shot_profile_route(event.text or "")
+            if _profile_prompt is not None:
+                _target_profile, _target_prompt = _profile_prompt
+                return await self._route_message_to_profile_cli(
+                    event,
+                    _target_profile,
+                    _target_prompt,
+                    one_shot=True,
+                )
+            _active_route = self._profile_route_for_key(_quick_key)
+            if _active_route:
+                _routed = await self._route_message_to_profile_cli(
+                    event,
+                    _active_route,
+                    event.text or "",
+                )
+                if _routed is not None:
+                    return _routed
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there

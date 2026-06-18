@@ -179,6 +179,7 @@ class CLIAgentSetupMixin:
         Processing / Anthropic fast mode, attach `request_overrides` so the
         API call is marked accordingly.
         """
+        from hermes_cli.model_routing import resolve_turn_model_route
         from hermes_cli.models import resolve_fast_mode_overrides
 
         runtime = {
@@ -190,29 +191,43 @@ class CLIAgentSetupMixin:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
-        route = {
-            "model": self.model,
-            "runtime": runtime,
-            "signature": (
+        if getattr(self, "_explicit_model_override", False) or getattr(self, "_explicit_provider_override", False):
+            # A CLI one-shot/model override is an explicit operator choice, not
+            # a candidate for declarative down-routing. This keeps commands like
+            # `hermes chat --provider openai-codex --model gpt-5.3-codex-spark`
+            # on the requested lane instead of silently sending them to the
+            # configured fast/balanced routing tier.
+            effective_model, effective_runtime, model_route = self.model, runtime, None
+        else:
+            effective_model, effective_runtime, model_route = resolve_turn_model_route(
+                user_message,
                 self.model,
-                runtime["provider"],
-                runtime["base_url"],
-                runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
+                runtime,
+            )
+        route = {
+            "model": effective_model,
+            "runtime": effective_runtime,
+            "routing": model_route,
+            "signature": (
+                effective_model,
+                effective_runtime["provider"],
+                effective_runtime["base_url"],
+                effective_runtime["api_mode"],
+                effective_runtime["command"],
+                tuple(effective_runtime["args"]),
             ),
         }
 
+        base_request_overrides = dict((model_route or {}).get("request_overrides") or {})
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
-            route["request_overrides"] = None
-            return route
-
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides
+        if service_tier:
+            try:
+                overrides = resolve_fast_mode_overrides(route["model"])
+            except Exception:
+                overrides = None
+            if overrides:
+                base_request_overrides.update(overrides)
+        route["request_overrides"] = base_request_overrides or None
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:

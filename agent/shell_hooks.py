@@ -44,8 +44,8 @@ Wire protocol
     {"decision": "block", "reason":  "Forbidden command"}   # Claude-Code-style
     {"action":   "block", "message": "Forbidden command"}   # Hermes-canonical
 
-    # Inject context for pre_llm_call:
-    {"context": "Today is Friday"}
+    # Inject context / request-scoped routing for pre_llm_call:
+    {"context": "Today is Friday", "reasoning_config": {"enabled": True, "effort": "high"}}
 
     # Silent no-op:
     <empty or any non-matching JSON object>
@@ -532,11 +532,21 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
         return None
 
+    result: Dict[str, Any] = {}
+
     context = data.get("context")
     if isinstance(context, str) and context.strip():
-        return {"context": context}
+        result["context"] = context
 
-    return None
+    # pre_llm_call hooks may return a sanitized per-turn reasoning override.
+    # Preserve it here so agent.turn_context can validate and apply it; dropping
+    # this field makes declarative routing advisory-only even when config says
+    # routing.mode=enforced.
+    reasoning_config = data.get("reasoning_config")
+    if event == "pre_llm_call" and isinstance(reasoning_config, dict):
+        result["reasoning_config"] = reasoning_config
+
+    return result or None
 
 
 # ---------------------------------------------------------------------------

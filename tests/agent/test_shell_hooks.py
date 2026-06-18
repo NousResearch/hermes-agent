@@ -84,6 +84,23 @@ class TestParseResponse:
         )
         assert r == {"context": "today is Friday"}
 
+    def test_pre_llm_call_reasoning_config_passthrough(self):
+        r = shell_hooks._parse_response(
+            "pre_llm_call",
+            '{"context": "route", "reasoning_config": {"enabled": true, "effort": "high"}}',
+        )
+        assert r == {
+            "context": "route",
+            "reasoning_config": {"enabled": True, "effort": "high"},
+        }
+
+    def test_non_pre_llm_call_reasoning_config_ignored(self):
+        r = shell_hooks._parse_response(
+            "post_llm_call",
+            '{"context": "route", "reasoning_config": {"enabled": true, "effort": "high"}}',
+        )
+        assert r == {"context": "route"}
+
     def test_subagent_stop_context_passthrough(self):
         r = shell_hooks._parse_response(
             "subagent_stop", '{"context": "child role=leaf"}',

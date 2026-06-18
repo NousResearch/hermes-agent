@@ -719,17 +719,16 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
     )
     monkeypatch.setattr(
-        config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
+        config_mod,
+        "load_config",
+        lambda: {"platform_toolsets": {"tui": ["memory"], "cli": ["web"]}},
     )
 
-    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
-    # _get_platform_tools because it's a non-configurable platform toolset
-    # whose tools live in hermes-cli's universe (see toolsets.py).
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    assert server._load_enabled_toolsets() == ["memory"]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
-    assert "using configured CLI toolsets" in err
+    assert "using configured TUI toolsets" in err
 
 
 def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
@@ -743,11 +742,45 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     import hermes_cli.config as config_mod
 
     monkeypatch.setattr(
-        config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
+        config_mod,
+        "load_config",
+        lambda: {"platform_toolsets": {"tui": ["memory"], "cli": ["web"]}},
     )
 
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
-    assert "using configured CLI toolsets" in capsys.readouterr().err
+    assert server._load_enabled_toolsets() == ["memory"]
+    assert "using configured TUI toolsets" in capsys.readouterr().err
+
+
+
+def test_load_enabled_toolsets_prefers_tui_platform_config(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"platform_toolsets": {"tui": ["memory"], "cli": ["web"]}},
+    )
+
+    assert server._load_enabled_toolsets() == ["memory"]
+
+
+def test_load_enabled_toolsets_falls_back_to_cli_platform_config(monkeypatch):
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"platform_toolsets": {"cli": ["web"]}},
+    )
+
+    enabled = server._load_enabled_toolsets()
+
+    assert "web" in enabled
+    assert "hermes-tui" not in enabled
 
 
 def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, capsys):
@@ -1301,6 +1334,31 @@ def test_resolve_model_strips_config_model(monkeypatch):
     assert server._resolve_model() == "nous/hermes-test"
 
 
+
+def test_config_model_target_prefers_global_model_over_routing_tier(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {"default": "gpt-5.4", "provider": "openai-codex"},
+            "routing": {
+                "enabled": True,
+                "model_selection": {"enabled": True, "default_tier": "balanced"},
+                "tiers": {
+                    "balanced": {
+                        "provider": "opencode-go",
+                        "model": "deepseek-v4-pro",
+                    }
+                },
+            },
+        },
+    )
+
+    assert server._config_model_target() == ("gpt-5.4", "openai-codex")
+
+
 def _sync_test_session(**extra):
     session = {
         "agent": types.SimpleNamespace(model="old/model"),
@@ -1496,6 +1554,33 @@ def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
     )
 
 
+
+def test_startup_runtime_uses_global_model_when_unpinned(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {"default": "gpt-5.4", "provider": "openai-codex"},
+            "routing": {
+                "enabled": True,
+                "model_selection": {"enabled": True, "default_tier": "balanced"},
+                "tiers": {
+                    "balanced": {
+                        "provider": "opencode-go",
+                        "model": "deepseek-v4-pro",
+                    }
+                },
+            },
+        },
+    )
+
+    assert server._resolve_startup_runtime() == ("gpt-5.4", "openai-codex")
+
+
 def test_load_fallback_model_merges_chain_providers_first(monkeypatch):
     # Parity with HermesCLI / gateway: fallback_providers stays first and keeps
     # its order, with any distinct legacy fallback_model entry merged in after
@@ -1560,6 +1645,90 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert agent.model == "gpt-5.5"
     assert captured["fallback_model"] == fallback_chain
     assert captured["platform"] == "tui"
+
+
+
+def test_make_agent_skips_duplicate_runtime_persona_prompt(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "get_hermes_home", lambda: tmp_path)
+    (tmp_path / "persona.md").write_text("You are Jarvis.", encoding="utf-8")
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+            "agent": {
+                "system_prompt": "You are Jarvis.",
+                "personalities": {"jarvis": "You are Jarvis."},
+            },
+            "display": {"personality": "jarvis"},
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "token",
+            "api_mode": "codex_responses",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["ephemeral_system_prompt"] is None
+
+
+def test_background_agent_kwargs_rehydrates_no_tool_parent_toolsets(monkeypatch):
+    parent = types.SimpleNamespace(
+        base_url="https://example.test/v1",
+        api_key="token",
+        provider="opencode-go",
+        api_mode="chat_completions",
+        model="deepseek-v4-pro",
+        enabled_toolsets=["hermes-tui"],
+        tools=[],
+        fallback_model=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"max_turns": 25}})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file", "terminal", "web"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(parent, "task-1")
+
+    assert kwargs["enabled_toolsets"] == ["file", "terminal", "web"]
+
+
+def test_background_agent_kwargs_preserves_toolful_parent_toolsets(monkeypatch):
+    parent = types.SimpleNamespace(
+        base_url="https://example.test/v1",
+        api_key="token",
+        provider="opencode-go",
+        api_mode="chat_completions",
+        model="deepseek-v4-pro",
+        enabled_toolsets=["memory"],
+        tools=[{"type": "function", "function": {"name": "memory"}}],
+        fallback_model=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"max_turns": 25}})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file", "terminal", "web"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(parent, "task-1")
+
+    assert kwargs["enabled_toolsets"] == ["memory"]
 
 
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
@@ -6219,6 +6388,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     )
     assert any(
         "No supported Chromium-family browser executable was found" in line
+        or "start a chromium-family browser with remote debugging" in line.lower()
         for line in resp["result"]["messages"]
     )
     assert any(

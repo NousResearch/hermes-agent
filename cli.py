@@ -3333,6 +3333,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # Track CLI-level model/provider overrides separately from config defaults.
+        # Declarative per-turn routing must not silently override an explicit
+        # one-shot invocation such as `hermes chat --provider openai-codex --model ...`.
+        self._explicit_model_override = bool(model)
+        self._explicit_provider_override = bool(provider)
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:

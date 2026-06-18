@@ -1494,16 +1494,14 @@ def _resolve_model() -> str:
 
 
 def _config_model_target() -> tuple[str, str]:
-    """(model, provider) currently selected by config (env as fallback).
+    """(model, provider) target for unpinned TUI sessions.
 
-    config.yaml wins over HERMES_MODEL / HERMES_INFERENCE_MODEL here, the
-    reverse of `_resolve_model()`'s startup order. Those env vars are a
-    provision-time seed (hosted instances set HERMES_INFERENCE_MODEL in the
-    container env); if they outranked config.yaml, the per-turn sync would
-    stay pinned to the seed forever and dashboard/CLI model changes would
-    never reach an open chat — the exact bug this sync exists to fix.
+    The global ``model`` block is the model selector's source of truth.
+    Declarative routing may still choose a per-turn worker lane later, but it
+    must not make fresh TUI sessions appear pinned to the routing default tier.
     """
-    cfg_model = _load_cfg().get("model")
+    cfg = _load_cfg()
+    cfg_model = cfg.get("model")
     model = ""
     provider = ""
     if isinstance(cfg_model, dict):
@@ -1529,6 +1527,9 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
         or os.environ.get("HERMES_INFERENCE_MODEL", "")
     ).strip()
     if not explicit_model:
+        target_model, target_provider = _config_model_target()
+        if target_model:
+            return target_model, target_provider or None
         return model, None
 
     try:
@@ -2049,7 +2050,7 @@ def _load_enabled_toolsets() -> list[str] | None:
             return valid
 
         fallback_notice = (
-            "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
+            "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured TUI toolsets"
         )
 
     try:
@@ -2064,8 +2065,15 @@ def _load_enabled_toolsets() -> list[str] | None:
         # list without baking in implicit MCP defaults. Using the wrong
         # variant at agent creation time makes MCP tools silently missing
         # from the TUI. See PR #3252 for the original design split.
+        platform_toolsets = cfg.get("platform_toolsets") or {}
+        platform = (
+            "tui"
+            if isinstance(platform_toolsets, dict)
+            and isinstance(platform_toolsets.get("tui"), list)
+            else "cli"
+        )
         enabled = sorted(
-            _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
+            _get_platform_tools(cfg, platform, include_default_mcp_servers=True)
         )
         if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
@@ -3186,6 +3194,44 @@ def _prompt_text(value) -> str:
     return str(value).strip()
 
 
+
+def _tui_startup_ephemeral_prompt(cfg: dict | None = None) -> str:
+    """Return the TUI-only ephemeral prompt after stripping duplicated persona text.
+
+    SOUL.md already provides the stable identity layer. On Cole's setup the TUI
+    was also appending the synced runtime persona from ``agent.system_prompt`` /
+    ``persona.md`` on every request, duplicating a full Jarvis block. Keep
+    explicit custom prompts, but suppress the known persona mirror.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    agent_cfg = cfg.get("agent") or {}
+    base_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
+    if not base_prompt:
+        return ""
+
+    try:
+        persona_path = get_hermes_home() / "persona.md"
+        if persona_path.exists():
+            persona_prompt = _prompt_text(persona_path.read_text(encoding="utf-8"))
+            if persona_prompt and persona_prompt == base_prompt:
+                return ""
+    except Exception:
+        pass
+
+    display_cfg = cfg.get("display") or {}
+    personality_name = str(display_cfg.get("personality") or "").strip()
+    if personality_name:
+        try:
+            _name, personality_prompt = _validate_personality(personality_name, cfg)
+            if _prompt_text(personality_prompt) == base_prompt:
+                return ""
+        except Exception:
+            pass
+
+    return base_prompt
+
+
+
 def _apply_personality_to_session(
     sid: str, session: dict, new_prompt: str, personality: str = ""
 ) -> tuple[bool, dict | None]:
@@ -3278,6 +3324,21 @@ def _agent_fallback_model(agent):
     return _load_fallback_model()
 
 
+def _agent_enabled_toolsets(agent):
+    """Return usable toolsets for follow-on TUI agents.
+
+    Cached agents created during a bad TUI toolset resolution can carry a
+    non-empty ``enabled_toolsets`` list that resolves to zero model tools
+    (for example MCP server names plus ``hermes-tui`` only). Do not propagate
+    that no-tools snapshot into background/fallback work; rehydrate from the
+    current TUI resolver unless the parent agent actually has callable tools.
+    """
+    enabled = getattr(agent, "enabled_toolsets", None)
+    if enabled and getattr(agent, "tools", None):
+        return enabled
+    return _load_enabled_toolsets() or enabled
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -3290,8 +3351,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
         "max_iterations": _cfg_max_turns(cfg, 25),
-        "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
-        or _load_enabled_toolsets(),
+        "enabled_toolsets": _agent_enabled_toolsets(agent),
         "quiet_mode": True,
         "verbose_logging": False,
         "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None)
@@ -3590,8 +3650,7 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
-    agent_cfg = cfg.get("agent") or {}
-    system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
+    system_prompt = _tui_startup_ephemeral_prompt(cfg)
     startup_skills = _parse_tui_skills_env()
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt

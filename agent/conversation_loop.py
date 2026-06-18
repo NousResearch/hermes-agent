@@ -56,6 +56,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
+from agent.system_prompt import build_effective_system_prompt
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -769,9 +770,10 @@ def run_conversation(
         # every turn.  We send it as a single content string so the
         # bytes are byte-stable across turns and upstream prompt caches
         # stay warm.
-        effective_system = active_system_prompt or ""
-        if agent.ephemeral_system_prompt:
-            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        effective_system = build_effective_system_prompt(
+            active_system_prompt,
+            agent.ephemeral_system_prompt,
+        )
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

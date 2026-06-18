@@ -203,6 +203,8 @@ def finalize_turn(
     # already have other surface text that shouldn't be augmented.
     if final_response and not interrupted:
         try:
+            if hasattr(agent, "_prune_superseded_file_mutation_failures"):
+                agent._prune_superseded_file_mutation_failures()
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
                 footer = agent._format_file_mutation_failure_footer(_failed)

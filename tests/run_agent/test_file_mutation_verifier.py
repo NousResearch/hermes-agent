@@ -166,6 +166,56 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
 
+    def test_later_filesystem_change_prunes_prior_failure(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "config.yaml"
+        target.write_text("before\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "after"},
+            json.dumps({"error": "Could not find old_string"}),
+            is_error=True,
+        )
+        assert str(target) in agent._turn_failed_file_mutations
+
+        target.write_text("after\n")
+        agent._prune_superseded_file_mutation_failures()
+
+        assert agent._turn_failed_file_mutations == {}
+
+    def test_unchanged_file_keeps_prior_failure(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "config.yaml"
+        target.write_text("before\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "after"},
+            json.dumps({"error": "Could not find old_string"}),
+            is_error=True,
+        )
+        agent._prune_superseded_file_mutation_failures()
+
+        assert str(target) in agent._turn_failed_file_mutations
+
+    def test_missing_file_created_later_prunes_prior_failure(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "new.yaml"
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "after"},
+            json.dumps({"error": "Could not find old_string"}),
+            is_error=True,
+        )
+        assert str(target) in agent._turn_failed_file_mutations
+
+        target.write_text("created\n")
+        agent._prune_superseded_file_mutation_failures()
+
+        assert agent._turn_failed_file_mutations == {}
+
     def test_write_file_with_lint_error_counts_as_landed(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(

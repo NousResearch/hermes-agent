@@ -111,7 +111,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
-    CommandDef("profile", "Show active profile name and home directory", "Info"),
+    CommandDef("profile", "Show or switch this chat's routed Hermes profile", "Info",
+               args_hint="[name|off]"),
+    CommandDef("profiles", "List Hermes profiles reachable from this chat", "Info",
+               gateway_only=True),
+    CommandDef("use", "Route this chat through another Hermes profile", "Session",
+               gateway_only=True, args_hint="<profile|off>"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -357,12 +362,14 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "help",
         "new",
         "profile",
+        "profiles",
         "queue",
         "restart",
         "status",
         "steer",
         "stop",
         "update",
+        "use",
         "version",
     }
 )
@@ -553,6 +560,8 @@ _TELEGRAM_MENU_PRIORITY = (
     "platforms",
     "platform",
     "profile",
+    "profiles",
+    "use",
     "whoami",
 )
 """Built-in commands that should stay visible in Telegram's capped menu.
@@ -1056,7 +1065,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
 #   - billing: the terminal-billing surface (buy/auto-reload/limit); /hermes billing.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "debug"})
+#   - profiles/use: profile-router controls are primarily for Telegram chats;
+#     on Slack they stay reachable through /hermes without taking native slots.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "debug", "profiles", "use"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

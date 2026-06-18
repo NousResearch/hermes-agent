@@ -25,6 +25,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_environment,
     skill_matches_platform,
+    yaml_load,
 )
 from utils import atomic_json_write
 
@@ -1082,7 +1083,72 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
+
+_SKILLS_PROMPT_FULL_MODES = {"", "full", "default", "index"}
+_SKILLS_PROMPT_NAMES_ONLY_MODES = {"names", "names_only", "names-only"}
+_SKILLS_PROMPT_HYBRID_MODES = {"hybrid", "router", "routing"}
+
+
+def _normalize_skills_prompt_mode(raw: object) -> str:
+    """Normalize the configured skills prompt mode."""
+    mode = str(raw or "full").strip().lower()
+    if mode in _SKILLS_PROMPT_NAMES_ONLY_MODES:
+        return "names_only"
+    if mode in _SKILLS_PROMPT_HYBRID_MODES:
+        return "hybrid"
+    if mode in _SKILLS_PROMPT_FULL_MODES:
+        return "full"
+    logger.debug("Unknown skills.prompt_mode %r; falling back to full", raw)
+    return "full"
+
+
+def _normalize_string_list(value: object) -> tuple[str, ...]:
+    """Return a compact ordered tuple of non-empty strings."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return ()
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return tuple(result)
+
+
+def _load_skills_prompt_options() -> tuple[str, tuple[str, ...]]:
+    """Read prompt-mode options from profile-scoped config.yaml.
+
+    Shape::
+
+        skills:
+          prompt_mode: full | names_only | hybrid
+          prompt_router:
+            pinned: [skill-name, category/skill-name]
+
+    Invalid or missing config falls back to the historical full catalog.
+    """
+    config_path = get_hermes_home() / "config.yaml"
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    except Exception as exc:
+        logger.debug("Could not read skills prompt options from %s: %s", config_path, exc)
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    skills_cfg = parsed.get("skills") if isinstance(parsed.get("skills"), dict) else {}
+    mode = _normalize_skills_prompt_mode((skills_cfg or {}).get("prompt_mode"))
+    router_cfg = (skills_cfg or {}).get("prompt_router")
+    if not isinstance(router_cfg, dict):
+        router_cfg = {}
+    pinned = _normalize_string_list(router_cfg.get("pinned"))
+    return mode, pinned
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1170,6 +1236,23 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    raw_metadata = frontmatter.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_hermes_meta = metadata.get("hermes")
+    hermes_meta = raw_hermes_meta if isinstance(raw_hermes_meta, dict) else {}
+    triggers = _normalize_string_list(
+        frontmatter.get("triggers")
+        or frontmatter.get("aliases")
+        or hermes_meta.get("triggers")
+        or hermes_meta.get("aliases")
+    )
+    router_pin = bool(
+        frontmatter.get("router")
+        or frontmatter.get("prompt_router")
+        or hermes_meta.get("router")
+        or hermes_meta.get("prompt_router")
+    )
+
     return {
         "skill_name": skill_name,
         "category": category,
@@ -1177,6 +1260,8 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "triggers": list(triggers),
+        "router_pin": router_pin,
     }
 
 
@@ -1241,6 +1326,120 @@ def _skill_should_show(
     return True
 
 
+def _plural_skill_count(count: int) -> str:
+    return f"{count} skill" if count == 1 else f"{count} skills"
+
+
+def _render_skills_prompt_header(mode_label: str) -> str:
+    return (
+        f"## Skills ({mode_label})\n"
+        "Skills are a lazy procedural library. Load the relevant skill with "
+        "skill_view(name) before executing specialized workflows. If the user "
+        "explicitly names or invokes a skill, load it. If the task domain suggests "
+        "a skill but the exact name is unclear, call skills_list(category=...) "
+        "or skills_list() first, then skill_view(). Do not assume procedure details "
+        "from this compact index alone.\n"
+        "Whenever the user asks you to configure, set up, install, enable, disable, "
+        "modify, or troubleshoot Hermes Agent itself — its CLI, config, models, "
+        "providers, tools, skills, voice, gateway, plugins, or any feature — load "
+        "the `hermes-agent` skill first.\n"
+        "If a loaded skill is stale or wrong, patch it with skill_manage before "
+        "finishing when safe."
+    )
+
+
+def _render_names_only_skill_prompt(skills_by_category: dict[str, list[tuple[str, str]]]) -> str:
+    index_lines: list[str] = []
+    for category in sorted(skills_by_category.keys()):
+        names = sorted({name for name, _ in skills_by_category[category]})
+        index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+    return (
+        _render_skills_prompt_header("names-only index")
+        + "\n\n<available_skills>\n"
+        + "\n".join(index_lines)
+        + "\n</available_skills>\n\n"
+        "Only proceed without loading a skill if genuinely none are relevant to the task."
+    )
+
+
+def _render_hybrid_skill_router(
+    visible_skill_entries: list[dict],
+    router_pinned: tuple[str, ...],
+) -> str:
+    category_counts: dict[str, int] = {}
+    entries_by_name: dict[str, dict] = {}
+    for entry in visible_skill_entries:
+        category = str(entry.get("category") or "general")
+        category_counts[category] = category_counts.get(category, 0) + 1
+        name = str(entry.get("frontmatter_name") or entry.get("skill_name") or "")
+        skill_name = str(entry.get("skill_name") or "")
+        if name:
+            entries_by_name.setdefault(name, entry)
+        if skill_name:
+            entries_by_name.setdefault(skill_name, entry)
+        rel = f"{category}/{skill_name}" if skill_name else ""
+        if rel:
+            entries_by_name.setdefault(rel, entry)
+
+    category_lines = [
+        f"  {category}: {_plural_skill_count(category_counts[category])}"
+        for category in sorted(category_counts)
+    ]
+
+    pinned_entries: list[dict] = []
+    seen: set[str] = set()
+    for name in router_pinned:
+        entry = entries_by_name.get(name)
+        if not entry:
+            continue
+        display_name = str(entry.get("frontmatter_name") or entry.get("skill_name") or name)
+        if display_name in seen:
+            continue
+        seen.add(display_name)
+        pinned_entries.append(entry)
+    for entry in visible_skill_entries:
+        if not entry.get("router_pin"):
+            continue
+        display_name = str(entry.get("frontmatter_name") or entry.get("skill_name") or "")
+        if not display_name or display_name in seen:
+            continue
+        seen.add(display_name)
+        pinned_entries.append(entry)
+
+    pinned_lines: list[str] = []
+    for entry in sorted(pinned_entries, key=lambda e: str(e.get("frontmatter_name") or e.get("skill_name") or "")):
+        name = str(entry.get("frontmatter_name") or entry.get("skill_name") or "")
+        desc = str(entry.get("description") or "").strip()
+        triggers = _normalize_string_list(entry.get("triggers"))
+        line = f"    - {name}"
+        if desc:
+            line += f": {desc}"
+        if triggers:
+            line += f" (triggers: {', '.join(triggers[:8])})"
+        pinned_lines.append(line)
+
+    sections = [
+        _render_skills_prompt_header("hybrid skill router"),
+        "",
+        "<skill_categories>",
+        *category_lines,
+        "</skill_categories>",
+    ]
+    if pinned_lines:
+        sections.extend([
+            "",
+            "<pinned_router_skills>",
+            *pinned_lines,
+            "</pinned_router_skills>",
+        ])
+    sections.extend([
+        "",
+        "Use skills_list(category=...) to inspect a category and skill_view(name) to load the full procedure. "
+        "The router is intentionally compact; absence from pinned_router_skills does not mean the skill is unavailable.",
+    ])
+    return "\n".join(sections)
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -1282,6 +1481,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names(_platform_hint or None)
+    prompt_mode, router_pinned = _load_skills_prompt_options()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1290,6 +1490,8 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        prompt_mode,
+        router_pinned,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1302,15 +1504,23 @@ def build_skills_system_prompt(
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+    visible_skill_entries: list[dict] = []
+
+    def _record_visible_entry(entry: dict) -> None:
+        category = str(entry.get("category") or "general")
+        frontmatter_name = str(entry.get("frontmatter_name") or entry.get("skill_name") or "")
+        description = str(entry.get("description") or "")
+        visible_skill_entries.append(entry)
+        skills_by_category.setdefault(category, []).append((frontmatter_name, description))
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
-        for entry in snapshot.get("skills", []):
-            if not isinstance(entry, dict):
+        for raw_entry in snapshot.get("skills", []):
+            if not isinstance(raw_entry, dict):
                 continue
-            skill_name = entry.get("skill_name") or ""
-            category = entry.get("category") or "general"
-            frontmatter_name = entry.get("frontmatter_name") or skill_name
+            entry = dict(raw_entry)
+            skill_name = str(entry.get("skill_name") or "")
+            frontmatter_name = str(entry.get("frontmatter_name") or skill_name)
             platforms = entry.get("platforms") or []
             if not skill_matches_platform({"platforms": platforms}):
                 continue
@@ -1322,9 +1532,7 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
-            skills_by_category.setdefault(category, []).append(
-                (frontmatter_name, entry.get("description", ""))
-            )
+            _record_visible_entry(entry)
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -1338,8 +1546,9 @@ def build_skills_system_prompt(
             skill_entries.append(entry)
             if not is_compatible:
                 continue
-            skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
+            skill_name = str(entry["skill_name"])
+            frontmatter_name = str(entry["frontmatter_name"])
+            if frontmatter_name in disabled or skill_name in disabled:
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -1347,9 +1556,7 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
-            skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
-            )
+            _record_visible_entry(entry)
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1377,9 +1584,13 @@ def build_skills_system_prompt(
     # and typically small).  Local skills already in skills_by_category take
     # precedence: we track seen names and skip duplicates from external dirs.
     seen_skill_names: set[str] = set()
-    for cat_skills in skills_by_category.values():
-        for name, _desc in cat_skills:
-            seen_skill_names.add(name)
+    for entry in visible_skill_entries:
+        frontmatter_name = str(entry.get("frontmatter_name") or entry.get("skill_name") or "")
+        skill_name = str(entry.get("skill_name") or "")
+        if frontmatter_name:
+            seen_skill_names.add(frontmatter_name)
+        if skill_name:
+            seen_skill_names.add(skill_name)
 
     for ext_dir in external_dirs:
         if not ext_dir.exists():
@@ -1390,9 +1601,9 @@ def build_skills_system_prompt(
                 if not is_compatible:
                     continue
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
-                skill_name = entry["skill_name"]
-                frontmatter_name = entry["frontmatter_name"]
-                if frontmatter_name in seen_skill_names:
+                skill_name = str(entry["skill_name"])
+                frontmatter_name = str(entry["frontmatter_name"])
+                if frontmatter_name in seen_skill_names or skill_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
                     continue
@@ -1403,9 +1614,8 @@ def build_skills_system_prompt(
                 ):
                     continue
                 seen_skill_names.add(frontmatter_name)
-                skills_by_category.setdefault(entry["category"], []).append(
-                    (frontmatter_name, entry["description"])
-                )
+                seen_skill_names.add(skill_name)
+                _record_visible_entry(entry)
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -1423,82 +1633,87 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
-    # Posture-driven category demotion (e.g. non-coding skills while pairing
-    # on code). Demoted categories stay in the index as a single names-only
-    # line — descriptions are dropped to cut noise, but every skill name
-    # remains visible so memory-anchored recall ("load <name>") keeps working.
-    # NEVER remove entries entirely: agent-created skills are the model's
-    # project memory, and models don't reach for skills_list to rediscover
-    # what the index stops showing them. Match on the top-level category
-    # segment so nested categories ("social-media/twitter") are demoted with
-    # their parent.
-    demoted = frozenset(
-        cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
-    )
-
-    hidden_note = ""
-    if demoted:
-        hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
-        )
-
-    if not skills_by_category:
-        result = ""
+    if prompt_mode == "names_only":
+        result = _render_names_only_skill_prompt(skills_by_category) if skills_by_category else ""
+    elif prompt_mode == "hybrid":
+        result = _render_hybrid_skill_router(visible_skill_entries, router_pinned) if visible_skill_entries else ""
     else:
-        index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            # Deduplicate and sort skills within each category
-            seen = set()
-            if category in demoted:
-                names = sorted({name for name, _ in skills_by_category[category]})
-                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
-                continue
-            cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
-
-        result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
-            "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
-            + hidden_note
+        # Posture-driven category demotion (e.g. non-coding skills while pairing
+        # on code). Demoted categories stay in the index as a single names-only
+        # line — descriptions are dropped to cut noise, but every skill name
+        # remains visible so memory-anchored recall ("load <name>") keeps working.
+        # NEVER remove entries entirely: agent-created skills are the model's
+        # project memory, and models don't reach for skills_list to rediscover
+        # what the index stops showing them. Match on the top-level category
+        # segment so nested categories ("social-media/twitter") are demoted with
+        # their parent.
+        demoted = frozenset(
+            cat for cat in skills_by_category
+            if cat.split("/", 1)[0] in (compact_categories or frozenset())
         )
+
+        hidden_note = ""
+        if demoted:
+            hidden_note = (
+                "\n(Categories marked [names only] are outside the current coding "
+                "context, so their descriptions are omitted — the skills work "
+                "normally and load with skill_view(name) as usual.)"
+            )
+
+        if not skills_by_category:
+            result = ""
+        else:
+            index_lines = []
+            for category in sorted(skills_by_category.keys()):
+                # Deduplicate and sort skills within each category
+                seen = set()
+                if category in demoted:
+                    names = sorted({name for name, _ in skills_by_category[category]})
+                    index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                    continue
+                cat_desc = category_descriptions.get(category, "")
+                if cat_desc:
+                    index_lines.append(f"  {category}: {cat_desc}")
+                else:
+                    index_lines.append(f"  {category}:")
+                for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    if desc:
+                        index_lines.append(f"    - {name}: {desc}")
+                    else:
+                        index_lines.append(f"    - {name}")
+
+            result = (
+                "## Skills (mandatory)\n"
+                "Before replying, scan the skills below. If a skill matches or is even partially relevant "
+                "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+                "Err on the side of loading — it is always better to have context you don't need "
+                "than to miss critical steps, pitfalls, or established workflows. "
+                "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
+                "and proven workflows that outperform general-purpose approaches. Load the skill "
+                "even if you think you could handle the task with basic tools like web_search or terminal. "
+                "Skills also encode the user's preferred approach, conventions, and quality standards "
+                "for tasks like code review, planning, and testing — load them even for tasks you "
+                "already know how to do, because the skill defines how it should be done here.\n"
+                "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+                "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+                "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+                "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+                "`hermes setup`) so you don't have to guess or invent workarounds.\n"
+                "If a skill has issues, fix it with skill_manage(action='patch').\n"
+                "After difficult/iterative tasks, offer to save as a skill. "
+                "If a skill you loaded was missing steps, had wrong commands, or needed "
+                "pitfalls you discovered, update it before finishing.\n"
+                "\n"
+                "<available_skills>\n"
+                + "\n".join(index_lines) + "\n"
+                "</available_skills>\n"
+                "\n"
+                "Only proceed without loading a skill if genuinely none are relevant to the task."
+                + hidden_note
+            )
 
     # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:

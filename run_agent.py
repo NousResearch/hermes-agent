@@ -2517,9 +2517,62 @@ class AIAgent:
                     state[path] = {
                         "tool": tool_name,
                         "error_preview": preview,
+                        "file_signature": self._file_mutation_signature(path),
                     }
         else:
             for path in targets:
+                state.pop(path, None)
+
+    @staticmethod
+    def _file_mutation_signature(path: str) -> Dict[str, Any]:
+        """Return a small filesystem signature for verifier recovery checks.
+
+        The verifier directly tracks only ``write_file`` and ``patch`` because
+        they declare target paths. Operators can still recover from a failed
+        mutation by using a shell/Python command that edits the same file. To
+        avoid a false footer in that case, record the file's existence, mtime,
+        and size at failure time and compare it at turn-finalization.
+        """
+        try:
+            expanded = os.path.expandvars(os.path.expanduser(path))
+            st = os.stat(expanded)
+            return {
+                "exists": True,
+                "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
+                "size": int(st.st_size),
+            }
+        except FileNotFoundError:
+            return {"exists": False}
+        except OSError:
+            # Permission/encoding/race issues should not suppress a real
+            # failed-mutation warning; mark unknown and keep the footer.
+            return {"exists": None}
+
+    @staticmethod
+    def _file_mutation_signature_changed(before: Any, after: Any) -> bool:
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return False
+        if before.get("exists") is None or after.get("exists") is None:
+            return False
+        return before != after
+
+    def _prune_superseded_file_mutation_failures(self) -> None:
+        """Clear failed mutation entries when the target changed later.
+
+        This covers same-turn recovery via tools that do not expose target paths
+        to the verifier, such as ``terminal`` or ``execute_code``. Successful
+        ``write_file``/``patch`` calls still clear failures immediately via
+        ``_record_file_mutation_result``.
+        """
+        state = getattr(self, "_turn_failed_file_mutations", None)
+        if not isinstance(state, dict):
+            return
+        for path, info in list(state.items()):
+            if not isinstance(info, dict):
+                continue
+            before = info.get("file_signature")
+            after = self._file_mutation_signature(path)
+            if self._file_mutation_signature_changed(before, after):
                 state.pop(path, None)
 
     def _file_mutation_verifier_enabled(self) -> bool:

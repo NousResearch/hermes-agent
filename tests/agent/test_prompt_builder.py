@@ -474,6 +474,83 @@ class TestBuildSkillsSystemPrompt:
         full = build_skills_system_prompt()
         assert "Write threads" in full
 
+    def test_names_only_prompt_mode_keeps_names_and_drops_descriptions(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  prompt_mode: names_only\n"
+        )
+        for cat, name, desc in (
+            ("software-development", "context-token-management", "Long context audit workflow"),
+            ("creative", "stop-slop", "Rewrite AI-ish prose"),
+        ):
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "names-only" in result
+        assert "context-token-management" in result
+        assert "stop-slop" in result
+        assert "Long context audit workflow" not in result
+        assert "Rewrite AI-ish prose" not in result
+        assert "skill_view" in result
+
+    def test_hybrid_prompt_mode_renders_router_and_pinned_skills(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  prompt_mode: hybrid\n"
+            "  prompt_router:\n"
+            "    pinned: [context-token-management]\n"
+        )
+        for cat, name, desc in (
+            ("software-development", "context-token-management", "Class-level context-token audit workflow"),
+            ("creative", "stop-slop", "Rewrite AI-ish prose"),
+            ("work", "eb-work-intake-router", "Route Elliott Bay work"),
+        ):
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "hybrid skill router" in result
+        assert "software-development: 1 skill" in result
+        assert "creative: 1 skill" in result
+        assert "work: 1 skill" in result
+        assert "context-token-management: Class-level context-token audit workflow" in result
+        assert "Rewrite AI-ish prose" not in result
+        assert "Route Elliott Bay work" not in result
+        assert "skills_list(category=" in result
+        assert "skill_view" in result
+
+    def test_prompt_mode_change_misses_cache(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "tools" / "cached-skill"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: cached-skill\ndescription: Cached description\n---\n"
+        )
+
+        full = build_skills_system_prompt()
+        assert "Cached description" in full
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  prompt_mode: names_only\n"
+        )
+        names_only = build_skills_system_prompt()
+        assert "cached-skill" in names_only
+        assert "Cached description" not in names_only
+
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

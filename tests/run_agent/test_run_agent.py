@@ -1176,6 +1176,62 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
 
+class TestEffectiveSystemPromptDeduplication:
+    def _profile_prompt_files(self, tmp_path, persona="PERSONA", soul="SOUL"):
+        (tmp_path / "persona.md").write_text(persona, encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text(soul, encoding="utf-8")
+
+    def test_skips_synced_persona_when_soul_is_already_loaded(self, tmp_path, monkeypatch):
+        from agent import system_prompt as system_prompt_mod
+
+        persona = "# Hermes Runtime Persona — J.A.R.V.I.S.\n\nCompact runtime persona."
+        soul = "# Hermes Agent Soul — J.A.R.V.I.S.\n\nCanonical identity."
+        self._profile_prompt_files(tmp_path, persona=persona, soul=soul)
+        monkeypatch.setattr(system_prompt_mod, "get_hermes_home", lambda: tmp_path)
+
+        base = f"Base prompt.\n\n{soul}\n\nOther stable guidance."
+
+        assert system_prompt_mod.should_append_ephemeral_system_prompt(base, persona) is False
+        assert system_prompt_mod.build_effective_system_prompt(base, persona) == base
+
+    def test_preserves_custom_ephemeral_prompt(self, tmp_path, monkeypatch):
+        from agent import system_prompt as system_prompt_mod
+
+        persona = "# Hermes Runtime Persona — J.A.R.V.I.S.\n\nCompact runtime persona."
+        soul = "# Hermes Agent Soul — J.A.R.V.I.S.\n\nCanonical identity."
+        custom = "Use the temporary incident-response style for this turn."
+        self._profile_prompt_files(tmp_path, persona=persona, soul=soul)
+        monkeypatch.setattr(system_prompt_mod, "get_hermes_home", lambda: tmp_path)
+
+        base = f"Base prompt.\n\n{soul}"
+
+        assert system_prompt_mod.should_append_ephemeral_system_prompt(base, custom) is True
+        assert system_prompt_mod.build_effective_system_prompt(base, custom) == f"{base}\n\n{custom}"
+
+    def test_preserves_persona_when_soul_is_not_loaded(self, tmp_path, monkeypatch):
+        from agent import system_prompt as system_prompt_mod
+
+        persona = "# Hermes Runtime Persona — J.A.R.V.I.S.\n\nCompact runtime persona."
+        self._profile_prompt_files(tmp_path, persona=persona, soul="")
+        monkeypatch.setattr(system_prompt_mod, "get_hermes_home", lambda: tmp_path)
+
+        base = "Base prompt with generic identity."
+
+        assert system_prompt_mod.should_append_ephemeral_system_prompt(base, persona) is True
+        assert system_prompt_mod.build_effective_system_prompt(base, persona) == f"{base}\n\n{persona}"
+
+    def test_skips_exact_ephemeral_duplicate_already_in_base(self, tmp_path, monkeypatch):
+        from agent import system_prompt as system_prompt_mod
+
+        self._profile_prompt_files(tmp_path, persona="PERSONA", soul="SOUL")
+        monkeypatch.setattr(system_prompt_mod, "get_hermes_home", lambda: tmp_path)
+
+        base = "Base prompt.\n\nAlready included."
+
+        assert system_prompt_mod.should_append_ephemeral_system_prompt(base, "Already included.") is False
+        assert system_prompt_mod.build_effective_system_prompt(base, "Already included.") == base
+
+
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""
 

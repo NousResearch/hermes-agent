@@ -111,6 +111,72 @@ class TestParseSchedule:
             parse_schedule("99 99 99 99 99")
 
 
+class TestParseScheduleOnceAt:
+    """The display strings emitted for one-shot jobs must round-trip back
+    through parse_schedule().
+
+    ``_schedule_display_for_job`` / ``parse_schedule`` emit
+    ``"once at YYYY-MM-DD HH:MM"`` for one-shot jobs, and the Edit Job modal
+    pre-fills its schedule input with that display string. Re-feeding the
+    system's own output must succeed, not raise ``400 INVALID SCHEDULE``.
+    """
+
+    def test_once_at_round_trip_preserves_run_at(self):
+        # Core contract: the display a one-shot produces parses back to the
+        # exact same run_at.
+        iso = parse_schedule("2030-01-15T14:00:00")
+        assert iso["display"] == "once at 2030-01-15 14:00"
+
+        redo = parse_schedule(iso["display"])
+        assert redo["kind"] == "once"
+        assert redo["run_at"] == iso["run_at"]
+
+    def test_once_at_round_trip_via_created_job(self, tmp_cron_dir):
+        # The same contract, exercised through the real create_job path that
+        # populates schedule_display — this is what the Edit modal re-submits.
+        job = create_job(prompt="ping", schedule="2030-01-15T14:00:00")
+        assert job["schedule_display"] == "once at 2030-01-15 14:00"
+
+        redo = parse_schedule(job["schedule_display"])
+        assert redo["kind"] == "once"
+        assert redo["run_at"] == job["schedule"]["run_at"]
+
+    def test_once_at_case_insensitive(self):
+        baseline = parse_schedule("once at 2026-06-19 12:00")
+        for variant in ("ONCE AT 2026-06-19 12:00", "Once At 2026-06-19 12:00"):
+            result = parse_schedule(variant)
+            assert result["kind"] == "once"
+            assert result["run_at"] == baseline["run_at"]
+
+    def test_once_at_whitespace_tolerant(self):
+        baseline = parse_schedule("once at 2026-06-19 12:00")
+        result = parse_schedule("  once   at   2026-06-19   12:00  ")
+        assert result["kind"] == "once"
+        assert result["run_at"] == baseline["run_at"]
+
+    def test_once_at_with_seconds_retained(self):
+        result = parse_schedule("once at 2026-06-19 12:00:30")
+        assert result["kind"] == "once"
+        run_at = datetime.fromisoformat(result["run_at"])
+        assert (run_at.hour, run_at.minute, run_at.second) == (12, 0, 30)
+
+    def test_once_at_malformed_raises_with_original_hints(self):
+        # "once at <garbage>" must reject cleanly with the SAME suggestion
+        # list as today. The fix is additive: no new format hint is taught,
+        # because "once at ..." is system-emitted, not a user-facing format.
+        with pytest.raises(ValueError) as excinfo:
+            parse_schedule("once at banana")
+        message = str(excinfo.value)
+        assert "Duration:" in message
+        assert "Interval:" in message
+        assert "Cron:" in message
+        assert "Timestamp:" in message
+        # The suggestion block (everything after the echoed input) must NOT
+        # gain a new "once at" hint — that form is system-emitted, not taught.
+        hints = message.split("Use:", 1)[1]
+        assert "once at" not in hints.lower()
+
+
 # =========================================================================
 # compute_next_run
 # =========================================================================

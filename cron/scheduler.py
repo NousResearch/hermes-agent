@@ -1587,6 +1587,20 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 
+        # Discover and load plugins so lifecycle hooks (pre_tool_call,
+        # post_tool_call, etc.) fire during cron execution.  Idempotent:
+        # subsequent ticks short-circuit on already-loaded plugins.  Must
+        # happen BEFORE AIAgent construction so the tool registry picks up
+        # plugin-registered hooks.  See #48043.
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception as _plugin_exc:
+            logger.warning(
+                "Job '%s': plugin discovery failed (non-fatal): %s",
+                job_id, _plugin_exc,
+            )
+
         # Initialize MCP servers so configured mcp_servers are available to
         # the agent's tool registry before AIAgent is constructed. Without
         # this, cron jobs never saw any MCP tools — only the gateway / CLI

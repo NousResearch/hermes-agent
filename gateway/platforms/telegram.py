@@ -774,6 +774,119 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    # ── Media caption MarkdownV2 fallback (#32839) ────────────────────────
+    #
+    # ``send_message`` runs the agent's text through :meth:`format_message` and
+    # sends it with ``parse_mode=MARKDOWN_V2`` so headers, bold, lists, etc.
+    # render on every Telegram client.  Historically the media send_* helpers
+    # forwarded ``caption`` raw with no ``parse_mode``, so markdown attached
+    # to a photo/document/video (e.g. an analysis report rendered alongside
+    # a screenshot) appeared as literal ``### Heading`` / ``**bold**`` on
+    # mobile.  The helpers below give every media path the same
+    # markdown-then-plain-text fallback the text path enjoys.
+
+    @staticmethod
+    def _is_markdown_parse_error(exc: BaseException) -> bool:
+        """Return True when *exc* is a Telegram BadRequest about parse_mode.
+
+        Telegram raises ``BadRequest: Can't parse entities: ...`` (and a few
+        ``Can't find end of the entity``-style variants) when MarkdownV2
+        input is invalid.  Match on the error text so we don't have to import
+        the SDK exception class here.
+        """
+        text = str(exc).lower()
+        return (
+            "can't parse" in text
+            or "cant parse" in text
+            or "can't find end of" in text
+            or "unsupported start tag" in text
+            or "byte offset" in text
+            or "entity" in text and "parse" in text
+        )
+
+    def _caption_send_kwargs(self, caption: Optional[str]) -> Dict[str, Any]:
+        """Build ``caption`` + ``parse_mode`` kwargs for a media send call.
+
+        Mirrors :meth:`send`'s markdown handling so callers can render
+        headers/bold/inline-code in captions instead of leaking raw markdown
+        to clients.  Returns ``{"caption": None}`` for empty input so the
+        result can be ``**``-unpacked unconditionally.
+
+        Telegram caps captions at 1024 UTF-16 code units.  MarkdownV2 escape
+        backslashes can inflate the formatted text past that ceiling for
+        special-char-heavy inputs; we fall back to the raw (truncated) text
+        in that case rather than emitting an over-length caption that
+        Telegram would reject outright.
+        """
+        if not caption:
+            return {"caption": None}
+        raw = caption[:1024]
+        formatted = self.format_message(raw)
+        if utf16_len(formatted) > 1024:
+            return {"caption": raw, "parse_mode": None}
+        return {"caption": formatted, "parse_mode": ParseMode.MARKDOWN_V2}
+
+    async def _send_media_with_caption_fallback(
+        self,
+        send_fn: Any,
+        base_kwargs: Dict[str, Any],
+        *,
+        caption: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        reply_to_message_id: Optional[int],
+        media_label: str,
+        reset_media: Optional[Any] = None,
+    ) -> Any:
+        """Send a media call with MarkdownV2 caption + plain-text fallback.
+
+        Wraps :meth:`_send_with_dm_topic_reply_anchor_retry` so the existing
+        anchor-retry semantics still apply, then catches MarkdownV2 parse
+        errors and retries once with the formatting stripped.  Without this,
+        a caption whose markdown survives :meth:`format_message` but trips
+        the Bot API parser (rare, but observed when long analysis reports
+        mix tables, headers, and code) would either fail the whole send or
+        leave the user staring at raw ``### Heading`` / ``**bold**``.
+        """
+        caption_kwargs = self._caption_send_kwargs(caption)
+        send_kwargs = {**base_kwargs, **caption_kwargs}
+        try:
+            return await self._send_with_dm_topic_reply_anchor_retry(
+                send_fn,
+                send_kwargs,
+                metadata,
+                reply_to_message_id,
+                media_label,
+                reset_media=reset_media,
+            )
+        except Exception as md_error:
+            if (
+                not caption
+                or caption_kwargs.get("parse_mode") is None
+                or not self._is_markdown_parse_error(md_error)
+            ):
+                raise
+            logger.warning(
+                "[%s] MarkdownV2 caption parse failed for %s, "
+                "falling back to plain text: %s",
+                self.name,
+                media_label,
+                md_error,
+            )
+            plain_caption = _strip_mdv2(caption_kwargs["caption"])
+            plain_kwargs = {
+                **base_kwargs,
+                "caption": plain_caption,
+                "parse_mode": None,
+            }
+            return await self._send_with_dm_topic_reply_anchor_retry(
+                send_fn,
+                plain_kwargs,
+                metadata,
+                reply_to_message_id,
+                media_label,
+                reset_media=reset_media,
+            )
+
     async def _send_with_dm_topic_reply_anchor_retry(
         self,
         send_fn: Any,
@@ -4407,19 +4520,19 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    msg = await self._send_media_with_caption_fallback(
                         self._bot.send_voice,
                         {
                             "chat_id": int(chat_id),
                             "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
-                        metadata,
-                        reply_to_id,
-                        "voice",
+                        caption=caption,
+                        metadata=metadata,
+                        reply_to_message_id=reply_to_id,
+                        media_label="voice",
                         reset_media=lambda: audio_file.seek(0),
                     )
                 elif ext in {".mp3", ".m4a"}:
@@ -4433,19 +4546,19 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    msg = await self._send_media_with_caption_fallback(
                         self._bot.send_audio,
                         {
                             "chat_id": int(chat_id),
                             "audio": audio_file,
-                            "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
-                        metadata,
-                        reply_to_id,
-                        "audio",
+                        caption=caption,
+                        metadata=metadata,
+                        reply_to_message_id=reply_to_id,
+                        media_label="audio",
                         reset_media=lambda: audio_file.seek(0),
                     )
                 else:
@@ -4534,7 +4647,10 @@ class TelegramAdapter(BasePlatformAdapter):
             opened_files: List[Any] = []
             try:
                 for image_url, alt_text in chunk:
-                    caption = alt_text[:1024] if alt_text else None
+                    # Match the markdown-aware caption handling that
+                    # _send_media_with_caption_fallback applies to single
+                    # photos so album members render the same way (#32839).
+                    caption_kwargs = self._caption_send_kwargs(alt_text)
                     if image_url.startswith("file://"):
                         local_path = _unquote(image_url[7:])
                         if not os.path.exists(local_path):
@@ -4545,9 +4661,9 @@ class TelegramAdapter(BasePlatformAdapter):
                             continue
                         fh = open(local_path, "rb")
                         opened_files.append(fh)
-                        media.append(InputMediaPhoto(media=fh, caption=caption))
+                        media.append(InputMediaPhoto(media=fh, **caption_kwargs))
                     else:
-                        media.append(InputMediaPhoto(media=image_url, caption=caption))
+                        media.append(InputMediaPhoto(media=image_url, **caption_kwargs))
 
                 if not media:
                     continue
@@ -4630,19 +4746,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(image_path, "rb") as image_file:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_photo,
                     {
                         "chat_id": int(chat_id),
                         "photo": image_file,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "photo",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="photo",
                     reset_media=lambda: image_file.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4726,20 +4842,20 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             with open(file_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_document,
                     {
                         "chat_id": int(chat_id),
                         "document": f,
                         "filename": display_name,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "document",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="document",
                     reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4774,19 +4890,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_video,
                     {
                         "chat_id": int(chat_id),
                         "video": f,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "video",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="video",
                     reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4826,19 +4942,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            msg = await self._send_with_dm_topic_reply_anchor_retry(
+            msg = await self._send_media_with_caption_fallback(
                 self._bot.send_photo,
                 {
                     "chat_id": int(chat_id),
                     "photo": image_url,
-                    "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **photo_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
-                metadata,
-                reply_to_id,
-                "URL photo",
+                caption=caption,
+                metadata=metadata,
+                reply_to_message_id=reply_to_id,
+                media_label="URL photo",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -4863,19 +4979,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=reply_to_id,
                     reply_to_mode=self._reply_to_mode
                 )
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_photo,
                     {
                         "chat_id": int(chat_id),
                         "photo": image_data,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **upload_thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "uploaded photo",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="uploaded photo",
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
@@ -4910,19 +5026,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            msg = await self._send_with_dm_topic_reply_anchor_retry(
+            msg = await self._send_media_with_caption_fallback(
                 self._bot.send_animation,
                 {
                     "chat_id": int(chat_id),
                     "animation": animation_url,
-                    "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **animation_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
-                metadata,
-                reply_to_id,
-                "animation",
+                caption=caption,
+                metadata=metadata,
+                reply_to_message_id=reply_to_id,
+                media_label="animation",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

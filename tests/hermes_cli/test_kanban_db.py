@@ -859,6 +859,67 @@ class TestSharedBoardPaths:
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
 
+def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch, caplog):
+    """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
+
+    Without this fallback, the gateway's kanban dispatcher crashes every
+    60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
+    retried forever — which is what the real-world user report shows
+    (see hermes-agent issue #22032).
+
+    NOTE: We do NOT use the ``kanban_home`` fixture here because that
+    fixture pre-initializes the DB via ``kb.init_db()`` — putting the
+    file in WAL on disk. The Bug D safety guard now refuses to downgrade
+    to DELETE when the on-disk header is already WAL, so testing the
+    NFS-fallback path requires a truly-fresh DB file (NFS scenario in
+    production: first connection of the first process ever to touch the
+    file, where downgrading is safe because nobody else has WAL state
+    yet).
+    """
+    import sqlite3 as _sqlite3
+    from unittest.mock import patch as _patch
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Clear module cache so a fresh connect() is attempted
+    kb._INITIALIZED_PATHS.clear()
+
+    real_connect = _sqlite3.connect
+
+    class _WalBlockingConnection(_sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                raise _sqlite3.OperationalError("locking protocol")
+            return super().execute(sql, *args, **kwargs)
+
+    def wal_blocking_connect(*args, **kwargs):
+        return real_connect(
+            *args, factory=_WalBlockingConnection, **kwargs
+        )
+
+    with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            conn = kb.connect()
+
+    # One fallback error, naming kanban.db
+    errors = [
+        r
+        for r in caplog.records
+        if r.levelname == "ERROR" and "kanban.db" in r.getMessage()
+    ]
+    assert len(errors) >= 1, (
+        f"Expected a kanban.db ERROR, got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+    # DB still usable end-to-end — create + list a task
+    t = kb.create_task(conn, title="post-fallback task")
+    tasks = kb.list_tasks(conn)
+    assert any(row.id == t for row in tasks)
+    conn.close()
+
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.

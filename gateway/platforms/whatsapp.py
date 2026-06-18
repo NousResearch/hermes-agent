@@ -187,6 +187,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    _strip_media_directives,
 )
 
 
@@ -708,6 +709,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         Formats markdown for WhatsApp, splits long messages into chunks
         that preserve code block boundaries, and sends each chunk sequentially.
+
+        As a backstop, ``MEDIA:<path>`` directives are extracted and delivered
+        as native attachments *before* the text body — mirroring the WeChat
+        adapter pattern.  This prevents internal filesystem paths from leaking
+        as visible text when the upstream dispatch path fails to strip them.
         """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
@@ -721,12 +727,48 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             import aiohttp
 
+            # --- MEDIA: backstop (mirrors WeChat adapter pattern) ---
+            media_files, cleaned = self.extract_media(content)
+            media_files = self.filter_media_delivery_paths(media_files)
+            _, cleaned = self.extract_images(cleaned)
+            # Strip any remaining MEDIA: tags from visible text (protected-span
+            # directives inside code blocks / inline code are not extracted but
+            # must not leak as visible path text — #43656).
+            cleaned = _strip_media_directives(cleaned).strip()
+
+            _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+            _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+            _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+            async def _deliver_media(path: str, is_voice: bool = False) -> None:
+                ext = Path(path).suffix.lower()
+                try:
+                    if is_voice or ext in _AUDIO_EXTS:
+                        await self.send_voice(chat_id=chat_id, audio_path=path)
+                    elif ext in _VIDEO_EXTS:
+                        await self.send_video(chat_id=chat_id, video_path=path)
+                    elif ext in _IMAGE_EXTS:
+                        await self.send_image_file(chat_id=chat_id, image_path=path)
+                    else:
+                        await self.send_document(chat_id=chat_id, file_path=path)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] media delivery failed for %s: %s",
+                        self.name, path, exc,
+                    )
+
+            for media_path, is_voice in media_files:
+                await _deliver_media(media_path, is_voice)
+            # --- end MEDIA: backstop ---
+
             # Format and chunk the message
-            formatted = self.format_message(content)
+            formatted = self.format_message(cleaned)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
             last_message_id = None
             for chunk in chunks:
+                if not chunk.strip():
+                    continue
                 payload: Dict[str, Any] = {
                     "chatId": chat_id,
                     "message": chunk,

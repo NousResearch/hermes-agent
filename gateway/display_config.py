@@ -4,14 +4,27 @@ Provides ``resolve_display_setting()`` — the single entry-point for reading
 display settings with platform-specific overrides and sensible defaults.
 
 Resolution order (first non-None wins):
-    1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
-    2. ``display.<key>``                       — global user setting
-    3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
-    4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
+    1. ``display.platforms.<platform>.<chat_type>.<key>`` — per-chat-type
+       override, where ``<chat_type>`` is the session chat type (``dm``,
+       ``group``, ``channel``, ``thread``, …).  Only consulted when a
+       ``chat_type`` is supplied by the caller.
+    2. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
+    3. ``display.<key>``                       — global user setting
+    4. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
+    5. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
+
+The per-chat-type layer (1) lets an operator keep full verbosity in ``dm``
+conversations while staying quiet in ``channel``/``group`` conversations on the
+*same* platform — e.g. ``display.platforms.slack.channel.tool_progress: off``
+with ``dm`` left verbose.  The scope key is the literal ``chat_type`` value, so
+each conversation type is configured independently.  When no ``chat_type`` is
+supplied (CLI sessions, callers that don't thread it through) or no matching
+``<chat_type>`` subdict exists, resolution is byte-for-byte identical to the
+prior per-platform behavior.
 
 Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
 top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
-sets an explicit per-platform override.
+(or a per-chat-type ``...<chat_type>.streaming``) sets an explicit override.
 
 Backward compatibility: ``display.tool_progress_overrides`` is still read as a
 fallback for ``tool_progress`` when no ``display.platforms`` entry exists.  A
@@ -153,6 +166,7 @@ def resolve_display_setting(
     platform_key: str,
     setting: str,
     fallback: Any = None,
+    chat_type: str = "",
 ) -> Any:
     """Resolve a display setting with per-platform override support.
 
@@ -167,16 +181,36 @@ def resolve_display_setting(
         Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
     fallback : Any
         Fallback value when the setting isn't found anywhere.
+    chat_type : str
+        Optional gateway chat type (``"dm"``, ``"group"``, ``"channel"``,
+        ``"thread"``, …).  When supplied, a per-chat-type override layer
+        (``display.platforms.<platform>.<chat_type>.<key>``) is consulted
+        *before* the plain per-platform override; the scope key is the literal
+        ``chat_type`` value.  When empty (the default) or no matching subdict
+        exists, resolution is identical to the prior per-platform behavior —
+        fully backward compatible.
 
     Returns
     -------
     The resolved value, or *fallback* if nothing is configured.
     """
     display_cfg = user_config.get("display") or {}
-
-    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     platforms = display_cfg.get("platforms") or {}
     plat_overrides = platforms.get(platform_key)
+
+    # 0. Per-chat-type override (display.platforms.<platform>.<chat_type>.<key>).
+    #    Most specific layer; only consulted when the caller threads a
+    #    chat_type through and a matching subdict exists.  The scope key is the
+    #    literal chat_type value (e.g. "dm", "group", "channel", "thread").
+    ct = (chat_type or "").strip().lower()
+    if ct and isinstance(plat_overrides, dict):
+        scoped = plat_overrides.get(ct)
+        if isinstance(scoped, dict):
+            val = scoped.get(setting)
+            if val is not None:
+                return _normalise(setting, val)
+
+    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     if isinstance(plat_overrides, dict):
         val = plat_overrides.get(setting)
         if val is not None:

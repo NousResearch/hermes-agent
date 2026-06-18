@@ -977,6 +977,27 @@ display:
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
   # display.platforms.telegram.
 
+  # Per-chat-type overrides: vary verbosity by conversation type on the SAME
+  # platform. Add a subdict keyed on the literal chat_type value (dm, group,
+  # channel, thread) under any display.platforms.<platform> entry. The
+  # per-chat-type layer is consulted BEFORE the plain per-platform value, so it
+  # wins when present and otherwise falls through unchanged. Any display key
+  # valid per-platform (tool_progress, interim_assistant_messages,
+  # thinking_progress, show_reasoning, streaming, long_running_notifications,
+  # busy_ack_detail, tool_preview_length, cleanup_progress) is valid inside a
+  # chat_type subdict. Each chat_type is configured independently.
+  # Example — full verbosity in DMs, final-answer-only in channels:
+  #   display:
+  #     platforms:
+  #       slack:
+  #         dm:
+  #           tool_progress: all
+  #           interim_assistant_messages: true
+  #         channel:
+  #           tool_progress: off
+  #           interim_assistant_messages: false
+  #           long_running_notifications: false
+
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and

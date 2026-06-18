@@ -105,3 +105,66 @@ def test_custom_endpoint_chat_completions_still_uses_openai_wire():
     assert client is not None
     assert model == "my-model"
     assert not isinstance(client, AnthropicAuxiliaryClient)
+
+
+def test_resolve_explicit_custom_anthropic_messages_preserves_provider_root():
+    # Explicit custom Anthropic endpoints must not be rewritten to /v1.
+    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+
+    adapter_patch, fake_client = _install_anthropic_adapter_mocks()
+    with adapter_patch as build_client:
+        client, model = resolve_provider_client(
+            "custom",
+            model="kimi-for-coding",
+            explicit_base_url="https://api.kimi.com/coding",
+            explicit_api_key="kimi-key",
+            api_mode="anthropic_messages",
+            main_runtime={"model": "kimi-for-coding"},
+        )
+
+    assert isinstance(client, AnthropicAuxiliaryClient)
+    assert client._real_client is fake_client
+    assert client.api_key == "kimi-key"
+    assert client.base_url == "https://api.kimi.com/coding"
+    assert model == "kimi-for-coding"
+    build_client.assert_called_once_with("kimi-key", "https://api.kimi.com/coding")
+
+
+def test_resolve_explicit_custom_anthropic_autodetect_preserves_provider_root():
+    # Kimi Coding is Anthropic-wire even when api_mode is omitted.
+    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+
+    adapter_patch, fake_client = _install_anthropic_adapter_mocks()
+    with adapter_patch as build_client:
+        client, model = resolve_provider_client(
+            "custom",
+            model="kimi-for-coding",
+            explicit_base_url="https://api.kimi.com/coding",
+            explicit_api_key="kimi-key",
+        )
+
+    assert isinstance(client, AnthropicAuxiliaryClient)
+    assert client._real_client is fake_client
+    assert client.base_url == "https://api.kimi.com/coding"
+    assert model == "kimi-for-coding"
+    build_client.assert_called_once_with("kimi-key", "https://api.kimi.com/coding")
+
+
+def test_maybe_wrap_anthropic_strips_openai_v1_suffix():
+    # Defensive normalization prevents double-/v1 Messages paths.
+    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
+
+    adapter_patch, fake_client = _install_anthropic_adapter_mocks()
+    with adapter_patch as build_client:
+        client = _maybe_wrap_anthropic(
+            object(),
+            "kimi-for-coding",
+            "kimi-key",
+            "https://api.kimi.com/coding/v1",
+            "anthropic_messages",
+        )
+
+    assert isinstance(client, AnthropicAuxiliaryClient)
+    assert client._real_client is fake_client
+    assert client.base_url == "https://api.kimi.com/coding"
+    build_client.assert_called_once_with("kimi-key", "https://api.kimi.com/coding")

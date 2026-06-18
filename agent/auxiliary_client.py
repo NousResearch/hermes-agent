@@ -1155,6 +1155,20 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     return False
 
 
+def _canonical_anthropic_messages_base_url(base_url: str) -> str:
+    # Anthropic SDK clients append /v1/messages themselves. If an OpenAI-wire
+    # path already appended /v1 before transport detection, strip it back to
+    # the provider root to avoid URLs like /coding/v1/v1/messages.
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return normalized
+    if normalized.lower().endswith("/v1"):
+        candidate = normalized[:-3].rstrip("/")
+        if _endpoint_speaks_anthropic_messages(candidate):
+            return candidate
+    return normalized
+
+
 def _maybe_wrap_anthropic(
     client_obj: Any,
     model: str,
@@ -1218,22 +1232,25 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
 
+    anthropic_base_url = _canonical_anthropic_messages_base_url(base_url)
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, anthropic_base_url)
     except Exception as exc:
         logger.warning(
-            "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "Failed to build Anthropic client for %s (%s) - falling back to "
+            "OpenAI-wire client.", anthropic_base_url, exc,
         )
         return client_obj
 
     logger.debug(
         "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
         "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
+        model,
+        anthropic_base_url[:60] if anthropic_base_url else "",
+        api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
+        real_client, model, api_key, anthropic_base_url, is_oauth=False,
     )
 
 
@@ -3680,13 +3697,13 @@ def resolve_provider_client(
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            raw_custom_base = explicit_base_url.strip().rstrip("/")
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
                 or "no-key-required"  # local servers don't need auth
             )
-            if not custom_base:
+            if not raw_custom_base:
                 logger.warning(
                     "resolve_provider_client: explicit custom endpoint requested "
                     "but base_url is empty"
@@ -3696,19 +3713,45 @@ def resolve_provider_client(
                 model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
                 provider,
             )
+            explicit_mode = (api_mode or "").strip()
+            uses_anthropic_messages = (
+                explicit_mode == "anthropic_messages"
+                or (not explicit_mode and _endpoint_speaks_anthropic_messages(raw_custom_base))
+            )
+            if uses_anthropic_messages:
+                anthropic_base = _canonical_anthropic_messages_base_url(raw_custom_base)
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(custom_key, anthropic_base)
+                except Exception as exc:
+                    logger.warning(
+                        "Explicit custom endpoint %s uses Anthropic Messages but "
+                        "could not build the Anthropic client (%s) - falling back "
+                        "to OpenAI-wire.",
+                        anthropic_base,
+                        exc,
+                    )
+                else:
+                    client = AnthropicAuxiliaryClient(
+                        real_client, final_model, custom_key, anthropic_base, is_oauth=False,
+                    )
+                    return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                            else (client, final_model))
+
+            custom_base = _to_openai_base_url(raw_custom_base).strip()
             extra = {}
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:
                 extra["default_query"] = _dq
-            if base_url_host_matches(custom_base, "api.kimi.com"):
+            if base_url_host_matches(raw_custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
-            elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
+            elif base_url_host_matches(raw_custom_base, "api.githubcopilot.com"):
                 from hermes_cli.copilot_auth import copilot_request_headers
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
-            elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
-                extra["default_headers"] = build_nvidia_nim_headers(custom_base)
+            elif base_url_host_matches(raw_custom_base, "integrate.api.nvidia.com"):
+                extra["default_headers"] = build_nvidia_nim_headers(raw_custom_base)
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.
@@ -3723,7 +3766,7 @@ def resolve_provider_client(
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
-            client = _wrap_if_needed(client, final_model, custom_base, custom_key)
+            client = _wrap_if_needed(client, final_model, raw_custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:

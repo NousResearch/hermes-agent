@@ -444,9 +444,27 @@ def validate_run_config(*, mode: str, n: int, allow_underpowered_live: bool = Fa
         raise ValueError(f"live Phase-2 gate requires N=180 minimum; got n={n}")
 
 
-def make_fixtures(n: int, *, seed: int) -> list[TrialFixture]:
+def make_fixtures(n: int, *, seed: int, probe_kind: str = "mixed") -> list[TrialFixture]:
+    """Build N recovery fixtures.
+
+    probe_kind:
+      - "exact":    all exact-string sentinel probes (the raw-store / FTS path's
+                    real contract). Use this for the Arm-A gate run.
+      - "semantic": all owner-name semantic probes (recovery of meaning). The
+                    DAG / Arm-B owns this contract.
+      - "mixed":    legacy 2/3-exact, 1/3-semantic interleave (cross-contaminated;
+                    kept only for backward compat, NOT for a gate run).
+    """
     rng = random.Random(seed)
-    fixtures = [_make_fixture(index=i, arm="semantic" if i % 3 == 1 else "exact", seed=seed) for i in range(n)]
+    if probe_kind == "exact":
+        arms = ["exact"] * n
+    elif probe_kind == "semantic":
+        arms = ["semantic"] * n
+    elif probe_kind == "mixed":
+        arms = ["semantic" if i % 3 == 1 else "exact" for i in range(n)]
+    else:
+        raise ValueError(f"probe_kind must be exact|semantic|mixed, got {probe_kind!r}")
+    fixtures = [_make_fixture(index=i, arm=arms[i], seed=seed) for i in range(n)]
     rng.shuffle(fixtures)
     return fixtures
 
@@ -632,6 +650,7 @@ def run_recovery_gate(
     driver: RecoveryDriver | None = None,
     judge: Any | None = None,
     allow_underpowered_live: bool = False,
+    probe_kind: str = "mixed",
 ) -> RecoveryRun:
     validate_run_config(mode=mode, n=n, allow_underpowered_live=allow_underpowered_live)
     sampling = sampling or SamplingParams(seed=seed)
@@ -642,7 +661,7 @@ def run_recovery_gate(
     if driver is None:
         driver = OfflineStubDriver() if mode == "dry-run" else LiveAegisDriver()
 
-    fixtures = make_fixtures(n, seed=seed)
+    fixtures = make_fixtures(n, seed=seed, probe_kind=probe_kind)
     has_semantic = any(fixture.arm == "semantic" for fixture in fixtures)
     calibration: JudgeCalibrationResult | None = None
     if has_semantic:
@@ -921,6 +940,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--filler-turns", type=int, default=4, help="Filler turns per trial in --session-mode.")
     parser.add_argument("--filler-tokens", type=int, default=2500, help="Approximate filler-token budget per filler turn in --session-mode.")
     parser.add_argument("--allow-underpowered-live", action="store_true", help="Allow N<180 live runs for E2E shakedown ONLY; not a Phase-2 promotion gate.")
+    parser.add_argument("--probe-kind", choices=["exact", "semantic", "mixed"], default="exact", help="Probe contract: 'exact' = raw-store/FTS gate (Arm-A, DEFAULT per PRD-8.1), 'semantic' = DAG/meaning, 'mixed' = legacy interleave (NOT a gate run; explicit opt-in only).")
+    parser.add_argument("--lcm-db", help="Path to the lcm.db the session driver reads tool-call evidence from (default: ~/.hermes/profiles/<profile>/lcm.db). NOTE: this only redirects the evidence-READ path; the live gateway still WRITES to the profile db. True write-isolation needs a gateway config change (out of scope per AC-5).")
     return parser.parse_args(argv)
 
 
@@ -963,6 +984,7 @@ def main(argv: list[str] | None = None) -> int:
                 filler_tokens=args.filler_tokens,
                 model=args.model,
                 provider=args.provider,
+                lcm_db=args.lcm_db,
             )
         else:
             driver = LiveAegisDriver(command=command, timeout_seconds=args.timeout_seconds)
@@ -976,6 +998,7 @@ def main(argv: list[str] | None = None) -> int:
         budget=budget,
         driver=driver,
         allow_underpowered_live=args.allow_underpowered_live,
+        probe_kind=args.probe_kind,
     )
     print(f"{run.gate.correct_trials}/{run.gate.total_trials} correct; Wilson lower={run.gate.wilson_lower:.6f}")
     print(f"estimated spend=${run.estimated_spend_usd:.6f}; observed spend=${run.observed_spend_usd:.6f}; report={out_path}")

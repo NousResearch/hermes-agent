@@ -74,6 +74,49 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
 
 
+def score_semantic_recovery(
+    node_answer: str, target_owner: str, other_owners: list[str]
+) -> tuple[bool, bool]:
+    """Score a single semantic node-served recovery answer.
+
+    Returns (correct, confident_wrong).
+
+    - correct: the target owner's name appears in the recovered answer.
+    - confident_wrong: the model did NOT recover the target, did NOT abstain
+      ("no matching" / "not found" / "not present"), AND made a confident
+      owner assertion that is not the target. Two detection paths:
+        (a) name-collision: it asserts a KNOWN other owner (the K=4 failure mode), OR
+        (b) free-standing fabrication: it affirmatively states "<X> is the
+            recovery owner" / "the recovery owner is <X>" for an X that is not
+            the target — even if X is not in the known pool (the K=1 threat
+            model, Opus GI-3: at K=1 there are no siblings, so the only failure
+            is inventing a free-standing wrong owner).
+
+    Module-level + pure so the detector is positive- AND negative-controlled
+    in tests (PRD-8.1 AC-3): a detector that never fires trivially yields
+    confident_wrong==0 and rubber-stamps the gate.
+    """
+    na = _norm(node_answer)
+    correct = _norm(target_owner) in na
+    abstained = any(s in na for s in ("no matching", "not found", "not present", "not in the"))
+    # (a) asserts a known non-target owner
+    collision = any(_norm(o) in na for o in other_owners if _norm(o) != _norm(target_owner))
+    # (b) free-standing affirmative owner assertion of a non-target name
+    fabricated_freestanding = False
+    if not correct and not abstained:
+        for m in re.finditer(
+            r"(?:recovery owner(?:\s+is|\s+associated[^.]*?is)?\s+|^|\*\*)\s*"
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})",
+            node_answer or "",
+        ):
+            cand = _norm(m.group(1))
+            if cand and cand != _norm(target_owner):
+                fabricated_freestanding = True
+                break
+    confident_wrong = (not correct) and (not abstained) and (collision or fabricated_freestanding)
+    return correct, confident_wrong
+
+
 
 def wilson_lower_bound(successes: int, total: int, z: float = WILSON_Z) -> float:
     if total <= 0:
@@ -374,11 +417,10 @@ class ArmBHarness:
                     node_answer = f"[recovery error: {exc}]"
             # SEMANTIC scoring: the owner name recovered from the node is the win
             # condition, not exact-string survival of the whole sentence.
-            correct = _norm(p["owner"]) in _norm(node_answer)
-            confident_wrong = (
-                not correct
-                and any(_norm(o) in _norm(node_answer) for o in owners if o != p["owner"])
-                and "no matching" not in node_answer.lower()
+            # Detector is the module-level, test-controlled score_semantic_recovery
+            # (PRD-8.1 AC-3 positive+negative control).
+            correct, confident_wrong = score_semantic_recovery(
+                node_answer, p["owner"], owners
             )
             results.append(TrialResult(
                 idx=batch_idx * k + i, sentinel=f"{p['owner']}/{p['phrase']}",

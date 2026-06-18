@@ -1467,6 +1467,74 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice}
 
 
+def prompt_gateway_approval(
+    command: str,
+    description: str,
+    *,
+    session_key: str | None = None,
+    pattern_key: str | None = None,
+    pattern_keys: list[str] | None = None,
+    allow_permanent: bool = True,
+    surface: str = "gateway",
+) -> str:
+    """Prompt for approval through the active gateway session queue.
+
+    This is the public gateway counterpart to ``prompt_dangerous_approval``:
+    callers that are not running inside the CLI terminal thread can still
+    block synchronously while the gateway sends the request to Telegram,
+    Slack, etc. and resolves it through ``resolve_gateway_approval()``.
+
+    Returns ``once``, ``session``, ``always``, or ``deny``. Missing gateway
+    session/callback, notify failure, timeout, and explicit denial all fail
+    closed as ``deny``.
+    """
+    resolved_session_key = session_key or get_current_session_key(default="")
+    if not resolved_session_key:
+        return "deny"
+
+    primary_key = pattern_key or f"gateway:{command}"
+    all_keys = list(pattern_keys or [primary_key])
+    approval_data = {
+        "command": command,
+        "pattern_key": primary_key,
+        "pattern_keys": all_keys,
+        "description": description,
+        "allow_permanent": bool(allow_permanent),
+    }
+
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(resolved_session_key)
+    if notify_cb is None:
+        submit_pending(resolved_session_key, approval_data)
+        return "deny"
+
+    decision = _await_gateway_decision(
+        resolved_session_key,
+        notify_cb,
+        approval_data,
+        surface=surface,
+    )
+    if decision.get("notify_failed"):
+        return "deny"
+
+    if not decision.get("resolved"):
+        return "deny"
+    choice = decision.get("choice") or "deny"
+    if choice == "always" and not allow_permanent:
+        choice = "session"
+    if choice == "deny":
+        return "deny"
+
+    for key in all_keys:
+        if choice == "session":
+            approve_session(resolved_session_key, key)
+        elif choice == "always":
+            approve_session(resolved_session_key, key)
+            approve_permanent(key)
+            save_permanent_allowlist(_permanent_approved)
+    return choice
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.

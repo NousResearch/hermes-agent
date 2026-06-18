@@ -134,6 +134,65 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
 
+    def test_gateway_session_wires_approval_callback(self, monkeypatch):
+        from tools.approval import (
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        captured = {}
+
+        def fake_prompt_gateway_approval(command, description, **kwargs):
+            captured["approval_prompt"] = {
+                "command": command,
+                "description": description,
+                **kwargs,
+            }
+            return "session"
+
+        def fake_init(self, **kwargs):
+            self._approval_callback = kwargs.get("approval_callback")
+            captured["callback"] = self._approval_callback
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured["choice"] = self._approval_callback(
+                "touch /tmp/codex-approval-test",
+                "Codex requests exec in /tmp",
+                allow_permanent=False,
+            )
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setattr(
+            "tools.terminal_tool._get_approval_callback",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.approval.prompt_gateway_approval",
+            fake_prompt_gateway_approval,
+        )
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        token = set_current_session_key("telegram:chat:123")
+        try:
+            agent = _make_codex_agent()
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                result = agent.run_conversation("needs filesystem escalation")
+        finally:
+            reset_current_session_key(token)
+
+        assert result["final_response"] == "ok"
+        assert callable(captured["callback"])
+        assert captured["choice"] == "session"
+        assert captured["approval_prompt"]["session_key"] == "telegram:chat:123"
+        assert captured["approval_prompt"]["allow_permanent"] is False
+        assert captured["approval_prompt"]["surface"] == "codex_app_server"
+
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
         with patch.object(agent, "_spawn_background_review", return_value=None):

@@ -1685,6 +1685,71 @@ class TestApprovalTimeoutIsNotConsent:
         assert "NOT consented" in r["message"]
         assert "rephrase" in r["message"].lower()
 
+    def test_prompt_gateway_approval_uses_queue_and_returns_choice(self):
+        from tools import approval as mod
+
+        notified = []
+
+        def notify(data):
+            notified.append(data)
+
+        mod.register_gateway_notify(self.SESSION_KEY, notify)
+
+        result_holder = {}
+
+        def _prompt():
+            result_holder["choice"] = mod.prompt_gateway_approval(
+                "touch /tmp/codex-approval-test",
+                "Codex requests exec in /tmp",
+                session_key=self.SESSION_KEY,
+                pattern_key="codex:test",
+                allow_permanent=False,
+                surface="codex_app_server",
+            )
+
+        t = threading.Thread(target=_prompt)
+        t.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+
+        mod.resolve_gateway_approval(self.SESSION_KEY, "once")
+        t.join(timeout=5)
+
+        assert result_holder["choice"] == "once"
+        assert len(notified) == 1
+        assert notified[0]["command"] == "touch /tmp/codex-approval-test"
+        assert notified[0]["allow_permanent"] is False
+
+    def test_prompt_gateway_approval_maps_disallowed_always_to_session(self):
+        from tools import approval as mod
+
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        result_holder = {}
+
+        def _prompt():
+            result_holder["choice"] = mod.prompt_gateway_approval(
+                "apply_patch",
+                "Codex requests to apply a patch",
+                session_key=self.SESSION_KEY,
+                pattern_key="codex:patch",
+                allow_permanent=False,
+            )
+
+        t = threading.Thread(target=_prompt)
+        t.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+
+        mod.resolve_gateway_approval(self.SESSION_KEY, "always")
+        t.join(timeout=5)
+
+        assert result_holder["choice"] == "session"
+
     def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
         """Plugins must be able to distinguish timeout from explicit deny.
 

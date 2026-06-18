@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from types import SimpleNamespace
 
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -44,6 +45,21 @@ def test_gateway_loop_routes_start_and_status(tmp_path, monkeypatch):
 
     # bare /loop returns usage through the same path
     assert "Usage:" in _dispatch("")
+
+
+def test_gateway_loop_uses_profile_home_even_when_gateway_cwd_is_repo(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    gateway_repo = tmp_path / "gateway-repo"
+    gateway_repo.mkdir()
+    subprocess.run(["git", "init"], cwd=gateway_repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    monkeypatch.chdir(gateway_repo)
+
+    started = _dispatch("start Gateway Profile Scope")
+
+    assert str(home / "loops" / "gateway-profile-scope") in started
+    assert (home / "loops" / "gateway-profile-scope" / "loop.json").exists()
+    assert not (gateway_repo / ".hermes" / "loops" / "gateway-profile-scope" / "loop.json").exists()
 
 
 def test_gateway_loop_plan_and_run_share_cli_logic(tmp_path, monkeypatch):

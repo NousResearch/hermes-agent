@@ -441,7 +441,20 @@ _DOC_SKIP_NAMES = {
     "credentials.json",
     "secrets.json",
 }
-_DOC_SKIP_PARTS = {".git", "node_modules", "venv", ".venv", "__pycache__"}
+_DOC_SKIP_PARTS = {
+    ".aws",
+    ".config",
+    ".git",
+    ".gnupg",
+    ".ssh",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "venv",
+}
+_DOC_SKIP_SUFFIXES = {".cer", ".crt", ".key", ".p12", ".pem", ".pfx"}
+_DOC_ALLOWED_SUFFIXES = {".md", ".markdown", ".txt"}
+_DOC_MAX_BYTES = 512_000
 _DEFAULT_DOC_GLOBS = (
     "README.md",
     "AGENTS.md",
@@ -451,14 +464,31 @@ _DEFAULT_DOC_GLOBS = (
 )
 
 
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        resolved = path.resolve()
+        resolved_root = root.resolve()
+    except OSError:
+        return False
+    return resolved == resolved_root or resolved_root in resolved.parents
+
+
 def _is_safe_doc_path(path: Path) -> bool:
-    parts = set(path.parts)
+    parts = {part.lower() for part in path.parts}
     name = path.name.lower()
+    suffix = path.suffix.lower()
     if parts & _DOC_SKIP_PARTS:
         return False
     if name in _DOC_SKIP_NAMES or name.startswith(".env"):
         return False
-    if any(token in name for token in ("secret", "credential", "token", "apikey", "api_key")):
+    if suffix in _DOC_SKIP_SUFFIXES or suffix not in _DOC_ALLOWED_SUFFIXES:
+        return False
+    if any(token in name for token in ("secret", "credential", "token", "apikey", "api_key", "password", "private_key")):
+        return False
+    try:
+        if path.stat().st_size > _DOC_MAX_BYTES:
+            return False
+    except OSError:
         return False
     return path.is_file()
 
@@ -510,8 +540,11 @@ def index_docs(
             path = Path(raw).expanduser()
             if not path.is_absolute():
                 path = root / path
+            if not _is_under(path, root):
+                skipped.append(raw)
+                continue
             if path.is_dir():
-                candidates.extend(p for p in path.rglob("*.md") if _is_safe_doc_path(p))
+                candidates.extend(p for p in path.rglob("*.md") if _is_safe_doc_path(p) and _is_under(p, root))
             elif _is_safe_doc_path(path):
                 candidates.append(path)
             else:
@@ -1109,6 +1142,12 @@ def complete_story(
         return f"Story not found: {story_id}"
     if str(story.get("status") or "").lower() in _TERMINAL_STATUSES:
         return f"Story {story_id} is already {story.get('status')}."
+    current_status = str(story.get("status") or "todo").lower()
+    if current_status not in {"running", "needs_review"}:
+        return (
+            f"Refusing to complete {story_id}: story status is {current_status}.\n"
+            "Run `/loop run next` before completion, or block it with `/loop block <story-id> <reason>`."
+        )
 
     evidence_path, reason = _resolve_evidence_path(str(evidence), loop_dir, cwd)
     if evidence_path is None:
@@ -1135,7 +1174,7 @@ def complete_story(
     else:
         story["evidence"] = [record]
 
-    current_status = str(story.get("status") or "").lower()
+    current_status = str(story.get("status") or "todo").lower()
     review_required = bool(story.get("review_required"))
     approving_review = current_status == "needs_review" and review_required
     new_status = "done" if approving_review or not review_required else "needs_review"

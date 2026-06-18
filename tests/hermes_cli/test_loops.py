@@ -82,6 +82,32 @@ def test_create_loop_is_idempotent_for_same_slug(tmp_path):
     assert len(list_loops(tmp_path, hermes_home=home)) == 1
 
 
+def test_docs_add_skips_outside_and_secret_like_explicit_paths(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    home = tmp_path / "home"
+    loop_path = create_loop("Docs Safety", cwd=repo, hermes_home=home)["path"]
+    docs = repo / "docs"
+    docs.mkdir()
+    good = docs / "guide.md"
+    good.write_text("# Safe Guide\nUseful project docs.", encoding="utf-8")
+    ssh_dir = repo / ".ssh"
+    ssh_dir.mkdir()
+    secretish = ssh_dir / "id_rsa.txt"
+    secretish.write_text("-----BEGIN OPENSSH PRIVATE KEY-----", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("# External Secret Context", encoding="utf-8")
+
+    message = index_docs([str(good), str(secretish), str(outside)], cwd=repo, hermes_home=home)
+    docs_md = (loop_path / "docs.md").read_text(encoding="utf-8")
+
+    assert "Indexed 1 docs" in message
+    assert "Safe Guide" in docs_md
+    assert "OPENSSH PRIVATE KEY" not in docs_md
+    assert "External Secret Context" not in docs_md
+
+
 def test_loop_status_is_read_only_and_reports_counts(tmp_path):
     home = tmp_path / "home"
     result = create_loop("Story Loop", cwd=tmp_path, hermes_home=home)
@@ -163,6 +189,19 @@ def test_complete_refuses_missing_evidence(tmp_path):
     assert "Refusing to complete S1" in message
     assert "not found" in message
     assert manifest["stories"][0]["status"] == "running"
+
+
+def test_complete_refuses_story_that_was_not_started(tmp_path):
+    home, loop_path = _plan(tmp_path)
+    evidence = loop_path / "evidence.txt"
+    evidence.write_text("verified", encoding="utf-8")
+
+    message = complete_story("S2", str(evidence), cwd=tmp_path, hermes_home=home)
+    manifest = json.loads((loop_path / "stories.json").read_text(encoding="utf-8"))
+
+    assert "Refusing to complete S2" in message
+    assert "status is todo" in message
+    assert manifest["stories"][1]["status"] == "todo"
 
 
 def test_complete_refuses_evidence_outside_boundary(tmp_path):

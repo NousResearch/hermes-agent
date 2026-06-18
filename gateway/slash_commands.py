@@ -1656,9 +1656,10 @@ class GatewaySlashCommandsMixin:
         assumed.
         """
         from hermes_cli.loops import handle_loop_command
+        from hermes_constants import get_hermes_home
         args = (event.get_command_args() or "").strip()
         command = f"/loop {args}" if args else "/loop"
-        return handle_loop_command(command)
+        return handle_loop_command(command, cwd=get_hermes_home())
 
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.

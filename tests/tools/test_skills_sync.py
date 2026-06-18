@@ -58,7 +58,7 @@ class TestReadWriteManifest:
         with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
             _write_manifest({"new-skill": "newhash"})
 
-        assert manifest_file.read_text(encoding="utf-8") == "new-skill:newhash\n"
+        assert manifest_file.read_text(encoding="utf-8") == "new-skill:copy:newhash\n"
         assert stat.S_IMODE(manifest_file.stat().st_mode) == 0o660
 
 
@@ -223,7 +223,8 @@ class TestExternalDirsIndexing:
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
 
-    def test_shadowed_skill_skipped_and_not_manifested(self, tmp_path):
+    @pytest.mark.parametrize("link", [False, True])
+    def test_shadowed_skill_skipped_and_not_manifested(self, tmp_path, link):
         """When an external dir provides the skill, sync must not write it
         locally — nor baseline it in the manifest.
 
@@ -237,8 +238,9 @@ class TestExternalDirsIndexing:
         ext_dir = self._setup_external(tmp_path)
 
         with self._patches(bundled, skills_dir, manifest_file):
-            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
-                result = sync_skills(quiet=True)
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]), \
+                    patch("tools.skills_sync.can_link_from_source", return_value=True):
+                result = sync_skills(quiet=True, link=link)
                 manifest = _read_manifest()
 
         assert "clair-qa" in result["shadowed_by_external"]
@@ -248,6 +250,29 @@ class TestExternalDirsIndexing:
         assert "clair-qa" not in manifest
         # The non-shadowed skill is still synced and baselined normally.
         assert "ascii-art" in manifest
+        assert (skills_dir / "creative" / "ascii-art").is_symlink() is link
+
+    def test_external_dir_adoption_removes_only_manifest_owned_link(self, tmp_path):
+        """Registering a Personal Suite/external source removes its stale local link, not its source."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        ext_dir = self._setup_external(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync.can_link_from_source", return_value=True):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+                sync_skills(quiet=True, link=True)
+            local_link = skills_dir / "devops" / "clair-qa"
+            assert local_link.is_symlink()
+
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext_dir]):
+                result = sync_skills(quiet=True, link=True)
+
+        assert "clair-qa" in result["shadowed_by_external"]
+        assert not local_link.exists() and not local_link.is_symlink()
+        assert (ext_dir / "devops" / "clair-qa" / "main.py").exists()
+        assert "clair-qa" not in _read_manifest()
 
 
     def test_no_external_dirs_unchanged(self, tmp_path):
@@ -1035,3 +1060,354 @@ class TestCallTimeDirResolution:
                 ss._rmtree_writable(foreign)
         finally:
             reset_hermes_home_override(token)
+
+# ── Symlink mode tests ─────────────────────────────────────────────────
+
+
+class TestSyncSkillsSymlink:
+    """Tests for ``sync_skills(link=True)`` symlink-based install mode."""
+
+    @staticmethod
+    def _setup_bundled(tmp_path):
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "skill-a").mkdir(parents=True)
+        (bundled / "skill-a" / "SKILL.md").write_text("---\nname: skill-a\n---\n# A")
+        (bundled / "skill-b").mkdir(parents=True)
+        (bundled / "skill-b" / "SKILL.md").write_text("---\nname: skill-b\n---\n# B")
+        return bundled
+
+    @staticmethod
+    def _patches(bundled, skills_dir, manifest_file, *, in_git=True, git_dirty=False):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch(
+            "tools.skills_sync_link._git_toplevel",
+            return_value=bundled.parent.resolve() if in_git else None,
+        ))
+        stack.enter_context(patch("tools.skills_sync.git_is_dirty", return_value=git_dirty))
+        return stack
+
+    def test_fresh_install_creates_symlinks(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True, link=True)
+
+        assert len(result["copied"]) == 2
+        dest_a = skills_dir / "skill-a"
+        dest_b = skills_dir / "skill-b"
+        assert dest_a.is_symlink()
+        assert dest_b.is_symlink()
+        assert dest_a.resolve() == (bundled / "skill-a")
+        assert dest_b.resolve() == (bundled / "skill-b")
+
+    def test_fresh_install_writes_v3_symlink_manifest(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+            manifest = _read_manifest()
+
+        from tools.skills_sync_link import is_link_manifest_entry
+        assert is_link_manifest_entry(manifest["skill-a"])
+        assert is_link_manifest_entry(manifest["skill-b"])
+
+    def test_symlink_idempotent_on_clean_repo(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+            result2 = sync_skills(quiet=True, link=True)
+
+        assert result2["copied"] == []
+        assert result2["updated"] == []
+        assert result2["skipped"] == 2
+
+    def test_broken_symlink_recreated(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+
+        dest = skills_dir / "skill-a"
+        old_bundled = tmp_path / "old-bundled-skills"
+        bundled.rename(old_bundled)
+        bundled = self._setup_bundled(tmp_path / "new-checkout")
+        assert not dest.exists()
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True, link=True)
+
+        assert dest.is_symlink()
+        assert dest.exists()
+        assert dest.resolve() == (bundled / "skill-a")
+
+    def test_broken_symlink_falls_back_to_copy_without_link_flag(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+
+        dest = skills_dir / "skill-a"
+        old_bundled = tmp_path / "old-bundled-skills"
+        bundled.rename(old_bundled)
+        bundled = self._setup_bundled(tmp_path / "new-checkout")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert not dest.is_symlink()
+        assert dest.is_dir()
+        assert (dest / "SKILL.md").exists()
+
+    def test_failed_broken_link_copy_preserves_link_for_retry(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+        dest = skills_dir / "skill-a"
+        old_target = Path(os.readlink(dest))
+        old_bundled = tmp_path / "old-bundled-skills"
+        bundled.rename(old_bundled)
+        bundled = self._setup_bundled(tmp_path / "new-checkout")
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync._copy_dir", side_effect=OSError("disk full")):
+            sync_skills(quiet=True)
+
+        assert dest.is_symlink()
+        assert Path(os.readlink(dest)) == old_target
+        assert "skill-a:symlink:" in manifest_file.read_text(encoding="utf-8")
+
+    def test_manifest_owned_link_retargeted_by_user_is_never_overwritten(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+
+        dest = skills_dir / "skill-a"
+        user_target = tmp_path / "user-owned-skill-a"
+        user_target.mkdir()
+        (user_target / "SKILL.md").write_text("---\nname: skill-a\n---\n# User")
+        dest.unlink()
+        dest.symlink_to(user_target, target_is_directory=True)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True, link=True)
+
+        assert dest.is_symlink()
+        assert dest.resolve() == user_target
+        assert (user_target / "SKILL.md").read_text().endswith("# User")
+        assert result["skipped"] == 2
+
+    def test_external_precedence_never_unlinks_user_retargeted_link(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        external = tmp_path / "personal-suite"
+        external_skill = external / "skill-a"
+        external_skill.mkdir(parents=True)
+        (external_skill / "SKILL.md").write_text("---\nname: skill-a\n---\n# External")
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+            sync_skills(quiet=True, link=True)
+
+        dest = skills_dir / "skill-a"
+        user_target = tmp_path / "user-owned-skill-a"
+        user_target.mkdir()
+        (user_target / "SKILL.md").write_text("---\nname: skill-a\n---\n# User")
+        dest.unlink()
+        dest.symlink_to(user_target, target_is_directory=True)
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("agent.skill_utils.get_external_skills_dirs", return_value=[external]):
+            result = sync_skills(quiet=True, link=True)
+
+        assert "skill-a" in result["shadowed_by_external"]
+        assert dest.is_symlink()
+        assert dest.resolve() == user_target
+        assert (external_skill / "SKILL.md").exists()
+        assert "skill-a:" in manifest_file.read_text(encoding="utf-8")
+
+    def test_dirty_git_symlink_skipped(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+
+        with self._patches(bundled, skills_dir, manifest_file, git_dirty=True):
+            result = sync_skills(quiet=True, link=True)
+
+        dest = skills_dir / "skill-a"
+        assert dest.is_symlink()
+        assert result["skipped"] == 2
+
+    def test_non_git_source_falls_back_to_copy(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file, in_git=False):
+            result = sync_skills(quiet=True, link=True)
+
+        assert set(result["copied"]) == {"skill-a", "skill-b"}
+        assert not (skills_dir / "skill-a").is_symlink()
+        assert not (skills_dir / "skill-b").is_symlink()
+
+    def test_source_inside_active_skills_tree_falls_back_to_copy(self, tmp_path):
+        skills_dir = tmp_path / "user_skills"
+        bundled = self._setup_bundled(skills_dir)
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True, link=True)
+
+        assert set(result["copied"]) == {"skill-a", "skill-b"}
+        assert not (skills_dir / "skill-a").is_symlink()
+        assert (bundled / "skill-a" / "SKILL.md").exists()
+
+    def test_untracked_dangling_symlink_is_never_overwritten(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        dest = skills_dir / "skill-a"
+        missing_target = tmp_path / "user-owned-missing-target"
+        dest.symlink_to(missing_target, target_is_directory=True)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True, link=True)
+
+        assert dest.is_symlink()
+        assert Path(os.readlink(dest)) == missing_target
+        assert "skill-a" not in result["copied"]
+        assert "skill-a" not in _read_manifest()
+
+    def test_v2_manifest_entries_stay_copy_mode(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+
+        old_hash = _dir_hash(bundled / "skill-a")
+        manifest_file.write_text(f"skill-a:{old_hash}\n")
+
+        import shutil
+        shutil.copytree(bundled / "skill-a", skills_dir / "skill-a")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True, link=True)
+
+        dest = skills_dir / "skill-a"
+        assert not dest.is_symlink()
+        assert dest.is_dir()
+        dest_b = skills_dir / "skill-b"
+        assert dest_b.is_symlink()
+
+    def test_mixed_copy_and_symlink_manifest_roundtrip(self, tmp_path):
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+
+        from tools.skills_sync import SYMLINK_SENTINEL
+        entries = {
+            "copy-skill": "abc123def456",
+            "sym-skill": SYMLINK_SENTINEL,
+            "targeted-sym-skill": f"{SYMLINK_SENTINEL}:{tmp_path / 'checkout' / 'skill'}",
+        }
+
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            _write_manifest(entries)
+            result = _read_manifest()
+
+        assert result == entries
+
+        lines = manifest_file.read_text().strip().splitlines()
+        assert "copy-skill:copy:abc123def456" in lines
+        assert "sym-skill:symlink:" in lines
+        assert f"targeted-sym-skill:symlink:{tmp_path / 'checkout' / 'skill'}" in lines
+
+    def test_bundled_maintenance_unlinks_managed_links_without_touching_source(self, tmp_path):
+        from tools.skills_sync_bundled_ops import (
+            list_user_modified_bundled_skills,
+            remove_pristine_bundled_skills,
+            reset_bundled_skill,
+        )
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+            assert list_user_modified_bundled_skills() == []
+
+            refused = reset_bundled_skill("skill-a")
+            assert refused["ok"] is False
+            assert (skills_dir / "skill-a").is_symlink()
+
+            removed = remove_pristine_bundled_skills()
+            assert set(removed["removed"]) == {"skill-a", "skill-b"}
+            assert (bundled / "skill-a" / "SKILL.md").exists()
+
+            sync_skills(quiet=True, link=True)
+            restored = reset_bundled_skill("skill-a", restore=True)
+
+        assert restored["ok"] is True
+        assert not (skills_dir / "skill-a").is_symlink()
+        assert (skills_dir / "skill-a" / "SKILL.md").exists()
+        assert (bundled / "skill-a" / "SKILL.md").exists()
+
+    def test_bundled_maintenance_preserves_user_retargeted_link(self, tmp_path):
+        from tools.skills_sync_bundled_ops import (
+            list_user_modified_bundled_skills,
+            remove_pristine_bundled_skills,
+            reset_bundled_skill,
+        )
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True, link=True)
+            dest = skills_dir / "skill-a"
+            user_target = tmp_path / "user-owned-skill-a"
+            user_target.mkdir()
+            (user_target / "SKILL.md").write_text("---\nname: skill-a\n---\n# User")
+            dest.unlink()
+            dest.symlink_to(user_target, target_is_directory=True)
+
+            modified = list_user_modified_bundled_skills()
+            reset = reset_bundled_skill("skill-a", restore=True)
+            removed = remove_pristine_bundled_skills()
+
+        assert [entry["name"] for entry in modified] == ["skill-a"]
+        assert reset["ok"] is False
+        assert "unowned symlink" in reset["message"]
+        assert "skill-a" not in removed["removed"]
+        assert any(entry["name"] == "skill-a" for entry in removed["skipped"])
+        assert dest.is_symlink()
+        assert dest.resolve() == user_target
+        assert (user_target / "SKILL.md").exists()

@@ -487,6 +487,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Web dashboard visual theme",
         "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
     },
+    "dashboard.chat_mode": {
+        "type": "select",
+        "description": "Chat page surface",
+        "options": ["terminal", "dialog"],
+    },
     "display.resume_display": {
         "type": "select",
         "description": "How resumed sessions display history",

@@ -1614,6 +1614,9 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Chat page surface: "terminal" keeps the embedded TUI as the default,
+        # while "dialog" uses the browser-native chat panel.
+        "chat_mode": "terminal",
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

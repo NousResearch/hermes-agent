@@ -32,6 +32,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { DialogChatPage } from "@/pages/DialogChatPage";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -81,6 +82,16 @@ const TERMINAL_THEME_STATIC = {
   cursorAccent: "#0d2626",
   selectionBackground: "#f0e6d244",
 };
+
+type ChatMode = "dialog" | "terminal";
+
+function chatModeFromConfig(config: Record<string, unknown> | null): ChatMode {
+  const dashboard =
+    config && typeof config.dashboard === "object" && config.dashboard !== null
+      ? (config.dashboard as { chat_mode?: unknown })
+      : null;
+  return dashboard?.chat_mode === "dialog" ? "dialog" : "terminal";
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -185,6 +196,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => ({ ...TERMINAL_THEME_STATIC, background: terminalBg }),
     [terminalBg],
   );
+  const [chatMode, setChatMode] = useState<ChatMode | null>(null);
+  const terminalMode = chatMode === "terminal";
+  const dialogMode = chatMode === "dialog";
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
@@ -200,7 +214,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const channel = useMemo(() => generateChannelId(), [resumeParam, scopedProfile]);
 
   useEffect(() => {
-    if (!resumeParam) return;
+    let cancelled = false;
+    api
+      .getConfig()
+      .then((config) => {
+        if (!cancelled) setChatMode(chatModeFromConfig(config));
+      })
+      .catch(() => {
+        if (!cancelled) setChatMode("terminal");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!resumeParam || !terminalMode) return;
 
     let cancelled = false;
 
@@ -222,7 +251,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, searchParams, setSearchParams, terminalMode]);
+
+  const handleDialogResume = useCallback(
+    (sessionId: string | null) => {
+      const next = new URLSearchParams(searchParams);
+      if (sessionId) {
+        next.set("resume", sessionId);
+      } else {
+        next.delete("resume");
+      }
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -258,7 +300,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     // When hidden (non-chat tab) we must not register the header button —
     // another page owns the header's end slot at that point.
-    if (!isActive) {
+    if (!isActive || !terminalMode) {
       setEnd(null);
       return;
     }
@@ -285,7 +327,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       </Button>,
     );
     return () => setEnd(null);
-  }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+  }, [isActive, terminalMode, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;
@@ -307,6 +349,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   };
 
   useEffect(() => {
+    if (!terminalMode) return;
+
     const host = hostRef.current;
     if (!host) return;
 
@@ -744,7 +788,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile, reconnectNonce]);
+  }, [channel, resumeParam, scopedProfile, reconnectNonce, terminalMode]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -816,6 +860,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // descendants below those layers (see Toast.tsx).
   const mobileModelToolsPortal =
     isActive &&
+    terminalMode &&
     narrow &&
     portalRoot &&
     createPortal(
@@ -900,66 +945,89 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
-        <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
-          )}
-          style={{
-            backgroundColor: terminalBg,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
-        >
-          <div
-            ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-          />
-
-          {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
-              Offer an in-place restart so the user never has to refresh the
-              whole page to get a working chat back. */}
-          {sessionEnded && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60 backdrop-blur-sm">
-              <div className="text-sm tracking-wide text-white/80">
-                Session ended.
-              </div>
-              <Button
-                onClick={reconnect}
-                prefix={<RotateCcw className="h-4 w-4" />}
-                aria-label="Start a new chat session"
-              >
-                Start new session
-              </Button>
-            </div>
-          )}
-
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+        {chatMode === null && (
+          <section
             className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg",
+              "border border-border bg-background/40 text-sm text-text-tertiary",
             )}
-            style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            style={{ boxShadow: "0 8px 32px rgba(0, 0, 0, 0.25)" }}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
-        </div>
+            Loading chat...
+          </section>
+        )}
 
-        {!narrow && (
+        {dialogMode && (
+          <DialogChatPage
+            isActive={isActive}
+            profile={scopedProfile}
+            resumeSessionId={resumeParam}
+            onResumeSession={handleDialogResume}
+          />
+        )}
+
+        {terminalMode && (
+          <div
+            className={cn(
+              "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
+              "p-2 sm:p-3",
+            )}
+            style={{
+              backgroundColor: terminalBg,
+              boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+            }}
+          >
+            <div
+              ref={hostRef}
+              className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            />
+
+            {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
+                Offer an in-place restart so the user never has to refresh the
+                whole page to get a working chat back. */}
+            {sessionEnded && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60 backdrop-blur-sm">
+                <div className="text-sm tracking-wide text-white/80">
+                  Session ended.
+                </div>
+                <Button
+                  onClick={reconnect}
+                  prefix={<RotateCcw className="h-4 w-4" />}
+                  aria-label="Start a new chat session"
+                >
+                  Start new session
+                </Button>
+              </div>
+            )}
+
+            <Button
+              ghost
+              onClick={handleCopyLast}
+              title="Copy last assistant response as raw markdown"
+              aria-label="Copy last assistant response"
+              className={cn(
+                "absolute z-10",
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
+                "lg:bottom-4 lg:right-4",
+              )}
+              style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Copy className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {copyState === "copied" ? "copied" : "copy last response"}
+                </span>
+              </span>
+            </Button>
+          </div>
+        )}
+
+        {!narrow && terminalMode && (
           <div
             id="chat-side-panel"
             role="complementary"

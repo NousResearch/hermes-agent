@@ -2841,7 +2841,7 @@ def _build_top_level_description() -> str:
         "Each subagent gets its own conversation, terminal session, and toolset. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
+        "TWO MODES ('goal' is always required; optionally add 'tasks' for batch):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
         f"items concurrently for this user (configured via "
@@ -3096,7 +3096,7 @@ DELEGATE_TASK_SCHEMA = {
                 ),
             },
         },
-        "required": [],
+        "required": ["goal"],
     },
 }
 

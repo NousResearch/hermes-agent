@@ -75,6 +75,14 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    def test_schema_requires_goal(self):
+        """goal must be required so weak models cannot generate empty {} calls.
+
+        See https://github.com/NousResearch/hermes-agent/issues/41823
+        """
+        required = DELEGATE_TASK_SCHEMA["parameters"].get("required", [])
+        self.assertIn("goal", required)
+
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
         not the framework defaults. Without this, models that read 'default 3'

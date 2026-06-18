@@ -717,6 +717,16 @@ except ImportError:
     _cron_resume = None
     _cron_trigger = None
 
+
+def _notify_cron_provider_jobs_changed() -> None:
+    """Tell the active cron scheduler provider the job set changed after a REST
+    mutation (no-op for the built-in). Best-effort — never breaks the handler."""
+    try:
+        from cron.scheduler import _notify_provider_jobs_changed
+        _notify_provider_jobs_changed()
+    except Exception:
+        pass
+
 # Defense-in-depth: mirror the agent-facing cronjob tool, which scans the
 # user-supplied prompt for exfiltration/injection payloads at create/update
 # time (tools/cronjob_tools.py).  The REST cron endpoints are authenticated
@@ -3206,6 +3216,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["repeat"] = repeat
 
             job = _cron_create(**kwargs)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3262,6 +3273,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3281,6 +3293,7 @@ class APIServerAdapter(BasePlatformAdapter):
             success = _cron_remove(job_id)
             if not success:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"ok": True})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3300,6 +3313,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_pause(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3319,6 +3333,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_resume(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)

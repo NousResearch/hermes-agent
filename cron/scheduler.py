@@ -2025,6 +2025,24 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         return False
 
 
+def _notify_provider_jobs_changed() -> None:
+    """Best-effort: tell the active scheduler provider the job set changed.
+
+    Called by the consumer surfaces (model tool / CLI / REST) AFTER a
+    successful store mutation (create/update/remove/pause/resume) so an external
+    provider (Chronos) can re-provision/cancel the affected one-shot via NAS.
+    No-op for the built-in (it re-reads jobs.json each tick), so the default
+    path is unchanged. Lives here (not in cron/jobs.py) to keep the store free
+    of provider imports — avoids an import cycle and keeps jobs.py low-coupling.
+    Never raises into the caller.
+    """
+    try:
+        from cron.scheduler_provider import resolve_cron_scheduler
+        resolve_cron_scheduler().on_jobs_changed()
+    except Exception as e:
+        logger.debug("on_jobs_changed notify failed: %s", e)
+
+
 def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
     Check and run all due jobs.

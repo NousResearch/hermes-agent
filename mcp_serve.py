@@ -881,6 +881,8 @@ def create_profile_router_mcp_server():
         profile_get as _profile_get,
         profile_health as _profile_health,
         profiles_list as _profiles_list,
+        workspace_close as _workspace_close,
+        workspace_get as _workspace_get,
         workspace_open as _workspace_open,
     )
 
@@ -891,7 +893,8 @@ def create_profile_router_mcp_server():
             "Hermes Agent no-model profile router. This surface exposes only "
             "read-only profile inventory and policy-gated read-only workspace "
             "tools: profiles_list, profile_get, profile_health, "
-            "workspace_open, file_read, and file_search. It does not expose "
+            "workspace_open, workspace_get, workspace_close, file_read, "
+            "and file_search. It does not expose "
             "conversation messaging, write/patch, terminal, cron, or "
             "agent-loop execution tools."
         ),
@@ -916,6 +919,16 @@ def create_profile_router_mcp_server():
     def workspace_open(profile_ref: str, root: str, mode: str = "checkout") -> str:
         """Open a read-only, policy-gated workspace and return an opaque ID."""
         return _workspace_open(profile_ref=profile_ref, root=root, mode=mode)
+
+    @mcp.tool()
+    def workspace_get(workspace_id: str) -> str:
+        """Inspect an opened workspace by opaque ID without exposing its root."""
+        return _workspace_get(workspace_id=workspace_id)
+
+    @mcp.tool()
+    def workspace_close(workspace_id: str) -> str:
+        """Close an opened workspace and remove its server-side registry entry."""
+        return _workspace_close(workspace_id=workspace_id)
 
     @mcp.tool()
     def file_read(

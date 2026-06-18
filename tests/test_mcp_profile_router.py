@@ -21,6 +21,8 @@ from mcp_profile_router import (
     profile_health,
     profiles_list,
     resolve_workspace_path,
+    workspace_close,
+    workspace_get,
     workspace_open,
 )
 
@@ -104,6 +106,8 @@ def test_router_tool_metadata_is_explicitly_no_model_by_default():
         "profile_get",
         "profile_health",
         "workspace_open",
+        "workspace_get",
+        "workspace_close",
         "file_read",
         "file_search",
     }
@@ -358,6 +362,57 @@ def test_workspace_open_file_read_and_search_are_policy_gated_and_bounded(
     assert missing_workspace["llm_calls"] == 0
 
 
+def test_workspace_get_and_close_inspect_and_cleanup_registry(hermes_home, tmp_path):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "notes.md").write_text("alpha\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+            }
+        },
+    )
+
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+
+    inspected = json.loads(workspace_get(workspace_id))
+    assert inspected["ok"] is True
+    assert inspected["llm_calls"] == 0
+    assert inspected["workspace"]["workspace_id"] == workspace_id
+    assert inspected["workspace"]["profile_ref"] == "local:main-bot"
+    assert "root" not in inspected["workspace"]
+
+    closed = json.loads(workspace_close(workspace_id))
+    assert closed["ok"] is True
+    assert closed["closed"] is True
+    assert closed["llm_calls"] == 0
+    assert closed["workspace"]["workspace_id"] == workspace_id
+    assert "root" not in closed["workspace"]
+
+    after_close = json.loads(workspace_get(workspace_id))
+    assert after_close["ok"] is False
+    assert after_close["error"]["code"] == "workspace_not_found"
+    assert after_close["llm_calls"] == 0
+
+    read_after_close = json.loads(file_read(workspace_id, "notes.md"))
+    assert read_after_close["ok"] is False
+    assert read_after_close["error"]["code"] == "workspace_not_found"
+    assert read_after_close["llm_calls"] == 0
+
+    missing_close = json.loads(workspace_close("ws_missing"))
+    assert missing_close["ok"] is False
+    assert missing_close["error"]["code"] == "workspace_not_found"
+    assert missing_close["llm_calls"] == 0
+
+
 def test_missing_profile_router_policy_exposes_no_profiles_by_default(hermes_home):
     result = json.loads(profiles_list())
     assert result["ok"] is True
@@ -478,6 +533,8 @@ def test_profile_router_mcp_factory_exposes_only_no_model_profile_tools(
         "profile_get",
         "profile_health",
         "workspace_open",
+        "workspace_get",
+        "workspace_close",
         "file_read",
         "file_search",
     }

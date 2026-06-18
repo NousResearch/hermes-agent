@@ -508,6 +508,18 @@ ROUTER_TOOL_METADATA: Mapping[str, RouterToolMetadata] = {
         cost_class=COST_CLASS_NO_MODEL,
         llm_calls=0,
     ),
+    "workspace_get": RouterToolMetadata(
+        name="workspace_get",
+        description="Inspect an opened workspace by opaque ID without revealing its root.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
+    "workspace_close": RouterToolMetadata(
+        name="workspace_close",
+        description="Close an opened workspace and remove its server-side registry entry.",
+        cost_class=COST_CLASS_NO_MODEL,
+        llm_calls=0,
+    ),
     "file_read": RouterToolMetadata(
         name="file_read",
         description="Read a paginated text file through an opened read-only workspace.",
@@ -790,6 +802,28 @@ def open_workspace(
 
     assert_default_tools_are_no_model()
     return (registry or DEFAULT_WORKSPACE_REGISTRY).open(profile_ref, root, mode=mode)
+
+
+def get_workspace(
+    workspace_id: str,
+    *,
+    registry: WorkspaceRegistry | None = None,
+) -> WorkspaceMetadata:
+    """Return metadata for an opened workspace without invoking a model."""
+
+    assert_default_tools_are_no_model()
+    return (registry or DEFAULT_WORKSPACE_REGISTRY).get(workspace_id)
+
+
+def close_workspace(
+    workspace_id: str,
+    *,
+    registry: WorkspaceRegistry | None = None,
+) -> WorkspaceMetadata:
+    """Remove an opened workspace from the server-side registry."""
+
+    assert_default_tools_are_no_model()
+    return (registry or DEFAULT_WORKSPACE_REGISTRY).close(workspace_id)
 
 
 def read_workspace_file(
@@ -1188,6 +1222,36 @@ def workspace_open(profile_ref: str, root: str, mode: str = "checkout") -> str:
         )
     except ProfileRouterError as exc:
         return _tool_error("workspace_open", exc)
+
+
+def workspace_get(workspace_id: str) -> str:
+    """MCP-ready wrapper: inspect an opened workspace by opaque ID."""
+
+    try:
+        workspace = get_workspace(workspace_id)
+        return _tool_envelope(
+            "workspace_get",
+            {"ok": True, "workspace": _public_workspace_dict(workspace)},
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_get", exc)
+
+
+def workspace_close(workspace_id: str) -> str:
+    """MCP-ready wrapper: close an opened workspace registry entry."""
+
+    try:
+        workspace = close_workspace(workspace_id)
+        return _tool_envelope(
+            "workspace_close",
+            {
+                "ok": True,
+                "closed": True,
+                "workspace": _public_workspace_dict(workspace),
+            },
+        )
+    except ProfileRouterError as exc:
+        return _tool_error("workspace_close", exc)
 
 
 def file_read(

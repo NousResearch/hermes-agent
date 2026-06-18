@@ -322,3 +322,20 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_confirmation_policy_is_bridged_to_approval_guard():
+    """terminal.confirmation_policy feeds the approval guard via env.
+
+    Unlike backend/timeouts, this env var is consumed in tools.approval rather
+    than tools.terminal_tool, so pin it explicitly instead of relying on the
+    terminal_tool env-var scanner above.
+    """
+    import tools.approval as approval
+
+    source = inspect.getsource(approval)
+
+    assert "confirmation_policy" in _cli_env_map_keys()
+    assert "confirmation_policy" in _gateway_env_map_keys()
+    assert "confirmation_policy" in _save_config_env_sync_keys()
+    assert "TERMINAL_CONFIRMATION_POLICY" in source

@@ -259,9 +259,9 @@ _TOOL_STUBS = {
     ),
     "terminal": (
         "terminal",
-        "command: str, timeout: int = None, workdir: str = None",
+        "command: str, timeout: int = None, workdir: str = None, security_risk: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}',
+        '{"command": command, "timeout": timeout, "workdir": workdir, "security_risk": security_risk}',
     ),
 }
 
@@ -1794,8 +1794,8 @@ _TOOL_DOC_LINES = [
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),
     ("terminal",
-     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "  terminal(command: str, timeout=None, workdir=None, security_risk=None) -> dict\n"
+     "    Foreground only (no background/pty). security_risk is optional: LOW/MEDIUM/HIGH/UNKNOWN. Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
 

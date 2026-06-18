@@ -763,6 +763,11 @@ export function useMessageStream({
           rotatedSessionId !== selectedStoredSessionIdRef.current &&
           isActiveEvent
         ) {
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
+          setSessionCompacting(rotatedSessionId, false)
+          compactedTurnRef.current.delete(rotatedSessionId)
+          $compressingStatus.set(null)
           setSelectedStoredSessionId(rotatedSessionId)
           selectedStoredSessionIdRef.current = rotatedSessionId
           navigate(sessionRoute(rotatedSessionId))
@@ -817,6 +822,12 @@ export function useMessageStream({
         }
 
         if (apply) {
+          if (sessionId && payload?.running === false) {
+            setSessionCompacting(sessionId, false)
+            compactedTurnRef.current.delete(sessionId)
+            $compressingStatus.set(null)
+          }
+
           if (runningChanged && sessionId) {
             updateSessionState(sessionId, state => {
               const busy = Boolean(payload!.running)
@@ -1116,9 +1127,17 @@ export function useMessageStream({
           void refreshBackgroundProcesses(sessionId)
         } else if (payload?.kind === 'compressing') {
           // Show compress progress in the status bar.
+          if (sessionId) {
+            setSessionCompacting(sessionId, true)
+            compactedTurnRef.current.add(sessionId)
+          }
           $compressingStatus.set(payload.text ?? null)
         } else if (payload?.kind === 'ready') {
           // Compression finished or was cancelled — clear the indicator.
+          if (sessionId) {
+            setSessionCompacting(sessionId, false)
+            compactedTurnRef.current.delete(sessionId)
+          }
           $compressingStatus.set(null)
         }
       } else if (event.type === 'review.summary') {

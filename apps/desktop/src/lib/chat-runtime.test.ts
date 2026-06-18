@@ -11,6 +11,11 @@ function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttach
 }
 
 describe('optimisticAttachmentRef', () => {
+  it('ignores missing attachment entries', () => {
+    expect(optimisticAttachmentRef(undefined)).toBeNull()
+    expect(optimisticAttachmentRef(null)).toBeNull()
+  })
+
   it('renders an image from its in-hand base64 preview (no @image: path ref)', () => {
     const ref = optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL }))
 

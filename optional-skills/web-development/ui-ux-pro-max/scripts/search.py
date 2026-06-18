@@ -74,15 +74,15 @@ if __name__ == "__main__":
     # Design system takes priority
     if args.design_system:
         result = generate_design_system(
-            args.query, 
-            args.project_name, 
+            args.query,
+            args.project_name,
             args.format,
             persist=args.persist,
             page=args.page,
             output_dir=args.output_dir
         )
         print(result)
-        
+
         # Print persistence confirmation
         if args.persist:
             project_slug = args.project_name.lower().replace(' ', '-') if args.project_name else "default"

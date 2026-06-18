@@ -102,7 +102,30 @@ tick()
 
 ### Gateway Integration
 
-In gateway mode, the scheduler runs in a dedicated background thread (`_start_cron_ticker` in `gateway/run.py`) that calls `scheduler.tick()` every 60 seconds alongside message handling.
+In gateway mode, the cron **trigger** (the part that decides *when* a due job
+fires — "Axis B") is selected through a pluggable `CronScheduler` provider. The
+gateway calls `resolve_cron_scheduler()` (`cron/scheduler_provider.py`) and runs
+the resolved provider's `start()` in a dedicated background thread, alongside a
+separate gateway-housekeeping thread.
+
+The active provider is chosen by the `cron.provider` config key:
+
+- **empty (default)** → the built-in `InProcessCronScheduler`, which runs the
+  historical in-process loop calling `scheduler.tick()` every 60 seconds. This
+  is byte-identical to the pre-provider behavior.
+- **a named provider** (e.g. `chronos`, a managed-cron provider for
+  scale-to-zero deployments) → discovered from `plugins/cron/<name>/` or
+  `$HERMES_HOME/plugins/<name>/`.
+
+If a named provider is missing, fails to load, or reports `is_available() ==
+False`, the resolver falls back to the built-in with a warning — **cron is
+never left without a trigger.** The built-in provider lives in core
+(`cron/scheduler_provider.py`), not in `plugins/`, so the fallback can't be
+accidentally removed.
+
+What "firing" *means* (job execution + delivery) is unchanged and shared by all
+providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
+A provider only controls the trigger, never execution.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 

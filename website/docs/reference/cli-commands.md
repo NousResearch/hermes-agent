@@ -533,6 +533,13 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
 
+The cron **trigger** is pluggable via the `cron.provider` config key. Empty
+(the default) uses the built-in in-process ticker. A named provider (e.g.
+`chronos`, a managed-cron provider for scale-to-zero deployments) is discovered
+from `plugins/cron/<name>/` or `$HERMES_HOME/plugins/<name>/`; an unknown or
+unavailable provider falls back to the built-in, so cron is never left without
+a trigger. See the [cron internals](../developer-guide/cron-internals.md#gateway-integration) doc.
+
 ## `hermes kanban`
 
 ```bash

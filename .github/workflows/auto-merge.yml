@@ -154,9 +154,24 @@ jobs:
               if (wr.pull_requests && wr.pull_requests.length > 0) {
                 prNumber = wr.pull_requests[0].number;
               } else {
-                // Fork PRs or branches with no open PR — nothing to do.
-                core.info('workflow_run has no associated same-repo PR — skipping.');
-                return;
+                // GitHub omits pull_requests for Dependabot PRs and some other
+                // actors. Fall back to listing open PRs for the head branch so
+                // Dependabot dependency-bump PRs are still evaluated.
+                const { data: openPrs } = await github.rest.pulls.list({
+                  owner, repo, state: 'open',
+                  head: `${owner}:${wr.head_branch}`,
+                  per_page: 1,
+                });
+                if (openPrs.length === 0) {
+                  core.info(
+                    `workflow_run: no open same-repo PR for branch '${wr.head_branch}' — skipping.`
+                  );
+                  return;
+                }
+                prNumber = openPrs[0].number;
+                core.info(
+                  `workflow_run: resolved PR #${prNumber} via branch lookup for '${wr.head_branch}'.`
+                );
               }
             } else {
               prNumber = context.payload.pull_request.number;

@@ -239,6 +239,56 @@ class TestTelegramApprovalCallback:
     """Test the approval callback handling in _handle_callback_query."""
 
     @pytest.mark.asyncio
+    async def test_gmail_triage_callback_uses_active_hermes_home_for_scripts(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._is_callback_user_authorized = lambda *args, **kwargs: True
+
+        profile_home = tmp_path / "profiles" / "reviewer"
+        script_dir = profile_home / "scripts" / "gmail-triage"
+        script_dir.mkdir(parents=True)
+        script_path = script_dir / "archive.sh"
+        script_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+        call_log = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def _fake_create_subprocess_exec(*cmd, **kwargs):
+            call_log["cmd"] = cmd
+            call_log["kwargs"] = kwargs
+            return _FakeProc()
+
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(id=123, first_name="Alice"),
+            message=SimpleNamespace(text="Triage this", chat_id=12345),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+
+        with patch("hermes_constants.get_hermes_home", return_value=profile_home):
+            with patch(
+                "gateway.platforms.telegram.asyncio.create_subprocess_exec",
+                side_effect=_fake_create_subprocess_exec,
+            ):
+                await adapter._handle_gmail_triage_callback(
+                    query,
+                    "gt:archive:msg-42",
+                    query_chat_id="12345",
+                    query_chat_type="private",
+                    query_thread_id=None,
+                    query_user_name="Alice",
+                )
+
+        assert call_log["cmd"][0] == str(script_path)
+        assert call_log["cmd"][1:] == ("msg-42",)
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_resolves_approval_on_click(self):
         adapter = _make_adapter()
         # Set up approval state

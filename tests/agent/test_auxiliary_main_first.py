@@ -440,3 +440,103 @@ def test_aggregator_providers_constant_removed():
         "treating aggregators specially. If you re-added it, the main-first "
         "policy may have regressed."
     )
+
+
+# ── provider+model matched-pair resolution (mid-session route swap) ──────────
+
+
+class TestResolveAutoProviderModelPairing:
+    """``_resolve_auto`` must resolve (provider, model) as a MATCHED PAIR.
+
+    Regression for the mid-session route-swap bug: the caller's live
+    ``main_runtime`` carried the NEW provider (``openai-codex``) while the
+    process-global ``_RUNTIME_MAIN_MODEL`` still held the OLD model
+    (``claude-opus-4-8``). Two independent ``or`` fallbacks crossed them into
+    a Codex route + an Opus model id, producing a hard upstream
+    ``400: 'claude-opus-4-8' is not supported when using Codex``. The pair
+    must come from the SAME source.
+    """
+
+    def test_stale_runtime_model_not_crossed_onto_global_provider(self):
+        """A stale runtime model (no provider) must NOT cross onto the global provider.
+
+        Faithful repro of the observed 400: after a mid-session route swap the
+        process-globals correctly moved to the NEW pair (openai-codex / gpt-5.5),
+        but the caller's ``main_runtime`` still carried only a STALE model
+        (claude-opus-4-8) with no provider. The old two-independent-``or`` logic
+        crossed the stale Opus model onto the global Codex provider →
+        ``400: 'claude-opus-4-8' is not supported when using Codex``. With the
+        matched-pair fix the absent runtime provider means BOTH fields come from
+        the (correct) global pair.
+        """
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openai-codex",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="gpt-5.5",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "gpt-5.5")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            # Runtime dict carries ONLY the stale model, no provider.
+            client, model = _resolve_auto(main_runtime={"model": "claude-opus-4-8"})
+
+        assert client is mock_client
+        # MUST resolve the global pair (codex + gpt-5.5); the stale Opus model
+        # must NOT be crossed onto the Codex provider.
+        assert mock_resolve.call_args.args[0] == "openai-codex"
+        assert mock_resolve.call_args.args[1] == "gpt-5.5"
+        assert mock_resolve.call_args.args[1] != "claude-opus-4-8"
+
+    def test_no_runtime_provider_falls_back_to_global_pair(self):
+        """With no runtime provider, BOTH provider and model come from the globals."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="anthropic/claude-sonnet-4.6",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "anthropic/claude-sonnet-4.6")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            # Empty runtime dict → must use the global pair, not cross sources.
+            client, model = _resolve_auto(main_runtime={})
+
+        assert client is mock_client
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
+
+    def test_runtime_provider_without_model_does_not_borrow_global_model(self):
+        """A runtime provider with a blank model must NOT borrow the global model.
+
+        Borrowing would re-introduce the cross-source pairing. With no model to
+        pair to the runtime provider, Step-1 is skipped (main_model blank) and
+        resolution falls through to the fallback chain — never a mismatched
+        provider+model client.
+        """
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="claude-pool",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._get_provider_chain", return_value=[],
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(
+                main_runtime={"provider": "openai-codex", "model": ""}
+            )
+
+        # Step-1 skipped (no model paired to the runtime provider); the global
+        # Opus model was NOT borrowed onto the codex provider.
+        mock_resolve.assert_not_called()
+        assert client is None

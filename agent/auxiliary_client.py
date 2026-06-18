@@ -3186,8 +3186,24 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # on aggregators (OpenRouter, Nous) who previously got routed to a
     # cheap provider-side default.  Explicit per-task overrides set via
     # config.yaml (auxiliary.<task>.provider) still win over this.
-    main_provider = str(runtime_provider or _read_main_provider() or "")
-    main_model = str(runtime_model or _read_main_model() or "")
+    #
+    # provider + model are a MATCHED PAIR and must be resolved from the
+    # SAME source.  Resolving them with two independent ``or`` fallbacks
+    # (``runtime_provider or global``, ``runtime_model or global``) could
+    # cross a provider from one source with a model from another — e.g.
+    # after a mid-session route swap the caller's ``main_runtime`` carries
+    # the NEW provider (openai-codex) but the global ``_RUNTIME_MAIN_MODEL``
+    # still holds the OLD model (claude-opus-4-8), yielding a Codex route +
+    # an Opus model id and a hard ``400: model ... not supported when using
+    # Codex``.  Take the pair atomically: if the caller's runtime dict names
+    # a provider, its model wins (even when blank); only fall through to the
+    # process-global pair when the runtime dict has no provider at all.
+    if runtime_provider:
+        main_provider = str(runtime_provider)
+        main_model = str(runtime_model or "")
+    else:
+        main_provider = str(_read_main_provider() or "")
+        main_model = str(_read_main_model() or "")
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider

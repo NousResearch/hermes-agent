@@ -1,5 +1,4 @@
 {
-  "_comment": "Wan 2.1 text-to-video. Cloud: confirmed available. Local: download wan2.1_t2v_1.3B_fp16.safetensors → models/diffusion_models/ (or models/unet/), umt5_xxl_fp16.safetensors → models/text_encoders/ (or models/clip/), wan_2.1_vae.safetensors → models/vae/. Output: MP4. Large model — only on cloud or 24 GB+ local GPU.",
   "6": {
     "class_type": "CLIPTextEncode",
     "_meta": {"title": "Prompt"},

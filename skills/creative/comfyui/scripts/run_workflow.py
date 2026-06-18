@@ -64,7 +64,7 @@ from _common import (  # noqa: E402
     coerce_seed, emit_json, http_get, http_post, http_request,
     is_cloud_host, is_link, log, looks_like_video_workflow,
     media_type_from_filename, new_client_id, resolve_api_key, resolve_url,
-    safe_path_join, unwrap_workflow,
+    safe_path_join, strip_comment_keys, unwrap_workflow,
 )
 
 
@@ -171,6 +171,10 @@ class ComfyRunner:
 
     # ---------- submit ----------
     def submit(self, workflow: dict) -> dict:
+        # ComfyUI's /prompt rejects underscore-prefixed comment/metadata keys
+        # (it calls .get() on every top-level value). Strip them defensively so
+        # any workflow — bundled or user-authored — submits cleanly.
+        workflow = strip_comment_keys(workflow)
         payload: dict[str, Any] = {"prompt": workflow, "client_id": self.client_id}
         if self.partner_key:
             payload["extra_data"] = {"api_key_comfy_org": self.partner_key}

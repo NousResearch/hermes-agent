@@ -3093,37 +3093,59 @@ class BasePlatformAdapter(ABC):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        options: Optional[list] = None,
+        display_type: Optional[str] = None,
+        auth_policy: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> SendResult:
         """Send a clarify prompt to the user.
 
-        Two render modes:
+        Three render modes:
 
-          * **Multiple choice** (``choices`` is a non-empty list) — adapters
-            that override this should render inline buttons (one per choice
-            plus a final "Other" / free-text option).  Button callbacks
-            MUST resolve via
+          * **Multiple choice** (``choices`` is a non-empty list, ``options``
+            is None) — adapters that override this should render inline buttons
+            (one per choice plus a final "Other" / free-text option).  Button
+            callbacks MUST resolve via
             ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``
             with the chosen string.  Picking the "Other" button calls
             ``mark_awaiting_text(clarify_id)`` so the next message in the
             session is captured as the response.
 
-          * **Open-ended** (``choices`` is None or empty) — render the
-            question as a plain text message; the next user message in the
-            session is captured by the gateway's text-intercept and
+          * **Rich options** (``options`` is a non-empty list) — adapters
+            with rich UI support (Discord) override to render an
+            ``InteractivePromptView`` with buttons and optional modals.
+            Resolution goes through the same
+            ``resolve_gateway_clarify(clarify_id, response)`` with a JSON
+            response string.  Platforms without rich UI fall back to a
+            numbered list of option labels; the user replies with a number
+            and the text-intercept resolves.
+
+          * **Open-ended** (both ``choices`` and ``options`` are None/empty) —
+            render the question as a plain text message; the next user message
+            in the session is captured by the gateway's text-intercept and
             resolves the clarify automatically (see
             ``GatewayRunner._maybe_intercept_clarify_text``).
 
-        The default implementation falls back to a numbered text list,
-        which works on every platform — the user replies with a number
-        ("2") or with the literal choice text, and the gateway intercepts
-        and resolves.  For the text fallback path, the default calls
-        ``mark_awaiting_text()`` so that the gateway text-intercept
-        (:meth:`GatewayRunner._maybe_intercept_clarify_text`) catches the
-        user's reply instead of timing out.
-        Adapters with native button UIs (Telegram, Discord) SHOULD
-        override this for a richer UX.
+        The default implementation falls back to a numbered text list for both
+        simple choices and rich options.  Adapters with native button UIs
+        (Telegram, Discord) SHOULD override this for a richer UX.
         """
-        if choices:
+        if options:
+            # Rich options path — text fallback: list option labels.
+            lines = [f"❓ {question}", ""]
+            for i, opt in enumerate(options, start=1):
+                label = opt.get("label", f"Option {i}")
+                desc = opt.get("description", "")
+                if desc:
+                    lines.append(f"  {i}. {label} — {desc}")
+                else:
+                    lines.append(f"  {i}. {label}")
+            lines.append("")
+            lines.append("Reply with the number or your own answer.")
+            text = "\n".join(lines)
+            from tools.clarify_gateway import mark_awaiting_text
+            mark_awaiting_text(clarify_id)
+        elif choices:
             lines = [f"❓ {question}", ""]
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")

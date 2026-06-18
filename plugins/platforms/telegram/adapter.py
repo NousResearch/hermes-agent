@@ -4667,6 +4667,7 @@ class TelegramAdapter(BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,  # ignore rich-option params (options, display_type, auth_policy)
     ) -> SendResult:
         """Render a clarify prompt with one inline button per choice.
 

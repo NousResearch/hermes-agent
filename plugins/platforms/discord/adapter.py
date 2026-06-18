@@ -5713,18 +5713,30 @@ class DiscordAdapter(BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        options: Optional[list] = None,
+        display_type: Optional[str] = None,
+        auth_policy: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> SendResult:
         """Render a clarify prompt with one Discord button per choice.
 
-        Multi-choice mode (``choices`` non-empty): renders a button per option
-        plus a final "✏️ Other (type answer)" button. Picking "Other" flips
-        the clarify entry into text-capture mode so the next user message in
-        the session becomes the response. Numeric clicks resolve immediately
-        via ``resolve_gateway_clarify(clarify_id, choice_text)``.
+        Three modes:
 
         Open-ended mode (``choices`` empty/None): renders the question as
         plain embed text — no buttons. The gateway's text-intercept captures
         the next message in this session and resolves the clarify.
+
+        **Simple multi-choice** (``choices`` non-empty, ``options`` None):
+        renders a button per option plus a final "✏️ Other (type answer)"
+        button. Picking "Other" flips the clarify entry into text-capture
+        mode so the next user message in the session becomes the response.
+        Numeric clicks resolve immediately via
+        ``resolve_gateway_clarify(clarify_id, choice_text)``.
+
+        **Rich options** (``options`` non-empty): renders an
+        ``InteractivePromptView`` with styled buttons and optional modal
+        forms. Resolution goes through
+        ``resolve_gateway_clarify(clarify_id, json_response)``.
 
         Choice normalisation: ``choices`` may contain bare strings OR dicts
         (LLMs sometimes emit ``[{"description": "..."}]`` instead of bare
@@ -5751,6 +5763,29 @@ class DiscordAdapter(BasePlatformAdapter):
             if len(body) > max_desc:
                 body = body[: max_desc - 3] + "..."
 
+            # -- Rich options path ------------------------------------------
+            if options:
+                from tools.discord_interactive_views import (
+                    InteractivePromptView,
+                    build_prompt_embed,
+                )
+
+                embed = build_prompt_embed(question, status="pending")
+                view = InteractivePromptView(
+                    prompt_id=clarify_id,
+                    question=question,
+                    options=options,
+                    allowed_user_ids=self._allowed_user_ids,
+                    allowed_role_ids=self._allowed_role_ids,
+                    auth_policy=auth_policy or "session_owner_only",
+                    origin_user_id=None,  # falls back to allowlist auth
+                    timeout_seconds=timeout_seconds or 900,
+                )
+                msg = await channel.send(embed=embed, view=view)
+                view._message = msg
+                return SendResult(success=True, message_id=str(msg.id))
+
+            # -- Simple multi-choice / open-ended path ----------------------
             embed = discord.Embed(
                 title="❓ Hermes needs your input",
                 description=body,

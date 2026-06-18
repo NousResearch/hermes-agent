@@ -42,7 +42,7 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports two modes: 1. **Multiple choice** — provide up to 4 choices. The user picks one or types their own answer via a 5th 'Other' option. 2.… | — |
+| `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports two modes: 1. **Simple** — provide up to 4 `choices`; the UI auto-appends an 'Other' option for free-text. 2. **Rich** — provide up to 25 `options` objects with `label`, `value`, `style` (primary/secondary/success/danger), and optional modal forms. Rich options are caller-controlled with no auto-'Other'. Also supports `display_type`, `auth_policy`, and `timeout_seconds`. | — |
 
 ## `code_execution` toolset
 

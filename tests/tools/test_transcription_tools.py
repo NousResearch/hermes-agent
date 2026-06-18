@@ -941,6 +941,56 @@ class TestTranscribeAudioDispatch:
 
         assert mock_openai.call_args[0][1] == "gpt-4o-transcribe"
 
+    def test_command_provider_falls_back_to_local_when_configured(self, sample_ogg):
+        config = {
+            "provider": "parakeet",
+            "providers": {
+                "parakeet": {
+                    "type": "command",
+                    "command": "parakeet-transcribe {input}",
+                    "fallback_provider": "local",
+                }
+            },
+            "local": {"model": "small"},
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="parakeet"), \
+             patch("tools.transcription_tools._transcribe_command_stt",
+                   return_value={"success": False, "error": "missing binary"}), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "fallback text", "provider": "local"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["transcript"] == "fallback text"
+        assert result["fallback_from"] == "parakeet"
+        assert result["fallback_reason"] == "missing binary"
+        assert "fell back to local faster-whisper" in result["warning"]
+        mock_local.assert_called_once_with(sample_ogg, "small")
+
+    def test_command_provider_returns_original_failure_without_fallback(self, sample_ogg):
+        config = {
+            "provider": "parakeet",
+            "providers": {
+                "parakeet": {
+                    "type": "command",
+                    "command": "parakeet-transcribe {input}",
+                }
+            },
+        }
+        expected = {"success": False, "error": "missing binary"}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="parakeet"), \
+             patch("tools.transcription_tools._transcribe_command_stt", return_value=expected), \
+             patch("tools.transcription_tools._transcribe_local") as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result == expected
+        mock_local.assert_not_called()
+
 
 # ============================================================================
 # _transcribe_mistral

@@ -11678,9 +11678,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _echo_adapter:
                         for _tx in _successful_transcripts:
                             try:
+                                _echo_text = _tx if _tx.startswith("🎙️") else f'🎙️ "{_tx}"'
                                 await _echo_adapter.send(
                                     source.chat_id,
-                                    f'🎙️ "{_tx}"',
+                                    _echo_text,
                                     metadata=_echo_meta,
                                 )
                             except Exception as _echo_exc:
@@ -16651,12 +16652,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
-                    successful_transcripts.append(transcript)
-                    # Pass the transcript through as a plain quoted line. The
-                    # earlier wording ("The user sent a voice message~ Here's
-                    # what they said: ...") read as a meta-instruction and made
-                    # the LLM volunteer commentary about voice mode rather than
-                    # reply to the content.
+                    fallback_from = result.get("fallback_from")
+                    if fallback_from:
+                        provider_used = result.get("provider", "local")
+                        # This payload is echoed to the user when transcript
+                        # echoing is enabled. Do not put the raw command error
+                        # in the echo or the LLM-visible prompt: it can contain
+                        # environment-specific details.
+                        successful_transcripts.append(
+                            f'🎙️ "{transcript}"\n\n'
+                            f'⚠️ STT fallback: {fallback_from} failed, so Hermes used '
+                            f'{provider_used} / faster-whisper.'
+                        )
+                    else:
+                        successful_transcripts.append(transcript)
+                    # Keep the agent-facing input as the current upstream
+                    # plain transcript form. Provider failure details belong
+                    # in operational logs, not durable conversation context.
                     enriched_parts.append(f'"{transcript}"')
                 else:
                     error = result.get("error", "unknown error")

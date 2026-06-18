@@ -185,3 +185,35 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     # Success path: the transcript passes through as a plain quoted line, with
     # no "voice message" meta-commentary that the LLM would echo back.
     assert "queued voice transcript" in result
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner._has_setup_skill = lambda: False
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "fallback transcript",
+            "provider": "local",
+            "fallback_from": "parakeet",
+            "fallback_reason": "command exited 127",
+        },
+    ):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            "caption",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "fallback transcript" in result
+    assert "STT fallback" not in result
+    assert "command exited 127" not in result
+    assert transcripts == [
+        '🎙️ "fallback transcript"\n\n'
+        "⚠️ STT fallback: parakeet failed, so Hermes used "
+        "local / faster-whisper."
+    ]

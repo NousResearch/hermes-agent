@@ -1796,13 +1796,54 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     # local than a plugin install (same precedence rule as TTS PR #17843).
     command_provider_config = _resolve_command_stt_provider_config(provider, stt_config)
     if command_provider_config is not None:
-        return _transcribe_command_stt(
+        command_result = _transcribe_command_stt(
             file_path,
             provider,
             command_provider_config,
             stt_config,
             model_override=model,
         )
+        if command_result.get("success"):
+            return command_result
+
+        fallback_provider = str(
+            command_provider_config.get("fallback_provider")
+            or command_provider_config.get("fallback")
+            or ""
+        ).strip().lower().replace("_", "-")
+        if fallback_provider in {"local", "faster-whisper"}:
+            command_error = command_result.get("error", "unknown error")
+            if _HAS_FASTER_WHISPER or _try_lazy_install_stt():
+                local_cfg = stt_config.get("local", {})
+                model_name = _normalize_local_model(
+                    model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+                )
+                logger.warning(
+                    "STT command provider '%s' failed (%s); falling back to local faster-whisper",
+                    provider,
+                    command_error,
+                )
+                fallback_result = _transcribe_local(file_path, model_name)
+                fallback_result["fallback_from"] = provider
+                fallback_result["fallback_reason"] = command_error
+                if fallback_result.get("success"):
+                    fallback_result["warning"] = (
+                        f"STT provider '{provider}' failed; fell back to local faster-whisper."
+                    )
+                else:
+                    fallback_error = fallback_result.get("error", "unknown error")
+                    fallback_result["error"] = (
+                        f"STT provider '{provider}' failed ({command_error}); "
+                        f"fallback provider 'local' also failed ({fallback_error})"
+                    )
+                return fallback_result
+            logger.warning(
+                "STT command provider '%s' failed and fallback_provider=local is configured, "
+                "but faster-whisper is unavailable: %s",
+                provider,
+                command_error,
+            )
+        return command_result
 
     # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
     # Gemini-STT). Fires only when ``provider`` is neither a built-in

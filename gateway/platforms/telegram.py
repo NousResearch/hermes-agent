@@ -378,6 +378,21 @@ class TelegramAdapter(BasePlatformAdapter):
     _TEXT_BATCH_SHORT_LEN = 1024
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
 
+    _UNSET = object()  # sentinel for "attribute not initialized"
+
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        """Read a boolean env var using common truthy/falsy strings."""
+        raw = os.getenv(name)
+        if raw is None:
+            return bool(default)
+        value = raw.strip().lower()
+        if value in {"1", "true", "yes", "on", "y"}:
+            return True
+        if value in {"0", "false", "no", "off", "n"}:
+            return False
+        return bool(default)
+
     @staticmethod
     def _env_float_clamped(
         name: str,
@@ -513,6 +528,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Optional inbound message reaction lifecycle. When set via
+        # HERMES_TELEGRAM_REACTIONS_ENABLED=1, the adapter reacts at three
+        # stages: 👀 on receive, ✍️ on response ready, ✅/❌ on complete.
+        self._reaction_lifecycle_enabled: bool = self._env_bool(
+            "HERMES_TELEGRAM_REACTIONS_ENABLED", False
+        )
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -6748,18 +6769,35 @@ class TelegramAdapter(BasePlatformAdapter):
     # ── Message reactions (processing lifecycle) ──────────────────────────
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+        """Check if Telegram message reactions are enabled via config/env."""
+        # When __init__ ran, _reaction_lifecycle_enabled is explicitly set.
+        # When it's the sentinel, __init__ didn't run — use only TELEGRAM_REACTIONS.
+        val = getattr(self, "_reaction_lifecycle_enabled", self._UNSET)
+        if val is not self._UNSET:
+            return bool(val)
+        return os.getenv("TELEGRAM_REACTIONS", "").lower() not in {"false", "0", "no", ""}
+
+    def _reaction_event_ids(self, event: MessageEvent):
+        """Extract chat_id and message_id from a reaction event."""
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event.source, "message_id", None)
+        return chat_id, message_id
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
             return False
         try:
+            from telegram._reaction import ReactionTypeEmoji
+            reaction = ReactionTypeEmoji(emoji=emoji)
+        except (ImportError, ModuleNotFoundError):
+            # Fallback: pass plain string (works with real PTB, not with mocks)
+            reaction = emoji
+        try:
             await self._bot.set_message_reaction(
                 chat_id=int(chat_id),
                 message_id=int(message_id),
-                reaction=emoji,
+                reaction=reaction,
             )
             return True
         except Exception as e:
@@ -6788,31 +6826,26 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Set eyes reaction when message is received."""
         if not self._reactions_enabled():
             return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
+        chat_id, message_id = self._reaction_event_ids(event)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(chat_id, message_id, "\U0001f440")  # 👀
+
+    async def on_response_ready(self, event: MessageEvent) -> None:
+        """Swap to brain reaction after the agent finishes thinking."""
+        if not self._reactions_enabled():
+            return
+        chat_id, message_id = self._reaction_event_ids(event)
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\U0001f9e0")  # 🧠
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
-
-        Unlike Discord (additive reactions), Telegram's set_message_reaction
-        replaces all existing reactions in one call — no remove step needed.
-
-        On CANCELLED outcomes (e.g. the user runs ``/stop``, or a session is
-        interrupted mid-flight), we explicitly clear the 👀 in-progress
-        reaction so it doesn't linger on the user's message indefinitely.
-        Without this clear, the only way to remove the 👀 was to wait for
-        another agent run to swap it to 👍/👎 — which never happens if the
-        cancellation was the last activity in the chat.
-        """
+        """Set final success/failure reaction."""
         if not self._reactions_enabled():
             return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
+        chat_id, message_id = self._reaction_event_ids(event)
         if not (chat_id and message_id):
             return
         if outcome == ProcessingOutcome.CANCELLED:
@@ -6821,5 +6854,5 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(
                 chat_id,
                 message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
             )

@@ -311,7 +311,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Esc / Ctrl+C to interrupt…' : ''}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

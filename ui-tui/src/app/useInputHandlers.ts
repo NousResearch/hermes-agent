@@ -420,6 +420,21 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return voiceRecordToggle()
     }
 
+    // Esc while agent is running → interrupt the turn (same as Ctrl+C in busy
+    // state, but without the clear-draft / exit fallbacks).  Guard: must not
+    // be blocked by an overlay (approval, clarify, pager, etc.) — those are
+    // handled above in the `isBlocked` branch and never reach here anyway, but
+    // the explicit check keeps the intent readable.  Also skip when completions
+    // are open so Esc can first dismiss the autocomplete list.
+    if (key.escape && live.busy && live.sid && !isBlocked && !cState.completions.length) {
+      return turnController.interruptTurn({
+        appendMessage: actions.appendMessage,
+        gw: gateway.gw,
+        sid: live.sid,
+        sys: actions.sys
+      })
+    }
+
     // Queue-edit cancel beats selection-clear for plain Esc: the queue header
     // explicitly promises "Esc cancel", so honoring it takes priority over the
     // implicit selection-dismissal convention. Without an active edit, fall through.

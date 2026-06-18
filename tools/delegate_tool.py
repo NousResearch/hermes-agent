@@ -2652,12 +2652,14 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key;
+    ``delegation.api_key_env`` can name a provider-specific environment
+    variable. When neither is configured, ``api_key`` is returned as ``None``
+    so ``_build_child_agent`` inherits the parent agent's key
+    (``effective_api_key = override_api_key or parent_api_key``). This keeps
+    parent-key inheritance for local OpenAI-compatible endpoints while avoiding
+    accidental inheritance when the user explicitly selected a provider-specific
+    environment variable.
 
     Otherwise, if ``delegation.provider`` is configured, the full credential
     bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
@@ -2673,16 +2675,25 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_api_key_env = str(cfg.get("api_key_env") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
     if configured_base_url:
-        # When delegation.api_key is not set, return None so _build_child_agent
-        # falls back to the parent agent's API key via the credential inheritance
-        # path (effective_api_key = override_api_key or parent_api_key). This
-        # lets providers that store their key in a non-OPENAI_API_KEY env var
-        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
-        # callers to duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
+        # Direct endpoints may need a provider-specific env key (for example
+        # GLM_API_KEY for Z.AI coding-plan). Prefer an explicit api_key, then
+        # delegation.api_key_env, and only inherit the parent key when neither
+        # is configured. Without this, a custom delegation endpoint can receive
+        # the parent's unrelated key and fail with 401.
+        api_key = configured_api_key
+        if not api_key and configured_api_key_env:
+            api_key = (os.getenv(configured_api_key_env) or "").strip() or None
+            if not api_key:
+                raise ValueError(
+                    f"delegation.api_key_env is set to '{configured_api_key_env}', "
+                    f"but that environment variable is missing or empty. "
+                    f"Set {configured_api_key_env}, set delegation.api_key, "
+                    f"or remove delegation.api_key_env to inherit the parent key."
+                )
 
         # Use the shared URL-based api_mode detector (same path the main agent's
         # runtime resolver uses) so Anthropic-compatible direct endpoints with a

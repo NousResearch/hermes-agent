@@ -147,6 +147,27 @@ class TestDingTalkAdapterInit:
         assert adapter._client_id == "env-id"
         assert adapter._client_secret == "env-secret"
 
+    def test_declares_code_block_support(self):
+        """DingTalk sends ``msgtype: markdown`` and renders ``` fences, so the
+        ``supports_code_blocks`` capability must be True. ``GatewayRunner``'s
+        ``progress_callback`` gates the terminal-command-as-```bash block on this
+        flag; with it left at the base-class default of False, terminal tool
+        calls on DingTalk silently fall back to the compact preview line.
+        """
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        assert DingTalkAdapter.supports_code_blocks is True
+        # The capability must be a genuine override, not the inherited default.
+        assert BasePlatformAdapter.supports_code_blocks is False
+
+        # The flag is only honest if _normalize_markdown preserves a fenced
+        # block end-to-end (DingTalk's renderer only dedents the fence markers).
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        rendered = adapter._normalize_markdown("```bash\nls -la /tmp\n```")
+        assert "```bash" in rendered
+        assert "ls -la /tmp" in rendered
+
 
 # ---------------------------------------------------------------------------
 # Message text extraction

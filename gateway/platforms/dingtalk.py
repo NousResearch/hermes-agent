@@ -159,6 +159,7 @@ class DingTalkAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    supports_code_blocks = True  # DingTalk markdown renders fenced code blocks (see _normalize_markdown)
 
     @property
     def SUPPORTS_MESSAGE_EDITING(self) -> bool:  # noqa: N802

@@ -21,6 +21,30 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 
+def _hermes_expanduser(path: str) -> str:
+    """Expand ``~`` using the Hermes-aware HOME, not the raw process HOME.
+
+    In-process file tools run inside the gateway process whose ``HOME``
+    may differ from the interactive session's HOME (especially in profile
+    mode or containers).  ``get_subprocess_home()`` returns the correct
+    HOME for the current profile/mode, matching what the terminal tool
+    passes to subprocesses.
+    """
+    if not path.startswith("~"):
+        return os.path.expanduser(path)
+    try:
+        from hermes_constants import get_subprocess_home
+        home = get_subprocess_home()
+        if home:
+            # Expand ~user prefix manually using the resolved HOME
+            if path == "~" or path.startswith("~/"):
+                return home + path[1:]
+            # ~user/path — fall back to default expansion
+    except Exception:
+        pass
+    return os.path.expanduser(path)
+
+
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 # ---------------------------------------------------------------------------
@@ -107,7 +131,7 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = os.path.expanduser(raw)
+    expanded = _hermes_expanduser(raw)
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -285,7 +309,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.expanduser(path)
+    normalized = _hermes_expanduser(path)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -309,7 +333,7 @@ def _is_blocked_device(filepath: str) -> bool:
     they resolve to terminal-specific paths. Then check the resolved path so a
     workspace symlink to /dev/zero cannot bypass the guard.
     """
-    normalized = os.path.expanduser(filepath)
+    normalized = _hermes_expanduser(filepath)
     if _is_blocked_device_path(normalized):
         return True
     try:
@@ -356,7 +380,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    normalized = os.path.normpath(_hermes_expanduser(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."

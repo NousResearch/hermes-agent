@@ -486,3 +486,59 @@ class TestPatchSchemaShape:
         params = PATCH_SCHEMA["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
+
+
+
+class TestHermesExpanduser:
+    """Tests for _hermes_expanduser — profile-aware ~ expansion."""
+
+    def test_non_tilde_path_unchanged(self):
+        """Paths without ~ should pass through unchanged."""
+        from tools.file_tools import _hermes_expanduser
+        assert _hermes_expanduser("/absolute/path") == "/absolute/path"
+        assert _hermes_expanduser("relative/path") == "relative/path"
+
+    def test_tilde_with_subpath_uses_subprocess_home(self, monkeypatch):
+        """~/foo should use get_subprocess_home() when available."""
+        from tools.file_tools import _hermes_expanduser
+        monkeypatch.setattr(
+            "hermes_constants.get_subprocess_home",
+            lambda: "/opt/data/profiles/coder/home",
+        )
+        result = _hermes_expanduser("~/projects/myapp")
+        assert result == "/opt/data/profiles/coder/home/projects/myapp"
+
+    def test_bare_tilde_uses_subprocess_home(self, monkeypatch):
+        """~ alone should expand to get_subprocess_home()."""
+        from tools.file_tools import _hermes_expanduser
+        monkeypatch.setattr(
+            "hermes_constants.get_subprocess_home",
+            lambda: "/opt/data/profiles/coder/home",
+        )
+        assert _hermes_expanduser("~") == "/opt/data/profiles/coder/home"
+
+    def test_falls_back_to_os_expanduser_when_no_subprocess_home(self, monkeypatch):
+        """When get_subprocess_home() returns None, fall back to os.path.expanduser."""
+        from tools.file_tools import _hermes_expanduser
+        monkeypatch.setattr(
+            "hermes_constants.get_subprocess_home",
+            lambda: None,
+        )
+        result = _hermes_expanduser("~/file.txt")
+        # Should match os.path.expanduser("~/file.txt")
+        import os
+        assert result == os.path.expanduser("~/file.txt")
+
+    def test_falls_back_on_import_error(self, monkeypatch):
+        """When hermes_constants is not importable, fall back gracefully."""
+        import builtins
+        real_import = builtins.__import__
+        def mock_import(name, *args, **kwargs):
+            if name == "hermes_constants":
+                raise ImportError("mocked")
+            return real_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        from tools.file_tools import _hermes_expanduser
+        import os
+        result = _hermes_expanduser("~/file.txt")
+        assert result == os.path.expanduser("~/file.txt")

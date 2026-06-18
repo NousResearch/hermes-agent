@@ -101,6 +101,34 @@ Longer explanation if needed. Wrap at 72 characters.
 
 Types: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`, `perf`
 
+## 2.5. Check Repository PR Template
+
+**Before creating a PR**, check if the target repository has a pull request template in `.github/PULL_REQUEST_TEMPLATE.md` (or `.github/pull_request_template.md`). Many projects require specific sections (description, test plan, checklist). Following the template increases the chance of quick review.
+
+### Check for Template
+
+**With gh:**
+
+```bash
+gh api repos/$OWNER/$REPO/contents/.github/PULL_REQUEST_TEMPLATE.md --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "No PR template found"
+```
+
+**With curl:**
+
+```bash
+curl -s -H "Authorization: token $GITHUB_TOKEN" \
+  "https://api.github.com/repos/$OWNER/$REPO/contents/.github/PULL_REQUEST_TEMPLATE.md" \
+  | python3 -c "
+import sys, json
+try:
+    content = json.load(sys.stdin)['content']
+    print(__import__('base64').b64decode(content).decode())
+except:
+    print('No PR template found')"
+```
+
+If a template exists, **fill your PR body to match its structure** — include all required sections and checkboxes. This ensures the PR meets the project's standards before reviewers even look at it.
+
 ## 3. Pushing and Creating a PR
 
 ### Push the Branch (same either way)

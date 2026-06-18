@@ -24,7 +24,7 @@ interface VirtualSessionListProps {
   className?: string
   onArchiveSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
-  onResumeSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, profile?: null | string) => Promise<void> | void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   sessions: SessionInfo[]
@@ -78,7 +78,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id)
+      onResume: () => onResumeSession(session.id, session.profile)
     }
 
     return sortable ? (

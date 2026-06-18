@@ -56,6 +56,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (urlProfile !== null && urlProfile !== profile) {
       setManagementProfile(urlProfile);
+      // URL changes are the external source of truth for deep-linked scope.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setProfileState(urlProfile);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,11 +94,14 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         const active = info.active || "default";
         setCurrentProfile(current);
 
-        // Deep links (?profile=) win. Otherwise align the switcher with the
-        // sticky active profile so Chat and management pages match what the
-        // Profiles page shows as "active" (machine dashboard runs as
-        // `current`, usually default).
-        if (urlProfile === null && active !== current) {
+        // Deep links (?profile=) win. Otherwise, only the root/default
+        // dashboard may auto-follow the sticky active profile. Dedicated
+        // per-profile dashboard backends must default to their own profile
+        // scope; on a fleet host the sticky active marker is global and can
+        // legitimately differ from this backend's `current` profile. Letting
+        // an isolated `roo`/`777`/`leopold` dashboard auto-select `default`
+        // makes its sessions and management pages look cross-wired.
+        if (urlProfile === null && current === "default" && active !== current) {
           setManagementProfile(active);
           setProfileState(active);
         }

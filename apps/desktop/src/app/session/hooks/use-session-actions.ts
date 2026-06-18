@@ -217,7 +217,11 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
 }
 
-function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
+function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string, profileHint?: null | string): boolean {
+  if (profileHint && normalizeProfileKey(session.profile) !== normalizeProfileKey(profileHint)) {
+    return false
+  }
+
   return session.id === storedSessionId || session._lineage_root_id === storedSessionId
 }
 
@@ -236,11 +240,26 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+async function resolveStoredSession(storedSessionId: string, profileHint?: null | string): Promise<SessionInfo | undefined> {
+  const hintedProfile = profileHint ? normalizeProfileKey(profileHint) : null
+  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId, hintedProfile))
 
   if (cached) {
     return cached
+  }
+
+  if (hintedProfile) {
+    try {
+      const session = await getSession(storedSessionId, hintedProfile)
+
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // Fall through: stale route state or a deleted remote row. The normal
+      // active-profile/direct lookup + cross-profile probe below still handles
+      // pasted/legacy URLs without a hint.
+    }
   }
 
   // Direct by-id on the live backend — one row lookup, no list scan. Covers
@@ -264,7 +283,7 @@ async function resolveStoredSession(storedSessionId: string): Promise<SessionInf
   const otherProfiles = $profiles
     .get()
     .map(profile => normalizeProfileKey(profile.name))
-    .filter(key => key !== activeKey)
+    .filter(key => key !== activeKey && key !== hintedProfile)
 
   for (const profile of otherProfiles) {
     try {
@@ -562,7 +581,7 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false) => {
+    async (storedSessionId: string, replaceRoute = false, profileHint?: null | string) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -603,8 +622,8 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
-      const sessionProfile = storedForProfile?.profile
+      const storedForProfile = await resolveStoredSession(storedSessionId, profileHint)
+      const sessionProfile = storedForProfile?.profile ?? profileHint
 
       if (resumeRequestRef.current !== requestId) {
         return
@@ -616,7 +635,7 @@ export function useSessionActions({
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
       if (cachedRuntimeId && cachedState) {
-        const stored = $sessions.get().find(session => session.id === storedSessionId)
+        const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId, sessionProfile))
 
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -678,7 +697,7 @@ export function useSessionActions({
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
-      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId, sessionProfile))
       applyStoredSessionPreviewRuntimeInfo(stored)
 
       if (stored) {

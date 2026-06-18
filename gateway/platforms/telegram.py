@@ -109,6 +109,81 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 MAX_COMMANDS_PER_SCOPE = 30
 
 
+def _telegram_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _telegram_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+async def build_telegram_httpx_requests(logger_name: str = "telegram"):
+    """Build Telegram HTTPXRequest objects with shared timeout/proxy settings.
+
+    Reused by both the live gateway adapter and standalone send paths so cron
+    delivery matches the gateway's network behavior.
+    """
+    request_kwargs = {
+        "connection_pool_size": _telegram_env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+        "pool_timeout": _telegram_env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+        "connect_timeout": _telegram_env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+        "read_timeout": _telegram_env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+        "write_timeout": _telegram_env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+    }
+
+    disable_fallback = (
+        os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    fallback_ips = parse_fallback_ip_env(os.getenv("HERMES_TELEGRAM_FALLBACK_IPS", ""))
+    if not fallback_ips:
+        fallback_ips = await discover_fallback_ips()
+        if fallback_ips:
+            logger.info(
+                "[%s] Auto-discovered Telegram fallback IPs: %s",
+                logger_name,
+                ", ".join(fallback_ips),
+            )
+
+    proxy_targets = ["api.telegram.org", *fallback_ips]
+    proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
+    if fallback_ips and not proxy_url and not disable_fallback:
+        logger.info(
+            "[%s] Telegram fallback IPs active: %s",
+            logger_name,
+            ", ".join(fallback_ips),
+        )
+        request = HTTPXRequest(
+            **request_kwargs,
+            httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+        )
+        get_updates_request = HTTPXRequest(
+            **request_kwargs,
+            httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+        )
+    elif proxy_url:
+        logger.info(
+            "[%s] Proxy detected; passing explicitly to HTTPXRequest: %s",
+            logger_name,
+            proxy_url,
+        )
+        request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+        get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+    else:
+        if disable_fallback:
+            logger.info("[%s] Telegram fallback-IP transport disabled via env", logger_name)
+        request = HTTPXRequest(**request_kwargs)
+        get_updates_request = HTTPXRequest(**request_kwargs)
+
+    return request, get_updates_request
+
+
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -2014,66 +2089,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 builder = builder.local_mode(True)
                 logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
 
-            # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
-            # can trigger "Pool timeout: All connections in the connection pool are occupied"
-            # during reconnect/bootstrap. Use safer defaults and allow env overrides.
-            def _env_int(name: str, default: int) -> int:
-                try:
-                    return int(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            def _env_float(name: str, default: float) -> float:
-                try:
-                    return float(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            request_kwargs = {
-                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
-                "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
-                "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
-                "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
-                "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
-            }
-
-            disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
-            fallback_ips = self._fallback_ips()
-            if not fallback_ips:
-                fallback_ips = await discover_fallback_ips()
-                logger.info(
-                    "[%s] Auto-discovered Telegram fallback IPs: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
-                )
-
-            proxy_targets = ["api.telegram.org", *fallback_ips]
-            proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
-            if fallback_ips and not proxy_url and not disable_fallback:
-                logger.info(
-                    "[%s] Telegram fallback IPs active: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
-                )
-                # Keep request/update pools separate to reduce contention during
-                # polling reconnect + bot API bootstrap/delete_webhook calls.
-                request = HTTPXRequest(
-                    **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
-                )
-                get_updates_request = HTTPXRequest(
-                    **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
-                )
-            elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-            else:
-                if disable_fallback:
-                    logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+            # PTB defaults are too aggressive on flaky networks; share the
+            # hardened request construction with standalone send paths so cron
+            # delivery behaves the same way as the live adapter.
+            request, get_updates_request = await build_telegram_httpx_requests(self.name)
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()

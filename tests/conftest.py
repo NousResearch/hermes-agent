@@ -339,6 +339,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
     for name in _HERMES_BEHAVIORAL_VARS:
         monkeypatch.delenv(name, raising=False)
 
+    # 2b. Never let a test open a real browser. Auth/OAuth flows (e.g. the xAI
+    #     loopback login) call ``webbrowser.open()``; CI is headless so it's a
+    #     no-op there, but on a graphical dev box it actually launches the
+    #     browser — a test running the full suite locally would pop a window
+    #     (and start a real OAuth flow) per subprocess that touches the path.
+    #     Return False so callers take their "couldn't open, print the URL"
+    #     fallback instead of hanging. Tests that assert on browser-opening
+    #     patch ``webbrowser.open`` themselves; that patch overrides this no-op.
+    monkeypatch.setattr("webbrowser.open", lambda *args, **kwargs: False)
+
     # 3. Redirect HERMES_HOME to a per-test tempdir. Code that reads
     #    ``~/.hermes/*`` via ``get_hermes_home()`` now gets the tempdir.
     #

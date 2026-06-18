@@ -3009,6 +3009,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not msg_id or not room_id:
             return
         if outcome == ProcessingOutcome.CANCELLED:
+            self._pending_reactions.pop((room_id, msg_id), None)
             return
         reaction_key = (room_id, msg_id)
         if reaction_key in self._pending_reactions:

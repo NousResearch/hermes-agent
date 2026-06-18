@@ -3003,6 +3003,28 @@ class TestMatrixReactions:
         self.adapter._send_reaction.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_on_processing_complete_cancelled_clears_pending_reactions(self):
+        """CANCELLED must pop the dict entry to prevent unbounded growth."""
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._send_reaction = AsyncMock(return_value=True)
+        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_123"}
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+        assert self.adapter._pending_reactions == {}
+        self.adapter._send_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_on_processing_complete_no_pending_reaction(self):
         """on_processing_complete should skip redaction if no eyes reaction was tracked."""
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome

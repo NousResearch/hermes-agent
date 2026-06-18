@@ -1647,6 +1647,19 @@ class GatewaySlashCommandsMixin:
         # Let the normal message handler process it
         return await self._handle_message(retry_event)
 
+    async def _handle_loop_command(self, event: "MessageEvent") -> str:
+        """Handle /loop for gateway platforms via the shared durable loop engine.
+
+        All lifecycle verbs route through the same ``handle_loop_command`` narrow
+        waist used by the CLI, so behavior is identical across surfaces. Loop
+        state is file-backed and profile-aware, so no interactive repo cwd is
+        assumed.
+        """
+        from hermes_cli.loops import handle_loop_command
+        args = (event.get_command_args() or "").strip()
+        command = f"/loop {args}" if args else "/loop"
+        return handle_loop_command(command)
+
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
 

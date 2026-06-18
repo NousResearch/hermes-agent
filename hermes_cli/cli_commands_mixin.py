@@ -1820,6 +1820,14 @@ class CLICommandsMixin:
             print("   status       Show current browser mode")
             print()
 
+    def _handle_loop_command(self, cmd: str) -> None:
+        """Dispatch /loop subcommands through the shared durable loop engine."""
+        from cli import _cprint
+        from hermes_cli.loops import handle_loop_command
+        result = handle_loop_command(cmd or "/loop")
+        for line in (result or "").splitlines() or [""]:
+            _cprint(f"  {line}")
+
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""
         from cli import _DIM, _RST, _cprint

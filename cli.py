@@ -3503,11 +3503,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
+        self._session_db_unavailable = False
         try:
             from hermes_state import SessionDB
             self._session_db = SessionDB()
         except Exception as e:
+            # #41386: a failed session store means the transcript is NOT
+            # persisted to state.db — the live chat looks healthy but resume
+            # later shows a truncated/empty session. A buried log line is not
+            # enough; surface it prominently so the user knows persistence is
+            # off for this run and can fix the store before relying on resume.
+            self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+            try:
+                # Console is imported at module scope; do NOT re-import it here.
+                # A function-local `import` would make `Console` a local name for
+                # the whole __init__ body and break the earlier `self.console =
+                # Console()` with UnboundLocalError.
+                Console(stderr=True).print(
+                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
+                    "this conversation will [bold]NOT be saved[/bold] to disk and "
+                    "cannot be resumed later. Searching past sessions is also disabled.\n"
+                    f"  Reason: {e}\n"
+                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
+                )
+            except Exception:
+                # Never let the warning path itself break startup.
+                print(
+                    "WARNING: Session store unavailable — this conversation will NOT be "
+                    f"saved to disk and cannot be resumed later. Reason: {e}"
+                )
 
         # Opportunistic state.db maintenance — runs at most once per
         # min_interval_hours, tracked via state_meta in state.db itself so

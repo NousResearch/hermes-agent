@@ -2685,9 +2685,22 @@ class TelegramAdapter(BasePlatformAdapter):
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
-            return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize, metadata=metadata,
-            )
+            if not finalize:
+                # Mid-stream overflow: truncate the preview instead of
+                # spawning continuation messages.  _edit_overflow_split
+                # sends chunks[1:] as new messages and updates the active
+                # message_id; the next token edit carries the full
+                # accumulated text (still > limit), triggering another
+                # split → infinite reply chain (#48648).  Truncate to
+                # 4000 code-units (safe margin below the 4096 cap) so the
+                # preview keeps updating on the same message until the
+                # stream finishes and finalize=True does the real split.
+                truncated = content[:4000]
+                content = truncated
+            else:
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                )
 
         try:
             if not finalize:

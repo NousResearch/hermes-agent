@@ -2814,10 +2814,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
         config = getattr(self, "config", None)
+        # Mirror SessionStore._resolve_profile_for_key so this fallback path
+        # produces the same namespace as the primary path: None (legacy
+        # agent:main) unless multiplexing is on, then the active profile.
+        _profile = None
+        if getattr(config, "multiplex_profiles", False):
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile = get_active_profile_name() or "default"
+            except Exception:
+                _profile = None
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            profile=_profile,
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:

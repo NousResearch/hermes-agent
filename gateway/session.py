@@ -615,14 +615,40 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _session_key_namespace(profile: Optional[str]) -> str:
+    """Return the ``agent:<ns>`` namespace prefix for a session key.
+
+    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
+    ``main`` is a static namespace literal (NOT a branch name — branching keys
+    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
+    slot to carry the profile:
+
+    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
+      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
+      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
+    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
+      layout, just a different namespace, so two profiles serving the same
+      platform/chat never collide.
+    """
+    if not profile or profile == "default":
+        return "agent:main"
+    return f"agent:{profile}"
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    profile: Optional[str] = None,
 ) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
+
+    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
+    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
+    that don't multiplex produce byte-identical keys to before. Only the
+    multiplexing gateway passes a non-default profile.
 
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
@@ -643,6 +669,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -651,12 +678,12 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_chat_id}"
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
-        # collapses into one shared "agent:main:<platform>:dm" session, and a
+        # collapses into one shared "<ns>:<platform>:dm" session, and a
         # single cached agent ends up serving multiple people's conversations —
         # cross-user history bleed.  participant_id keeps DMs isolated per user.
         dm_participant_id = source.user_id_alt or source.user_id
@@ -667,11 +694,11 @@ def build_session_key(
             )
         if dm_participant_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_participant_id}"
+                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{ns}:{platform}:dm:{source.thread_id}"
+        return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -679,7 +706,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -775,12 +802,31 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
+    def _resolve_profile_for_key(self) -> Optional[str]:
+        """Return the profile namespace for session keys, or None when off.
+
+        Phase 0: when ``multiplex_profiles`` is disabled (default), returns
+        ``None`` so keys stay in the legacy ``agent:main`` namespace —
+        byte-identical to before. When enabled, returns the active profile name
+        so this store's keys are namespaced to it. Per-source profile
+        attribution (one store serving many profiles) arrives in a later phase;
+        until then the active profile is the correct namespace.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return None
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=self._resolve_profile_for_key(),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:

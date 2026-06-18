@@ -226,6 +226,10 @@ def test_profile_router_policy_is_deny_by_default_for_execution_groups(hermes_ho
     assert route_policy.allow_deploy is False
     assert route_policy.allow_model_tools is False
     assert route_policy.allowed_cost_classes == (COST_CLASS_NO_MODEL,)
+    assert route_policy.terminal_execution_policy.enabled is False
+    assert route_policy.terminal_execution_policy.allowed_commands == ()
+    assert route_policy.terminal_execution_policy.allowed_command_prefixes == ()
+    assert route_policy.terminal_execution_policy.require_no_shell is True
 
 
 def test_profile_router_policy_rejects_invalid_hosts_and_outside_roots(tmp_path):
@@ -255,6 +259,53 @@ def test_profile_router_policy_rejects_invalid_hosts_and_outside_roots(tmp_path)
                 }
             }
         )
+
+
+def test_terminal_execution_policy_requires_no_shell_explicit_allowlist(tmp_path):
+    host_root = tmp_path / "allowed"
+    base_config = {
+        "profile_router": {
+            "hosts": {"local": {"enabled": True, "allowed_roots": [str(host_root)]}},
+            "profiles": {
+                "local:main-bot": {
+                    "enabled": True,
+                    "allowed_roots": [str(host_root)],
+                    "terminal": {"enabled": True},
+                }
+            },
+        }
+    }
+
+    with pytest.raises(ProfileRouterError, match="requires allowed_commands"):
+        config = json.loads(json.dumps(base_config))
+        config["profile_router"]["profiles"]["local:main-bot"]["terminal"][
+            "execution"
+        ] = {"enabled": True}
+        load_profile_router_policy(config=config)
+
+    with pytest.raises(ProfileRouterError, match="cannot be false"):
+        config = json.loads(json.dumps(base_config))
+        config["profile_router"]["profiles"]["local:main-bot"]["terminal"][
+            "execution"
+        ] = {"require_no_shell": False}
+        load_profile_router_policy(config=config)
+
+    config = json.loads(json.dumps(base_config))
+    config["profile_router"]["profiles"]["local:main-bot"]["terminal"][
+        "execution"
+    ] = {
+        "enabled": True,
+        "allowed_commands": ["pwd"],
+        "allowed_command_prefixes": ["git status"],
+    }
+    policy = load_profile_router_policy(config=config)
+    route_policy = policy.get_profile_policy(parse_profile_ref("local:main-bot"))
+    assert route_policy.terminal_execution_policy.enabled is True
+    assert route_policy.terminal_execution_policy.allowed_commands == ("pwd",)
+    assert route_policy.terminal_execution_policy.allowed_command_prefixes == (
+        "git status",
+    )
+    assert route_policy.terminal_execution_policy.require_no_shell is True
 
 
 def test_workspace_metadata_requires_explicit_filesystem_read_policy(hermes_home):
@@ -697,6 +748,9 @@ def test_powerful_tool_wrappers_require_fresh_context_before_write_or_terminal(
         "root_exposed": False,
         "uses_shell": False,
         "executes": False,
+        "execution_policy_enabled": False,
+        "allowlist_match": False,
+        "no_shell_compatible": True,
         "public_mcp_exposure": "disabled_pending_http_auth_config_review",
     }
     assert terminal_disabled["llm_calls"] == 0
@@ -793,6 +847,82 @@ def test_terminal_run_preflight_requires_policy_and_workspace_relative_cwd(
     assert preflight["policy"]["terminal_allowed"] is True
     assert preflight["audit"]["root_exposed"] is False
     assert str(workspace_root) not in json.dumps(disabled)
+
+
+def test_terminal_run_reports_allowlist_policy_without_executing(
+    hermes_home,
+    tmp_path,
+):
+    allowed_root = tmp_path / "allowed"
+    workspace_root = allowed_root / "project"
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "AGENTS.md").write_text("# Agents\nPolicy.\n", encoding="utf-8")
+
+    _write_router_config(
+        hermes_home,
+        host_roots=[str(allowed_root)],
+        profiles={
+            "local:main-bot": {
+                "enabled": True,
+                "allowed_roots": [str(allowed_root)],
+                "filesystem": {"read": True},
+                "terminal": {
+                    "enabled": True,
+                    "execution": {
+                        "enabled": True,
+                        "allowed_commands": ["pwd"],
+                        "allowed_command_prefixes": ["git status"],
+                    },
+                },
+            }
+        },
+    )
+    opened = json.loads(workspace_open("local:main-bot", str(workspace_root)))
+    workspace_id = opened["workspace"]["workspace_id"]
+    token = json.loads(workspace_instructions_get(workspace_id))["context"]["context_token"]
+
+    allowed = json.loads(terminal_run(workspace_id, "pwd", context_token=token))
+    assert allowed["ok"] is False
+    assert allowed["error"]["code"] == "tool_disabled"
+    allowed_preflight = allowed["terminal_command"]
+    assert allowed_preflight["blocked"] is False
+    assert allowed_preflight["decision"] == "disabled_pending_execution_implementation"
+    assert allowed_preflight["risk_level"] == "low_allowlisted_unexecuted"
+    assert allowed_preflight["execution_policy"]["enabled"] is True
+    assert allowed_preflight["execution_policy"]["allowlist_match"] is True
+    assert allowed_preflight["execution_policy"]["allowlist_match_type"] == "exact"
+    assert allowed_preflight["audit"]["executes"] is False
+    assert allowed_preflight["audit"]["execution_policy_enabled"] is True
+    assert allowed_preflight["audit"]["allowlist_match"] is True
+    assert allowed_preflight["audit"]["no_shell_compatible"] is True
+    assert str(workspace_root) not in json.dumps(allowed)
+
+    prefix_allowed = json.loads(
+        terminal_run(workspace_id, "git status --short", context_token=token)
+    )
+    assert prefix_allowed["ok"] is False
+    assert prefix_allowed["error"]["code"] == "tool_disabled"
+    assert prefix_allowed["terminal_command"]["execution_policy"][
+        "allowlist_match_type"
+    ] == "prefix"
+
+    unlisted = json.loads(
+        terminal_run(workspace_id, "python -m pytest", context_token=token)
+    )
+    assert unlisted["ok"] is False
+    assert unlisted["error"]["code"] == "terminal_command_blocked"
+    assert "terminal_command_not_allowlisted" in {
+        reason["code"] for reason in unlisted["terminal_command"]["reasons"]
+    }
+
+    shell_control = json.loads(
+        terminal_run(workspace_id, "pwd && git status", context_token=token)
+    )
+    assert shell_control["ok"] is False
+    assert shell_control["error"]["code"] == "terminal_command_blocked"
+    assert "terminal_shell_control_not_allowed" in {
+        reason["code"] for reason in shell_control["terminal_command"]["reasons"]
+    }
 
 
 def test_file_write_is_denied_without_policy_and_for_secret_or_symlink_paths(

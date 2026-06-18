@@ -20,7 +20,7 @@ import re
 import shlex
 import subprocess
 from collections.abc import Iterable as IterableABC, Mapping as MappingABC
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NoReturn
 from uuid import uuid4
@@ -156,6 +156,22 @@ class HostRoutePolicy:
 
 
 @dataclass(frozen=True)
+class TerminalExecutionPolicy:
+    """Explicit allowlist gate for a future no-shell terminal executor.
+
+    ``terminal.enabled`` only permits preflight. Actual command execution must
+    stay disabled unless this nested policy is enabled and the command matches a
+    configured allowlist. The public MCP surface still does not register
+    ``terminal_run``; this object is server-side policy/audit scaffolding only.
+    """
+
+    enabled: bool = False
+    allowed_commands: tuple[str, ...] = ()
+    allowed_command_prefixes: tuple[str, ...] = ()
+    require_no_shell: bool = True
+
+
+@dataclass(frozen=True)
 class ProfileRoutePolicy:
     """Deny-by-default policy for one fully-qualified profile ref."""
 
@@ -176,6 +192,9 @@ class ProfileRoutePolicy:
     allow_model_tools: bool = False
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
     allowed_cost_classes: tuple[str, ...] = DEFAULT_ALLOWED_COST_CLASSES
+    terminal_execution_policy: TerminalExecutionPolicy = field(
+        default_factory=TerminalExecutionPolicy
+    )
 
 
 @dataclass(frozen=True)
@@ -281,6 +300,71 @@ def _policy_allowed_roots(value: Any, field: str) -> tuple[str, ...]:
             )
         roots.append(posixpath.normpath(root))
     return tuple(dict.fromkeys(roots))
+
+
+def _policy_terminal_command_tuple(value: Any, field: str) -> tuple[str, ...]:
+    commands = _policy_string_tuple(value, field)
+    for command in commands:
+        if "\n" in command or "\r" in command:
+            raise ProfileRouterError(
+                "invalid_policy",
+                f"{field} entries must be single-line commands",
+            )
+        if len(command) > MAX_TERMINAL_COMMAND_CHARS:
+            raise ProfileRouterError(
+                "invalid_policy",
+                f"{field} entries must be <= {MAX_TERMINAL_COMMAND_CHARS} characters",
+            )
+    return commands
+
+
+def _terminal_command_has_shell_control(tokens: Iterable[str]) -> bool:
+    return any(
+        token in SHELL_CONTROL_TOKENS or all(char in ";&|()<>" for char in token)
+        for token in tokens
+    )
+
+
+def _parse_terminal_execution_policy(value: Any, field: str) -> TerminalExecutionPolicy:
+    policy = _policy_mapping(value, field)
+    require_no_shell = _policy_bool(
+        policy.get("require_no_shell"), f"{field}.require_no_shell", default=True
+    )
+    if not require_no_shell:
+        raise ProfileRouterError(
+            "terminal_shell_execution_not_allowed",
+            f"{field}.require_no_shell cannot be false; terminal execution must be no-shell",
+        )
+
+    execution_policy = TerminalExecutionPolicy(
+        enabled=_policy_bool(policy.get("enabled"), f"{field}.enabled"),
+        allowed_commands=_policy_terminal_command_tuple(
+            policy.get("allowed_commands"), f"{field}.allowed_commands"
+        ),
+        allowed_command_prefixes=_policy_terminal_command_tuple(
+            policy.get("allowed_command_prefixes"),
+            f"{field}.allowed_command_prefixes",
+        ),
+        require_no_shell=require_no_shell,
+    )
+    if execution_policy.enabled and not (
+        execution_policy.allowed_commands or execution_policy.allowed_command_prefixes
+    ):
+        raise ProfileRouterError(
+            "terminal_allowlist_required",
+            f"{field}.enabled requires allowed_commands or allowed_command_prefixes",
+        )
+    for command in (
+        *execution_policy.allowed_commands,
+        *execution_policy.allowed_command_prefixes,
+    ):
+        tokens = _shell_command_tokens(command)
+        if _terminal_command_has_shell_control(tokens):
+            raise ProfileRouterError(
+                "terminal_allowlist_shell_control_not_allowed",
+                f"{field} entries cannot require shell control operators",
+            )
+    return execution_policy
 
 
 def _path_within_root(path: str, root: str) -> bool:
@@ -389,6 +473,17 @@ def _parse_profile_policy(
 
     filesystem = _policy_mapping(policy.get("filesystem"), f"profiles.{ref.value}.filesystem")
     terminal = _policy_mapping(policy.get("terminal"), f"profiles.{ref.value}.terminal")
+    allow_terminal = _policy_bool(
+        terminal.get("enabled"), f"profiles.{ref.value}.terminal.enabled"
+    )
+    terminal_execution_policy = _parse_terminal_execution_policy(
+        terminal.get("execution"), f"profiles.{ref.value}.terminal.execution"
+    )
+    if terminal_execution_policy.enabled and not allow_terminal:
+        raise ProfileRouterError(
+            "terminal_execution_requires_terminal",
+            f"profiles.{ref.value}.terminal.execution.enabled requires terminal.enabled=true",
+        )
     messaging = _policy_mapping(policy.get("messaging"), f"profiles.{ref.value}.messaging")
     cron = _policy_mapping(policy.get("cron"), f"profiles.{ref.value}.cron")
     git = _policy_mapping(policy.get("git"), f"profiles.{ref.value}.git")
@@ -432,9 +527,7 @@ def _parse_profile_policy(
         allow_filesystem_write=_policy_bool(
             filesystem.get("write"), f"profiles.{ref.value}.filesystem.write"
         ),
-        allow_terminal=_policy_bool(
-            terminal.get("enabled"), f"profiles.{ref.value}.terminal.enabled"
-        ),
+        allow_terminal=allow_terminal,
         allow_messaging=_policy_bool(
             messaging.get("enabled"), f"profiles.{ref.value}.messaging.enabled"
         ),
@@ -452,6 +545,7 @@ def _parse_profile_policy(
             default=DEFAULT_PROTECTED_BRANCHES,
         ),
         allowed_cost_classes=allowed_cost_classes,
+        terminal_execution_policy=terminal_execution_policy,
     )
 
 
@@ -1047,6 +1141,18 @@ def _public_policy_context(route_policy: ProfileRoutePolicy, router_policy: Prof
             "deploy": route_policy.allow_deploy,
         },
         "messaging_recipients_configured": bool(route_policy.messaging_allowed_recipients),
+        "terminal_execution_policy": {
+            "enabled": route_policy.terminal_execution_policy.enabled,
+            "require_no_shell": route_policy.terminal_execution_policy.require_no_shell,
+            "allowed_commands_count": len(
+                route_policy.terminal_execution_policy.allowed_commands
+            ),
+            "allowed_command_prefixes_count": len(
+                route_policy.terminal_execution_policy.allowed_command_prefixes
+            ),
+            "allowlist_redacted": True,
+            "public_mcp_exposure": "disabled_pending_http_auth_config_review",
+        },
         "protected_branches": list(route_policy.protected_branches),
         "model_policy": {
             "allow_model_tools": route_policy.allow_model_tools,
@@ -1909,8 +2015,7 @@ def _terminal_non_control_tokens(tokens: Iterable[str]) -> list[str]:
     return [
         token
         for token in tokens
-        if token not in SHELL_CONTROL_TOKENS
-        and not all(char in ";&|()<>" for char in token)
+        if not _terminal_command_has_shell_control([token])
     ]
 
 
@@ -1970,6 +2075,11 @@ def classify_terminal_command(command: str) -> dict:
         )
 
     tokens = _shell_command_tokens(stripped)
+    has_shell_control = (
+        "\n" in stripped
+        or "\r" in stripped
+        or _terminal_command_has_shell_control(tokens)
+    )
     non_control = _terminal_non_control_tokens(tokens)
     basenames = {_terminal_token_basename(token) for token in non_control}
     reasons: list[dict] = []
@@ -2029,11 +2139,79 @@ def classify_terminal_command(command: str) -> dict:
         "llm_calls": 0,
         "uses_shell": False,
         "executes": False,
+        "no_shell_compatible": not has_shell_control,
         "command_length": len(stripped),
         "parsed_token_count": len(tokens),
         "blocked": blocked,
         "decision": "blocked" if blocked else "disabled_pending_execution_policy",
         "risk_level": "blocked" if blocked else "low_unexecuted",
+        "reasons": reasons,
+    }
+
+
+def _terminal_allowlist_match(
+    command: str,
+    execution_policy: TerminalExecutionPolicy,
+) -> tuple[str | None, int | None]:
+    stripped = command.strip()
+    for index, allowed in enumerate(execution_policy.allowed_commands):
+        if stripped == allowed:
+            return "exact", index
+    for index, prefix in enumerate(execution_policy.allowed_command_prefixes):
+        if stripped == prefix or stripped.startswith(prefix + " "):
+            return "prefix", index
+    return None, None
+
+
+def _evaluate_terminal_execution_policy(
+    command: str,
+    classification: Mapping[str, Any],
+    route_policy: ProfileRoutePolicy,
+) -> dict:
+    execution_policy = route_policy.terminal_execution_policy
+    match_type, match_index = _terminal_allowlist_match(command, execution_policy)
+    reasons: list[dict] = []
+
+    if execution_policy.require_no_shell and not classification.get(
+        "no_shell_compatible", False
+    ):
+        reasons.append(
+            {
+                "code": "terminal_shell_control_not_allowed",
+                "name": "require_no_shell",
+                "detail": "Terminal execution policy requires no-shell argv-compatible commands",
+            }
+        )
+    if execution_policy.enabled and match_type is None:
+        reasons.append(
+            {
+                "code": "terminal_command_not_allowlisted",
+                "name": "execution_allowlist",
+                "detail": "Terminal execution policy requires an explicit command allowlist match",
+            }
+        )
+
+    blocked = execution_policy.enabled and bool(reasons)
+    if not execution_policy.enabled:
+        decision = "execution_disabled_by_policy"
+    elif blocked:
+        decision = "blocked_by_execution_policy"
+    else:
+        decision = "allowlisted_pending_execution_implementation"
+
+    return {
+        "enabled": execution_policy.enabled,
+        "require_no_shell": execution_policy.require_no_shell,
+        "allowed_commands_count": len(execution_policy.allowed_commands),
+        "allowed_command_prefixes_count": len(
+            execution_policy.allowed_command_prefixes
+        ),
+        "allowlist_redacted": True,
+        "allowlist_match": match_type is not None,
+        "allowlist_match_type": match_type,
+        "allowlist_match_index": match_index,
+        "blocked": blocked,
+        "decision": decision,
         "reasons": reasons,
     }
 
@@ -2074,6 +2252,27 @@ def preflight_terminal_command(
         workspace, working_directory
     )
     classification = classify_terminal_command(command)
+    execution_policy = _evaluate_terminal_execution_policy(
+        command, classification, route_policy
+    )
+    if execution_policy["blocked"]:
+        classification = {
+            **classification,
+            "blocked": True,
+            "decision": "blocked",
+            "risk_level": "blocked",
+            "reasons": [*classification["reasons"], *execution_policy["reasons"]],
+        }
+    elif (
+        not classification["blocked"]
+        and execution_policy["enabled"]
+        and execution_policy["allowlist_match"]
+    ):
+        classification = {
+            **classification,
+            "decision": "disabled_pending_execution_implementation",
+            "risk_level": "low_allowlisted_unexecuted",
+        }
     return {
         **classification,
         "working_directory": public_cwd,
@@ -2085,12 +2284,16 @@ def preflight_terminal_command(
             "deploy_allowed": route_policy.allow_deploy,
             "protected_branches": list(route_policy.protected_branches),
         },
+        "execution_policy": execution_policy,
         "audit": {
             "tool": "terminal_run",
             "llm_calls": 0,
             "root_exposed": False,
             "uses_shell": False,
             "executes": False,
+            "execution_policy_enabled": execution_policy["enabled"],
+            "allowlist_match": execution_policy["allowlist_match"],
+            "no_shell_compatible": classification["no_shell_compatible"],
             "public_mcp_exposure": "disabled_pending_http_auth_config_review",
         },
     }

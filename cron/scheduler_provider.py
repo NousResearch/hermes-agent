@@ -72,6 +72,46 @@ class CronScheduler(ABC):
         return None
 
 
+def resolve_cron_scheduler() -> "CronScheduler":
+    """Return the active cron scheduler provider.
+
+    Reads ``cron.provider`` from config. Empty/absent → built-in. A named
+    provider that is missing, fails to load, or reports ``is_available() ==
+    False`` falls back to the built-in with a warning — cron must never be left
+    without a trigger.
+    """
+    import logging
+
+    logger = logging.getLogger("cron.scheduler_provider")
+
+    name = ""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        name = (cfg_get(load_config(), "cron", "provider", default="") or "").strip()
+    except Exception:
+        pass
+
+    if not name or name in ("builtin", "in-process", "inprocess"):
+        return InProcessCronScheduler()
+
+    try:
+        from plugins.cron import load_cron_scheduler
+        provider = load_cron_scheduler(name)
+        if provider is None:
+            logger.warning("cron.provider '%s' not found; using built-in ticker", name)
+            return InProcessCronScheduler()
+        if not provider.is_available():
+            logger.warning("cron.provider '%s' not available; using built-in ticker", name)
+            return InProcessCronScheduler()
+        logger.info("Using cron scheduler provider: %s", provider.name)
+        return provider
+    except Exception as e:
+        logger.warning(
+            "Failed to load cron.provider '%s' (%s); using built-in ticker", name, e
+        )
+        return InProcessCronScheduler()
+
+
 class InProcessCronScheduler(CronScheduler):
     """Default provider: the historical in-process 60s ticker.
 

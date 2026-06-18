@@ -25,6 +25,28 @@ _TITLE_PROMPT = (
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
 
+import re as _re
+
+_SKILL_INVOCATION_RE = _re.compile(
+    r"^\[IMPORTANT:.*?(?:skill|skill bundle).*?instructions\.\s*"
+    r"(?:The full (?:skill|skill bundle) content is loaded below\.\s*)?\]\s*\n*",
+    _re.DOTALL,
+)
+
+
+def _strip_skill_invocation_prefix(message: str) -> str:
+    """Remove skill/skill-bundle activation scaffolding from user messages.
+
+    When a user invokes a skill via ``/skill-name``, the user message begins
+    with an ``[IMPORTANT: The user has invoked the "..." skill ...]`` block.
+    This block is boilerplate that confuses the title generator into producing
+    session names like ``[IMPORTANT: The user has invoked the "toggl..."``.
+    Stripping it lets the title reflect the user's actual request instead.
+    """
+    if not message:
+        return message
+    return _SKILL_INVOCATION_RE.sub("", message, count=1)
+
 
 def generate_title(
     user_message: str,
@@ -45,7 +67,9 @@ def generate_title(
     of silently accumulating untitled sessions.
     """
     # Truncate long messages to keep the request small
-    user_snippet = user_message[:500] if user_message else ""
+    # Strip skill invocation scaffolding so the title reflects the user's
+    # actual request, not the boilerplate activation prefix.  (#48359)
+    user_snippet = _strip_skill_invocation_prefix(user_message or "")[:500]
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     messages = [

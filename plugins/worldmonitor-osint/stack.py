@@ -42,7 +42,7 @@ def enable_osint_stack(
     *,
     platforms: tuple[str, ...] = ("cli", "messaging"),
     install_egov: bool = True,
-    install_worldmonitor_mcp: bool = True,
+    install_worldmonitor_mcp: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Enable OSINT plugins, toolsets, and register e-Gov Law MCP."""
@@ -105,9 +105,10 @@ def enable_osint_stack(
         result["worldmonitor_mcp"] = _ensure_mcp_oauth(dry_run=dry_run)
 
     result["next_steps"] = [
+        "SitDeck (no WM Pro): `hermes sitdeck-osint setup --email <gmail>` + crawl tools.",
         "Free tier (no Pro): `hermes worldmonitor-osint free-crawl` or fusion with `--wm-tier free`.",
         "Paid/sidecar: `hermes worldmonitor-osint setup-auth --mode sidecar` or `--mode key`.",
-        "OAuth MCP (optional): `hermes mcp login worldmonitor` after Pro sign-in.",
+        "OAuth MCP (optional, Pro only): `hermes mcp login worldmonitor` — skipped by default.",
         "Run `hermes shinka-osint setup --root <ShinkaEvolve-OSINT path>` if not configured.",
         "Fusion: `hermes worldmonitor-osint fusion 日本の安全保障 --wm-tier auto --source-mode real --save`.",
         "Agent tool: `worldmonitor_fusion_report` (WM Free/sidecar + Shinka MILSPEC).",

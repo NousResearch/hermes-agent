@@ -1,0 +1,9 @@
+name: sitdeck-osint
+version: 0.1.0
+description: "SitDeck browser OSINT — login via .env credentials and crawl dashboard intelligence."
+author: "Hermes local plugin"
+kind: standalone
+provides_tools:
+  - sitdeck_status
+  - sitdeck_crawl
+  - sitdeck_osint_digest

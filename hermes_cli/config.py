@@ -3084,6 +3084,20 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
         "advanced": True,
     },
+    "SITDECK_EMAIL": {
+        "description": "SitDeck login email (app.sitdeck.com) for sitdeck-osint browser crawl",
+        "prompt": "SitDeck email",
+        "url": "https://app.sitdeck.com/#register",
+        "password": False,
+        "category": "tool",
+    },
+    "SITDECK_PASSWORD": {
+        "description": "SitDeck account password (stored in .env only)",
+        "prompt": "SitDeck password",
+        "url": "https://app.sitdeck.com/#login",
+        "password": True,
+        "category": "tool",
+    },
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
         "prompt": "Exa API key",

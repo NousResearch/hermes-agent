@@ -200,6 +200,36 @@ def _load_mcp_module():
     return module
 
 
+def _resolve_isolated_python() -> list[str]:
+    """Pick a Python interpreter argv prefix that can import Shinka deps."""
+    override = (os.environ.get("SHINKA_OSINT_PYTHON") or "").strip()
+    if override:
+        return override.split()
+
+    def _can_import_anthropic(argv: list[str]) -> bool:
+        try:
+            proc = subprocess.run(
+                [*argv, "-c", "import anthropic"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return proc.returncode == 0
+        except Exception:
+            return False
+
+    candidates: list[list[str]] = [
+        [sys.executable],
+        ["py", "-3"],
+        ["python3"],
+        ["python"],
+    ]
+    for argv in candidates:
+        if _can_import_anthropic(argv):
+            return argv
+    return [sys.executable]
+
+
 def _call_tool_isolated(tool_name: str, arguments: dict[str, Any]) -> Any:
     root = resolve_root()
     example = (arguments.get("example") or resolve_default_example()).strip()
@@ -214,8 +244,9 @@ def _call_tool_isolated(tool_name: str, arguments: dict[str, Any]) -> Any:
     env["PYTHONPATH"] = os.pathsep.join([str(example_dir), str(root)])
     env.pop("PYTHONSAFEPATH", None)
 
+    python_argv = _resolve_isolated_python()
     proc = subprocess.run(
-        [sys.executable, "-c", _ISOLATED_RUNNER],
+        [*python_argv, "-c", _ISOLATED_RUNNER],
         input=json.dumps({"tool": tool_name, "arguments": arguments}, ensure_ascii=False),
         cwd=str(example_dir),
         env=env,

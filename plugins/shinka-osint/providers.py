@@ -420,8 +420,13 @@ def synthesize_executive_summary(
         )
 
     system_msg = (
-        "You are a Japanese OSINT briefer. Summarize MILSPEC scenario scores concisely. "
-        "Cite scenario IDs. Flag allowlist or fabrication issues if present. No speculation."
+        "You are a Japanese OSINT briefer writing MILSPEC-aligned summaries. "
+        "Mandatory rules: (1) Every factual claim MUST cite "
+        "[出典: URL], [出典: 法令・公文書 ID], or [出典: Shinka scenario_id + evidence_block]. "
+        "(2) Do not invent facts or numbers. Mark unsourced claims UNVERIFIED. "
+        "(3) Prefer primary government/treaty sources over media. "
+        "(4) Separate OBSERVED (sourced) from ASSESSMENT (labeled analytic judgment). "
+        "Cite scenario IDs. Flag allowlist or fabrication issues. No speculation."
     )
     user_msg = (
         f"Topic: {topic or '安全保障'}\n"

@@ -11,6 +11,7 @@ runs at a time if multiple processes overlap.
 import asyncio
 import atexit
 import concurrent.futures
+import contextlib
 import contextvars
 import json
 import logging
@@ -233,6 +234,67 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _job_needs_sequential_tick(job: dict) -> bool:
+    """Return True when a due job mutates process-global Hermes state."""
+    if (job.get("workdir") or "").strip():
+        return True
+    profile = str(job.get("profile") or "").strip()
+    return bool(profile) and profile.lower() != "default"
+
+
+@contextlib.contextmanager
+def _cron_profile_context(job: dict):
+    """Temporarily switch HERMES_HOME for profile-pinned cron jobs."""
+    global _hermes_home
+
+    profile_name = str(job.get("profile") or "").strip()
+    if not profile_name or profile_name.lower() == "default":
+        yield
+        return
+
+    try:
+        from hermes_cli import profiles as profiles_mod
+
+        canon = profiles_mod.normalize_profile_name(profile_name)
+        if not profiles_mod.profile_exists(canon):
+            logger.warning(
+                "Job '%s': profile %r missing — running in current HERMES_HOME",
+                job.get("id"),
+                profile_name,
+            )
+            yield
+            return
+        home = profiles_mod.get_profile_dir(canon)
+    except ValueError as exc:
+        logger.warning(
+            "Job '%s': invalid profile %r (%s) — running in current HERMES_HOME",
+            job.get("id"),
+            profile_name,
+            exc,
+        )
+        yield
+        return
+
+    prior_home = _hermes_home
+    prior_env = os.environ.get("HERMES_HOME")
+    _hermes_home = home
+    os.environ["HERMES_HOME"] = str(home)
+    logger.info(
+        "Job '%s': switched to profile %r (%s)",
+        job.get("id"),
+        canon,
+        home,
+    )
+    try:
+        yield
+    finally:
+        _hermes_home = prior_home
+        if prior_env is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = prior_env
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1310,6 +1372,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
+    with _cron_profile_context(job):
+        return _run_job_unscoped(job)
+
+
+def _run_job_unscoped(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
@@ -2092,8 +2159,8 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
         # so they MUST run sequentially to avoid corrupting each other.  Jobs
         # without a workdir leave env untouched and stay parallel-safe.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        sequential_jobs = [j for j in due_jobs if _job_needs_sequential_tick(j)]
+        parallel_jobs = [j for j in due_jobs if not _job_needs_sequential_tick(j)]
 
         _results: list = []
         _all_futures: list = []

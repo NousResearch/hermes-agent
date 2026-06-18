@@ -1,0 +1,10 @@
+name: scrapling-feeds
+version: 0.1.0
+description: "Government RSS/Atom feeds via polite HTTP (Scrapling Fetcher when installed)."
+author: "Hermes local plugin"
+kind: standalone
+provides_tools:
+  - gov_feed_status
+  - gov_feed_fetch
+  - gov_feed_digest
+  - mhlw_designated_check

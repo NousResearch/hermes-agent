@@ -1,0 +1,8 @@
+name: osint-agent
+version: 0.1.0
+description: "Unified OSINT agent — SitDeck + World Monitor Free + scrapling-feeds + PDB cron."
+author: "Hermes local plugin"
+kind: standalone
+provides_tools:
+  - osint_agent_status
+  - osint_agent_brief

@@ -388,8 +388,10 @@ def fusion_report(
         },
         "methodology": (
             "Fusion combines World Monitor real-time risk/news (koala73/worldmonitor) with "
-            "ShinkaEvolve-OSINT MILSPEC scoring (rule-based, no google-generativeai required). "
-            "Optional LLM summary uses Hermes auth: openai-codex, NVIDIA_API_KEY, nous, xai-oauth."
+            "ShinkaEvolve-OSINT MILSPEC scoring (rule-based). "
+            "PDB reports enforce primary-source discipline: government/treaty sources preferred; "
+            "media headlines require [出典: URL] and verification. "
+            "Optional LLM summary uses Hermes auth with MILSPEC citation rules."
         ),
     }
 

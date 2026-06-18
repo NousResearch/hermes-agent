@@ -137,6 +137,22 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _redirect_port_from_client_info(storage: "HermesTokenStorage") -> int | None:
+    """Return the loopback port from a previously registered OAuth client."""
+    data = _read_json(storage._client_info_path())
+    if not isinstance(data, dict):
+        return None
+    uris = data.get("redirect_uris")
+    if not isinstance(uris, list) or not uris:
+        return None
+    parsed = urlparse(str(uris[0]))
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return None
+    if parsed.port is None:
+        return None
+    return int(parsed.port)
+
+
 def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
     if not getattr(_oauth_interactivity, "enabled", True):
@@ -655,12 +671,19 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> int:
+def _configure_callback_port(
+    cfg: dict,
+    storage: "HermesTokenStorage | None" = None,
+) -> int:
     """Pick or validate the OAuth callback port.
 
     Stores the resolved port into ``cfg['_resolved_port']`` so sibling
     helpers (and the manager) can read it from the same dict. Returns the
     resolved port.
+
+    When ``redirect_port`` is 0 (auto), reuses the port from a previously
+    persisted ``*.client.json`` so re-login does not trip provider-side
+    redirect_uri mismatch errors (dynamic registration binds one URI).
 
     NOTE: also sets the legacy module-level ``_oauth_port`` so existing
     calls to ``_wait_for_callback`` keep working. The legacy global is
@@ -670,6 +693,11 @@ def _configure_callback_port(cfg: dict) -> int:
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
+    if requested == 0 and storage is not None:
+        stored_port = _redirect_port_from_client_info(storage)
+        if stored_port is not None:
+            requested = stored_port
+            cfg["redirect_port"] = stored_port
     port = _find_free_port() if requested == 0 else requested
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
@@ -777,7 +805,7 @@ def build_oauth_auth(
             "initial authorization, then cached tokens will be reused."
         )
 
-    _configure_callback_port(cfg)
+    _configure_callback_port(cfg, storage)
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 

@@ -189,6 +189,10 @@ honcho = ["honcho-ai==2.0.1"]
 # CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
 # alias so existing `pip install hermes-agent[vision]` invocations still resolve.
 vision = []
+# Government RSS direct-read (Scrapling Fetcher + urllib fallback) for scrapling-feeds plugin.
+scrapling-feeds = ["scrapling[fetchers]>=0.4.9,<0.5"]
+# SitDeck browser OSINT plugin (Playwright login + dashboard crawl).
+sitdeck-osint = ["playwright>=1.49,<2"]
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
 # 1.0.1, a malformed Host header makes `request.url.path` desync from the path

@@ -102,3 +102,44 @@ hermes worldmonitor-osint setup-stack
 3. egov-law MCP — `search_laws` / `get_law_article` for 憲法・安保関連法制
 
 Reports saved under `~/.hermes/worldmonitor-osint/reports/` when `save_report=true`.
+
+## PDB-style situation report (08:00 / 18:00 cron)
+
+Twice-daily **President's Daily Brief**–style open-source national-security digest:
+
+- World Monitor HIGH headlines + elevated CII (past 24h)
+- Shinka MILSPEC scenario scores
+- Japan implications + 24h watchlist
+
+```powershell
+# One-shot (mock WM for reliability; use --source-mode real when WM auth is ready)
+hermes worldmonitor-osint situation-report --slot morning
+hermes worldmonitor-osint situation-report --slot evening --cron-stdout
+
+# Install cron (local wall time — JST if Windows is JST)
+hermes worldmonitor-osint cron install
+hermes worldmonitor-osint cron install --source-mode real --llm-summary
+hermes worldmonitor-osint cron install --deliver telegram,discord --llm-summary --source-mode real
+```
+
+| Job | Schedule | Script |
+|-----|----------|--------|
+| `wm-osint-pdb-morning` | `0 8 * * *` | `~/.hermes/scripts/wm-osint-pdb-morning.py` |
+| `wm-osint-pdb-evening` | `0 18 * * *` | `~/.hermes/scripts/wm-osint-pdb-evening.py` |
+
+Saved reports: `~/.hermes/worldmonitor-osint/situation_reports/`. Cron uses `no_agent=True` (script-only); `cron.script_timeout_seconds` is bumped to ≥900 on install.
+
+### MILSPEC / 一次資料規律
+
+PDB レポートは **事実記述に信頼できる一次資料を優先** する:
+
+- **e-Gov Law API v2** — 憲法9条・自衛隊法・サイバー基本法等を自動取得（`egov_primary.py`）
+- **PRIMARY backfill** — WM 二次見出しを `site:go.jp OR site:gov …` で公式ドメインへ裏取り（`ddgs`）
+- **GitHub provenance** — worldmonitor / egov-law-mcp / hermes-agent の REST メタデータ
+- 見出し各行に `[PRIMARY|SECONDARY|UNVERIFIED]` と `[出典: URL]`
+- `--no-primary-backfill` / `--skip-egov` / `--skip-github` で段階的に無効化可能
+
+> 防御的 OSINT 方針: 公式 API・サイト制約検索のみ。**ボット回避・ステルスクロールは実装しない**（MILSPEC / Deep Research 防御基準）。
+
+日本法の一次資料: `hermes mcp install egov-law` または `py -3 -m pip install "egov-law-mcp>=0.1.0,<1"`
+

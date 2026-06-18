@@ -102,6 +102,10 @@ class WSTransport:
         self._pending_tokens: list[str] = []
         self._token_flush_handle: asyncio.TimerHandle | None = None
         self._token_flush_armed = False
+        # Serialize actual socket writes separately from buffer mutation. This
+        # commit predates token batching; the follow-up adapts the boundary to
+        # cover whole batches without dropping the current coalescing path.
+        self._send_lock = asyncio.Lock()
 
     @staticmethod
     def _is_streaming_frame(obj: dict) -> bool:
@@ -222,7 +226,10 @@ class WSTransport:
 
     async def _safe_send(self, line: str) -> None:
         try:
-            await self._ws.send_text(line)
+            async with self._send_lock:
+                if self._closed:
+                    return
+                await self._ws.send_text(line)
         except Exception as exc:
             self._closed = True
             _log.warning(

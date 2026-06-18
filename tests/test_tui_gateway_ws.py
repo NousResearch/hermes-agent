@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import threading
 import time
 
@@ -179,6 +180,43 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         while len(sent) < 2 and time.time() < deadline:
             time.sleep(0.01)
         assert len(sent) == 2
+        assert transport._closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+
+def test_ws_transport_serializes_concurrent_sends():
+    active_sends = 0
+    max_active_sends = 0
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            nonlocal active_sends, max_active_sends
+            active_sends += 1
+            max_active_sends = max(max_active_sends, active_sends)
+            try:
+                await asyncio.sleep(0.05)
+                sent.append(line)
+            finally:
+                active_sends -= 1
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="serialize-test")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(transport.write, {"idx": 1}),
+                pool.submit(transport.write, {"idx": 2}),
+            ]
+            assert [f.result(timeout=2) for f in futures] == [True, True]
+
+        assert len(sent) == 2
+        assert max_active_sends == 1
         assert transport._closed is False
     finally:
         loop.call_soon_threadsafe(loop.stop)

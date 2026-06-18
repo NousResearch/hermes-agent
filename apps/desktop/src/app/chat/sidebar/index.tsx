@@ -131,7 +131,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     route: SKILLS_ROUTE
   },
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'work-queue', label: '', icon: props => <Codicon name="checklist" {...props} />, route: WORK_QUEUE_ROUTE },
+  { id: 'work-queue', label: 'Work Queue', icon: props => <Codicon name="checklist" {...props} />, route: WORK_QUEUE_ROUTE },
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 

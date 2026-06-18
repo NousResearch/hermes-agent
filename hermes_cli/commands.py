@@ -11,7 +11,6 @@ To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 from __future__ import annotations
 
 import logging
-import math
 import os
 import re
 import shutil
@@ -1526,59 +1525,14 @@ class SlashCommandCompleter(Completer):
         return self._prepared_cache
 
     @staticmethod
-    def _score_path(filepath: str, query: str) -> int:
-        """Score a file path against a fuzzy query. Higher = better match."""
-        if not query:
-            return 1  # show everything when query is empty
-
-        filename = os.path.basename(filepath)
-        lower_file = filename.lower()
-        lower_path = filepath.lower()
-        lower_q = query.lower()
-
-        # Exact filename match
-        if lower_file == lower_q:
-            return 100
-        # Filename starts with query
-        if lower_file.startswith(lower_q):
-            return 80
-        # Filename contains query as substring
-        if lower_q in lower_file:
-            return 60
-        # Full path contains query
-        if lower_q in lower_path:
-            return 40
-        # Initials / abbreviation match: e.g. "fo" matches "file_operations"
-        # Check if query chars appear in order in filename
-        qi = 0
-        for c in lower_file:
-            if qi < len(lower_q) and c == lower_q[qi]:
-                qi += 1
-        if qi == len(lower_q):
-            # Bonus if matches land on word boundaries (after _, -, /, .)
-            boundary_hits = 0
-            qi = 0
-            prev = "_"  # treat start as boundary
-            for c in lower_file:
-                if qi < len(lower_q) and c == lower_q[qi]:
-                    if prev in "_-./":
-                        boundary_hits += 1
-                    qi += 1
-                prev = c
-            if boundary_hits >= len(lower_q) * 0.5:
-                return 35
-            return 25
-        return 0
-
-    @staticmethod
     def _score_prepared(bn_lower: str, path_lower: str, query_lower: str) -> int:
-        """Inline fuzzy score from precomputed-lowercase inputs.
+        """Score a file against a fuzzy query from precomputed-lowercase inputs.
 
-        Identical scoring/tiers to :meth:`_score_path` (exact 100 / prefix 80 /
-        substring 60 / path-substring 40 / subsequence 25-35) but takes the
-        already-lowercased basename and path so the hot loop avoids repeating
-        .lower() on every candidate every keystroke. Keep this in lockstep with
-        ``_score_path`` — the standalone version is retained for callers/tests.
+        Higher = better match. Takes the already-lowercased basename and path
+        so the per-keystroke hot loop never repeats ``.lower()`` per candidate;
+        ``_get_prepared_files`` lowercases once per file-cache refresh. Tiers:
+        exact 100 / prefix 80 / substring 60 / path-substring 40 /
+        word-boundary subsequence 35 / plain subsequence 25 / no match 0.
         """
         if not query_lower:
             return 1
@@ -1590,7 +1544,7 @@ class SlashCommandCompleter(Completer):
             return 60
         if query_lower in path_lower:
             return 40
-        # Subsequence / word-boundary tier (matches _score_path).
+        # Subsequence tier, with a word-boundary (after _ - . /) bonus.
         qi = 0
         for c in bn_lower:
             if qi < len(query_lower) and c == query_lower[qi]:
@@ -1622,44 +1576,35 @@ class SlashCommandCompleter(Completer):
         prepared = self._get_prepared_files()
         cwd = os.getcwd()
 
-        # Load frecency once per call (one file read), score candidates inline.
+        # Frecency boosts, via the module's public scoring API (one cached store
+        # read for the whole candidate set). The gateway picker does the same —
+        # the scoring math + decay live entirely in tools.file_frecency, not
+        # here. We only apply the CLI-specific presentation transform: map the
+        # raw (unbounded, ~visit-count) score onto the 0-100 static scale with a
+        # saturating curve so a single very-frequent file can't bury the textual
+        # signal. Empty/disabled frecency yields an all-zero map → static order.
+        boosts: dict[str, float] = {}
         try:
             from tools import file_frecency
-            frecency_on = file_frecency.is_enabled()
-            frecency_store = file_frecency.load_store() if frecency_on else {}
-            alpha = file_frecency.weight_alpha() if frecency_on else 0.0
-            now = time.time()
-            lam = file_frecency._lambda() if frecency_on else 0.0
+            if file_frecency.is_enabled() and prepared:
+                alpha = file_frecency.weight_alpha()
+                abs_paths = [os.path.join(cwd, p[2]) for p in prepared]
+                raw_scores = file_frecency.score_many(abs_paths)
+                for (_, _, rel), ap in zip(prepared, abs_paths):
+                    raw = raw_scores.get(ap, 0.0)
+                    if raw:
+                        boosts[rel] = alpha * (raw / (raw + 1.0))
         except Exception:
-            frecency_on = False
-            frecency_store = {}
-            alpha = 0.0
-            now = 0.0
-            lam = 0.0
+            boosts = {}
 
         def _frecency_boost(relpath: str) -> float:
-            if not frecency_on or not frecency_store:
-                return 0.0
-            try:
-                key = os.path.abspath(os.path.join(cwd, relpath))
-            except Exception:
-                return 0.0
-            entry = frecency_store.get(key)
-            if entry is None:
-                return 0.0
-            dt = now - entry["t"]
-            raw = entry["w"] if dt <= 0 else entry["w"] * math.exp(-lam * dt)
-            # Normalize raw frecency (unbounded, ~visit count) into a bounded
-            # additive boost on the 0-100 static scale: saturating so a single
-            # very-frequent file can't dominate the textual signal entirely.
-            return alpha * (raw / (raw + 1.0))
+            return boosts.get(relpath, 0.0)
 
         if not query:
             # No query — rank by frecency desc, then existing mtime order.
             order = list(range(len(prepared)))
-            if frecency_on and frecency_store:
-                boosts = {i: _frecency_boost(prepared[i][2]) for i in order}
-                order.sort(key=lambda i: (-boosts[i], i))
+            if boosts:
+                order.sort(key=lambda i: (-_frecency_boost(prepared[i][2]), i))
             for i in order[:limit]:
                 fp = prepared[i][2]
                 is_dir = fp.endswith("/")

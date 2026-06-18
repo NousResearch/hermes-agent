@@ -147,10 +147,15 @@ def _lambda() -> float:
 
 
 def reset_config_cache() -> None:
-    """Drop the cached config block. For tests that mutate config.yaml."""
+    """Drop the cached config block and the store read-through cache.
+
+    Used by tests that mutate config.yaml or the store on disk between cases so
+    a stale parse can't leak across tests.
+    """
     global _config_cached, _config_loaded
     _config_cached = None
     _config_loaded = False
+    _invalidate_store_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +264,55 @@ def save_store(data: Dict[str, Dict[str, float]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Read-through cache (hot path)
+# ---------------------------------------------------------------------------
+# The completion pickers call score_many() once per keystroke. load_store() is
+# a disk read + json.loads + an O(entries) validation pass, so calling it per
+# frame scales the picker's per-keystroke cost with the store size — exactly
+# the asymmetry the file-list caches (5s TTL) already avoid. This is a short
+# read-through cache for the SCORING path only: record()/prune_missing() keep
+# using the uncached load_store() under the lock (they need a fresh
+# read-modify-write) and invalidate this cache on write.
+_STORE_TTL_S = 2.0
+_store_cache: Optional[Dict[str, Dict[str, float]]] = None
+_store_cache_mtime: float = -1.0
+_store_cache_time: float = 0.0
+
+
+def load_store_cached() -> Dict[str, Dict[str, float]]:
+    """Return the store via a short TTL + mtime read-through cache.
+
+    Within ``_STORE_TTL_S`` the cached parse is reused directly. After the TTL
+    we stat the file: if its mtime is unchanged we refresh the timer and skip
+    the re-parse entirely; only a changed (or first-seen) file pays for a fresh
+    ``load_store()``. Safe to call on the per-keystroke hot path.
+    """
+    global _store_cache, _store_cache_mtime, _store_cache_time
+    now = time.monotonic()
+    if _store_cache is not None and now - _store_cache_time < _STORE_TTL_S:
+        return _store_cache
+    try:
+        mtime = _store_file().stat().st_mtime
+    except OSError:
+        mtime = -1.0
+    if _store_cache is not None and mtime == _store_cache_mtime:
+        _store_cache_time = now  # unchanged on disk — reuse parse, reset timer
+        return _store_cache
+    _store_cache = load_store()
+    _store_cache_mtime = mtime
+    _store_cache_time = now
+    return _store_cache
+
+
+def _invalidate_store_cache() -> None:
+    """Drop the read-through cache so the next score reflects a just-written
+    store immediately (called by record() after save_store())."""
+    global _store_cache, _store_cache_mtime
+    _store_cache = None
+    _store_cache_mtime = -1.0
+
+
+# ---------------------------------------------------------------------------
 # Core algorithm
 # ---------------------------------------------------------------------------
 def _abs_key(path: str | Path) -> Optional[str]:
@@ -267,6 +321,20 @@ def _abs_key(path: str | Path) -> Optional[str]:
         return str(Path(path).expanduser().resolve())
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _decayed(weight: float, t_last: float, now: float, lam: float) -> float:
+    """Exponentially-decayed weight at time ``now``.
+
+    Single source of truth for the frecency decay so ``record``/``score``/
+    ``score_many`` can't drift apart. The ``dt <= 0`` guard returns the stored
+    weight unchanged, defending against clock skew / non-monotonic timestamps
+    (a backwards jump must never inflate the score).
+    """
+    dt = now - t_last
+    if dt <= 0:
+        return weight
+    return weight * math.exp(-lam * dt)
 
 
 def _age(data: Dict[str, Dict[str, float]], max_total: float) -> None:
@@ -306,13 +374,11 @@ def record(path: str | Path, *, now: Optional[float] = None) -> None:
             if entry is None:
                 data[key] = {"w": 1.0, "t": t}
             else:
-                dt = t - entry["t"]
-                # Guard against clock skew / non-monotonic timestamps: never
-                # let a backwards jump inflate the decay term.
-                decayed = entry["w"] * math.exp(-lam * dt) if dt > 0 else entry["w"]
+                decayed = _decayed(entry["w"], entry["t"], t, lam)
                 data[key] = {"w": decayed + 1.0, "t": max(t, entry["t"])}
             _age(data, cfg["max_total"])
             save_store(data)
+            _invalidate_store_cache()
     except Exception as e:  # noqa: BLE001
         logger.debug("file_frecency.record(%s) failed: %s", key, e, exc_info=True)
 
@@ -329,37 +395,33 @@ def score(path: str | Path, *, now: Optional[float] = None,
     key = _abs_key(path)
     if key is None:
         return 0.0
-    data = store if store is not None else load_store()
+    data = store if store is not None else load_store_cached()
     entry = data.get(key)
     if entry is None:
         return 0.0
     t = time.time() if now is None else now
-    dt = t - entry["t"]
-    if dt <= 0:
-        return entry["w"]
-    return entry["w"] * math.exp(-_lambda() * dt)
+    return _decayed(entry["w"], entry["t"], t, _lambda())
 
 
 def score_many(paths, *, now: Optional[float] = None) -> Dict[str, float]:
     """Score a batch of paths against one store read. Keys are the input paths
     (as given), values are frecency scores. Untracked paths score 0.0.
 
-    This is the picker entry point: load the store once, score every candidate.
+    This is the picker entry point: load the store once (cached), score every
+    candidate. Called per keystroke by the completion pickers, so it reads
+    through :func:`load_store_cached` to avoid a disk read + JSON parse on
+    every frame.
     """
     if not is_enabled():
         return {p: 0.0 for p in paths}
-    data = load_store()
+    data = load_store_cached()
     t = time.time() if now is None else now
     lam = _lambda()
     out: Dict[str, float] = {}
     for p in paths:
         key = _abs_key(p)
         entry = data.get(key) if key is not None else None
-        if entry is None:
-            out[p] = 0.0
-            continue
-        dt = t - entry["t"]
-        out[p] = entry["w"] if dt <= 0 else entry["w"] * math.exp(-lam * dt)
+        out[p] = _decayed(entry["w"], entry["t"], t, lam) if entry is not None else 0.0
     return out
 
 
@@ -379,6 +441,7 @@ def prune_missing() -> int:
                     removed += 1
             if removed:
                 save_store(data)
+                _invalidate_store_cache()
     except Exception as e:  # noqa: BLE001
         logger.debug("file_frecency.prune_missing failed: %s", e, exc_info=True)
     return removed

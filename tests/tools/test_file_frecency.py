@@ -181,6 +181,42 @@ def test_prune_missing(tmp_path):
     assert ff.load_store() == {}
 
 
+def test_score_many_uses_cached_store(tmp_path, monkeypatch):
+    """Per-keystroke scoring must not re-read+parse the store every call.
+
+    score_many() reads through load_store_cached(), so N consecutive calls hit
+    the disk via load_store() exactly once (within the TTL) — this is the
+    hot-path efficiency contract for the picker."""
+    p = str(tmp_path / "f.py")
+    open(p, "w").close()
+    ff.record(p)
+
+    ff._invalidate_store_cache()
+    calls = {"n": 0}
+    real = ff.load_store
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    monkeypatch.setattr(ff, "load_store", counting)
+    for _ in range(25):
+        ff.score_many([p])
+    assert calls["n"] == 1  # 25 keystrokes, one disk read
+
+
+def test_record_invalidates_cache(tmp_path):
+    """A fresh record() must be visible to the very next score_many() despite
+    the read-through cache (record invalidates it)."""
+    p = str(tmp_path / "f.py")
+    open(p, "w").close()
+    # Prime the cache with an empty store.
+    assert ff.score_many([p])[p] == 0.0
+    # Record, then score again — must reflect the write, not the cached empty.
+    ff.record(p)
+    assert ff.score_many([p])[p] > 0.0
+
+
 # ---------------------------------------------------------------------------
 # Gateway tiered-blend invariant (TUI + Desktop ranker)
 # ---------------------------------------------------------------------------

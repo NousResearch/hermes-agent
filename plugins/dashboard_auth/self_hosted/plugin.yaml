@@ -1,8 +1,0 @@
-name: self-hosted
-version: 1.0.0
-description: "Dashboard auth provider — generic self-hosted OpenID Connect (authorization-code + PKCE, public client). Works against any conformant OIDC identity provider (Authentik, Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …) via OIDC discovery. Auto-activates when an issuer + client_id are configured, either under dashboard.oauth.self_hosted.{issuer,client_id} in config.yaml (canonical surface) or via the HERMES_DASHBOARD_OIDC_ISSUER + HERMES_DASHBOARD_OIDC_CLIENT_ID env vars (operator override / secret injection). Scopes default to 'openid profile email'. Verifies the OIDC ID token (RS256/ES256) against the discovered jwks_uri."
-author: NousResearch
-kind: backend
-requires_env:
-  - HERMES_DASHBOARD_OIDC_ISSUER
-  - HERMES_DASHBOARD_OIDC_CLIENT_ID

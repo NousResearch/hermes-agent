@@ -1,9 +1,0 @@
-name: byterover
-version: 1.0.0
-description: "ByteRover — persistent knowledge tree with tiered retrieval via the brv CLI."
-external_dependencies:
-  - name: brv
-    install: "curl -fsSL https://byterover.dev/install.sh | sh"
-    check: "brv --version"
-hooks:
-  - on_pre_compress

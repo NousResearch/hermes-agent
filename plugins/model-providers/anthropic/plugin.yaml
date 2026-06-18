@@ -1,5 +1,0 @@
-name: anthropic-provider
-kind: model-provider
-version: 1.0.0
-description: Anthropic (Claude)
-author: Nous Research

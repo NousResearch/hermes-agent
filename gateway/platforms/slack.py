@@ -1428,6 +1428,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         try:
             import httpx
+            from tools.safe_fetch import safe_async_client
 
             async def _ssrf_redirect_guard(response):
                 """Re-check redirect targets so public URLs cannot bounce into private IPs."""
@@ -1436,8 +1437,10 @@ class SlackAdapter(BasePlatformAdapter):
                     if not is_safe_url(redirect_url):
                         raise ValueError("Blocked redirect to private/internal address")
 
-            # Download the image first
-            async with httpx.AsyncClient(
+            # Download the image first. safe_async_client validates + pins the
+            # resolved IP at connection time (no DNS-rebind TOCTOU); the
+            # pre-flight is_safe_url + redirect hook stay as defense in depth.
+            async with safe_async_client(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},

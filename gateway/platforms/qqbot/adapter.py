@@ -304,7 +304,13 @@ class QQAdapter(BasePlatformAdapter):
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain
             # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
+            from tools.safe_fetch import safe_async_client
+            # safe_async_client validates + pins the resolved IP at connection
+            # time (no DNS-rebind TOCTOU) for every request this client makes,
+            # including inbound media (voice STT) downloads. QQ API/CDN hosts are
+            # public, and the multimedia.nt.qq.com.cn trusted-host exception is
+            # honored by is_connectable_ip, so API connectivity is unaffected.
+            self._http_client = safe_async_client(
                 timeout=30.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},

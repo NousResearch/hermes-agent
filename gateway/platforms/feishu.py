@@ -3213,9 +3213,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
 
-        import httpx
+        from tools.safe_fetch import safe_async_client
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # safe_async_client validates + pins the resolved IP at connection time
+        # (no DNS-rebind TOCTOU; validates redirect targets too, which the bare
+        # client here did not). Pre-flight is_safe_url above stays as defense
+        # in depth.
+        async with safe_async_client(timeout=30.0, follow_redirects=True) as client:
             response = await client.get(
                 file_url,
                 headers={

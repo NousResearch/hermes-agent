@@ -634,9 +634,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
+    from tools.safe_fetch import safe_async_client
     _log = logging.getLogger(__name__)
 
-    async with httpx.AsyncClient(
+    # safe_async_client validates + pins the resolved IP at connection time
+    # (no DNS-rebind TOCTOU, and every connection incl. redirects is checked).
+    # The pre-flight is_safe_url above + the redirect event-hook stay as
+    # defense in depth.
+    async with safe_async_client(
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
@@ -748,9 +753,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
+    from tools.safe_fetch import safe_async_client
     _log = logging.getLogger(__name__)
 
-    async with httpx.AsyncClient(
+    # safe_async_client validates + pins the resolved IP at connection time
+    # (no DNS-rebind TOCTOU, and every connection incl. redirects is checked).
+    # The pre-flight is_safe_url above + the redirect event-hook stay as
+    # defense in depth.
+    async with safe_async_client(
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},

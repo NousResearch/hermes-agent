@@ -30,6 +30,7 @@ from hermes_cli.config import (
     is_managed,
     managed_error,
     read_raw_config,
+    save_config,
     save_env_value,
 )
 
@@ -4645,6 +4646,21 @@ def _runtime_health_lines() -> list[str]:
     return lines
 
 
+def _set_platform_unauthorized_dm_behavior(platform_key: str, behavior: str) -> None:
+    """Persist a platform-specific unauthorized-DM policy in config.yaml."""
+    cfg = read_raw_config()
+    platforms = cfg.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        cfg["platforms"] = platforms
+    platform_cfg = platforms.setdefault(platform_key, {})
+    if not isinstance(platform_cfg, dict):
+        platform_cfg = {}
+        platforms[platform_key] = platform_cfg
+    platform_cfg["unauthorized_dm_behavior"] = behavior
+    save_config(cfg)
+
+
 def _setup_standard_platform(platform: dict):
     """Interactive setup for Telegram, Discord, or Slack."""
     emoji = platform["emoji"]
@@ -4754,24 +4770,43 @@ def _setup_standard_platform(platform: dict):
             else:
                 # No allowlist — ask about open access vs DM pairing
                 print()
-                access_choices = [
-                    "Enable open access (anyone can message the bot)",
-                    "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
-                    "Skip for now (bot will deny all users until configured)",
-                ]
+                is_email = platform.get("key") == "email"
+                if is_email:
+                    access_choices = [
+                        "Enable open access (any email sender can message the bot)",
+                        "Use DM pairing (unknown email senders receive a pairing code)",
+                        "Keep unknown senders silent",
+                    ]
+                    default_access_idx = 2
+                else:
+                    access_choices = [
+                        "Enable open access (anyone can message the bot)",
+                        "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+                        "Skip for now (bot will deny all users until configured)",
+                    ]
+                    default_access_idx = 1
                 access_idx = prompt_choice(
-                    "  How should unauthorized users be handled?", access_choices, 1
+                    "  How should unauthorized users be handled?",
+                    access_choices,
+                    default_access_idx,
                 )
                 if access_idx == 0:
-                    save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
+                    if is_email:
+                        save_env_value("EMAIL_ALLOW_ALL_USERS", "true")
+                    else:
+                        save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
                     print_warning("  Open access enabled — anyone can use your bot!")
                 elif access_idx == 1:
+                    if is_email:
+                        _set_platform_unauthorized_dm_behavior("email", "pair")
                     print_success(
                         "  DM pairing mode — users will receive a code to request access."
                     )
                     print_info(
                         "  Approve with: hermes pairing approve <platform> <code>"
                     )
+                elif is_email:
+                    print_success("  Unknown email senders will be ignored.")
                 else:
                     print_info(
                         "  Skipped — configure later with 'hermes gateway setup'"

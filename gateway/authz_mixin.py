@@ -458,13 +458,16 @@ class GatewayAuthorizationMixin:
         Resolution order:
         1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
         2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
-        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+        3. Email defaults to ``"ignore"`` unless explicitly opted into
+           pairing. Inboxes may contain arbitrary unread human messages, so
+           replying with pairing codes is not a safe platform default.
+        4. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
            or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
            the allowlist signals that the owner has deliberately restricted
            access; spamming unknown contacts with pairing codes is both noisy
            and a potential info-leak. (#9337)
-        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        5. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
 
@@ -493,6 +496,13 @@ class GatewayAuthorizationMixin:
                     return "pair"
                 if dm_policy in {"allowlist", "disabled"}:
                     return "ignore"
+
+        # Email is inbox-shaped, not chat-shaped: an agent mailbox may contain
+        # unrelated unread human email. Require an explicit per-platform
+        # ``unauthorized_dm_behavior: pair`` opt-in before replying to unknown
+        # senders with pairing codes.
+        if platform == Platform.EMAIL:
+            return "ignore"
 
         # No explicit override.  Fall back to allowlist-aware default:
         # if any allowlist is configured for this platform, silently drop

@@ -228,7 +228,8 @@ class _VikingClient:
 
     def __init__(self, endpoint: str, api_key: str = "",
                  account: Optional[str] = None, user: Optional[str] = None,
-                 agent: Optional[str] = None):
+                 agent: Optional[str] = None,
+                 peer_id: str = ""):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
         # Account/user are local/trusted-mode tenant identity. API-key requests
@@ -237,6 +238,7 @@ class _VikingClient:
         self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
         self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
+        self._peer_id = peer_id or self._agent
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
@@ -247,7 +249,7 @@ class _VikingClient:
 
         h = {"Content-Type": "application/json"}
         if self._agent:
-            h["X-OpenViking-Actor-Peer"] = self._agent
+            h["X-OpenViking-Actor-Peer"] = self._peer_id or self._agent
         if include_tenant:
             if self._account:
                 h["X-OpenViking-Account"] = self._account
@@ -1800,6 +1802,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
+        self._peer_id = ""
         # Guards the (_session_id, _turn_count) pair. sync_turn runs on the
         # MemoryManager's background sync executor while on_session_end /
         # on_session_switch run on the caller's thread, so the snapshot+reset
@@ -1924,6 +1927,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "default": False,
                 "env_var": "OPENVIKING_RECALL_RESOURCES",
             },
+            {
+                "key": "user_isolation",
+                "description": (
+                    "When true, isolate memories per end-user (peer_id = agent>>user). "
+                    "When false (default), one peer per Hermes profile."
+                ),
+                "default": False,            },
         ]
 
     def get_status_config(self, provider_config: dict) -> dict:
@@ -2150,10 +2160,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
             else None
         )
 
+        # Read agent and end-user identity from the MemoryProvider interface.
+        # These are provided by Hermes core via initialize() kwargs (see
+        # agent/memory_provider.py:72-82). agent_identity is the profile name
+        # (e.g. "agent_arch"); user_id is the platform user identifier.
+        agent_identity = kwargs.get("agent_identity", self._agent)
+        user_id = kwargs.get("user_id", "")
+        user_isolation = kwargs.get("user_isolation", False)
+
+        # Compute peer_id based on user_isolation toggle:
+        #   false (default) -> peer_id = "agent_arch"       (one peer per agent)
+        #   true             -> peer_id = "agent_arch>>matrix_user_123"  (per end-user)
+        if user_isolation and user_id:
+            self._peer_id = f"{agent_identity}>>{user_id}"
+        else:
+            self._peer_id = agent_identity
+
         try:
             self._client = _VikingClient(
                 self._endpoint, self._api_key,
                 account=self._account, user=self._user, agent=self._agent,
+                peer_id=self._peer_id,
             )
             health_state, health_message = _classify_runtime_openviking_health(self._client, self._endpoint)
             if health_state == "unreachable":
@@ -2370,6 +2397,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             account=self._account,
             user=self._user,
             agent=self._agent,
+            peer_id=self._peer_id,
         )
 
     @staticmethod
@@ -2381,8 +2409,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "role": "assistant",
             "parts": [self._text_part(assistant_content)],
         }
-        if self._agent:
-            assistant_message["peer_id"] = self._agent
+        if self._peer_id or self._agent:
+            assistant_message["peer_id"] = self._peer_id or self._agent
         return {
             "messages": [
                 {"role": "user", "parts": [self._text_part(user_content)]},

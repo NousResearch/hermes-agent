@@ -340,6 +340,11 @@ plugins = [
   "**/plugin.yaml",
   "**/plugin.yml",
   "**/README.md",
+  # Plugin sidecar assets (Node sidecar for photon/iMessage).
+  # Without this glob the wheel ships the plugin's Python code but omits
+  # package.json, index.mjs, lockfile, etc. — hermes photon install-sidecar
+  # then fails with ENOENT.  See #48659.
+  "*/sidecar/**/*",
 ]
 
 [tool.setuptools.packages.find]

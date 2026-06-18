@@ -305,6 +305,7 @@ def test_gateway_run_force_flag_survives_parser_extraction():
         subparsers,
         cmd_gateway=lambda _args: None,
         cmd_proxy=lambda _args: None,
+        cmd_gateway_enroll=lambda _args: None,
     )
 
     args = parser.parse_args(["gateway", "run", "--force"])

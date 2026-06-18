@@ -705,6 +705,7 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        **kwargs,  # absorb extra caller kwargs (e.g. cwd) — #48531
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
@@ -1462,6 +1463,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        **kwargs,  # absorb extra caller kwargs (e.g. timestamp) — #48531
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.

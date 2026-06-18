@@ -238,7 +238,14 @@ class ResponsesApiTransport(ProviderTransport):
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
-                    kwargs["reasoning"] = github_reasoning
+                    # Request a reasoning summary so the Responses API actually
+                    # returns reasoning text. Without summary="auto" the
+                    # reasoning items come back with no summary and Hermes
+                    # persists empty reasoning/thinking content — the same loss
+                    # the non-GitHub branch below already avoids. Verified
+                    # against api.githubcopilot.com /responses: the summary is
+                    # only emitted when summary="auto" is sent. See #46527.
+                    kwargs["reasoning"] = {**github_reasoning, "summary": "auto"}
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = (

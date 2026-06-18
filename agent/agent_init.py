@@ -846,6 +846,19 @@ def init_agent(
                             agent.provider = _fb["provider"]
                             agent.model = _fb_model or _fb["model"]
                             agent._fallback_activated = True
+                            # Recompute api_mode for the fallback provider/model —
+                            # otherwise it stays whatever was computed above for
+                            # the (unreachable) primary, e.g. a Nous primary
+                            # configured with api_mode: codex_responses leaves
+                            # a Copilot gpt-5-mini fallback stuck on the
+                            # Responses API and silently drops reasoning/
+                            # thinking content. See #46527.
+                            from agent.chat_completion_helpers import resolve_fallback_api_mode
+                            agent.api_mode = resolve_fallback_api_mode(
+                                agent, agent.provider, agent.model, str(_fb_client.base_url),
+                            )
+                            if hasattr(agent, "_transport_cache"):
+                                agent._transport_cache.clear()
                             client_kwargs = {
                                 "api_key": _fb_client.api_key,
                                 "base_url": str(_fb_client.base_url),

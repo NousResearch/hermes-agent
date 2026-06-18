@@ -1042,6 +1042,45 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
+def resolve_fallback_api_mode(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
+    """Determine the ``api_mode`` a (provider, model, base_url) triple requires.
+
+    Shared by :func:`try_activate_fallback` (per-turn automatic fallback)
+    and the init-time fallback path in ``agent_init.py`` (#17929) so both
+    recompute ``api_mode`` for the *new* backend instead of inheriting it
+    from whatever provider was active before the switch.  See #46527 —
+    without this, a fallback to e.g. Copilot's ``gpt-5-mini`` (chat
+    completions only) silently inherited ``codex_responses`` from a Nous
+    primary configured with ``api_mode: codex_responses``, and the
+    response came back with no reasoning/thinking content.
+    """
+    fb_api_mode = "chat_completions"
+    if fb_provider == "openai-codex":
+        fb_api_mode = "codex_responses"
+    elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+        fb_api_mode = "anthropic_messages"
+    elif agent._is_azure_openai_url(fb_base_url):
+        # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
+        # support the Responses API. Stay on chat_completions.
+        fb_api_mode = "chat_completions"
+    elif agent._is_direct_openai_url(fb_base_url):
+        fb_api_mode = "codex_responses"
+    elif agent._provider_model_requires_responses_api(
+        fb_model,
+        provider=fb_provider,
+    ):
+        # GPT-5.x models usually need Responses API, but keep
+        # provider-specific exceptions like Copilot gpt-5-mini on
+        # chat completions.
+        fb_api_mode = "codex_responses"
+    elif fb_provider == "bedrock" or (
+        base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(fb_base_url, "amazonaws.com")
+    ):
+        fb_api_mode = "bedrock_converse"
+    return fb_api_mode
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1140,32 +1179,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
 
         # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
-        _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
-            fb_api_mode = "codex_responses"
-        elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
-            fb_api_mode = "anthropic_messages"
-        elif _fb_is_azure:
-            # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
-            # support the Responses API. Stay on chat_completions.
-            fb_api_mode = "chat_completions"
-        elif agent._is_direct_openai_url(fb_base_url):
-            fb_api_mode = "codex_responses"
-        elif agent._provider_model_requires_responses_api(
-            fb_model,
-            provider=fb_provider,
-        ):
-            # GPT-5.x models usually need Responses API, but keep
-            # provider-specific exceptions like Copilot gpt-5-mini on
-            # chat completions.
-            fb_api_mode = "codex_responses"
-        elif fb_provider == "bedrock" or (
-            base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
-            and base_url_host_matches(fb_base_url, "amazonaws.com")
-        ):
-            fb_api_mode = "bedrock_converse"
+        fb_api_mode = resolve_fallback_api_mode(agent, fb_provider, fb_model, fb_base_url)
 
         old_model = agent.model
 

@@ -100,6 +100,18 @@ class TestCodexBuildKwargs:
         )
         assert "prompt_cache_key" not in kw
 
+    def test_github_responses_requests_reasoning_summary(self, transport):
+        """#46527: the GitHub Responses branch must request summary="auto" so
+        Copilot returns reasoning text. Without it, reasoning items come back
+        empty and Hermes persists no reasoning/thinking content."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            is_github_responses=True,
+            github_reasoning_extra={"effort": "medium"},
+        )
+        assert kw.get("reasoning") == {"effort": "medium", "summary": "auto"}
+
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the
         body-level cache-routing key (the ``x-grok-conv-id`` header is

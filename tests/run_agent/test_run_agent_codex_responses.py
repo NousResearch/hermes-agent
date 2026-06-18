@@ -385,7 +385,9 @@ def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch
     assert kwargs["store"] is False
     assert kwargs["tool_choice"] == "auto"
     assert kwargs["parallel_tool_calls"] is True
-    assert kwargs["reasoning"] == {"effort": "medium"}
+    # #46527: Copilot's Responses API only returns reasoning text when
+    # summary="auto" is requested; without it reasoning is persisted empty.
+    assert kwargs["reasoning"] == {"effort": "medium", "summary": "auto"}
     assert "prompt_cache_key" not in kwargs
     assert "include" not in kwargs
 

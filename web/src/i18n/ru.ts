@@ -43,6 +43,9 @@ export const ru: Translations = {
     expand: "Развернуть",
     general: "Общие",
     messaging: "Мессенджеры",
+    gateway: "Шлюз",
+    gatewayHint:
+      "Мессенджеры, API-сервер и вебхуки настраиваются на странице «Каналы». Это настройки шлюза (режим прокси/ретрансляции и глобальный список разрешений).",
     pluginLoadFailed:
       "Не удалось загрузить скрипт этого плагина. Проверьте вкладку «Сеть» (dashboard-plugins/…) и путь к плагинам на сервере.",
     pluginNotRegistered:
@@ -90,6 +93,10 @@ export const ru: Translations = {
     statusOverview: "Обзор статуса",
     system: "Система",
     webUi: "Web UI",
+    managingProfile: "Управление профилем",
+    currentProfileOption: "эта панель ({name})",
+    managingProfileBanner:
+      "Управление профилем «{name}» — конфигурация, ключи, навыки, MCP, модель и новые чаты применяются к этому профилю.",
   },
 
   status: {
@@ -277,6 +284,9 @@ export const ru: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "сначала задайте домашний канал",
+      noneConfigured:
+        "Нет настроенных мессенджеров. Настройте один в разделе «Каналы» для доставки отчётов.",
     },
   },
 
@@ -287,7 +297,8 @@ export const ru: Translations = {
     nameRequired: "Имя обязательно",
     nameRule:
       "Только строчные буквы, цифры, _ и -; должно начинаться с буквы или цифры; до 64 символов.",
-    invalidName: "Недопустимое имя профиля",    cloneFrom: "Клонировать конфигурацию из профиля",
+    invalidName: "Недопустимое имя профиля",
+    cloneFrom: "Клонировать конфигурацию из профиля",
     cloneFromNone: "Нет (пусто)",
     allProfiles: "Профили",
     noProfiles: "Профили не найдены.",
@@ -310,6 +321,38 @@ export const ru: Translations = {
     created: "Создан",
     deleted: "Удалён",
     renamed: "Переименован",
+    activeProfile: "Активный профиль",
+    activeBadge: "активен",
+    setActive: "Сделать активным",
+    activeSet: "Активный профиль установлен",
+    gatewayRunning: "Шлюз запущен",
+    gatewayStopped: "Шлюз остановлен",
+    gatewayRunningWarning:
+      "Шлюз этого профиля запущен — он будет остановлен.",
+    aliasBadge: "псевдоним",
+    description: "Описание",
+    descriptionPlaceholder:
+      "В чём силён этот профиль? Используется для маршрутизации kanban-задач по роли.",
+    noDescription: "Описания нет",
+    editDescription: "Редактировать описание",
+    descriptionSaved: "Описание сохранено",
+    reviewBadge: "проверка",
+    autoGenerate: "Автогенерация",
+    generating: "Генерация…",
+    describeFailed: "Не удалось сгенерировать описание",
+    distribution: "Распределение",
+    advancedOptions: "Расширенные параметры",
+    cloneAll: "Клонировать всё (память, сессии, навыки, состояние)",
+    noSkillsOption: "Не добавлять встроенные навыки",
+    descriptionOptional: "Описание (необязательно)",
+    modelOptional: "Модель (необязательно)",
+    modelInherit: "Наследовать от клона / по умолчанию",
+    modelLoading: "Загрузка моделей…",
+    modelNone: "Нет авторизованных провайдеров — сначала укажите ключ",
+    editModel: "Изменить модель",
+    modelSaved: "Модель обновлена",
+    modelSelect: "Выберите модель",
+    actions: "Действия",
   },
 
   pluginsPage: {
@@ -371,6 +414,10 @@ export const ru: Translations = {
     setupNeeded: "Требуется настройка",
     disabledForCli: "Отключено для CLI",
     more: "+{count} ещё",
+    profileSelector: "Профиль",
+    currentProfile: "текущий ({name})",
+    managingProfile:
+      "Управление профилем «{name}» — переключатели применяются к этому профилю, а не к этой панели.",
   },
 
   config: {
@@ -489,6 +536,12 @@ export const ru: Translations = {
   theme: {
     title: "Тема",
     switchTheme: "Сменить тему",
+    fontTitle: "Шрифт",
+    fontDefault: "По умолчанию (тема)",
+    fontDefaultHint: "Использовать шрифт активной темы",
+    fontSans: "Без засечек",
+    fontSerif: "С засечками",
+    fontMono: "Моноширинный",
   },
 
   achievements: {
@@ -637,6 +690,9 @@ export const ru: Translations = {
     createTask: "Создать задачу в этой колонке",
     noTasks: "— нет задач —",
     unassigned: "без исполнителя",
+    needsAssignee: "Нужен исполнитель",
+    needsAssigneeHint:
+      "Зависимости выполнены, но диспетчер пропускает эту задачу, пока не назначен профиль.",
     untitled: "(без названия)",
     loadingDetail: "Загрузка…",
     addComment: "Добавить комментарий… (Enter — отправить)",

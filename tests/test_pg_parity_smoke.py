@@ -186,10 +186,12 @@ def _pg_session_db(dsn):
 
     original = cfgmod.load_config
     cfg = {"sessions": {"state_backend": "postgres", "postgres_dsn": dsn}}
-    cfgmod.load_config = lambda *a, **k: cfg
+    # setattr (rather than direct assignment) avoids a type-checker
+    # function-shadowing complaint while dynamically swapping the resolver.
+    setattr(cfgmod, "load_config", lambda *a, **k: cfg)
 
     def restore():
-        cfgmod.load_config = original
+        setattr(cfgmod, "load_config", original)
 
     try:
         return SessionDB(), restore

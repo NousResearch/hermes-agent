@@ -2062,9 +2062,9 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def _download_remote_media(self, url: str) -> str:
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import async_is_safe_url
 
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
         assert self._send_session is not None

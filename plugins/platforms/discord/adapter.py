@@ -72,7 +72,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
-from tools.url_safety import is_safe_url
+from tools.url_safety import async_is_safe_url
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -1902,7 +1902,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             continue
                         files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
                     else:
-                        if not is_safe_url(image_url):
+                        if not await async_is_safe_url(image_url):
                             logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
                             continue
                         # Download to BytesIO so it renders inline
@@ -2941,7 +2941,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        if not is_safe_url(image_url):
+        if not await async_is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL during Discord send_image", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
@@ -3020,7 +3020,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        if not is_safe_url(animation_url):
+        if not await async_is_safe_url(animation_url):
             logger.warning("[%s] Blocked unsafe animation URL during Discord send_animation", self.name)
             return await super().send_animation(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
@@ -4872,7 +4872,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return raw_bytes
 
         # Fallback: SSRF-gated URL download.
-        if not is_safe_url(att.url):
+        if not await async_is_safe_url(att.url):
             raise ValueError(
                 f"Blocked unsafe attachment URL (SSRF protection): {att.url}"
             )

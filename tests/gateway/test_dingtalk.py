@@ -119,6 +119,62 @@ class TestDingTalkRequirements:
         from gateway.platforms.dingtalk import check_dingtalk_requirements
         assert check_dingtalk_requirements() is True
 
+    def test_returns_true_with_config_credentials(self, monkeypatch):
+        """config.yaml extra credentials must satisfy the gate without env vars.
+
+        Regression test: the runner used to reject config-backed DingTalk
+        credentials that GatewayConfig already recognised as connected and
+        DingTalkAdapter.__init__ already accepted.
+        """
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        from gateway.platforms.dingtalk import check_dingtalk_requirements
+        config = PlatformConfig(
+            enabled=True,
+            extra={"client_id": "cfg-id", "client_secret": "cfg-secret"},
+        )
+        assert check_dingtalk_requirements(config) is True
+
+    def test_returns_false_when_config_lacks_credentials(self, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        from gateway.platforms.dingtalk import check_dingtalk_requirements
+        assert check_dingtalk_requirements(PlatformConfig(enabled=True)) is False
+
+    def test_mixed_config_and_env_credentials(self, monkeypatch):
+        """Each credential resolves independently (extra first, then env),
+        mirroring DingTalkAdapter.__init__."""
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "env-secret")
+        from gateway.platforms.dingtalk import check_dingtalk_requirements
+        config = PlatformConfig(enabled=True, extra={"client_id": "cfg-id"})
+        assert check_dingtalk_requirements(config) is True
+
+    def test_config_credentials_do_not_bypass_dependency_check(self, monkeypatch):
+        with patch.dict("sys.modules", {"dingtalk_stream": None}), \
+             patch("tools.lazy_deps.ensure", side_effect=ImportError("dingtalk_stream unavailable")):
+            monkeypatch.setattr(
+                "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", False
+            )
+            from gateway.platforms.dingtalk import check_dingtalk_requirements
+            config = PlatformConfig(
+                enabled=True,
+                extra={"client_id": "cfg-id", "client_secret": "cfg-secret"},
+            )
+            assert check_dingtalk_requirements(config) is False
+
 
 # ---------------------------------------------------------------------------
 # Adapter construction
@@ -146,6 +202,53 @@ class TestDingTalkAdapterInit:
         adapter = DingTalkAdapter(config)
         assert adapter._client_id == "env-id"
         assert adapter._client_secret == "env-secret"
+
+
+# ---------------------------------------------------------------------------
+# Runner integration — _create_adapter preflight
+# ---------------------------------------------------------------------------
+
+
+class TestRunnerCreateAdapter:
+    """The runner's DingTalk preflight must accept the same credential
+    sources the adapter and GatewayConfig connected-checker accept."""
+
+    def _create_dingtalk_adapter(self, config):
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={Platform.DINGTALK: config})
+        return runner._create_adapter(Platform.DINGTALK, config)
+
+    def test_config_only_credentials_create_adapter(self, monkeypatch):
+        """config.yaml-only credentials must produce a working adapter —
+        previously the env-only preflight returned None here even though
+        GatewayConfig reported the platform as connected."""
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        config = PlatformConfig(
+            enabled=True,
+            extra={"client_id": "cfg-id", "client_secret": "cfg-secret"},
+        )
+        adapter = self._create_dingtalk_adapter(config)
+        assert adapter is not None
+        assert adapter._client_id == "cfg-id"
+        assert adapter._client_secret == "cfg-secret"
+
+    def test_missing_credentials_still_blocked(self, monkeypatch):
+        monkeypatch.delenv("DINGTALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("DINGTALK_CLIENT_SECRET", raising=False)
+        monkeypatch.setattr(
+            "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", True
+        )
+        monkeypatch.setattr("gateway.platforms.dingtalk.HTTPX_AVAILABLE", True)
+        adapter = self._create_dingtalk_adapter(PlatformConfig(enabled=True))
+        assert adapter is None
 
 
 # ---------------------------------------------------------------------------

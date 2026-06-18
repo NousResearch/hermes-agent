@@ -7,7 +7,8 @@ Supports: text, images, audio, video, rich text, files, and group @mentions.
 
 Requires:
     pip install "dingtalk-stream>=0.20" httpx
-    DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET env vars
+    Credentials: DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET env vars,
+    or client_id/client_secret under the platform's ``extra`` config (below)
 
 Configuration in config.yaml:
     platforms:
@@ -110,8 +111,13 @@ DINGTALK_TYPE_MAPPING = {
 }
 
 
-def check_dingtalk_requirements() -> bool:
+def check_dingtalk_requirements(config: Optional[PlatformConfig] = None) -> bool:
     """Check if DingTalk dependencies are available and configured.
+
+    Credentials may come from ``config.extra`` (``client_id``/``client_secret``)
+    or the ``DINGTALK_CLIENT_ID``/``DINGTALK_CLIENT_SECRET`` env vars — the same
+    resolution order as ``DingTalkAdapter.__init__`` and the connected-platform
+    checker in ``gateway.config``.
 
     Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
     on first call if not present.
@@ -138,7 +144,10 @@ def check_dingtalk_requirements() -> bool:
         httpx = _httpx
         DINGTALK_STREAM_AVAILABLE = True
         HTTPX_AVAILABLE = True
-    if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
+    extra = getattr(config, "extra", None) or {}
+    client_id = extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
+    client_secret = extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
+    if not client_id or not client_secret:
         return False
     return True
 

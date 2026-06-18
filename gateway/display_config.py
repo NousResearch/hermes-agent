@@ -132,8 +132,8 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "whatsapp_cloud":  _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
-    "wecom":           _TIER_LOW,
-    "wecom_callback":  _TIER_LOW,
+    "wecom":           {**_TIER_LOW, "streaming": None},
+    "wecom_callback":  {**_TIER_LOW, "streaming": None},
     "dingtalk":        _TIER_LOW,
 
     # Tier 4 — batch or non-interactive delivery

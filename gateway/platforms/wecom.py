@@ -88,6 +88,12 @@ CALLBACK_COMMANDS = {APP_CMD_CALLBACK, APP_CMD_LEGACY_CALLBACK}
 NON_RESPONSE_COMMANDS = CALLBACK_COMMANDS | {APP_CMD_EVENT_CALLBACK}
 
 MAX_MESSAGE_LENGTH = 4000
+# WeCom AI Bot markdown.content is documented as up to 20,480 UTF-8 bytes.
+# Keep native stream overflow/slicing on the same byte unit so a streamed reply
+# that fits the documented message cap stays in one bubble, while ordinary
+# markdown send keeps the conservative MAX_MESSAGE_LENGTH above.
+STREAM_MESSAGE_MAX_BYTES = 20480
+STREAM_MESSAGE_TRUNCATION_NOTICE = "\n\n…\n\n⚠️ 内容超过企业微信单条流式消息上限，已截断。"
 CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -143,7 +149,11 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    STREAM_MESSAGE_MAX_BYTES = STREAM_MESSAGE_MAX_BYTES
+    STREAM_MESSAGE_TRUNCATION_NOTICE = STREAM_MESSAGE_TRUNCATION_NOTICE
     SUPPORTS_MESSAGE_EDITING = False
+    REQUIRES_EDIT_FINALIZE = True
+    DRAFT_STREAM_FINALIZES = True
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -554,7 +564,7 @@ class WeComAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None,
+            reply_to_message_id=msg_id,
             reply_to_text=reply_text if has_reply_context else None,
             timestamp=datetime.now(tz=timezone.utc),
         )
@@ -922,6 +932,116 @@ class WeComAdapter(BasePlatformAdapter):
         if not normalized or normalized.startswith("quote:"):
             return None
         return self._reply_req_ids.get(normalized)
+
+    def supports_draft_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """WeCom supports native reply-mode streams only for live inbound replies."""
+        del chat_type
+        reply_to = (metadata or {}).get("reply_to_message_id")
+        return self._reply_req_id_for_message(str(reply_to)) is not None
+
+    def _stream_id_for_draft(self, draft_id: int) -> str:
+        # WeCom appears to keep stream ids scoped wider than a single inbound
+        # request in the client UI.  Reusing short ids such as "hermes-1" after
+        # a gateway restart can leave the client stuck on its native
+        # "searching/生成中" placeholder instead of rendering the new stream.
+        # Prefix with the adapter's per-process device id while keeping the
+        # consumer's draft_id stable across frames in the same response.
+        return f"hermes-{self._device_id[:8]}-{int(draft_id)}"
+
+    @staticmethod
+    def _utf8_prefix(text: str, max_bytes: int) -> str:
+        """Return the longest prefix whose UTF-8 encoding fits *max_bytes*."""
+        if max_bytes <= 0:
+            return ""
+        encoded = str(text or "").encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return str(text or "")
+        return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+    @classmethod
+    def _truncate_stream_content(cls, content: str) -> str:
+        """Clamp native stream content to WeCom's byte cap with a visible notice."""
+        text = str(content or "")
+        if len(text.encode("utf-8")) <= cls.STREAM_MESSAGE_MAX_BYTES:
+            return text
+        notice = cls.STREAM_MESSAGE_TRUNCATION_NOTICE
+        notice_bytes = len(notice.encode("utf-8"))
+        budget = max(0, cls.STREAM_MESSAGE_MAX_BYTES - notice_bytes)
+        return cls._utf8_prefix(text, budget).rstrip() + notice
+
+    @property
+    def message_len_fn(self):
+        """WeCom content limits are documented in UTF-8 bytes."""
+        return lambda s: len(str(s or "").encode("utf-8"))
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """Use the documented 20,480-byte cap so long replies stay in one bubble."""
+        return self.STREAM_MESSAGE_MAX_BYTES
+
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        *,
+        stream_id: str,
+        content: str,
+        finish: bool = False,
+    ) -> Dict[str, Any]:
+        """Write one WeCom native stream frame without waiting for an ack.
+
+        Empirically, ``aibot_respond_msg`` stream frames may not produce a
+        correlated websocket response for every partial frame.  Waiting on the
+        generic request/response helper can therefore block the first frame and
+        defeat streaming.  Treat websocket write success as delivery.
+        """
+        body = {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "content": self._truncate_stream_content(content),
+                "finish": bool(finish),
+            },
+        }
+        await self._send_json(
+            {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": reply_req_id}, "body": body}
+        )
+        return {"headers": {"req_id": reply_req_id}, "errcode": 0, "body": body}
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send/update a WeCom AI Bot native reply stream frame."""
+        del chat_id
+        reply_to = (metadata or {}).get("reply_to_message_id")
+        reply_req_id = self._reply_req_id_for_message(str(reply_to))
+        if not reply_req_id:
+            return SendResult(success=False, error="WeCom draft stream requires inbound reply_to_message_id")
+
+        finish = bool((metadata or {}).get("finish") or (metadata or {}).get("final"))
+        stream_id = self._stream_id_for_draft(draft_id)
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id,
+                stream_id=stream_id,
+                content=content,
+                finish=finish,
+            )
+        except Exception as exc:
+            logger.error("[%s] Draft stream send failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+        return SendResult(
+            success=True,
+            message_id=stream_id if finish else None,
+            raw_response=response,
+        )
 
     # ------------------------------------------------------------------
     # Outbound messaging

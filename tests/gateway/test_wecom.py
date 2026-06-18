@@ -42,6 +42,17 @@ class TestWeComAdapterInit:
 
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
 
+    def test_native_stream_uses_documented_byte_limit(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        cap = adapter.streaming_overflow_limit()
+        assert isinstance(cap, int)
+        assert cap == 20480
+        assert adapter.message_len_fn("汉字") == len("汉字".encode("utf-8"))
+        assert type(adapter)._utf8_prefix("汉字", 4) == "汉"
+
     def test_reads_config_from_extra(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -644,7 +655,7 @@ class TestInboundMessages:
 
         event = adapter.handle_message.await_args.args[0]
         assert event.reply_to_text == "quoted message"
-        assert event.reply_to_message_id == "quote:msg-1"
+        assert event.reply_to_message_id == "msg-1"
 
     @pytest.mark.asyncio
     async def test_on_message_respects_group_policy(self):
@@ -953,3 +964,362 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+class TestWeComNativeDraftStreaming:
+    def test_supports_draft_streaming_requires_reply_context(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+
+        assert adapter.supports_draft_streaming(metadata={"reply_to_message_id": "msg-1"}) is True
+        assert adapter.supports_draft_streaming(metadata={"reply_to_message_id": "missing"}) is False
+        assert adapter.supports_draft_streaming(metadata=None) is False
+
+    @pytest.mark.asyncio
+    async def test_send_draft_emits_stream_frames_without_waiting_for_ack(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        sent_payloads = []
+
+        async def fake_send_json(payload):
+            sent_payloads.append(payload)
+
+        adapter._send_json = fake_send_json
+
+        partial = await adapter.send_draft(
+            "chat-1",
+            draft_id=7,
+            content="hello",
+            metadata={"reply_to_message_id": "msg-1"},
+        )
+        final = await adapter.send_draft(
+            "chat-1",
+            draft_id=7,
+            content="hello world",
+            metadata={"reply_to_message_id": "msg-1", "finish": True},
+        )
+
+        assert partial.success is True
+        assert final.success is True
+        assert len(sent_payloads) == 2
+        assert sent_payloads[0]["cmd"] == APP_CMD_RESPONSE
+        assert sent_payloads[0]["headers"]["req_id"] == "req-1"
+        assert sent_payloads[0]["body"]["msgtype"] == "stream"
+        assert sent_payloads[0]["body"]["stream"]["id"].endswith("-7")
+        # WeCom stream frames follow the official SDK shape:
+        # body.stream.content is the visible markdown/text; body.stream carries
+        # the lifecycle fields (id/finish) together.
+        assert sent_payloads[0]["body"]["stream"]["content"] == "hello"
+        assert sent_payloads[0]["body"]["stream"]["finish"] is False
+        assert sent_payloads[1]["headers"]["req_id"] == "req-1"
+        assert sent_payloads[1]["body"]["stream"]["id"].endswith("-7")
+        assert sent_payloads[1]["body"]["stream"]["content"] == "hello world"
+        assert sent_payloads[1]["body"]["stream"]["finish"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_draft_allows_long_stream_content_with_byte_safe_cap(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        sent_payloads = []
+
+        async def fake_send_json(payload):
+            sent_payloads.append(payload)
+
+        adapter._send_json = fake_send_json
+
+        long_content = "x" * 5000
+        result = await adapter.send_draft(
+            "chat-1",
+            draft_id=8,
+            content=long_content,
+            metadata={"reply_to_message_id": "msg-1", "finish": True},
+        )
+
+        assert result.success is True
+        assert sent_payloads[0]["body"]["stream"]["content"] == long_content
+
+        oversized = "汉" * 7000  # 21,000 UTF-8 bytes, just above the stream cap.
+        await adapter.send_draft(
+            "chat-1",
+            draft_id=9,
+            content=oversized,
+            metadata={"reply_to_message_id": "msg-1", "finish": True},
+        )
+
+        cap = adapter.streaming_overflow_limit()
+        assert isinstance(cap, int)
+        capped = sent_payloads[1]["body"]["stream"]["content"]
+        assert len(capped.encode("utf-8")) <= cap
+        assert capped.endswith(adapter.STREAM_MESSAGE_TRUNCATION_NOTICE)
+        assert capped.startswith("汉" * 10)
+        assert capped != oversized
+
+    @pytest.mark.asyncio
+    async def test_stream_consumer_finalizes_wecom_draft_without_regular_send(self):
+        from gateway.platforms.wecom import WeComAdapter
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        sent_payloads = []
+
+        async def fake_send_json(payload):
+            sent_payloads.append(payload)
+
+        adapter._send_json = fake_send_json
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="regular-send"))
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat-1",
+            StreamConsumerConfig(
+                transport="edit",
+                chat_type="dm",
+                edit_interval=0.01,
+                buffer_threshold=5,
+                cursor="",
+            ),
+            initial_reply_to_id="msg-1",
+        )
+        consumer.on_delta("Hello ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("world")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+        adapter.send.assert_not_awaited()
+        assert len(sent_payloads) >= 2
+        stream_ids = {payload["body"]["stream"]["id"] for payload in sent_payloads}
+        assert len(stream_ids) == 1
+        assert sent_payloads[-1]["body"]["stream"]["content"] == "Hello world"
+        assert sent_payloads[-1]["body"]["stream"]["finish"] is True
+
+    @pytest.mark.asyncio
+    async def test_stream_consumer_truncates_oversized_wecom_draft_without_regular_chunks(self):
+        from gateway.platforms.wecom import WeComAdapter
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        sent_payloads = []
+
+        async def fake_send_json(payload):
+            sent_payloads.append(payload)
+
+        adapter._send_json = fake_send_json
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="regular-send"))
+
+        oversized = "汉" * 7000  # 21,000 UTF-8 bytes, above WeCom's 20,480-byte cap.
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat-1",
+            StreamConsumerConfig(
+                transport="edit",
+                chat_type="dm",
+                edit_interval=0.01,
+                buffer_threshold=5,
+                cursor="",
+            ),
+            initial_reply_to_id="msg-1",
+        )
+        consumer.on_delta(oversized)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        adapter.send.assert_not_awaited()
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+        assert sent_payloads
+        final_stream = sent_payloads[-1]["body"]["stream"]
+        assert final_stream["finish"] is True
+        assert len(final_stream["content"].encode("utf-8")) <= adapter.STREAM_MESSAGE_MAX_BYTES
+        assert final_stream["content"].endswith(adapter.STREAM_MESSAGE_TRUNCATION_NOTICE)
+
+
+class _WeComFakeAgent:
+    last_instance = None
+
+    def __init__(self, *args, **kwargs):
+        self.tools = []
+        self.shutdown_memory_provider = lambda: None
+        self.close = lambda: None
+        self.stream_delta_callback = None
+        self.tool_progress_callback = None
+        self.tool_start_callback = None
+        self.interim_assistant_callback = None
+        self.status_callback = None
+        type(self).last_instance = self
+
+    def run_conversation(
+        self,
+        user_message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message=None,
+        persist_user_timestamp=None,
+    ):
+        if self.tool_progress_callback:
+            self.tool_progress_callback(
+                "tool.started",
+                tool_name="terminal",
+                preview="sleep 0.05 && echo ready",
+                args={"command": "sleep 0.05 && echo ready"},
+            )
+        import time
+        time.sleep(0.4)
+        if self.tool_progress_callback:
+            self.tool_progress_callback(
+                "tool_end",
+                tool_name="terminal",
+                preview="ready",
+                args={},
+            )
+        for chunk in ["工具完成后", "开始流式", "正文"]:
+            if self.stream_delta_callback:
+                self.stream_delta_callback(chunk)
+            time.sleep(0.02)
+        return {
+            "final_response": "工具完成后开始流式正文",
+            "messages": [],
+            "api_calls": 2,
+            "completed": True,
+            "tools": ["terminal"],
+        }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_wecom_gateway_streams_after_tool_phase(monkeypatch, tmp_path):
+    import sys
+    import threading
+    import types
+    from types import SimpleNamespace
+
+    import gateway.run as gateway_run
+    from gateway.config import GatewayConfig, Platform, StreamingConfig
+    from gateway.platforms.wecom import WeComAdapter
+    from gateway.session import SessionSource
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _WeComFakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = WeComAdapter(PlatformConfig(enabled=True))
+    adapter._reply_req_ids["msg-1"] = "req-1"
+    adapter._last_chat_req_ids["chat-1"] = "req-1"
+    sent_payloads = []
+
+    async def fake_send_json(payload):
+        sent_payloads.append(payload)
+
+    adapter._send_json = fake_send_json
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="plain-send"))
+    adapter.send_typing = AsyncMock()
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {Platform.WECOM: adapter}
+    runner.config = GatewayConfig(streaming=StreamingConfig(enabled=True, transport="auto", edit_interval=0.01, buffer_threshold=1, cursor=""))
+    runner._ephemeral_system_prompt = ""
+    runner._prefill_messages = []
+    runner._reasoning_config = None
+    runner._service_tier = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._running_agents = {}
+    runner._pending_model_notes = {}
+    runner._session_model_overrides = {}
+    runner._session_db = None
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+    runner._voice_mode = {}
+    runner._draining = False
+    runner._update_runtime_status = lambda *_args, **_kwargs: None
+    runner.hooks = SimpleNamespace(loaded_hooks=False, emit=AsyncMock())
+    runner.session_store = SimpleNamespace(
+        get_or_create_session=lambda source: SimpleNamespace(session_id="session-1"),
+        load_transcript=lambda session_id: [],
+    )
+    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "streaming": {"enabled": True, "transport": "auto"},
+            "display": {"platforms": {"wecom": {"streaming": True, "tool_progress": "all"}}},
+            "agent": {},
+        },
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {
+            "display": {"platforms": {"wecom": {"streaming": True, "tool_progress": "all"}}},
+            "agent": {},
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.5")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"provider": "custom:test", "api_key": "fake", "api_mode": "chat_completions"},
+    )
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *_args, **_kwargs: 100000)
+    import hermes_cli.tools_config as tools_config
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"terminal"})
+
+    source = SessionSource(
+        platform=Platform.WECOM,
+        chat_id="chat-1",
+        chat_type="dm",
+        user_id="user-1",
+        user_name="user-1",
+    )
+
+    result = await runner._run_agent(
+        message="先调用工具再回答",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="session-1",
+        session_key="agent:main:wecom:dm:chat-1",
+        event_message_id="msg-1",
+    )
+
+    assert result["final_response"] == "工具完成后开始流式正文"
+    adapter.send.assert_not_awaited()
+    stream_frames = [p for p in sent_payloads if p.get("body", {}).get("msgtype") == "stream"]
+    assert len(stream_frames) >= 3
+    assert all(p["cmd"] == "aibot_respond_msg" for p in stream_frames)
+    assert all(p["headers"]["req_id"] == "req-1" for p in stream_frames)
+
+    progress_frames = [
+        p for p in stream_frames
+        if "terminal" in p["body"]["stream"].get("content", "")
+    ]
+    assert progress_frames, "WeCom should expose Telegram-like tool progress before final text"
+    assert progress_frames[0]["body"]["stream"]["finish"] is False
+    assert progress_frames[-1]["body"]["stream"]["finish"] is True
+
+    content_frames = [
+        p for p in stream_frames
+        if p["body"]["stream"].get("content") == "工具完成后开始流式正文"
+    ]
+    assert content_frames
+    assert content_frames[-1]["body"]["stream"]["finish"] is True
+    assert {p["body"]["stream"]["id"] for p in progress_frames}.isdisjoint(
+        {p["body"]["stream"]["id"] for p in content_frames}
+    )

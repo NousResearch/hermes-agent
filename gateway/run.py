@@ -14134,9 +14134,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
+        if source.platform == Platform.WECOM and event_message_id:
+            # WeCom has no message-edit API, but live inbound AI-Bot callbacks
+            # do support native stream updates keyed by the inbound req_id.  DM
+            # chats have no thread_id, so carry the callback message id through
+            # metadata explicitly; the adapter maps it back to the req_id.
+            _progress_metadata = dict(_progress_metadata or {})
+            _progress_metadata.setdefault("reply_to_message_id", str(event_message_id))
         _progress_reply_to = (
             event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+            if (
+                (source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id)
+                or (source.platform == Platform.WECOM and event_message_id)
+            )
             else None
         )
 
@@ -14148,22 +14158,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
-                while not progress_queue.empty():
-                    try:
-                        progress_queue.get_nowait()
-                    except Exception:
-                        break
-                return
-
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
             can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _progress_uses_native_draft = False
+            _progress_draft_id: Optional[int] = None
+
+            # Skip tool progress for platforms that don't support message
+            # editing (e.g. iMessage/BlueBubbles) — each progress update
+            # would become a separate message bubble, which is noisy.  WeCom is
+            # the exception: it has no edit API, but live AI-Bot replies expose
+            # a native stream transport we can use as one mutable progress
+            # bubble, mirroring Telegram's accumulated tool-progress message.
+            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+                try:
+                    _progress_uses_native_draft = bool(
+                        getattr(adapter, "supports_draft_streaming")(
+                            chat_type=getattr(source, "chat_type", "") or None,
+                            metadata=_progress_metadata,
+                        )
+                    )
+                except Exception:
+                    logger.debug("Progress native draft probe failed", exc_info=True)
+                    _progress_uses_native_draft = False
+                if _progress_uses_native_draft:
+                    try:
+                        from gateway.stream_consumer import GatewayStreamConsumer
+                        GatewayStreamConsumer._draft_id_counter += 1
+                        _progress_draft_id = GatewayStreamConsumer._draft_id_counter
+                    except Exception:
+                        _progress_draft_id = int(time.time() * 1000) % 1_000_000_000
+                    can_edit = True
+                else:
+                    while not progress_queue.empty():
+                        try:
+                            progress_queue.get_nowait()
+                        except Exception:
+                            break
+                    return
 
             _progress_len_fn = (
                 adapter.message_len_fn
@@ -14197,13 +14231,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except (TypeError, ValueError):
                     _edit_accepts_metadata = False
 
-            async def _edit_progress_message(message_id: str, content: str):
+            async def _edit_progress_message(message_id: str, content: str, *, finalize: bool = False):
+                if _progress_uses_native_draft:
+                    metadata: Dict[str, Any] = dict(_progress_metadata or {})
+                    if finalize and getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
+                        metadata["finish"] = True
+                    return await adapter.send_draft(
+                        chat_id=source.chat_id,
+                        draft_id=int(message_id),
+                        content=content,
+                        metadata=metadata or None,
+                    )
                 kwargs = {
                     "chat_id": source.chat_id,
                     "message_id": message_id,
                     "content": content,
                 }
-                if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
+                if finalize and getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
                     kwargs["finalize"] = True
                 if _edit_accepts_metadata:
                     kwargs["metadata"] = _progress_metadata
@@ -14236,12 +14280,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cleanup_msg_ids.append(str(result.message_id))
 
             async def _send_progress_text(text: str):
-                result = await adapter.send(
-                    chat_id=source.chat_id,
-                    content=text,
-                    reply_to=_progress_reply_to,
-                    metadata=_progress_metadata,
-                )
+                nonlocal _progress_draft_id
+                if _progress_uses_native_draft:
+                    if _progress_draft_id is None:
+                        try:
+                            from gateway.stream_consumer import GatewayStreamConsumer
+                            GatewayStreamConsumer._draft_id_counter += 1
+                            _progress_draft_id = GatewayStreamConsumer._draft_id_counter
+                        except Exception:
+                            _progress_draft_id = int(time.time() * 1000) % 1_000_000_000
+                    metadata = dict(_progress_metadata or {})
+                    result = await adapter.send_draft(
+                        chat_id=source.chat_id,
+                        draft_id=int(_progress_draft_id),
+                        content=text,
+                        metadata=metadata or None,
+                    )
+                    if result.success and not getattr(result, "message_id", None):
+                        result.message_id = str(_progress_draft_id)
+                else:
+                    result = await adapter.send(
+                        chat_id=source.chat_id,
+                        content=text,
+                        reply_to=_progress_reply_to,
+                        metadata=_progress_metadata,
+                    )
                 _track_progress_result(result)
                 return result
 
@@ -14260,7 +14323,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 first_text = _progress_text(groups[0])
                 if progress_msg_id is not None:
-                    result = await _edit_progress_message(progress_msg_id, first_text)
+                    result = await _edit_progress_message(progress_msg_id, first_text, finalize=True)
                     if not result.success:
                         can_edit = False
                         # Fall back to the existing non-edit behavior below.
@@ -14397,14 +14460,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _cleanup_msg_ids.append(str(_flood_result.message_id))
                     else:
                         if can_edit:
-                            # First tool: send all accumulated text as new message
+                            # First tool: send all accumulated text as new mutable progress message
                             full_text = "\n".join(progress_lines)
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=full_text,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
+                            result = await _send_progress_text(full_text)
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(
@@ -14445,7 +14503,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if can_edit and progress_lines and progress_msg_id:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
+                                        await _edit_progress_message(progress_msg_id, _pending_text, finalize=True)
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -14457,13 +14515,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 await _roll_progress_overflow_if_needed()
                         except Exception:
                             break
-                    # Final edit with all remaining tools (only if editing works)
+                    # Final edit with all remaining tools (only if editing works).
+                    # If the turn completed before the first throttle window fired,
+                    # queued progress may exist without an on-screen bubble yet;
+                    # send it once, then finalize/update it. This is common for
+                    # fast tools and for WeCom native-draft progress.
+                    if can_edit and progress_lines and progress_msg_id is None:
+                        try:
+                            result = await _send_progress_text(_progress_text(progress_lines))
+                            if getattr(result, "success", False) and getattr(result, "message_id", None):
+                                progress_msg_id = str(result.message_id)
+                        except Exception:
+                            pass
                     if can_edit and progress_lines and progress_msg_id:
                         await _roll_progress_overflow_if_needed()
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = _progress_text(progress_lines)
                         try:
-                            await _edit_progress_message(progress_msg_id, full_text)
+                            await _edit_progress_message(progress_msg_id, full_text, finalize=True)
                         except Exception:
                             pass
                     return
@@ -14532,6 +14601,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            if source.platform == Platform.WECOM and event_message_id:
+                _status_thread_metadata = dict(_status_thread_metadata or {})
+                _status_thread_metadata.setdefault("reply_to_message_id", str(event_message_id))
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -14655,15 +14727,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
-                        # Platforms that don't support editing sent messages
-                        # (e.g. QQ, WeChat) should skip streaming entirely —
-                        # without edit support, the consumer sends a partial
-                        # first message that can never be updated, resulting in
-                        # duplicate messages (partial + final).
+                        # Non-editable platforms normally skip edit-style
+                        # streaming, but adapters with a native draft/stream
+                        # transport (WeCom AI Bot passive streams) can still
+                        # stream safely.  GatewayStreamConsumer resolves the
+                        # precise draft eligibility from metadata/chat type.
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        _adapter_supports_native_draft = False
                         if not _adapter_supports_edit:
-                            raise RuntimeError("skip streaming for non-editable platform")
-                        _effective_cursor = _scfg.cursor
+                            try:
+                                _adapter_supports_native_draft = bool(
+                                    getattr(_adapter, "supports_draft_streaming")(
+                                        chat_type=getattr(source, "chat_type", "") or None,
+                                        metadata=_status_thread_metadata,
+                                    )
+                                )
+                            except Exception:
+                                logger.debug("Native draft streaming probe failed", exc_info=True)
+                                _adapter_supports_native_draft = False
+                            if not _adapter_supports_native_draft:
+                                logger.debug(
+                                    "skip streaming for non-editable platform %s: metadata=%s",
+                                    source.platform,
+                                    _status_thread_metadata,
+                                )
+                                raise RuntimeError("skip streaming for non-editable platform")
+                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.

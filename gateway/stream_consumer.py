@@ -124,7 +124,7 @@ class GatewayStreamConsumer:
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
-        self.metadata = metadata
+        self.metadata = dict(metadata) if metadata else None
         # Fired whenever a fresh content bubble is created on the platform
         # (first-send of a new message, commentary, overflow chunk, or
         # fallback continuation). The gateway uses this to linearize the
@@ -134,6 +134,10 @@ class GatewayStreamConsumer:
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
         self._initial_reply_to_id = initial_reply_to_id
+        if initial_reply_to_id:
+            meta = dict(self.metadata) if self.metadata else {}
+            meta.setdefault("reply_to_message_id", str(initial_reply_to_id))
+            self.metadata = meta
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -177,6 +181,9 @@ class GatewayStreamConsumer:
         # in tests doesn't incorrectly enable this path.
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
+        )
+        self._draft_stream_finalizes: bool = (
+            getattr(adapter, "DRAFT_STREAM_FINALIZES", False) is True
         )
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
@@ -525,6 +532,7 @@ class GatewayStreamConsumer:
                     if (
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
+                        and not (self._use_draft_streaming and self._draft_stream_finalizes)
                     ):
                         # No existing message to edit (first message or after a
                         # segment break).  Use truncate_message — the same
@@ -627,6 +635,18 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
+                        elif (
+                            self._use_draft_streaming
+                            and self._draft_stream_finalizes
+                            and self._message_id is None
+                        ):
+                            self._final_response_sent = await self._send_draft_frame(
+                                self._accumulated,
+                                finish=True,
+                            )
+                            if self._final_response_sent:
+                                self._already_sent = True
+                                self._final_content_delivered = True
                         elif self._final_response_sent:
                             # A finalize=True tick above already delivered the
                             # final answer via the adapter's fresh-final path
@@ -1010,6 +1030,20 @@ class GatewayStreamConsumer:
         gates (e.g. python-telegram-bot 22.6+).
         """
         transport = (self.cfg.transport or "edit").lower()
+        # Non-editable platforms with a native stream transport (WeCom AI Bot)
+        # should still stream even when the global config says "edit".  Treat
+        # that common default as "auto" so adapter.supports_draft_streaming()
+        # can opt in for live inbound replies.
+        if transport == "edit" and isinstance(self.adapter, _BasePlatformAdapter):
+            if not getattr(self.adapter, "SUPPORTS_MESSAGE_EDITING", True):
+                try:
+                    if self.adapter.supports_draft_streaming(
+                        chat_type=self.cfg.chat_type or None,
+                        metadata=self.metadata,
+                    ):
+                        transport = "auto"
+                except Exception:
+                    logger.debug("supports_draft_streaming probe raised", exc_info=True)
         if transport == "edit":
             return False
         # "off" is filtered upstream by the gateway; treat as edit defensively.
@@ -1037,7 +1071,7 @@ class GatewayStreamConsumer:
             return False
         return True
 
-    async def _send_draft_frame(self, text: str) -> bool:
+    async def _send_draft_frame(self, text: str, *, finish: bool = False) -> bool:
         """Emit a single animated draft frame for the current accumulated text.
 
         Returns True when the frame landed.  On any failure, permanently
@@ -1052,11 +1086,15 @@ class GatewayStreamConsumer:
             self._use_draft_streaming = False
             return False
         try:
+            metadata = dict(self.metadata) if self.metadata else {}
+            if finish:
+                metadata["final"] = True
+                metadata["finish"] = True
             result = await self.adapter.send_draft(
                 chat_id=self.chat_id,
                 draft_id=self._draft_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=metadata or None,
             )
         except Exception as e:
             logger.debug(
@@ -1075,6 +1113,11 @@ class GatewayStreamConsumer:
             return False
         # Frame delivered.  Track text for parity with edit-based no-op skip.
         self._last_sent_text = text
+        if finish and self._draft_stream_finalizes:
+            self._final_response_sent = True
+            self._final_content_delivered = True
+            self._already_sent = True
+            self._message_id = "__no_edit__"
         return True
 
     async def _flush_segment_tail_on_edit_failure(self) -> None:
@@ -1359,31 +1402,26 @@ class GatewayStreamConsumer:
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
 
-        # Native draft streaming: route mid-stream frames through send_draft.
-        # The final answer is delivered via the regular sendMessage path
-        # below — drafts have no message_id so we can't finalize them
-        # in-place; the regular sendMessage clears the draft naturally on
-        # the client and gives the user a real message in their history.
-        # Skip when:
-        #   * finalize=True (this is the final answer; needs to be a real message)
-        #   * an edit path is already established (message_id is set, e.g. after
-        #     a tool-boundary segment break where the prior text was finalized
-        #     as a real sendMessage and the next text segment continues editing
-        #     that one — staying on edit-based for that segment is correct).
+        # Native draft streaming: route frames through send_draft.  Most draft
+        # transports (Telegram) use drafts only for mid-stream previews and
+        # finalize through a regular send below.  Native stream transports such
+        # as WeCom set DRAFT_STREAM_FINALIZES=True, so their final frame is also
+        # sent through send_draft(..., finish=True) and no duplicate regular
+        # send is created.
         if (
             self._use_draft_streaming
-            and not finalize
+            and (not finalize or self._draft_stream_finalizes)
             and self._message_id is None
         ):
-            # No-op skip: identical to the last frame we sent.
-            if text == self._last_sent_text:
+            # No-op skip: identical to the last frame we sent.  Explicit final
+            # frames are not skipped because native stream protocols need the
+            # lifecycle transition even when content is unchanged.
+            if text == self._last_sent_text and not finalize:
                 return True
-            ok = await self._send_draft_frame(text)
+            ok = await self._send_draft_frame(text, finish=finalize)
             if ok:
-                # Drafts mark "we put something on screen" but DO NOT set
-                # _already_sent — that flag gates the gateway's fallback
-                # final-send path and we still need that to fire so the
-                # user gets a real message (drafts have no message_id).
+                # Draft previews do not set _already_sent, but native final
+                # frames do so inside _send_draft_frame when finish=True.
                 return True
             # Failure already disabled drafts for this run; fall through to
             # the regular edit/send path below.

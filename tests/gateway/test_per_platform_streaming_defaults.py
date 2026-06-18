@@ -19,8 +19,8 @@ def test_default_per_platform_streaming_flags():
 
 
 def test_resolver_telegram_on_discord_off_when_global_enabled():
-    """With global streaming on, the per-platform defaults make Telegram stream
-    and Discord not — matching the platforms' actual streaming quality."""
+    """With global streaming on, the per-platform defaults make Telegram stream,
+    Discord not, and native-stream WeCom follow the global switch."""
     from hermes_cli.config import DEFAULT_CONFIG
     from gateway.display_config import resolve_display_setting
 
@@ -34,6 +34,8 @@ def test_resolver_telegram_on_discord_off_when_global_enabled():
 
     assert streams("telegram") is True
     assert streams("discord") is False
+    assert streams("wecom") is True
+    assert streams("wecom_callback") is True
     # A platform with no default entry follows the global switch.
     assert streams("slack") is True
 

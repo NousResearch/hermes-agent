@@ -4334,6 +4334,79 @@ class TestNormaliseThemeExtensions:
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
 
 
+class TestDeleteSessionEndpoint:
+    """Tests for ``DELETE /api/sessions/{session_id}`` — the single-row delete
+    behind the desktop sidebar's per-session delete.
+
+    The desktop optimistically removes the row, then RESTORES it on any error
+    and surfaces the message. So a 404 on a row that is already gone (reaped by
+    empty-session hygiene, or removed by a concurrent client — both common amid
+    /goal + auto-compression churn that leaves transient empty rows) resurrected
+    a ghost row and showed "session not found". DELETE must be idempotent and
+    resolve ids like every other session endpoint.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self, ids):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid in ids:
+                db.create_session(session_id=sid, source="cli")
+        finally:
+            db.close()
+
+    def _exists(self, sid) -> bool:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            return db.get_session(sid) is not None
+        finally:
+            db.close()
+
+    def test_delete_existing_session(self):
+        self._seed(["real_one"])
+        resp = self.auth_client.delete("/api/sessions/real_one")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        assert not self._exists("real_one")
+
+    def test_delete_absent_session_is_idempotent(self):
+        # PREMISE / regression: deleting a row that no longer exists must NOT
+        # 404 — the desktop would resurrect the ghost row and show
+        # "session not found". DELETE's contract is "ensure it's gone".
+        resp = self.auth_client.delete("/api/sessions/never_existed")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+
+    def test_delete_resolves_unique_prefix(self):
+        # Symmetry with the other session endpoints, which all resolve ids.
+        self._seed(["20260618_abcdef_unique"])
+        resp = self.auth_client.delete("/api/sessions/20260618_abcdef")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        assert not self._exists("20260618_abcdef_unique")
+
+
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the
     dashboard's "Delete N selected" flow on the sessions page.

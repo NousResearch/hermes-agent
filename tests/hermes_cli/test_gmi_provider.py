@@ -118,6 +118,15 @@ class TestGmiModelCatalog:
             },
         )
         monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
+        # gmi also resolves through the generic profile block, whose
+        # ProviderProfile.fetch_models() does its own urllib catalog fetch
+        # (independent of fetch_api_models above). Without neutralising it the
+        # test hits the live api.gmi-serving.com endpoint and flakes when it is
+        # reachable — returning live models instead of exercising the fallback.
+        monkeypatch.setattr(
+            "providers.base.ProviderProfile.fetch_models",
+            lambda self, **kwargs: None,
+        )
 
         assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
 

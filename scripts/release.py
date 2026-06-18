@@ -108,6 +108,7 @@ AUTHOR_MAP = {
     "dirtyren@users.noreply.github.com": "dirtyren",
     "johnjacobkenny@users.noreply.github.com": "johnjacobkenny",
     "chanyoung.kim@nota.ai": "channkim",
+    "skyzh@mail.build": "xxchan",
     "stevenn.damatoo@gmail.com": "x1erra",
     "evansrory@gmail.com": "zimigit2020",
     "237263164+ft-ioxcs@users.noreply.github.com": "ft-ioxcs",

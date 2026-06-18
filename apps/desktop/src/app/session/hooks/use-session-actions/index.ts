@@ -824,6 +824,13 @@ export function useSessionActions({
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
 
+        // Win the race: a sidebar refresh (cron poll, cross-window sync) can
+        // fire while the DELETE is in flight and reinsert the still-existing
+        // backend row into $sessions. Re-filter after the mutation succeeds
+        // so delete actually disappears, matching the archive pattern.
+        setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== removedPinId))
+
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
         }

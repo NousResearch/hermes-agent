@@ -5380,15 +5380,15 @@ class SessionDB:
     ) -> bool:
         """Delete a session and all its messages.
 
-        Delegate subagent children (``model_config._delegate_from``) are
-        cascade-deleted with the parent so they never resurface in session
-        pickers as orphaned rows. Branch / compression children are orphaned
-        (``parent_session_id → NULL``) so they remain accessible independently.
-        When *sessions_dir* is provided, also removes on-disk transcript
-        files (``.json`` / ``.jsonl`` / ``request_dump_*``) for every deleted
-        session. Returns True if the session was found and deleted.
+        If the session is part of a compression-continuation chain (the
+        sidebar shows the chain as one logical conversation), the entire
+        chain is deleted — not just the tip.  Delegate subagent children are
+        cascade-deleted.  Branch children are orphaned so they remain
+        accessible independently.  Returns True if at least one session was
+        found and deleted.
         """
         removed_delegate_ids: List[str] = []
+        deleted_ids: List[str] = []
 
         def _do(conn):
             cursor = conn.execute(
@@ -5396,22 +5396,61 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
-            # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
-            conn.execute(
-                "UPDATE sessions SET parent_session_id = NULL "
-                "WHERE parent_session_id = ?",
-                (session_id,),
-            )
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+            # Walk the full compression lineage (ancestors + descendants)
+            # so the entire logical conversation is deleted — not just the
+            # visible tip.  Same CTE pattern as set_session_archived.
+            chain = [r[0] for r in conn.execute(
+                """
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                SELECT id FROM lineage ORDER BY id
+                """,
+                (session_id, session_id),
+            ).fetchall()]
+
+            for sid in chain:
+                removed_delegate_ids.extend(_delete_delegate_children(conn, [sid]))
+                conn.execute(
+                    "UPDATE sessions SET parent_session_id = NULL "
+                    "WHERE parent_session_id = ?",
+                    (sid,),
+                )
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                deleted_ids.append(sid)
             return True
 
         deleted = self._execute_write(_do)
         if deleted:
             for delegate_id in removed_delegate_ids:
                 self._remove_session_files(sessions_dir, delegate_id)
-            self._remove_session_files(sessions_dir, session_id)
+            for sid in deleted_ids:
+                self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
 
     def delete_session_if_empty(

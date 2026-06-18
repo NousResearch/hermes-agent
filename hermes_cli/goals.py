@@ -7,8 +7,9 @@ continuation prompt back into the same session and keeps working until the
 goal is done, turn budget is exhausted, the user pauses/clears it, or the
 user sends a new message (which takes priority and pauses the goal loop).
 
-State is persisted in SessionDB's ``state_meta`` table keyed by
-``goal:<session_id>`` so ``/resume`` picks it up.
+State is persisted in SessionDB's ``state_meta`` table keyed by the
+conversation lineage root (``goal:<root_session_id>``) so ``/resume``,
+compression continuations, and branch tips in the same thread pick it up.
 
 Design notes / invariants:
 
@@ -236,6 +237,91 @@ def _get_session_db() -> Optional[Any]:
     return db
 
 
+def _goal_lineage_ids(db: Any, session_id: str) -> List[str]:
+    """Return session ids from current tip to lineage root."""
+    sid = (session_id or "").strip()
+    if not sid:
+        return []
+
+    current = sid
+    lineage = [sid]
+    seen = {sid}
+    for _ in range(100):
+        try:
+            row = db.get_session(current)
+        except Exception as exc:
+            logger.debug("GoalManager: lineage lookup failed for %s: %s", current, exc)
+            return lineage
+        if not row:
+            return lineage
+        if _session_has_model_config_marker(row, "_delegate_from"):
+            return lineage
+        parent = str(row.get("parent_session_id") or "").strip()
+        if not parent or parent in seen:
+            return lineage
+        seen.add(parent)
+        lineage.append(parent)
+        current = parent
+
+    return lineage
+
+
+def _session_has_model_config_marker(row: Dict[str, Any], marker: str) -> bool:
+    raw = row.get("model_config")
+    if isinstance(raw, dict):
+        return bool(raw.get(marker))
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return False
+    return isinstance(parsed, dict) and bool(parsed.get(marker))
+
+
+def goal_storage_id(session_id: str) -> str:
+    """Return the stable state_meta id for a session's visible thread.
+
+    Live session ids can rotate during compression and branch/fork flows create
+    child rows. Users experience those rows as one conversation thread when they
+    share a parent chain, so goal state is stored on the parent-chain root.
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return ""
+    db = _get_session_db()
+    if db is None:
+        return sid
+
+    lineage = _goal_lineage_ids(db, sid)
+    return lineage[-1] if lineage else sid
+
+
+def _goal_state_timestamp(state: GoalState) -> float:
+    return max(float(state.last_turn_at or 0.0), float(state.created_at or 0.0))
+
+
+def _select_goal_candidate(candidates: List[Tuple[float, int, str, GoalState]]) -> Tuple[str, GoalState]:
+    """Choose the goal state that should represent this visible thread.
+
+    New writes live on the lineage root. Legacy rows may still exist on any
+    tip/parent session from before thread-bound goals. A root active/paused
+    state is canonical, but a root terminal state must not hide a nearer active
+    legacy goal: that is the exact compression/branch failure this migration is
+    meant to repair.
+    """
+    root = candidates[-1]
+    if root[3].status in {"active", "paused"}:
+        return root[2], root[3]
+
+    for _, _, key, state in candidates:
+        if state.status in {"active", "paused"}:
+            return key, state
+
+    _, _, key, state = max(candidates, key=lambda item: (item[0], item[1]))
+    return key, state
+
+
 def load_goal(session_id: str) -> Optional[GoalState]:
     """Load the goal for a session, or None if none exists."""
     if not session_id:
@@ -243,18 +329,36 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     db = _get_session_db()
     if db is None:
         return None
+    lineage = _goal_lineage_ids(db, session_id) or [session_id]
+    storage_id = lineage[-1]
+    keys = [_meta_key(sid) for sid in lineage]
+
+    candidates: List[Tuple[float, int, str, GoalState]] = []
     try:
-        raw = db.get_meta(_meta_key(session_id))
+        for index, key in enumerate(keys):
+            raw = db.get_meta(key)
+            if not raw:
+                continue
+            try:
+                state = GoalState.from_json(raw)
+            except Exception as exc:
+                logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
+                continue
+            candidates.append((_goal_state_timestamp(state), -index, key, state))
     except Exception as exc:
         logger.debug("GoalManager: get_meta failed: %s", exc)
         return None
-    if not raw:
+    if not candidates:
         return None
-    try:
-        return GoalState.from_json(raw)
-    except Exception as exc:
-        logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
-        return None
+
+    loaded_from_key, state = _select_goal_candidate(candidates)
+    root_key = _meta_key(storage_id)
+    if storage_id and loaded_from_key != root_key:
+        try:
+            db.set_meta(root_key, state.to_json())
+        except Exception as exc:
+            logger.debug("GoalManager: goal lineage migration failed: %s", exc)
+    return state
 
 
 def save_goal(session_id: str, state: GoalState) -> None:
@@ -265,7 +369,7 @@ def save_goal(session_id: str, state: GoalState) -> None:
     if db is None:
         return
     try:
-        db.set_meta(_meta_key(session_id), state.to_json())
+        db.set_meta(_meta_key(goal_storage_id(session_id)), state.to_json())
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
 
@@ -276,6 +380,7 @@ def clear_goal(session_id: str) -> None:
     if state is None:
         return
     state.status = "cleared"
+    state.last_turn_at = time.time()
     save_goal(session_id, state)
 
 
@@ -539,6 +644,7 @@ class GoalManager:
         if not self._state:
             return None
         self._state.status = "paused"
+        self._state.last_turn_at = time.time()
         self._state.paused_reason = reason
         save_goal(self.session_id, self._state)
         return self._state
@@ -547,6 +653,7 @@ class GoalManager:
         if not self._state:
             return None
         self._state.status = "active"
+        self._state.last_turn_at = time.time()
         self._state.paused_reason = None
         if reset_budget:
             self._state.turns_used = 0
@@ -557,6 +664,7 @@ class GoalManager:
         if self._state is None:
             return
         self._state.status = "cleared"
+        self._state.last_turn_at = time.time()
         save_goal(self.session_id, self._state)
         self._state = None
 
@@ -564,6 +672,7 @@ class GoalManager:
         if not self._state:
             return
         self._state.status = "done"
+        self._state.last_turn_at = time.time()
         self._state.last_verdict = "done"
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
@@ -582,6 +691,7 @@ class GoalManager:
         if not text:
             raise ValueError("subgoal text is empty")
         self._state.subgoals.append(text)
+        self._state.last_turn_at = time.time()
         save_goal(self.session_id, self._state)
         return text
 
@@ -595,6 +705,7 @@ class GoalManager:
                 f"index out of range (1..{len(self._state.subgoals)})"
             )
         removed = self._state.subgoals.pop(idx)
+        self._state.last_turn_at = time.time()
         save_goal(self.session_id, self._state)
         return removed
 
@@ -604,6 +715,7 @@ class GoalManager:
             raise RuntimeError("no active goal")
         prev = len(self._state.subgoals)
         self._state.subgoals = []
+        self._state.last_turn_at = time.time()
         save_goal(self.session_id, self._state)
         return prev
 
@@ -702,8 +814,8 @@ class GoalManager:
                     "model in ~/.hermes/config.yaml:\n"
                     "  auxiliary:\n"
                     "    goal_judge:\n"
-                    "      provider: openrouter\n"
-                    "      model: google/gemini-3-flash-preview\n"
+                    "      provider: opencode-go\n"
+                    "      model: deepseek-v4-flash\n"
                     "Then /goal resume to continue."
                 ),
             }

@@ -42,6 +42,14 @@ def test_title_generation_present_in_default_config():
     assert tg["extra_body"] == {}
 
 
+def test_goal_judge_default_uses_auto_provider_path():
+    """Goal judging should not require a provider-specific API key by default."""
+    gj = DEFAULT_CONFIG["auxiliary"]["goal_judge"]
+    assert gj["provider"] == "auto"
+    assert gj["model"] == ""
+    assert gj["max_tokens"] >= 4096
+
+
 def test_session_search_no_longer_appears_in_auxiliary_model_config():
     """session_search is a direct DB-backed tool, not an auxiliary LLM task."""
     assert "session_search" not in DEFAULT_CONFIG["auxiliary"]

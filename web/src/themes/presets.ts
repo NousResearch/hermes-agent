@@ -184,6 +184,63 @@ export const roseTheme: DashboardTheme = {
   },
 };
 
+export const observatoryTheme: DashboardTheme = {
+  name: "observatory",
+  label: "Observatory",
+  description: "Deep stellar control room — cool blues and violet starlight",
+  palette: {
+    background: { hex: "#050712", alpha: 1 },
+    midground: { hex: "#c9e8ff", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0.08 },
+    warmGlow: "rgba(118, 92, 255, 0.22)",
+    noiseOpacity: 0.55,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontDisplay: `"Space Grotesk", ${SYSTEM_SANS}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap",
+    lineHeight: "1.6",
+    letterSpacing: "0.005em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.75rem",
+  },
+  assets: {
+    bg:
+      "radial-gradient(circle at 50% 16%, rgba(99, 102, 241, 0.22), transparent 42%)",
+  },
+  componentStyles: {
+    card: {
+      boxShadow:
+        "inset 0 0 0 1px rgba(148, 197, 255, 0.18), 0 18px 60px rgba(0, 0, 0, 0.35)",
+    },
+    header: {
+      background:
+        "linear-gradient(180deg, rgba(9, 13, 32, 0.96), rgba(5, 7, 18, 0.88))",
+    },
+  },
+  colorOverrides: {
+    primary: "#9ddcff",
+    primaryForeground: "#050712",
+    accent: "#7c6dff",
+    accentForeground: "#ffffff",
+    ring: "#9ddcff",
+    success: "#65f2b7",
+    warning: "#f6c177",
+    destructive: "#ff6b8f",
+  },
+  seriesColors: {
+    inputTokenAccent: "#9ddcff",
+    outputTokenAccent: "#7c6dff",
+  },
+  swatchColors: ["#050712", "#9ddcff", "#7c6dff"],
+  terminalBackground: "#02030a",
+};
+
 /**
  * Nous Blue — the inverted "light mode" Hermes look, ported from the
  * LENS_5I overlay preset in `@nous-research/ui`.
@@ -308,4 +365,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  observatory: observatoryTheme,
 };

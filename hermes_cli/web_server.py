@@ -490,7 +490,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",
-        "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+        "options": [
+            "default", "default-large", "nous-blue", "midnight", "ember",
+            "mono", "cyberpunk", "rose", "observatory",
+        ],
     },
     "display.resume_display": {
         "type": "select",
@@ -11335,7 +11338,8 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "rose",         "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "observatory",  "label": "Observatory",    "description": "Deep stellar control room — cool blues and violet starlight"},
 ]
 
 
@@ -11564,7 +11568,8 @@ def _discover_user_themes() -> list:
     if not themes_dir.is_dir():
         return []
     result = []
-    for f in sorted(themes_dir.glob("*.yaml")):
+    theme_files = sorted({*themes_dir.glob("*.yaml"), *themes_dir.glob("*.yml")})
+    for f in theme_files:
         try:
             data = yaml.safe_load(f.read_text(encoding="utf-8"))
         except Exception:

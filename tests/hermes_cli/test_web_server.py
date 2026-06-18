@@ -4129,6 +4129,26 @@ class TestStatusRemoteGateway:
 # ---------------------------------------------------------------------------
 
 
+class TestDashboardBuiltInThemes:
+    def test_observatory_is_listed_as_builtin_theme(self):
+        from hermes_cli import web_server
+
+        themes = {theme["name"]: theme for theme in web_server._BUILTIN_DASHBOARD_THEMES}
+        assert themes["observatory"] == {
+            "name": "observatory",
+            "label": "Observatory",
+            "description": "Deep stellar control room — cool blues and violet starlight",
+        }
+
+    def test_dashboard_theme_config_schema_includes_observatory(self):
+        from hermes_cli import web_server
+
+        options = web_server.CONFIG_SCHEMA["dashboard.theme"]["options"]
+        assert "observatory" in options
+        assert "default-large" in options
+        assert "nous-blue" in options
+
+
 class TestNormaliseThemeDefinition:
     """Tests for _normalise_theme_definition() — parses YAML theme files."""
 
@@ -4292,6 +4312,24 @@ class TestDiscoverUserThemes:
         assert results[0]["layout"]["density"] == "spacious"
         # defaults filled in
         assert "fontSans" in results[0]["typography"]
+
+    def test_loads_yml_extension_documented_as_supported(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        themes_dir = tmp_path / "dashboard-themes"
+        themes_dir.mkdir()
+        (themes_dir / "observatory.yml").write_text(
+            "name: observatory\n"
+            "label: Observatory\n"
+            "palette:\n"
+            "  background: \"#050712\"\n"
+            "  midground: \"#c9e8ff\"\n"
+        )
+
+        from hermes_cli import web_server
+
+        results = web_server._discover_user_themes()
+        assert [r["name"] for r in results] == ["observatory"]
+        assert results[0]["palette"]["background"]["hex"] == "#050712"
 
     def test_malformed_yaml_skipped(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

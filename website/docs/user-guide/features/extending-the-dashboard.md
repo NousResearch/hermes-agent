@@ -54,7 +54,7 @@ Themes and plugins are independent but synergistic. A theme can stand alone (jus
 
 ## Themes
 
-Themes are YAML files stored in `~/.hermes/dashboard-themes/`. The file name doesn't matter (the theme's `name:` field is what the system uses), but convention is `<name>.yaml`. Every field is optional — missing keys fall back to the built-in `default` theme, so a theme can be as small as one color.
+Themes are YAML files stored in `~/.hermes/dashboard-themes/`. The file name doesn't matter (the theme's `name:` field is what the system uses), but convention is `<name>.yaml`; `.yml` is also supported. Every field is optional — missing keys fall back to the built-in `default` theme, so a theme can be as small as one color.
 
 ### Quick start — your first theme
 
@@ -282,13 +282,15 @@ Each built-in ships its own palette, typography, and layout — switching produc
 |-------|---------|------------|--------|
 | **Hermes Teal** (`default`) | Dark teal + cream | System stack, 15px | 0.5rem radius, comfortable |
 | **Hermes Teal (Large)** (`default-large`) | Same as default | System stack, 18px, line-height 1.65 | 0.5rem radius, spacious |
+| **Nous Blue** (`nous-blue`) | Light cream + vivid Nous-blue | System stack, 15px | 0.5rem radius, comfortable |
 | **Midnight** (`midnight`) | Deep blue-violet | Inter + JetBrains Mono, 14px | 0.75rem radius, comfortable |
 | **Ember** (`ember`) | Warm crimson + bronze | Spectral (serif) + IBM Plex Mono, 15px | 0.25rem radius, comfortable |
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black | Share Tech Mono everywhere, 14px | 0 radius, compact |
 | **Rosé** (`rose`) | Pink + ivory | Fraunces (serif) + DM Mono, 16px | 1rem radius, spacious |
+| **Observatory** (`observatory`) | Near-black stellar canvas + cool blue/violet accents | Inter + JetBrains Mono + Space Grotesk, 15px | 0.75rem radius, comfortable |
 
-Themes that reference Google Fonts (all except Hermes Teal) load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
+Themes that reference Google Fonts load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
 
 ### Full theme YAML reference
 

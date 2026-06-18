@@ -354,9 +354,14 @@ class TestTurnTraceIsolation:
         # turn reused turn 1's lingering state and only one trace was opened.
         assert len(started) == 2
 
-        # The two turns are tracked under distinct, turn-scoped keys.
+        # Turn 2 finalized and was popped by _finish_trace; only turn 1's
+        # (non-finalizing) state lingers.  Assert the surviving key is turn 1's
+        # and that turn 2 never merged into it — `all(...)` over an empty set
+        # would pass vacuously, so pin the exact surviving key instead.
         keys = list(mod._TRACE_STATE.keys())
-        assert all("turn1" in k or "turn2" in k for k in keys)
+        assert len(keys) == 1
+        assert "turn1" in keys[0]
+        assert "turn2" not in keys[0]
 
     def test_pre_and_post_hooks_share_one_key_within_a_turn(self, monkeypatch):
         """turn_id is preferred over api_request_id so the turn-scoped

@@ -1,0 +1,98 @@
+"""CronScheduler provider interface (Axis B — the trigger).
+
+⚠️ EXPERIMENTAL — this interface is validated by exactly ONE consumer (the
+built-in) until an external provider (Chronos, Phase 4) shakes it out. Until
+then the module path, method signatures, and start() kwargs MAY change without
+a deprecation cycle. Once a second provider validates the shape it becomes
+stable. Any growth MUST be additive (new optional method with a default), never
+a changed signature on start() or a new abstractmethod.
+
+A CronScheduler decides *when* a due job fires. It does NOT decide what firing
+means: execution + delivery stay in cron.scheduler.run_job / _deliver_result,
+shared by all providers. Providers must never reimplement agent construction or
+delivery.
+
+The built-in InProcessCronScheduler runs the historical 60s daemon-thread
+ticker. Alternative providers (e.g. Chronos, a NAS-mediated managed-cron
+provider for scale-to-zero deployments) live under plugins/cron/<name>/ and are
+selected via the `cron.provider` config key (empty = built-in).
+"""
+from __future__ import annotations
+
+import threading
+from abc import ABC, abstractmethod
+from typing import Any
+
+
+class CronScheduler(ABC):
+    """Axis-B trigger provider. Decides WHEN a due cron job fires.
+
+    Required surface is intentionally minimal: ``name`` + ``start``. ``stop``
+    and ``is_available`` carry safe defaults. The three Phase-4 hooks
+    (``on_jobs_changed`` / ``fire_due`` / ``reconcile``) are added later as
+    NON-abstract methods so the built-in keeps satisfying the ABC without
+    overriding them — see ``test_abc_growth_stays_additive``.
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Short identifier, e.g. 'builtin', 'chronos'."""
+
+    def is_available(self) -> bool:
+        """Whether this provider can run in the current environment.
+
+        MUST NOT make network calls. The built-in is always available; an
+        external provider checks for configured endpoint/credentials. When a
+        named provider returns False, the resolver falls back to the built-in.
+        """
+        return True
+
+    @abstractmethod
+    def start(
+        self,
+        stop_event: threading.Event,
+        *,
+        adapters: Any = None,
+        loop: Any = None,
+        interval: int = 60,
+    ) -> None:
+        """Begin firing due jobs.
+
+        For the built-in this BLOCKS in the 60s loop until stop_event is set
+        (it is run inside a daemon thread by the caller, exactly as today).
+        An external provider may register a schedule/webhook and return
+        immediately; in that case it must still honor stop_event for teardown.
+        """
+
+    def stop(self) -> None:
+        """Optional eager teardown hook. Default no-op; setting the stop_event
+        is the primary stop signal. Override for providers holding external
+        resources (queue consumers, HTTP servers)."""
+        return None
+
+
+class InProcessCronScheduler(CronScheduler):
+    """Default provider: the historical in-process 60s ticker.
+
+    ``start()`` blocks in the tick loop until ``stop_event`` is set, identical
+    to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
+    a daemon thread.
+    """
+
+    @property
+    def name(self) -> str:
+        return "builtin"
+
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+        import logging
+        from cron.scheduler import tick as cron_tick
+
+        logger = logging.getLogger("cron.scheduler_provider")
+        logger.info("In-process cron scheduler started (interval=%ds)", interval)
+        while not stop_event.is_set():
+            try:
+                cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+            except Exception as e:
+                logger.debug("Cron tick error: %s", e)
+            stop_event.wait(interval)

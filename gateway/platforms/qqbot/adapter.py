@@ -1092,7 +1092,11 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # QQ's raw interaction scene for one-to-one chats is "c2c", but
+        # Hermes session keys historically use the generic "dm" chat type.
+        # Treat them as aliases so approval buttons sent from a QQ DM don't
+        # reject their own owner's click as unauthorized.
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

@@ -1266,6 +1266,37 @@ class TestAdapterInteractionDispatch:
         assert ack_calls == []
         assert callback_calls == []
 
+    def test_dm_session_key_authorizes_c2c_operator(self):
+        """Hermes keys QQ private chats as dm; QQ button events report c2c."""
+        adapter = self._make_adapter()
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+
+        event = InteractionEvent(
+            id="i-dm",
+            scene="c2c",
+            user_openid="USER123",
+            button_data="approve:agent:main:qqbot:dm:USER123:allow-once",
+        )
+        assert adapter._is_authorized_interaction_for_session(
+            event,
+            "agent:main:qqbot:dm:USER123",
+        )
+
+    def test_dm_session_key_rejects_wrong_c2c_operator(self):
+        adapter = self._make_adapter()
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+
+        event = InteractionEvent(
+            id="i-dm-bad",
+            scene="c2c",
+            user_openid="OTHER",
+            button_data="approve:agent:main:qqbot:dm:USER123:allow-once",
+        )
+        assert not adapter._is_authorized_interaction_for_session(
+            event,
+            "agent:main:qqbot:dm:USER123",
+        )
+
     @pytest.mark.asyncio
     async def test_callback_exception_does_not_propagate(self):
         adapter = self._make_adapter()

@@ -1187,17 +1187,17 @@ def build_frequent_files_hints() -> str:
     from hermes_constants import (
         get_hermes_home,
         get_skills_dir,
-        get_memory_dir,
         get_env_path,
     )
 
     home = get_hermes_home()
+    memory_dir = home / "memories"
     lines: list[str] = []
 
     # ── Standard paths (always present in a healthy Hermes install) ──
     standard_paths = [
-        ("Memory store", get_memory_dir() / "MEMORY.md"),
-        ("User profile", get_memory_dir() / "USER.md"),
+        ("Memory store", memory_dir / "MEMORY.md"),
+        ("User profile", memory_dir / "USER.md"),
         ("Identity", home / "SOUL.md"),
         ("Configuration", home / "config.yaml"),
         ("Skills directory", get_skills_dir()),

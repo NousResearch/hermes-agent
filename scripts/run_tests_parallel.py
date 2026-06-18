@@ -4,7 +4,7 @@
 The minimum-viable replacement for pytest-xdist + a subprocess-isolation
 plugin. Discovers test files under ``tests/`` (excluding integration/e2e
 unless explicitly requested), then runs one ``python -m pytest <file>``
-subprocess per file, with bounded parallelism (default: ``os.cpu_count()``).
+subprocess per file, with bounded parallelism (default: ``os.cpu_count() * 2``).
 
 Why per-file rather than per-test?
     Per-test spawn overhead (~250ms × 17k tests = 70min CPU minimum)
@@ -23,13 +23,13 @@ Why drop xdist entirely?
     the job.
 
 Usage:
-    python scripts/run_tests_parallel.py [pytest_args...]
+    python scripts/run_tests_parallel.py [paths...] [-- pytest_args...]
 
-    Common pytest args pass through (e.g. ``-v``, ``-x``, ``--tb=long``,
-    ``-k 'pattern'``, ``--lf``).
+    Common pytest args pass through after a literal ``--`` separator
+    (e.g. ``-- -v -x --tb=long -k 'pattern' --lf``).
 
 Environment:
-    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
+    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count()*2)
     HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
@@ -78,6 +78,34 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at com
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+
+def _parse_slice_spec(slice_raw: str) -> tuple[int, int]:
+    """Parse and validate a ``--slice`` value in ``I/N`` form."""
+    try:
+        idx_s, count_s = slice_raw.split("/", 1)
+        slice_index = int(idx_s)
+        slice_count = int(count_s)
+    except (ValueError, AttributeError):
+        print(
+            f"error: --slice must be I/N (e.g. 1/4), got: {slice_raw!r}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if slice_count < 1:
+        print(
+            f"error: --slice count must be at least 1, got {slice_count}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if not (1 <= slice_index <= slice_count):
+        print(
+            f"error: --slice index must be 1..{slice_count}, got {slice_index}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return slice_index, slice_count
 
 
 def _count_tests(
@@ -551,13 +579,6 @@ def _slice_files(
     """
     if slice_count < 2:
         return files
-    if not (1 <= slice_index <= slice_count):
-        print(
-            f"error: --slice index must be 1..{slice_count}, got {slice_index}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
     # Build (file, estimated_duration) pairs.
     default_dur = 2.0
     file_durs: List[Tuple[Path, float]] = []
@@ -666,13 +687,7 @@ def main() -> int:
     slice_index: int | None = None
     slice_count: int = 1
     if slice_raw:
-        try:
-            idx_s, count_s = slice_raw.split("/", 1)
-            slice_index = int(idx_s)
-            slice_count = int(count_s)
-        except (ValueError, AttributeError):
-            print(f"error: --slice must be I/N (e.g. 1/4), got: {slice_raw!r}", file=sys.stderr)
-            sys.exit(2)
+        slice_index, slice_count = _parse_slice_spec(slice_raw)
 
     repo_root = Path(__file__).resolve().parent.parent
 

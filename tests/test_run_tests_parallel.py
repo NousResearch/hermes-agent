@@ -38,6 +38,54 @@ _HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
 
 
+def test_invalid_slice_range_exits_before_discovery(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    missing_root = tmp_path / "missing"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--paths",
+            str(missing_root),
+            "--slice",
+            "999/2",
+        ],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10,
+    )
+
+    assert proc.returncode == 2
+    assert "error: --slice index must be 1..2, got 999" in proc.stderr
+    assert "No test files discovered" not in proc.stderr
+
+
+def test_invalid_env_slice_range_exits_before_discovery(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    missing_root = tmp_path / "missing"
+    env = os.environ.copy()
+    env["HERMES_TEST_SLICE"] = "2/1"
+
+    proc = subprocess.run(
+        [sys.executable, str(runner), "--paths", str(missing_root)],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10,
+    )
+
+    assert proc.returncode == 2
+    assert "error: --slice index must be 1..1, got 2" in proc.stderr
+    assert "No test files discovered" not in proc.stderr
+
+
 def _handoff_path_for(nonce: str) -> Path:
     return _HANDOFF_DIR / f"grandchild-{nonce}.json"
 

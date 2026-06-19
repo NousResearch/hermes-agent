@@ -144,7 +144,7 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):

@@ -59,6 +59,8 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # User-facing AgentCyber route block, when sensitive routing must fail closed.
+    agentcyber_block_response: Optional[str] = None
 
 
 def build_turn_context(
@@ -78,7 +80,9 @@ def build_turn_context(
     set_session_context,
     set_current_write_origin,
     ra,
+    restore_cyber_route_runtime=None,
     capture_cyber_route_metadata=None,
+    apply_cyber_route_guard=None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -110,6 +114,14 @@ def build_turn_context(
     # Bind the skill write-origin ContextVar for this thread.
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
+    # Restore a prior AgentCyber transient runtime before the ordinary fallback
+    # restore, so each new turn starts from the configured primary runtime.
+    if restore_cyber_route_runtime is not None:
+        try:
+            restore_cyber_route_runtime(agent)
+        except Exception:
+            logger.debug("AgentCyber route runtime restore skipped", exc_info=True)
+
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 
@@ -138,10 +150,31 @@ def build_turn_context(
         persist_user_message = sanitize_surrogates(persist_user_message)
 
     # AgentCyber routing metadata is captured per turn, after input
-    # sanitization and before prompt/message assembly. This is observation
-    # only: no model switching, prompt mutation, tool filtering, or blocking.
+    # sanitization and before prompt/message assembly. Sensitive routes may
+    # then switch to a configured local/open-weight runtime or fail closed
+    # before any hosted API request is made.
     if capture_cyber_route_metadata is not None:
         capture_cyber_route_metadata(agent, user_message)
+
+    agentcyber_block_response = None
+    if apply_cyber_route_guard is not None:
+        try:
+            agentcyber_block_response = apply_cyber_route_guard(agent)
+        except Exception:
+            logger.debug("AgentCyber route guard skipped", exc_info=True)
+
+    # Keep auxiliary runtime metadata aligned after any AgentCyber route switch.
+    try:
+        from agent.auxiliary_client import set_runtime_main
+        set_runtime_main(
+            getattr(agent, "provider", "") or "",
+            getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=getattr(agent, "api_key", "") or "",
+            api_mode=getattr(agent, "api_mode", "") or "",
+        )
+    except Exception:
+        pass
 
     # Store stream callback for _interruptible_api_call to pick up.
     agent._stream_callback = stream_callback
@@ -248,6 +281,20 @@ def build_turn_context(
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+
+    if agentcyber_block_response:
+        return TurnContext(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            conversation_history=conversation_history,
+            active_system_prompt=agent._cached_system_prompt,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            current_turn_user_idx=current_turn_user_idx,
+            should_review_memory=should_review_memory,
+            agentcyber_block_response=agentcyber_block_response,
+        )
 
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
@@ -412,4 +459,5 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        agentcyber_block_response=agentcyber_block_response,
     )

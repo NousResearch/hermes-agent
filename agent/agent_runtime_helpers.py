@@ -1743,6 +1743,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
 
+    # AgentCyber S0-S5 execution gates run before plugin hooks or tool dispatch.
+    # This gives the Cyber Edition a concrete policy boundary around tool/action
+    # flow rather than prompt-only guidance, using the final post-middleware args.
+    try:
+        from agent.cyber_policy import gate_tool_call_for_agent, tool_block_message
+        gate_decision = gate_tool_call_for_agent(agent, function_name, function_args)
+        if not gate_decision.allowed:
+            return tool_block_message(gate_decision)
+    except Exception:
+        logger.debug("AgentCyber execution gate check failed", exc_info=True)
+
     # Check plugin hooks for a block directive before executing anything.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:

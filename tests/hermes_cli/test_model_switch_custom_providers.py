@@ -45,6 +45,34 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
+def test_list_authenticated_providers_does_not_probe_schemeless_local_with_explicit_models(monkeypatch):
+    """Local custom endpoints may be configured without a URL scheme."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    def fail_fetch(*args, **kwargs):
+        raise AssertionError("schemeless local endpoint with explicit models should not be probed")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fail_fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local Ollama",
+                "base_url": "localhost:11434/v1",
+                "api_key": "local-key",
+                "model": "qwen3-coder",
+            }
+        ],
+        max_models=50,
+    )
+
+    local = next(p for p in providers if p["name"] == "Local Ollama")
+    assert local["models"] == ["qwen3-coder"]
+
+
 def test_resolve_provider_full_finds_named_custom_provider():
     """Explicit /model --provider should resolve saved custom_providers entries."""
     resolved = resolve_provider_full(

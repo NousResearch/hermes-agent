@@ -29,6 +29,7 @@ Design notes
 from __future__ import annotations
 
 import ctypes
+import json
 import locale
 import os
 import re
@@ -368,13 +369,37 @@ def _build_gateway_cmd_script(
     if profile_arg:
         prog_args.extend(profile_arg.split())
     prog_args.extend(["gateway", "run"])
+
+    # Launch the gateway under a Python-native watchdog (issue #48820, Bug 1).
+    # A Logon-trigger Scheduled Task fires only once; if the worker dies
+    # (crash, network dropout, SIGINT) nothing restarts it and the gateway
+    # silently goes dark. The watchdog supervises the worker and respawns it
+    # with capped exponential backoff + a crash-loop circuit breaker.
+    env_overlay = {
+        "HERMES_HOME": hermes_home,
+        "PYTHONIOENCODING": "utf-8",
+        "HERMES_GATEWAY_DETACHED": "1",
+        "VIRTUAL_ENV": venv_dir,
+    }
+    watchdog_args = [
+        pythonw_path,
+        "-m",
+        "hermes_cli.gateway_windows",
+        "watchdog",
+        "--working-dir",
+        working_dir,
+        "--argv",
+        json.dumps(prog_args),
+        "--env",
+        json.dumps(env_overlay),
+    ]
     # `pythonw.exe` is a GUI-subsystem executable: cmd.exe launches it and
     # returns immediately, so the Scheduled Task action finishes without a
     # visible console window. Do NOT use `start` here; that creates an extra
     # wrapper process and made gateway lifecycle/status harder to reason about.
     # Do NOT use `--replace` for service-managed starts; repeated /Run calls
     # should be idempotent, not churn parent/child takeover loops.
-    lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
+    lines.append(" ".join(_quote_cmd_script_arg(a) for a in watchdog_args))
     lines.append("exit /b 0")
     return "\r\n".join(lines) + "\r\n"
 
@@ -519,6 +544,20 @@ def _derive_venv_pythonw(python_exe: str) -> str:
     return python_exe
 
 
+def _derive_console_python(pythonw_exe: str) -> str:
+    """Inverse of ``_derive_venv_pythonw``: map ``pythonw.exe`` → ``python.exe``.
+
+    The watchdog runs as ``pythonw.exe`` (no console) but spawns the actual
+    gateway worker as ``python.exe`` so the worker's stdout/stderr can be
+    captured to ``gateway-stdio.log``. Returns the path unchanged if it isn't a
+    ``*w`` variant (e.g. already ``python.exe``, or a uv base interpreter).
+    """
+    p = Path(pythonw_exe)
+    if p.stem.endswith("w"):
+        return str(p.with_name(p.stem[:-1] + p.suffix))
+    return pythonw_exe
+
+
 def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     cfg_path = venv_dir / "pyvenv.cfg"
     try:
@@ -625,8 +664,26 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     _assert_windows()
     argv, working_dir, env_overlay = _build_gateway_argv()
 
-    # Inherit PATH etc. from the current env, overlay our required vars.
-    env = {**os.environ, **env_overlay}
+    # Wrap the gateway argv in the watchdog supervisor (issue #48820, Bug 1)
+    # so a detached gateway started outside the Scheduled Task path
+    # (``hermes gateway start``) is also auto-restarted on crash. The watchdog
+    # itself runs pythonw (no console) and re-spawns the worker with capped
+    # backoff + crash-loop protection.
+    watchdog_argv = [
+        argv[0],
+        "-m",
+        "hermes_cli.gateway_windows",
+        "watchdog",
+        "--working-dir",
+        working_dir,
+        "--argv",
+        json.dumps(argv),
+        "--env",
+        json.dumps(env_overlay),
+    ]
+    # The watchdog re-applies ``env_overlay`` onto its own environment before
+    # spawning the worker, so we only need to pass the current process env here.
+    env = dict(os.environ)
 
     # DETACHED_PROCESS        0x00000008  — no console attached to child
     # CREATE_NEW_PROCESS_GROUP 0x00000200 — child gets its own group, won't
@@ -652,7 +709,7 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     try:
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(
-                argv,
+                watchdog_argv,
                 cwd=working_dir,
                 env=env,
                 creationflags=flags,
@@ -669,7 +726,7 @@ def _spawn_detached(script_path: Path | None = None) -> int:
         flags_no_breakaway = flags & ~0x01000000
         with open(stray_log, "ab", buffering=0) as log_fh:
             proc = subprocess.Popen(
-                argv,
+                watchdog_argv,
                 cwd=working_dir,
                 env=env,
                 creationflags=flags_no_breakaway,
@@ -1309,3 +1366,264 @@ def restart() -> None:
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
     start()
+
+
+# ── Windows gateway watchdog (issue #48820, Bug 1) ────────────────────────────
+#
+# A Logon-trigger Scheduled Task fires once at login. If the gateway worker
+# dies (crash, network dropout, SIGINT from a GUI healthcheck), nothing
+# restarts it and inbound messages silently stop. This watchdog supervises the
+# worker the way systemd's ``Restart=`` + ``RestartForceExitStatus=75`` does on
+# Linux: respawn on unexpected exit, stop on a clean exit, respawn immediately
+# on a service-restart request (exit code 75), with capped exponential backoff
+# and a crash-loop circuit breaker so a permanently-broken worker (bad config,
+# port taken) surfaces an error instead of spinning forever.
+
+# Backoff / circuit-breaker tuning. Mirrors systemd defaults
+# (StartLimitIntervalSec=10s window, StartLimitBurst=5) and Kubernetes-style
+# capped exponential backoff.
+_WATCHDOG_BACKOFF_START_S = 1.0
+_WATCHDOG_BACKOFF_CAP_S = 60.0
+_WATCHDOG_HEALTHY_RUN_S = 60.0   # a run this long resets the backoff/burst counter
+_WATCHDOG_BURST_LIMIT = 5        # >N crashes inside the window → give up
+_WATCHDOG_BURST_WINDOW_S = 60.0
+_WATCHDOG_LOG_MAX_BYTES = 5 * 1024 * 1024  # rotate gateway-stdio.log past this
+
+
+def _watchdog_assign_job_object(pid: int):
+    """Best-effort: put *pid* in a Job Object that kills children on close.
+
+    Windows has no Unix process tree; orphaned worker children (and the worker
+    itself if the watchdog is killed) would otherwise leak. A Job Object with
+    ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` ties the worker's lifetime to the
+    watchdog. Returns the job handle (kept alive by the caller) or None.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION with KILL_ON_JOB_CLOSE (0x2000).
+        class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.POINTER(wintypes.ULONG)),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_ulonglong) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", _IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            job, 9, ctypes.byref(info), ctypes.sizeof(info)
+        ):  # 9 = JobObjectExtendedLimitInformation
+            kernel32.CloseHandle(job)
+            return None
+
+        PROCESS_SET_QUOTA = 0x0100
+        PROCESS_TERMINATE = 0x0001
+        handle = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+        if not handle:
+            kernel32.CloseHandle(job)
+            return None
+        ok = kernel32.AssignProcessToJobObject(job, handle)
+        kernel32.CloseHandle(handle)
+        if not ok:
+            kernel32.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def run_watchdog(working_dir: str, argv: list[str], env_overlay: dict) -> int:
+    """Supervise the gateway worker, respawning it on unexpected exit.
+
+    Returns the process exit code to propagate (0 on clean stop / give-up).
+    """
+    import time as _time
+
+    env = {**os.environ, **(env_overlay or {})}
+    hermes_home = env.get("HERMES_HOME")
+    if not hermes_home:
+        try:
+            from hermes_cli.config import get_hermes_home
+            hermes_home = str(get_hermes_home())
+        except Exception:
+            hermes_home = str(Path.home() / ".hermes")
+
+    log_dir = Path(hermes_home) / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    stray_log = log_dir / "gateway-stdio.log"
+
+    try:
+        from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+    except Exception:
+        GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
+
+    def _log(message: str) -> None:
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{ts}] [watchdog] {message}\n"
+        try:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            # Bounded log: rotate once it grows past the cap so a crash loop
+            # can't fill the disk.
+            if stray_log.exists() and stray_log.stat().st_size > _WATCHDOG_LOG_MAX_BYTES:
+                try:
+                    stray_log.replace(stray_log.with_suffix(".log.1"))
+                except Exception:
+                    pass
+            with open(stray_log, "a", encoding="utf-8") as fh:
+                fh.write(line)
+        except Exception:
+            pass
+
+    # Derive python.exe from the watchdog's python (which is pythonw.exe so it
+    # runs without a console). The worker also runs windowless via CREATE_NO_WINDOW.
+    child_argv = list(argv)
+    if child_argv:
+        child_argv[0] = _derive_console_python(child_argv[0])
+
+    _log(f"starting (pid {os.getpid()}); worker: {child_argv}")
+
+    backoff = _WATCHDOG_BACKOFF_START_S
+    crash_times: list[float] = []
+    _job_handle = None
+
+    while True:
+        # Close the previous iteration's Job Object handle (the worker it was
+        # tied to has already exited by now). Without this, each respawn leaks
+        # one kernel job handle over the supervisor's lifetime.
+        if _job_handle:
+            try:
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(_job_handle)
+            except Exception:
+                pass
+            _job_handle = None
+        started_at = _time.monotonic()
+        try:
+            with open(stray_log, "ab", buffering=0) as log_fh:
+                proc = subprocess.Popen(
+                    child_argv,
+                    cwd=working_dir,
+                    env=env,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                    close_fds=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_fh,
+                    stderr=log_fh,
+                )
+        except Exception as exc:  # pragma: no cover - spawn failure
+            _log(f"failed to spawn worker: {exc}; retrying in {backoff:.0f}s")
+            _time.sleep(backoff)
+            backoff = min(backoff * 2, _WATCHDOG_BACKOFF_CAP_S)
+            continue
+
+        # Tie the worker (and its children) to a kill-on-close Job Object so
+        # nothing leaks if the watchdog itself is terminated.
+        _job_handle = _watchdog_assign_job_object(proc.pid)
+        _log(f"spawned worker (pid {proc.pid})")
+
+        try:
+            exit_code = proc.wait()
+        except KeyboardInterrupt:
+            _log("interrupted; terminating worker and exiting")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return 0
+
+        ran_for = _time.monotonic() - started_at
+
+        if exit_code == 0:
+            _log("worker exited cleanly (0); watchdog stopping")
+            return 0
+        if exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE:
+            _log(f"worker requested restart ({exit_code}); respawning now")
+            backoff = _WATCHDOG_BACKOFF_START_S
+            crash_times.clear()
+            continue
+
+        # Unexpected exit. A run that lasted long enough is treated as healthy:
+        # reset backoff and the crash-burst counter.
+        if ran_for >= _WATCHDOG_HEALTHY_RUN_S:
+            backoff = _WATCHDOG_BACKOFF_START_S
+            crash_times.clear()
+
+        now = _time.monotonic()
+        crash_times.append(now)
+        crash_times[:] = [t for t in crash_times if now - t <= _WATCHDOG_BURST_WINDOW_S]
+        if len(crash_times) > _WATCHDOG_BURST_LIMIT:
+            _log(
+                f"worker crashed {len(crash_times)} times within "
+                f"{_WATCHDOG_BURST_WINDOW_S:.0f}s (last exit {exit_code}); "
+                "giving up. Fix the underlying error (check gateway.log) and "
+                "restart with `hermes gateway restart`."
+            )
+            return exit_code if exit_code else 1
+
+        _log(f"worker exited with {exit_code} after {ran_for:.0f}s; respawning in {backoff:.0f}s")
+        _time.sleep(backoff)
+        backoff = min(backoff * 2, _WATCHDOG_BACKOFF_CAP_S)
+
+
+def _watchdog_main(raw_args: list[str]) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="hermes_cli.gateway_windows watchdog")
+    parser.add_argument("command", choices=["watchdog"])
+    parser.add_argument("--working-dir", required=True)
+    parser.add_argument("--argv", required=True, help="JSON-encoded worker argv")
+    parser.add_argument("--env", required=True, help="JSON-encoded env overlay")
+    args = parser.parse_args(raw_args)
+
+    try:
+        worker_argv = json.loads(args.argv)
+        env_overlay = json.loads(args.env)
+    except Exception as exc:
+        print(f"watchdog: invalid arguments: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(worker_argv, list) or not worker_argv:
+        print("watchdog: --argv must be a non-empty JSON list", file=sys.stderr)
+        return 2
+    if not isinstance(env_overlay, dict):
+        env_overlay = {}
+    return run_watchdog(args.working_dir, worker_argv, env_overlay)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "watchdog":
+        raise SystemExit(_watchdog_main(sys.argv[1:]))

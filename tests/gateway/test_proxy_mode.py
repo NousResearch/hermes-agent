@@ -136,6 +136,7 @@ class TestResolveProxyUrl:
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                     "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")  # opt in to env proxy (#48820)
         monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080/")
         assert resolve_proxy_url() == "socks5://127.0.0.1:1080/"
 
@@ -143,6 +144,7 @@ class TestResolveProxyUrl:
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                     "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")  # opt in to env proxy (#48820)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
         monkeypatch.setenv("NO_PROXY", "api.telegram.org")
 
@@ -152,6 +154,7 @@ class TestResolveProxyUrl:
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                     "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")  # opt in to env proxy (#48820)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
         monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
 
@@ -161,6 +164,7 @@ class TestResolveProxyUrl:
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                     "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")  # opt in to env proxy (#48820)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
         monkeypatch.setenv("NO_PROXY", "*")
 

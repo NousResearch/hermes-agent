@@ -128,6 +128,7 @@ from gateway.platforms.base import (
     SendResult,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
+    trust_env_for_gateway,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -465,7 +466,7 @@ def _create_matrix_session(proxy_url: str | None):
     import aiohttp
 
     if not proxy_url:
-        return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(trust_env=trust_env_for_gateway())
 
     if proxy_url.split("://")[0].lower().startswith("socks"):
         try:
@@ -480,7 +481,7 @@ def _create_matrix_session(proxy_url: str | None):
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
-            return aiohttp.ClientSession(trust_env=True)
+            return aiohttp.ClientSession(trust_env=trust_env_for_gateway())
 
     return aiohttp.ClientSession(proxy=proxy_url)
 

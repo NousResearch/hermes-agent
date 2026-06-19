@@ -33,6 +33,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    trust_env_for_gateway,
 )
 from gateway.platforms.helpers import redact_phone, strip_markdown
 
@@ -128,7 +129,7 @@ class SmsAdapter(BasePlatformAdapter):
         await site.start()
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=trust_env_for_gateway(),
         )
         self._running = True
 
@@ -170,7 +171,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         session = self._http_session or aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=trust_env_for_gateway(),
         )
         try:
             for chunk in chunks:

@@ -4308,9 +4308,21 @@ class TestMatrixProxyConfig:
         assert adapter._proxy_url == "socks5://proxy:1080"
 
     def test_generic_proxy_fallback(self, monkeypatch):
+        # Generic env proxy inheritance is gated off by default (#48820 Bug 3);
+        # opt in so the fallback path is exercised.
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")
         adapter = self._make_adapter(monkeypatch,
                                      proxy_env={"HTTPS_PROXY": "http://corp:8080"})
         assert adapter._proxy_url == "http://corp:8080"
+
+    def test_generic_proxy_ignored_without_optin(self, monkeypatch):
+        # Without opt-in, an inherited HTTPS_PROXY must NOT be picked up — this
+        # is the core of the Windows Scheduled Task misroute fix (#48820).
+        monkeypatch.delenv("GATEWAY_TRUST_PROXY", raising=False)
+        monkeypatch.delenv("GATEWAY_TRUST_ENV", raising=False)
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"HTTPS_PROXY": "http://corp:8080"})
+        assert adapter._proxy_url is None
 
     def test_matrix_proxy_takes_priority(self, monkeypatch):
         adapter = self._make_adapter(monkeypatch,
@@ -4323,7 +4335,23 @@ class TestCreateMatrixSession:
     """Verify _create_matrix_session applies proxy at the session level."""
 
     @pytest.mark.asyncio
-    async def test_no_proxy_returns_trust_env_session(self):
+    async def test_no_proxy_returns_gated_trust_env_session(self, monkeypatch):
+        # trust_env now defaults OFF (#48820 Bug 3) so a Windows Scheduled Task
+        # can't inherit a stray HTTP_PROXY. It only flips on with an explicit
+        # opt-in.
+        monkeypatch.delenv("GATEWAY_TRUST_PROXY", raising=False)
+        monkeypatch.delenv("GATEWAY_TRUST_ENV", raising=False)
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import _create_matrix_session
+            session = _create_matrix_session(None)
+            try:
+                assert session.trust_env is False
+            finally:
+                await session.close()
+
+    @pytest.mark.asyncio
+    async def test_no_proxy_trust_env_optin(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")
         with patch.dict("sys.modules", _make_fake_mautrix()):
             from gateway.platforms.matrix import _create_matrix_session
             session = _create_matrix_session(None)

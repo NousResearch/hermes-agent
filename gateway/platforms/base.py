@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import functools
 import inspect
 import ipaddress
 import logging
@@ -20,7 +21,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from utils import is_truthy_value, normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,49 @@ def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[st
     return False
 
 
+def trust_env_for_gateway() -> bool:
+    """Whether gateway HTTP clients should inherit proxy settings from the env.
+
+    Default is **False**: a gateway launched from a Windows Scheduled Task (or
+    any non-interactive session) can silently inherit ``HTTP_PROXY`` /
+    ``HTTPS_PROXY`` pointing at a local proxy (e.g. ``127.0.0.1:7890``) that the
+    user's interactive shells never see. When that proxy isn't running, every
+    platform poll fails with a connection-refused loop (issue #48820, Bug 3).
+
+    Opt back in (restoring the historical ``trust_env=True`` behavior, which
+    also re-enables ``SSL_CERT_FILE`` pickup) by setting ``gateway.trust_proxy:
+    true`` in ``config.yaml`` — the canonical, documented surface for this
+    behavioral toggle. ``GATEWAY_TRUST_PROXY`` is honored as an internal
+    escape-hatch env var (e.g. for ad-hoc/CI overrides) but config.yaml is the
+    user-facing path.
+
+    Explicit per-platform proxy vars (e.g. ``DISCORD_PROXY``, ``TELEGRAM_PROXY``)
+    are honored regardless of this setting — they are an explicit user choice,
+    not implicit environment inheritance.
+    """
+    if is_truthy_value(os.environ.get("GATEWAY_TRUST_PROXY")):
+        return True
+    return _config_trust_proxy()
+
+
+@functools.lru_cache(maxsize=1)
+def _config_trust_proxy() -> bool:
+    """Read ``gateway.trust_proxy`` from config.yaml (cached).
+
+    Cached because ``load_gateway_config()`` does a full disk read + YAML parse
+    + plugin discovery, and ``trust_env_for_gateway()`` is called per HTTP
+    client construction. ``trust_proxy`` is a restart-time toggle (the gateway
+    re-reads config.yaml on restart, not live), so a process-lifetime cache
+    introduces no staleness regression.
+    """
+    try:
+        from gateway.config import load_gateway_config
+        gw_cfg = load_gateway_config()
+        return bool(getattr(gw_cfg, "trust_proxy", False))
+    except Exception:
+        return False
+
+
 def resolve_proxy_url(
     platform_env_var: str | None = None,
     *,
@@ -353,9 +397,12 @@ def resolve_proxy_url(
     """Return a proxy URL from env vars, or macOS system proxy.
 
     Check order:
-      0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority
-      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
-      2. macOS system proxy via ``scutil --proxy`` (auto-detect)
+      0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority, always
+         honored (explicit user choice)
+      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants) — only
+         when ``trust_env_for_gateway()`` is True (default False; see #48820)
+      2. macOS system proxy via ``scutil --proxy`` (auto-detect) — only when
+         ``trust_env_for_gateway()`` is True
 
     Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
     of ``target_hosts``.
@@ -366,6 +413,12 @@ def resolve_proxy_url(
             if should_bypass_proxy(target_hosts):
                 return None
             return normalize_proxy_url(value)
+    # Generic environment proxy inheritance is gated: a non-interactive launch
+    # (Windows Scheduled Task, systemd) must not silently route through an
+    # inherited proxy the user never configured for the gateway. Explicit
+    # per-platform vars above are exempt.
+    if not trust_env_for_gateway():
+        return None
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()

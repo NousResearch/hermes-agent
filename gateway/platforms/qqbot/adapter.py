@@ -69,6 +69,7 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    trust_env_for_gateway,
 )
 from gateway.platforms.helpers import strip_markdown
 
@@ -455,17 +456,20 @@ class QQAdapter(BasePlatformAdapter):
             await self._session.close()
         self._session = None
 
-        # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
-        # local patch, so QQ can regress to direct-connect timeouts after update.
-        self._session = aiohttp.ClientSession(trust_env=True)
-        ws_proxy = (
-            os.getenv("WSS_PROXY")
-            or os.getenv("wss_proxy")
-            or os.getenv("HTTPS_PROXY")
-            or os.getenv("https_proxy")
-            or os.getenv("ALL_PROXY")
-            or os.getenv("all_proxy")
-        )
+        # Honor an explicit WSS proxy always (deliberate user choice). Generic
+        # inherited env proxies (HTTPS_PROXY/ALL_PROXY) are only used when the
+        # gateway is configured to trust the environment — a Windows Scheduled
+        # Task can otherwise inherit a stray proxy and misroute the WS (#48820).
+        _trust_env = trust_env_for_gateway()
+        self._session = aiohttp.ClientSession(trust_env=_trust_env)
+        ws_proxy = os.getenv("WSS_PROXY") or os.getenv("wss_proxy")
+        if not ws_proxy and _trust_env:
+            ws_proxy = (
+                os.getenv("HTTPS_PROXY")
+                or os.getenv("https_proxy")
+                or os.getenv("ALL_PROXY")
+                or os.getenv("all_proxy")
+            )
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={

@@ -200,7 +200,14 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
     )
 
     assert "pythonw.exe" in content
-    assert "gateway run" in content
+    # The Scheduled Task now launches the gateway under the watchdog supervisor
+    # (issue #48820, Bug 1) rather than invoking `gateway run` directly. The
+    # worker command is embedded as a JSON --argv blob the watchdog spawns.
+    assert "hermes_cli.gateway_windows" in content
+    assert "watchdog" in content
+    assert "--argv" in content
+    # The worker argv is embedded as cmd-quoted JSON (inner quotes doubled).
+    assert '""gateway"", ""run""' in content
     assert "--replace" not in content
     assert "start \"\"" not in content
     assert "exit /b 0" in content

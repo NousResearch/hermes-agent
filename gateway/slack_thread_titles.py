@@ -1,8 +1,9 @@
 """Persistent Slack thread preview titles.
 
-Slack's conversation list previews only the first line of the latest reply.
-For long-running Hermes threads, a stable title prefix makes every reply
-recognizable without reopening the thread.
+Slack exposes different preview surfaces (notifications, sidebars, thread
+lists) that do not all choose snippets the same way. Keep one stable title per
+thread, make the visible body title placement configurable, and provide a
+top-level fallback string for Slack clients that use notification fallbacks.
 """
 
 from __future__ import annotations
@@ -107,7 +108,7 @@ def _save_store_unlocked(data: dict[str, Any]) -> None:
 
 
 def normalize_title(title: str, *, fallback: str = _FALLBACK_TITLE) -> str:
-    """Sanitize a human or generated title for use as a Slack prefix."""
+    """Sanitize a human or generated title for use as a Slack marker."""
 
     text = str(title or "").strip()
     text = re.sub(r"^\*{1,2}|\*{1,2}$", "", text).strip()
@@ -223,15 +224,62 @@ def extract_retitle_request(text: str) -> Optional[str]:
     return title or None
 
 
-def build_thread_title_prompt(title: str) -> str:
+def normalize_placement(placement: str | None) -> str:
+    """Normalize visible title marker placement config."""
+
+    value = str(placement or "both").strip().lower().replace("_", "-")
+    aliases = {
+        "prepend": "first",
+        "prefix": "first",
+        "start": "first",
+        "append": "last",
+        "suffix": "last",
+        "end": "last",
+        "edge": "both",
+        "edges": "both",
+    }
+    value = aliases.get(value, value)
+    if value not in {"first", "last", "both", "none"}:
+        return "both"
+    return value
+
+
+def title_marker(title: str) -> str:
+    """Return the canonical visible Markdown title marker."""
+
+    return f"**{normalize_title(title)}:**"
+
+
+def build_thread_title_prompt(title: str, *, placement: str = "both") -> str:
     """Build the ephemeral system instruction injected for a Slack thread."""
 
     normalized = normalize_title(title)
+    where = normalize_placement(placement)
+    if where == "first":
+        instruction = (
+            f"Begin every user-visible reply in this thread with exactly "
+            f"`**{normalized}:**`."
+        )
+    elif where == "last":
+        instruction = (
+            f"End every user-visible reply in this thread with exactly "
+            f"`**{normalized}:**` as the final paragraph."
+        )
+    elif where == "both":
+        instruction = (
+            f"Begin every user-visible reply in this thread with exactly "
+            f"`**{normalized}:**` and end it with exactly `**{normalized}:**` "
+            "as the final paragraph."
+        )
+    else:
+        instruction = (
+            "Slack delivery will attach the preview title fallback; do not add "
+            "a visible title marker unless the user asks."
+        )
     return (
         "[Slack thread title]\n"
         f"This Slack thread's fixed preview title is: {normalized}. "
-        f"End every user-visible reply in this thread with exactly `**{normalized}:**` "
-        "as the final paragraph. Reuse this exact title until the user explicitly "
+        f"{instruction} Reuse this exact title until the user explicitly "
         "says `retitle this thread: <new title>`."
     )
 
@@ -264,16 +312,82 @@ def content_has_title_marker(content: str, title: str) -> bool:
     )
 
 
-def apply_title_prefix(content: str, title: str) -> str:
-    """Append the Slack thread title unless it is already present.
+def _content_edge_has_title_marker(content: str, title: str, *, first: bool) -> bool:
+    normalized = normalize_title(title).casefold()
+    existing = _title_from_content_edge(content, first=first)
+    return bool(existing and existing.casefold() == normalized)
 
-    The historical function name is retained for compatibility with the Slack
-    adapter/tests. Slack previews the last paragraph, so the marker belongs at
-    the end, not the top. Because of course it does.
-    """
+
+def apply_title_marker(content: str, title: str, *, placement: str = "both") -> str:
+    """Apply the visible Slack thread title marker at the requested edge(s)."""
 
     body = str(content or "")
-    normalized = normalize_title(title)
-    if not body.strip() or content_has_title_marker(body, normalized):
+    if not body.strip():
         return body
-    return f"{body.rstrip()}\n\n**{normalized}:**"
+    normalized = normalize_title(title)
+    marker = title_marker(normalized)
+    where = normalize_placement(placement)
+    if where == "none":
+        return body
+
+    result = body.strip()
+    if where in {"first", "both"} and not _content_edge_has_title_marker(
+        result, normalized, first=True
+    ):
+        result = f"{marker}\n\n{result.lstrip()}"
+    if where in {"last", "both"} and not _content_edge_has_title_marker(
+        result, normalized, first=False
+    ):
+        result = f"{result.rstrip()}\n\n{marker}"
+    return result
+
+
+def _strip_title_marker_lines(content: str, title: str) -> str:
+    normalized = normalize_title(title).casefold()
+    kept: list[str] = []
+    for line in str(content or "").splitlines():
+        existing = _title_from_markdown_line(line.strip())
+        if existing and existing.casefold() == normalized:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _plain_preview_text(content: str) -> str:
+    text = str(content or "")
+    text = re.sub(r"```[\s\S]*?```", " ", text)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+    text = re.sub(r"_([^_]+)_", r"\1", text)
+    text = re.sub(r"<([^|>]+)\|([^>]+)>", r"\2", text)
+    text = re.sub(r"<([^>]+)>", r"\1", text)
+    text = re.sub(r"\[[^\]]+\]\(([^)]+)\)", r"\1", text)
+    text = re.sub(r"^[>\-#*\s]+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def build_preview_fallback(content: str, title: str, *, max_length: int = 240) -> str:
+    """Return Slack top-level text that starts with the stable thread title.
+
+    Slack documents top-level ``text`` as the notification fallback when a
+    message uses blocks. Include a compact body excerpt after the title so the
+    fallback remains useful for notifications and screen readers without
+    sacrificing the preview prefix.
+    """
+
+    normalized = normalize_title(title)
+    prefix = f"{normalized}:"
+    body = _plain_preview_text(_strip_title_marker_lines(content, normalized))
+    if not body:
+        return prefix
+    fallback = f"{prefix} {body}"
+    if len(fallback) <= max_length:
+        return fallback
+    return fallback[: max_length - 1].rstrip() + "…"
+
+
+def apply_title_prefix(content: str, title: str) -> str:
+    """Compatibility wrapper: apply title markers at both visible edges."""
+
+    return apply_title_marker(content, title, placement="both")

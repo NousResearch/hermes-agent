@@ -53,11 +53,13 @@ from gateway.platforms.base import (
     cache_video_from_bytes,
 )
 from gateway.slack_thread_titles import (
-    apply_title_prefix,
+    apply_title_marker,
+    build_preview_fallback,
     build_thread_title_prompt,
     extract_retitle_request,
     get_or_create_thread_title,
     get_thread_title,
+    normalize_placement,
     set_thread_title,
 )
 
@@ -1160,15 +1162,21 @@ class SlackAdapter(BasePlatformAdapter):
                 )
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            content = self._maybe_prefix_thread_title(
-                chat_id,
-                thread_ts,
-                content,
-                metadata,
-            )
+            title = self._thread_title_for_delivery(chat_id, thread_ts, metadata)
+            if title:
+                content = apply_title_marker(
+                    content,
+                    title,
+                    placement=self._thread_title_placement(),
+                )
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
+            fallback_text = (
+                build_preview_fallback(content, title)
+                if title and self._thread_title_preview_fallback_enabled()
+                else None
+            )
 
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1182,9 +1190,13 @@ class SlackAdapter(BasePlatformAdapter):
             for i, chunk in enumerate(chunks):
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
+                    "text": fallback_text or chunk,
                     "mrkdwn": True,
                 }
+                if fallback_text:
+                    blocks = self._slack_message_blocks(chunk)
+                    if blocks:
+                        kwargs["blocks"] = blocks
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
@@ -1270,19 +1282,30 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
-            content = self._maybe_prefix_thread_title(
+            title = self._thread_title_for_delivery(
                 chat_id,
                 thread_ts,
-                content,
                 metadata,
                 final=finalize,
             )
+            if title:
+                content = apply_title_marker(
+                    content,
+                    title,
+                    placement=self._thread_title_placement(),
+                )
             formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
-                channel=chat_id,
-                ts=message_id,
-                text=formatted,
-            )
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "ts": message_id,
+                "text": formatted,
+            }
+            if title and self._thread_title_preview_fallback_enabled():
+                kwargs["text"] = build_preview_fallback(content, title)
+                blocks = self._slack_message_blocks(formatted)
+                if blocks:
+                    kwargs["blocks"] = blocks
+            await self._get_client(chat_id).chat_update(**kwargs)
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)
@@ -1355,16 +1378,90 @@ class SlackAdapter(BasePlatformAdapter):
             return True  # default: each DM thread is its own session
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
-    def _thread_titles_enabled(self) -> bool:
-        """Whether Slack thread-title prompting/enforcement is enabled."""
+    def _thread_titles_config(self) -> Any:
+        """Return raw Slack thread-title config."""
         raw = self.config.extra.get("thread_titles")
         if raw is None:
             raw = self.config.extra.get("thread_titles_enabled")
+        return raw
+
+    def _thread_titles_enabled(self) -> bool:
+        """Whether Slack thread-title prompting/enforcement is enabled."""
+        raw = self._thread_titles_config()
         if raw is None:
             return True
         if isinstance(raw, dict):
             raw = raw.get("enabled", True)
         return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _thread_title_placement(self) -> str:
+        """Return visible body title marker placement: first, last, both, none."""
+        raw = self._thread_titles_config()
+        placement = None
+        if isinstance(raw, dict):
+            placement = raw.get("placement") or raw.get("position")
+        if placement is None:
+            placement = self.config.extra.get("thread_title_placement")
+        return normalize_placement(placement)
+
+    def _thread_title_preview_fallback_enabled(self) -> bool:
+        """Whether to send a title-first top-level text fallback with blocks."""
+        raw = self._thread_titles_config()
+        if isinstance(raw, dict):
+            raw = raw.get("preview_fallback", raw.get("fallback_text", True))
+        else:
+            raw = self.config.extra.get("thread_title_preview_fallback", True)
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+    @staticmethod
+    def _slack_message_blocks(formatted: str) -> Optional[List[Dict[str, Any]]]:
+        """Render a formatted Slack mrkdwn message as Section blocks.
+
+        Slack uses top-level ``text`` as the notification fallback when blocks
+        are present. Section block mrkdwn text is limited to 3000 characters and
+        Slack accepts at most 50 blocks, so split conservatively and fall back to
+        plain text if the body is somehow larger than that envelope.
+        """
+        text = str(formatted or "")
+        if not text.strip():
+            return None
+        limit = 3000
+        blocks: List[Dict[str, Any]] = []
+        current = ""
+        for line in text.splitlines(keepends=True):
+            while len(line) > limit:
+                if current:
+                    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": current.rstrip()}})
+                    current = ""
+                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": line[:limit].rstrip()}})
+                line = line[limit:]
+            if len(current) + len(line) > limit and current:
+                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": current.rstrip()}})
+                current = ""
+            current += line
+        if current.strip():
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": current.rstrip()}})
+        if not blocks or len(blocks) > 50:
+            return None
+        return blocks
+
+    def _thread_title_for_delivery(
+        self,
+        chat_id: str,
+        thread_ts: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        final: bool = False,
+    ) -> Optional[str]:
+        """Return the persisted title when this outgoing Slack message needs it."""
+        if not self._thread_titles_enabled() or not thread_ts:
+            return None
+        md = metadata or {}
+        if md.get("suppress_slack_thread_title"):
+            return None
+        if not final and not md.get("notify"):
+            return None
+        return get_thread_title(chat_id, thread_ts)
 
     def _maybe_prefix_thread_title(
         self,
@@ -1375,18 +1472,16 @@ class SlackAdapter(BasePlatformAdapter):
         *,
         final: bool = False,
     ) -> str:
-        """Append the persisted Slack thread title to final user-visible text."""
-        if not self._thread_titles_enabled() or not thread_ts:
-            return content
-        md = metadata or {}
-        if md.get("suppress_slack_thread_title"):
-            return content
-        if not final and not md.get("notify"):
-            return content
-        title = get_thread_title(chat_id, thread_ts)
+        """Compatibility wrapper for older tests/callers."""
+        title = self._thread_title_for_delivery(
+            chat_id,
+            thread_ts,
+            metadata,
+            final=final,
+        )
         if not title:
             return content
-        return apply_title_prefix(content, title)
+        return apply_title_marker(content, title, placement=self._thread_title_placement())
 
     def _resolve_thread_ts(
         self,
@@ -2901,7 +2996,10 @@ class SlackAdapter(BasePlatformAdapter):
                         thread_ts,
                         seed_text,
                     )
-                title_prompt = build_thread_title_prompt(thread_title)
+                title_prompt = build_thread_title_prompt(
+                    thread_title,
+                    placement=self._thread_title_placement(),
+                )
                 _channel_prompt = (
                     f"{_channel_prompt}\n\n{title_prompt}"
                     if _channel_prompt

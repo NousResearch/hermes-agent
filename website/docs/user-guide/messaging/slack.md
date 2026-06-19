@@ -341,12 +341,20 @@ platforms:
       # Only the first chunk of the first reply is broadcast.
       reply_broadcast: false
 
-      # Append each final thread reply with a stable bold title so Slack
-      # conversation previews remain scannable. The title is persisted per
-      # channel_id + thread_ts and shared across Hermes profiles on the same
-      # install. Users can rename it with:
+      # Add a stable bold title to final thread replies and send a title-first
+      # top-level fallback text for Slack notification/preview surfaces. The
+      # title is persisted per channel_id + thread_ts and shared across Hermes
+      # profiles on the same install. Users can rename it with:
       # retitle this thread: New Slack Thread Title
-      thread_titles: true
+      thread_titles:
+        enabled: true
+        # first | last | both | none. "both" is the safest default because
+        # Slack's sidebar/thread preview heuristics are not publicly specified.
+        placement: both
+        # When true, render the body as Block Kit and set top-level text to
+        # "Title: short body excerpt" for Slack's documented notification
+        # fallback path.
+        preview_fallback: true
 ```
 
 | Key | Default | Description |
@@ -354,7 +362,7 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
-| `platforms.slack.extra.thread_titles` | `true` | Stores a stable 5-10 word title per Slack thread, injects it into the agent prompt, and enforces it on final replies. Set `false` to disable. |
+| `platforms.slack.extra.thread_titles` | `true` | Stores a stable 5-10 word title per Slack thread, injects it into the agent prompt, enforces visible markers on final replies, and sends a title-first fallback when Block Kit rendering is enabled. Set `false` to disable, or use a map for `enabled`, `placement`, and `preview_fallback`. |
 
 ### Slack thread preview titles
 
@@ -363,13 +371,19 @@ When enabled, Hermes stores a short title for each Slack thread under
 `channel_id + thread_ts`, so all Slack-facing profiles on the same Hermes
 installation reuse the same title for the same Slack thread.
 
-Hermes uses that title in two places:
+Hermes uses that title in three places:
 
-1. It injects an ephemeral instruction telling the agent to end every
-   user-visible reply with exactly `**Title:**` as the final paragraph.
-2. It enforces the final title paragraph at Slack delivery time for final replies, including
-   streamed responses. Slack receives native mrkdwn, so `**Title:**` renders as
-   `*Title:*` in the API payload.
+1. It injects an ephemeral instruction telling the agent where to place the
+   visible `**Title:**` marker. The default placement is `both` because Slack
+   does not publicly document one universal sidebar/thread preview heuristic.
+2. It enforces the requested marker placement at Slack delivery time for final
+   replies, including streamed responses. Slack receives native mrkdwn, so
+   `**Title:**` renders as `*Title:*` in the API payload.
+3. When `preview_fallback` is enabled, Hermes sends the visible body as Block
+   Kit and sets top-level `text` to `Title: short body excerpt`. Slack documents
+   that top-level `text` is the notification fallback for block messages; this
+   gives preview surfaces a title-first fallback without relying only on first
+   or last paragraph extraction.
 
 To rename a thread title, reply in the thread:
 

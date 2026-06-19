@@ -1070,8 +1070,13 @@ class TestSlackThreadTitles:
         )
 
         assert result.success
-        text = adapter._app.client.chat_postMessage.call_args.kwargs["text"]
-        assert text == "Implemented.\n\n*Slack Preview Thread Title Policy:*"
+        call = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call["text"] == "Slack Preview Thread Title Policy: Implemented."
+        assert call["blocks"][0]["text"]["text"] == (
+            "*Slack Preview Thread Title Policy:*\n\n"
+            "Implemented.\n\n"
+            "*Slack Preview Thread Title Policy:*"
+        )
 
     @pytest.mark.asyncio
     async def test_inbound_message_injects_thread_title_prompt(
@@ -1102,7 +1107,7 @@ class TestSlackThreadTitles:
         assert event.source.thread_id == "1111111111.000001"
         assert "[Slack thread title]" in event.channel_prompt
         assert "**Slack Quick Preview Title Consistency Request:**" in event.channel_prompt
-        assert "final paragraph" in event.channel_prompt
+        assert "first and final" in event.channel_prompt or "Begin every user-visible reply" in event.channel_prompt
 
     @pytest.mark.asyncio
     async def test_inbound_retitle_updates_persisted_thread_title(

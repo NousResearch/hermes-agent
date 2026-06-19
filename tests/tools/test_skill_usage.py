@@ -18,7 +18,13 @@ def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:
 
 @pytest.fixture
 def skills_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with a clean skills/ dir for each test."""
+    """Isolated HERMES_HOME with a clean skills/ dir for each test.
+
+    Pins ``curator.prune_builtins`` OFF so the bundled/hub-protection tests in
+    this module exercise the off-path semantics regardless of the shipped
+    default. Tests that want built-ins to be curation-eligible flip it back on
+    explicitly via ``monkeypatch.setattr(mod, "_prune_builtins_enabled", ...)``.
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "skills").mkdir()
@@ -28,6 +34,7 @@ def skills_home(tmp_path, monkeypatch):
     import importlib
     import tools.skill_usage as mod
     importlib.reload(mod)
+    monkeypatch.setattr(mod, "_prune_builtins_enabled", lambda: False)
     return home
 
 
@@ -339,7 +346,7 @@ def test_agent_created_skips_archive_and_hub_dirs(skills_home):
 # ---------------------------------------------------------------------------
 
 def test_archive_skill_moves_directory(skills_home):
-    from tools.skill_usage import archive_skill, get_record, STATE_ARCHIVED
+    from tools.skill_usage import archive_skill, get_record
     skills_dir = skills_home / "skills"
     skill_dir = _write_skill(skills_dir, "old-skill")
     assert skill_dir.exists()
@@ -446,6 +453,76 @@ def test_archive_collision_gets_suffix(skills_home):
     assert any(n.startswith("dup-") and n != "dup" for n in archived)
 
 
+def test_restore_does_not_pull_unrelated_sibling_out_of_archive(skills_home):
+    """Restoring a name with no exact archive entry must NOT grab a different
+    archived skill that merely shares a ``<name>-`` prefix.
+
+    The timestamped-duplicate fallback recognises only the suffix
+    ``archive_skill`` writes on a collision (``-YYYYMMDDHHMMSS``). A bare
+    ``startswith(f"{name}-")`` also matches sibling skills, so restoring
+    ``git`` would rip an archived ``git-helpers`` out of the archive, rename
+    it to ``git``, and report success — destroying the sibling's only copy."""
+    from tools.skill_usage import (
+        archive_skill, restore_skill, list_archived_skill_names, mark_agent_created,
+    )
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "git-helpers")
+    mark_agent_created("git-helpers")
+    ok, msg = archive_skill("git-helpers")
+    assert ok, msg
+
+    # "git" was never archived; only its prefix-sharing sibling was.
+    ok, msg = restore_skill("git")
+    assert not ok, f"restore('git') should not match 'git-helpers': {msg}"
+    assert "not found" in msg.lower()
+
+    # The sibling must be untouched: still in the archive, never moved to skills/git.
+    assert (skills_dir / ".archive" / "git-helpers" / "SKILL.md").exists()
+    assert "git-helpers" in list_archived_skill_names()
+    assert not (skills_dir / "git").exists()
+
+
+def test_restore_still_matches_timestamped_duplicate(skills_home):
+    """The fix must not over-narrow: a real collision dupe written by
+    ``archive_skill`` (``<name>-YYYYMMDDHHMMSS``) is still restorable by name
+    when no bare ``<name>`` entry exists."""
+    from tools.skill_usage import restore_skill
+    skills_dir = skills_home / "skills"
+    dupe = skills_dir / ".archive" / "report-tool-20260101000000"
+    dupe.mkdir(parents=True)
+    (dupe / "SKILL.md").write_text(
+        "---\nname: report-tool\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("report-tool")
+    assert ok, msg
+    assert (skills_dir / "report-tool" / "SKILL.md").exists()
+
+
+def test_restore_prefers_timestamped_dupe_over_unrelated_sibling(skills_home):
+    """With both a real timestamped duplicate and an unrelated sibling present,
+    restoring the bare name picks the duplicate and leaves the sibling alone."""
+    from tools.skill_usage import restore_skill
+    archive = skills_home / "skills" / ".archive"
+
+    dupe = archive / "report-20260101000000"          # real collision dupe of "report"
+    sibling = archive / "report-card"                  # unrelated sibling skill
+    for d, frontname in ((dupe, "report"), (sibling, "report-card")):
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {frontname}\ndescription: x\n---\n", encoding="utf-8",
+        )
+
+    ok, msg = restore_skill("report")
+    assert ok, msg
+    # The duplicate (name: report) was restored, not the sibling (name: report-card).
+    restored = (skills_home / "skills" / "report" / "SKILL.md").read_text()
+    assert "name: report\n" in restored
+    assert "name: report-card" not in restored
+    assert not dupe.exists()       # the dupe moved out of the archive
+    assert sibling.exists()        # the unrelated sibling stayed put
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
@@ -520,27 +597,35 @@ def test_agent_created_report_derives_activity_from_view_and_patch(skills_home, 
 
 
 # ---------------------------------------------------------------------------
-# Provenance guard — telemetry must not leak records for bundled/hub skills
+# Telemetry vs curation — usage is tracked for ALL skills; curation is not
 # ---------------------------------------------------------------------------
 
-def test_bump_view_no_op_for_bundled_skill(skills_home):
-    """Telemetry bumps on bundled skills are dropped — the sidecar must stay
-    focused on agent-created skills only."""
-    from tools.skill_usage import bump_view, load_usage
+def test_bump_view_tracks_bundled_skill(skills_home):
+    """Telemetry IS recorded for bundled skills (observability), but the record
+    must NOT make the skill a curation candidate by itself."""
+    from tools.skill_usage import (
+        bump_view, load_usage, list_agent_created_skill_names,
+    )
     skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "ship-bundled")
     (skills_dir / ".bundled_manifest").write_text(
         "ship-bundled:abc\n", encoding="utf-8",
     )
 
     bump_view("ship-bundled")
-    assert "ship-bundled" not in load_usage(), (
-        "bundled skill leaked into .usage.json"
+    rec = load_usage().get("ship-bundled")
+    assert isinstance(rec, dict), "bundled skill telemetry should be recorded"
+    assert rec["view_count"] == 1
+    # Pruning is off by default in this fixture → not a curation candidate.
+    assert "ship-bundled" not in list_agent_created_skill_names()
+
+
+def test_bump_patch_tracks_hub_skill(skills_home):
+    from tools.skill_usage import (
+        bump_patch, load_usage, list_agent_created_skill_names,
     )
-
-
-def test_bump_patch_no_op_for_hub_skill(skills_home):
-    from tools.skill_usage import bump_patch, load_usage
     skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "from-hub")
     hub = skills_dir / ".hub"
     hub.mkdir()
     (hub / "lock.json").write_text(
@@ -548,12 +633,17 @@ def test_bump_patch_no_op_for_hub_skill(skills_home):
     )
 
     bump_patch("from-hub")
-    assert "from-hub" not in load_usage()
+    rec = load_usage().get("from-hub")
+    assert isinstance(rec, dict), "hub skill telemetry should be recorded"
+    assert rec["patch_count"] == 1
+    # Hub skills are NEVER curation candidates regardless of any flag.
+    assert "from-hub" not in list_agent_created_skill_names()
 
 
-def test_bump_use_no_op_for_hub_skill(skills_home):
+def test_bump_use_tracks_hub_skill(skills_home):
     from tools.skill_usage import bump_use, load_usage
     skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "from-hub")
     hub = skills_dir / ".hub"
     hub.mkdir()
     (hub / "lock.json").write_text(
@@ -561,7 +651,9 @@ def test_bump_use_no_op_for_hub_skill(skills_home):
     )
 
     bump_use("from-hub")
-    assert "from-hub" not in load_usage()
+    rec = load_usage().get("from-hub")
+    assert isinstance(rec, dict)
+    assert rec["use_count"] == 1
 
 
 def test_set_state_no_op_for_bundled_skill(skills_home):
@@ -593,12 +685,17 @@ def test_restore_refuses_to_shadow_bundled_skill(skills_home):
     assert "bundled" in msg.lower() or "shadow" in msg.lower()
 
 
-def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
-    """The combined guarantee: no curator code path can archive, mark stale,
-    set-state, or persist telemetry for a bundled or hub-installed skill."""
+def test_end_to_end_telemetry_tracked_but_lifecycle_refused(skills_home):
+    """The combined guarantee under decoupled telemetry/curation:
+
+    - Usage telemetry (view/use/patch) IS recorded for bundled & hub skills.
+    - Lifecycle mutations (set_state, set_pinned, archive) are REFUSED for them
+      (with pruning off, the fixture default), so no state/pinned/archived flag
+      lands and the directories stay on disk.
+    """
     from tools.skill_usage import (
         bump_view, bump_use, bump_patch, set_state, set_pinned,
-        archive_skill, load_usage, STATE_STALE, STATE_ARCHIVED,
+        archive_skill, load_usage, STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED,
     )
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "bundled-one")
@@ -614,7 +711,6 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
         json.dumps({"installed": {"hub-one": {}}}), encoding="utf-8",
     )
 
-    # Hammer every mutator at the bundled/hub names
     for name in ("bundled-one", "hub-one"):
         bump_view(name)
         bump_use(name)
@@ -625,15 +721,55 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
         ok, _msg = archive_skill(name)
         assert not ok, f"archive_skill(\"{name}\") should refuse"
 
-    # Sidecar must be clean of all three
     data = load_usage()
-    assert "bundled-one" not in data
-    assert "hub-one" not in data
+    # Telemetry landed for both.
+    for name in ("bundled-one", "hub-one"):
+        assert name in data, f"{name} telemetry should be recorded"
+        assert data[name]["view_count"] == 1
+        assert data[name]["use_count"] == 1
+        assert data[name]["patch_count"] == 1
+        # But lifecycle mutators were refused — state stays the default, never
+        # archived/stale/pinned, and created_by is never agent.
+        assert data[name]["state"] == STATE_ACTIVE
+        assert data[name]["archived_at"] is None
+        assert data[name]["pinned"] is False
+        assert data[name].get("created_by") != "agent"
 
-    # Directories must still be in place on disk
+    # Directories must still be in place on disk.
     assert (skills_dir / "bundled-one" / "SKILL.md").exists()
     assert (skills_dir / "hub-one" / "SKILL.md").exists()
 
-    # The agent-created skill can still be mutated normally
+    # The agent-created skill can still be mutated normally.
     bump_view("mine")
     assert load_usage()["mine"]["view_count"] == 1
+
+
+def test_usage_report_covers_all_provenance(skills_home):
+    """usage_report() surfaces every skill with provenance, unlike the
+    curator-scoped agent_created_report()."""
+    from tools.skill_usage import (
+        bump_use, usage_report, mark_agent_created,
+    )
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "bundled-one")
+    _write_skill(skills_dir, "hub-one")
+    _write_skill(skills_dir, "mine")
+    (skills_dir / ".bundled_manifest").write_text("bundled-one:abc\n", encoding="utf-8")
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"hub-one": {}}}), encoding="utf-8",
+    )
+    mark_agent_created("mine")
+    for n in ("bundled-one", "hub-one", "mine"):
+        bump_use(n)
+
+    rows = {r["name"]: r for r in usage_report()}
+    assert set(rows) == {"bundled-one", "hub-one", "mine"}
+    assert rows["bundled-one"]["provenance"] == "bundled"
+    assert rows["hub-one"]["provenance"] == "hub"
+    assert rows["mine"]["provenance"] == "agent"
+    # All carry real usage now.
+    for n in rows:
+        assert rows[n]["use_count"] == 1
+        assert rows[n]["_persisted"] is True

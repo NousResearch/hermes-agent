@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Preview Demo</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", sans-serif;
+    background: radial-gradient(1200px 600px at 20% 10%, #4a1a33 0%, #2a1020 40%, #120810 100%);
+    color: #ffe4f1;
+    display: grid;
+    place-items: center;
+    padding: 2rem;
+  }
+  .card {
+    max-width: 520px;
+    padding: 2rem 2.25rem;
+    border: 1px solid rgba(255,182,214,0.18);
+    border-radius: 14px;
+    background: rgba(28,14,22,0.6);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  }
+  h1 {
+    margin: 0 0 0.5rem;
+    font-size: 1.5rem;
+    letter-spacing: 0.01em;
+  }
+  p { margin: 0.35rem 0; opacity: 0.85; line-height: 1.5; }
+  .dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: #ff6fb5; margin-right: 0.5rem;
+    box-shadow: 0 0 12px #ff6fb5;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { transform: scale(1); opacity: 1; }
+    50%     { transform: scale(1.4); opacity: 0.6; }
+  }
+  code {
+    background: rgba(255,182,214,0.10);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  .time { font-variant-numeric: tabular-nums; opacity: 0.7; font-size: 0.85rem; margin-top: 1rem; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1><span class="dot"></span>preview-demo.html</h1>
+    <p>Tiny standalone HTML artifact — no server, no build step.</p>
+    <p>Open directly in a browser via <code>file://</code>.</p>
+    <p class="time" id="t"></p>
+  </div>
+  <script>
+    const el = document.getElementById('t');
+    const tick = () => { el.textContent = new Date().toLocaleString(); };
+    tick(); setInterval(tick, 1000);
+  </script>
+</body>
+</html>

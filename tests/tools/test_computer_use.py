@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -337,7 +338,7 @@ class TestCaptureResponse:
         from tools.computer_use.backend import CaptureResult
         from tools.computer_use import tool as cu_tool
 
-        fake_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        fake_png = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADUlEQVR4nGNgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
 
         class FakeBackend:
             def start(self): pass
@@ -360,7 +361,9 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "vision"})
 
         assert isinstance(out, dict)
@@ -369,11 +372,41 @@ class TestCaptureResponse:
         assert any(p.get("type") == "image_url" for p in out["content"])
         assert any(p.get("type") == "text" for p in out["content"])
 
+    def test_capture_tiny_image_returns_text_json(self):
+        """Providers can reject <8px images, so placeholders must be omitted."""
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use import tool as cu_tool
+
+        tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAC0lEQVR4nGNgQAcAABIAAXfx+gAAAAAASUVORK5CYII="
+
+        cap = CaptureResult(
+            mode="som",
+            width=0,
+            height=0,
+            png_b64=tiny_png,
+            elements=[
+                UIElement(index=1, role="AXButton", label="Continue", bounds=(10, 20, 30, 30)),
+            ],
+            app="Safari",
+            window_title="Example",
+            png_bytes_len=68,
+        )
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
+            out = cu_tool._capture_response(cap)
+
+        parsed = json.loads(out)
+        assert parsed["width"] == 2
+        assert parsed["height"] == 2
+        assert "screenshot omitted" in parsed["summary"]
+        assert parsed["elements"][0]["label"] == "Continue"
+
     def test_capture_som_with_elements_formats_index(self):
         from tools.computer_use.backend import CaptureResult, UIElement
         from tools.computer_use import tool as cu_tool
 
-        fake_png = "iVBORw0KGgo="
+        fake_png = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADUlEQVR4nGNgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
 
         class FakeBackend:
             def start(self): pass
@@ -398,7 +431,9 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
         assert isinstance(out, dict)
         text_part = next(p for p in out["content"] if p.get("type") == "text")
@@ -435,6 +470,7 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         return FakeBackend()
+
 
     def test_capture_ax_caps_elements_at_default_for_dense_trees(self):
         """Regression for #22865: an Electron-style 600-element AX tree must
@@ -582,7 +618,9 @@ class TestCaptureResponse:
             def focus_app(self, app, raise_window=False): ...
 
         cu_tool.reset_backend_for_tests()
-        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()):
+        with patch.object(cu_tool, "_get_backend", return_value=FakeBackend()), \
+             patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
             out = cu_tool.handle_computer_use({"action": "capture", "mode": "som"})
 
         assert isinstance(out, dict) and out["_multimodal"] is True
@@ -592,6 +630,32 @@ class TestCaptureResponse:
             "the truncation note describes a payload field that isn't present"
         )
         assert "truncated to" not in out["text_summary"]
+
+
+class TestCuaCaptureImageDimensions:
+    def test_png_dimensions_are_sniffed_from_image_bytes(self):
+        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+
+        raw_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
+            "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+            validate=False,
+        )
+        assert _image_dimensions_from_bytes(raw_png) == (1, 1)
+
+    def test_jpeg_dimensions_are_sniffed_from_sof_segment(self):
+        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+
+        raw_jpeg = (
+            b"\xff\xd8" +
+            b"\xff\xe0\x00\x10" + (b"0" * 14)
+            + b"\xff\xc0\x00\x11\x08"
+            + b"\x01\x2c"  # height: 300
+            + b"\x01\x90"  # width: 400
+            + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+            + b"\xff\xd9"
+        )
+        assert _image_dimensions_from_bytes(raw_jpeg) == (400, 300)
 
 
 # ---------------------------------------------------------------------------
@@ -1204,6 +1268,78 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+class TestCuaDriverSessionReconnect:
+    def test_call_tool_reconnects_once_after_closed_resource(self):
+        """A daemon restart closes the cached MCP stdio channel; recover once."""
+        import threading
+        from typing import Any, cast
+        from anyio import ClosedResourceError
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                # 1st call_tool -> closed; aexit ok; aenter ok; retried call_tool ok.
+                self.effects = [ClosedResourceError(), None, None, {"ok": True}]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                effect = self.effects.pop(0)
+                if isinstance(effect, Exception):
+                    raise effect
+                return effect
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        # Reconnect-once sequence: failed call -> aexit -> aenter -> retried call.
+        assert bridge.calls[0][0] == ("call", "list_apps", {})
+        assert bridge.calls[1][0] == ("aexit",)
+        assert bridge.calls[2][0] == ("aenter",)
+        assert bridge.calls[3][0] == ("call", "list_apps", {})
+        assert len(bridge.calls) == 4
+
+    def test_call_tool_does_not_retry_on_unrelated_error(self):
+        """Non-transport errors must propagate without a reconnect attempt."""
+        import threading
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise ValueError("boom")
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        session._aexit = lambda: ("aexit",)
+        session._aenter = lambda: ("aenter",)
+
+        import pytest
+        with pytest.raises(ValueError):
+            session.call_tool("list_apps", {})
+        # Exactly one attempt, no reconnect.
+        assert len(bridge.calls) == 1
+
+
 class TestCaptureAppFilterNoMatch:
     """capture(app=X) must not silently fall back to the frontmost window
     when X matches nothing — on a non-English macOS, list_windows returns
@@ -1314,3 +1450,80 @@ class TestFocusAppFilterNoMatch:
         assert res.ok is True
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
+
+
+class TestCuaEnvironmentScrubbing:
+    """Verify that cua-driver subprocess environment is sanitized (issue #37878)."""
+
+    def test_cua_session_sanitizes_provider_env_vars(self):
+        """_CuaDriverSession._aenter() must sanitize sensitive env vars.
+
+        The cua-driver MCP subprocess should not inherit Hermes-managed credentials
+        or other sensitive environment variables — only runtime-required vars.
+        This is a regression test for issue #37878.
+        """
+        from unittest.mock import MagicMock, patch, AsyncMock
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        import asyncio
+
+        bridge = _AsyncBridge()
+        session = _CuaDriverSession(bridge)
+
+        captured_env = {}
+
+        async def test_aenter():
+            # Set up test environment with both safe and blocked vars
+            test_env = {
+                "OPENAI_API_KEY": "sk-secret",  # blocked
+                "ANTHROPIC_API_KEY": "sk-ant-secret",  # blocked
+                "PATH": "/usr/bin:/bin",  # safe
+                "HOME": "/home/user",  # safe
+                "SAFE_VAR": "allowed",  # safe
+            }
+
+            with patch.dict(os.environ, test_env, clear=True):
+                with patch("tools.computer_use.cua_backend.cua_driver_binary_available",
+                          return_value=True):
+                    # Mock StdioServerParameters to capture the env arg
+                    def capture_env(**kwargs):
+                        captured_env.update(kwargs.get("env", {}))
+                        # Return mock that works with async context manager
+                        mock = MagicMock()
+                        mock.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+                        mock.__aexit__ = AsyncMock(return_value=None)
+                        return mock
+
+                    with patch("mcp.StdioServerParameters", side_effect=capture_env), \
+                         patch("mcp.client.stdio.stdio_client") as mock_stdio, \
+                         patch("mcp.ClientSession") as mock_session_class, \
+                         patch("contextlib.AsyncExitStack"):
+
+                        # Setup mocks for stdio_client and ClientSession
+                        mock_read = MagicMock()
+                        mock_write = MagicMock()
+                        mock_stdio.return_value.__aenter__ = AsyncMock(
+                            return_value=(mock_read, mock_write))
+                        mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
+
+                        mock_session = MagicMock()
+                        mock_session.initialize = AsyncMock()
+                        mock_session_class.return_value.__aenter__ = AsyncMock(
+                            return_value=mock_session)
+                        mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+                        try:
+                            await session._aenter()
+                        except Exception:
+                            pass  # Mocks may raise, but env should be captured
+
+        asyncio.run(test_aenter())
+
+        # Verify blocked credentials are not in the passed env
+        assert "OPENAI_API_KEY" not in captured_env, \
+            "OPENAI_API_KEY should be stripped from cua-driver subprocess"
+        assert "ANTHROPIC_API_KEY" not in captured_env, \
+            "ANTHROPIC_API_KEY should be stripped from cua-driver subprocess"
+
+        # Verify PATH is preserved (safe var)
+        assert "PATH" in captured_env or "SAFE_VAR" in captured_env, \
+            "At least one safe environment variable should be preserved"

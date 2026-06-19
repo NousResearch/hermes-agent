@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -31,11 +32,18 @@ from hermes_cli.config import (
     read_raw_config,
     save_env_value,
 )
+
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
-    print_header, print_info, print_success, print_warning, print_error,
-    prompt, prompt_choice, prompt_yes_no,
+    print_header,
+    print_info,
+    print_success,
+    print_warning,
+    print_error,
+    prompt,
+    prompt_choice,
+    prompt_yes_no,
 )
 from hermes_cli.colors import Colors, color
 
@@ -69,6 +77,7 @@ class ProfileGatewayProcess:
     path: Path
     pid: int
 
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -84,9 +93,17 @@ def _get_service_pids() -> set:
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 result = subprocess.run(
-                    scope_args + ["list-units", "hermes-gateway*",
-                                  "--plain", "--no-legend", "--no-pager"],
-                    capture_output=True, text=True, timeout=5,
+                    scope_args
+                    + [
+                        "list-units",
+                        "hermes-gateway*",
+                        "--plain",
+                        "--no-legend",
+                        "--no-pager",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 for line in result.stdout.strip().splitlines():
                     parts = line.split()
@@ -95,9 +112,10 @@ def _get_service_pids() -> set:
                     svc = parts[0]
                     try:
                         show = subprocess.run(
-                            scope_args + ["show", svc,
-                                          "--property=MainPID", "--value"],
-                            capture_output=True, text=True, timeout=5,
+                            scope_args + ["show", svc, "--property=MainPID", "--value"],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
                         )
                         pid = int(show.stdout.strip())
                         if pid > 0:
@@ -113,7 +131,9 @@ def _get_service_pids() -> set:
             label = get_launchd_label()
             result = subprocess.run(
                 ["launchctl", "list", label],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0:
                 # Output: "PID\tStatus\tLabel" header, then one data line
@@ -145,6 +165,7 @@ def _get_parent_pid(pid: int) -> int | None:
         return None
     try:
         import psutil  # type: ignore
+
         return psutil.Process(pid).ppid() or None
     except ImportError:
         pass
@@ -207,9 +228,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
     which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits with code 75.  Both systemd (``Restart=always``
-    + ``RestartForceExitStatus=75``) and launchd (``KeepAlive.SuccessfulExit
-    = false``) relaunch the process after the graceful exit.
+    seconds), then exits.  Both systemd (``Restart=always``) and launchd
+    (unconditional ``<key>KeepAlive</key><true/>``) restart on any exit.
 
     This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
     which SIGKILL in-flight agents after a short timeout.
@@ -277,7 +297,9 @@ def _get_ancestor_pids() -> set[int]:
     return ancestors
 
 
-def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int]) -> None:
+def _append_unique_pid(
+    pids: list[int], pid: int | None, exclude_pids: set[int]
+) -> None:
     if pid is None or pid <= 0:
         return
     if pid == os.getpid() or pid in exclude_pids or pid in pids:
@@ -297,26 +319,27 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     # gateway.  See #13242.
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
-    patterns = [
-        "hermes_cli.main gateway",
-        "hermes_cli.main --profile",
-        "hermes_cli.main -p",
-        "hermes_cli/main.py gateway",
-        "hermes_cli/main.py --profile",
-        "hermes_cli/main.py -p",
-        "hermes gateway",
-        "gateway/run.py",
-    ]
+    # Strict command-line matcher shared with gateway.status: requires the
+    # actual ``gateway run`` subcommand (or the dedicated entrypoints), so this
+    # scan no longer false-matches ``gateway status``/``dashboard`` siblings or
+    # unrelated processes like ``python -m tui_gateway``. Lazy import mirrors the
+    # circular-import avoidance used elsewhere in this module.
+    from gateway.status import looks_like_gateway_command_line
     current_home = str(get_hermes_home().resolve())
+    current_home_lc = current_home.lower()
     current_profile_arg = _profile_arg(current_home)
-    current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
+    current_profile_name = (
+        current_profile_arg.split()[-1] if current_profile_arg else ""
+    )
+    current_profile_name_lc = current_profile_name.lower()
 
     def _matches_current_profile(command: str) -> bool:
+        command_lc = command.lower()
         if current_profile_name:
             return (
-                f"--profile {current_profile_name}" in command
-                or f"-p {current_profile_name}" in command
-                or f"HERMES_HOME={current_home}" in command
+                f"--profile {current_profile_name_lc}" in command_lc
+                or f"-p {current_profile_name_lc}" in command_lc
+                or f"hermes_home={current_home_lc}" in command_lc
             )
 
         # Default-profile case: no profile flag in argv. Accept as long as
@@ -324,9 +347,12 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
         # may be passed via env (not visible in wmic/CIM command line) so
         # its absence is NOT disqualifying — only a non-matching explicit
         # HERMES_HOME= in argv is.
-        if "--profile " in command or " -p " in command:
+        if "--profile " in command_lc or " -p " in command_lc:
             return False
-        if "HERMES_HOME=" in command and f"HERMES_HOME={current_home}" not in command:
+        if (
+            "hermes_home=" in command_lc
+            and f"hermes_home={current_home_lc}" not in command_lc
+        ):
             return False
         return True
 
@@ -343,7 +369,13 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
             if wmic_path is not None:
                 try:
                     result = subprocess.run(
-                        [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                        [
+                            wmic_path,
+                            "process",
+                            "get",
+                            "ProcessId,CommandLine",
+                            "/FORMAT:LIST",
+                        ],
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
@@ -384,10 +416,10 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
             for line in result.stdout.split("\n"):
                 line = line.strip()
                 if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine="):]
+                    current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns) and (
+                    pid_str = line[len("ProcessId=") :]
+                    if looks_like_gateway_command_line(current_cmd) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -409,9 +441,10 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         if pid == my_pid or pid in exclude_pids:
                             continue
                         try:
-                            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().decode("utf-8", errors="replace")
+                            with open(f"/proc/{pid}/cmdline", "rb") as _f:
+                                cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            if any(p in cmdline for p in patterns) and (
+                            if looks_like_gateway_command_line(cmdline) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -454,7 +487,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
                     if pid is None:
                         continue
-                    if any(pattern in command for pattern in patterns) and (
+                    if looks_like_gateway_command_line(command) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
@@ -508,7 +541,9 @@ def _filter_venv_launcher_stubs(pids: list[int]) -> list[int]:
     return [p for p in pids if p not in drop]
 
 
-def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
+def find_gateway_pids(
+    exclude_pids: set | None = None, all_profiles: bool = False
+) -> list:
     """Find PIDs of running gateway processes.
 
     Args:
@@ -557,7 +592,9 @@ def find_profile_gateway_processes(
         if pid is None or pid <= 0 or pid in _exclude or pid in seen:
             continue
         seen.add(pid)
-        processes.append(ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid))
+        processes.append(
+            ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid)
+        )
     return processes
 
 
@@ -591,7 +628,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     #
     # ``windows_detach_popen_kwargs()`` returns the right kwargs for the
     # host platform and is a no-op on POSIX (just ``start_new_session=True``).
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from hermes_cli._subprocess_compat import (
+        windows_detach_flags_without_breakaway,
+        windows_detach_popen_kwargs,
+    )
 
     watcher = textwrap.dedent(
         """
@@ -614,6 +654,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         # Platform-appropriate detach for the respawned gateway.  On POSIX
         # start_new_session=True maps to os.setsid; on Windows we need
         # explicit creationflags because start_new_session is a no-op there.
+        # CREATE_BREAKAWAY_FROM_JOB is critical: the watcher itself may have
+        # been spawned inside a job object (Electron/Tauri parent), and
+        # without breakaway the respawned gateway would die when that job
+        # tears down. See _subprocess_compat.windows_detach_flags().
         _popen_kwargs = {
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
@@ -622,26 +666,67 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
             _CREATE_NEW_PROCESS_GROUP = 0x00000200
             _DETACHED_PROCESS = 0x00000008
             _CREATE_NO_WINDOW = 0x08000000
-            _popen_kwargs["creationflags"] = (
-                _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
+            _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+            _flags = (
+                _CREATE_NEW_PROCESS_GROUP
+                | _DETACHED_PROCESS
+                | _CREATE_NO_WINDOW
+                | _CREATE_BREAKAWAY_FROM_JOB
             )
+            try:
+                _popen_kwargs["creationflags"] = _flags
+                subprocess.Popen(cmd, **_popen_kwargs)
+            except OSError:
+                # CREATE_BREAKAWAY_FROM_JOB can be rejected with
+                # ERROR_ACCESS_DENIED when the parent's job object refuses
+                # breakaway. Retry without it — DETACHED_PROCESS et al.
+                # alone are enough in most setups. Mirrors the canonical
+                # fallback in gateway_windows._spawn_detached.
+                _popen_kwargs["creationflags"] = _flags & ~_CREATE_BREAKAWAY_FROM_JOB
+                subprocess.Popen(cmd, **_popen_kwargs)
         else:
             _popen_kwargs["start_new_session"] = True
-        subprocess.Popen(cmd, **_popen_kwargs)
+            subprocess.Popen(cmd, **_popen_kwargs)
         """
     ).strip()
 
+    watcher_argv = [
+        sys.executable,
+        "-c",
+        watcher,
+        str(old_pid),
+        *_gateway_run_args_for_profile(profile),
+    ]
+
+    # Same platform-aware detach for the watcher process itself — so
+    # closing the user's terminal doesn't kill the watcher.
     try:
-        # Same platform-aware detach for the watcher process itself — so
-        # closing the user's terminal doesn't kill the watcher.
         subprocess.Popen(
-            [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
+            watcher_argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
-        return False
+        # CREATE_BREAKAWAY_FROM_JOB rejected by the parent job object
+        # (Electron, Windows Terminal with restrictive job settings, …).
+        # Retry without it. POSIX never reaches this branch — there
+        # ``start_new_session=True`` cannot raise OSError — so the
+        # fallback is only meaningful on Windows.
+        try:
+            fallback_kwargs: dict = (
+                {"creationflags": windows_detach_flags_without_breakaway()}
+                if sys.platform == "win32"
+                else {"start_new_session": True}
+            )
+            subprocess.Popen(
+                watcher_argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **fallback_kwargs,
+            )
+        except OSError:
+            return False
     return True
 
 
@@ -693,7 +778,7 @@ def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
     for line in result.stdout.splitlines():
         if not line.startswith("Environment="):
             continue
-        body = line[len("Environment="):].strip()
+        body = line[len("Environment=") :].strip()
         for token in body.split():
             if "=" not in token:
                 continue
@@ -835,11 +920,17 @@ def _wait_for_systemd_service_restart(
                     print(f"✓ {scope_label} service restarted (PID {new_pid})")
                     return True
                 if gateway_state == "startup_failed":
-                    reason = (runtime_state or {}).get("exit_reason") or "startup failed"
-                    print(f"⚠ {scope_label} service process restarted (PID {new_pid}), but gateway startup failed: {reason}")
+                    reason = (runtime_state or {}).get(
+                        "exit_reason"
+                    ) or "startup failed"
+                    print(
+                        f"⚠ {scope_label} service process restarted (PID {new_pid}), but gateway startup failed: {reason}"
+                    )
                     return False
                 if not printed_runtime_wait:
-                    print(f"⏳ {scope_label} service process started (PID {new_pid}); waiting for gateway runtime...")
+                    print(
+                        f"⏳ {scope_label} service process started (PID {new_pid}); waiting for gateway runtime..."
+                    )
                     printed_runtime_wait = True
 
         if active_state == "activating" and sub_state == "auto-restart":
@@ -895,12 +986,16 @@ def _print_systemd_start_limit_wait(system: bool = False) -> None:
     journal_prefix = "journalctl " if system else "journalctl --user "
     print(f"⏳ {scope_label} service is temporarily rate-limited by systemd.")
     print("  systemd is refusing another immediate start after repeated exits.")
-    print(f"  Wait for the start-limit window to expire, then run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}")
+    print(
+        f"  Wait for the start-limit window to expire, then run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
+    )
     print(f"  Or clear the failed state manually: {systemctl_prefix}reset-failed {svc}")
     print(f"  Check logs: {journal_prefix}-u {svc} -l --since '5 min ago'")
 
 
-def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | None = None) -> bool:
+def _recover_pending_systemd_restart(
+    system: bool = False, previous_pid: int | None = None
+) -> bool:
     """Recover a planned service restart that is stuck in systemd state."""
     props = _read_systemd_unit_properties(system=system)
     if not props:
@@ -933,7 +1028,9 @@ def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | N
     ):
         svc = get_service_name()
         scope_label = _service_scope_label(system).capitalize()
-        print(f"↻ Clearing failed state for pending {scope_label.lower()} service restart...")
+        print(
+            f"↻ Clearing failed state for pending {scope_label.lower()} service restart..."
+        )
         _run_systemctl(
             ["reset-failed", svc],
             system=system,
@@ -985,11 +1082,30 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         # Other container runtimes (or containers built before Phase 2)
         # still get the original "docker (foreground)" label.
         try:
-            from hermes_cli.service_manager import detect_service_manager
+            from hermes_cli.service_manager import detect_service_manager, get_service_manager
             if detect_service_manager() == "s6":
+                profile = _profile_suffix() or "default"
+                service_name = f"gateway-{profile}"
+                mgr = get_service_manager()
+                service_installed = False
+                service_running = False
+                try:
+                    service_dir = getattr(mgr, "scandir", None)
+                    if service_dir is not None:
+                        service_installed = (service_dir / service_name).is_dir()
+                except Exception:
+                    service_installed = False
+                if service_installed:
+                    try:
+                        service_running = bool(mgr.is_running(service_name))
+                    except Exception:
+                        service_running = False
                 return GatewayRuntimeSnapshot(
                     manager="s6 (container supervisor)",
+                    service_installed=service_installed,
+                    service_running=service_running,
                     gateway_pids=gateway_pids,
+                    service_scope="s6",
                 )
         except Exception:
             pass  # Fall through to the legacy label on any detection error.
@@ -1024,8 +1140,14 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
     )
 
 
-def _format_gateway_pids(pids: tuple[int, ...] | list[int], *, limit: int | None = 3) -> str:
-    rendered = [str(pid) for pid in pids[:limit] if pid > 0] if limit is not None else [str(pid) for pid in pids if pid > 0]
+def _format_gateway_pids(
+    pids: tuple[int, ...] | list[int], *, limit: int | None = 3
+) -> str:
+    rendered = (
+        [str(pid) for pid in pids[:limit] if pid > 0]
+        if limit is not None
+        else [str(pid) for pid in pids if pid > 0]
+    )
     if limit is not None and len(pids) > limit:
         rendered.append("...")
     return ", ".join(rendered)
@@ -1035,7 +1157,9 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
     if not snapshot.has_process_service_mismatch:
         return
     print()
-    print("⚠ Gateway process is running for this profile, but the service is not active")
+    print(
+        "⚠ Gateway process is running for this profile, but the service is not active"
+    )
     print(f"  PID(s): {_format_gateway_pids(snapshot.gateway_pids, limit=None)}")
     print("  This is usually a manual foreground/tmux/nohup run, so `hermes gateway`")
     print("  can refuse to start another copy until this process stops.")
@@ -1053,8 +1177,7 @@ def _print_other_profiles_gateway_status() -> None:
 
         current = get_active_profile_name()
         other_processes = [
-            p for p in find_profile_gateway_processes()
-            if p.profile != current
+            p for p in find_profile_gateway_processes() if p.profile != current
         ]
         if not other_processes:
             return
@@ -1097,6 +1220,7 @@ def _gateway_list() -> None:
         if prof.gateway_running:
             try:
                 from gateway.status import get_running_pid
+
                 pid = get_running_pid(prof.path / "gateway.pid", cleanup_stale=False)
                 if pid:
                     parts.append(f"PID {pid}")
@@ -1107,8 +1231,9 @@ def _gateway_list() -> None:
         print(" — ".join(parts))
 
 
-def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
-                           all_profiles: bool = False) -> int:
+def kill_gateway_processes(
+    force: bool = False, exclude_pids: set | None = None, all_profiles: bool = False
+) -> int:
     """Kill any running gateway processes. Returns count killed.
 
     Args:
@@ -1120,7 +1245,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
     """
     pids = find_gateway_pids(exclude_pids=exclude_pids, all_profiles=all_profiles)
     killed = 0
-    
+
     for pid in pids:
         try:
             terminate_pid(pid, force=force)
@@ -1130,7 +1255,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
             pass
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
-    
+
         except OSError as exc:
             print(f"Failed to kill PID {pid}: {exc}")
     return killed
@@ -1154,6 +1279,7 @@ def stop_profile_gateway() -> bool:
 
     try:
         from gateway.status import write_planned_stop_marker
+
         write_planned_stop_marker(pid)
     except Exception:
         pass
@@ -1170,6 +1296,7 @@ def stop_profile_gateway() -> bool:
     # a no-op — route through the cross-platform existence check.
     import time as _time
     from gateway.status import _pid_exists
+
     for _ in range(20):
         if not _pid_exists(pid):
             break
@@ -1181,7 +1308,7 @@ def stop_profile_gateway() -> bool:
 
 
 def is_linux() -> bool:
-    return sys.platform.startswith('linux')
+    return sys.platform.startswith("linux")
 
 
 from hermes_constants import is_container, is_termux, is_wsl
@@ -1245,10 +1372,11 @@ def supports_systemd_services() -> bool:
 
 
 def is_macos() -> bool:
-    return sys.platform == 'darwin'
+    return sys.platform == "darwin"
+
 
 def is_windows() -> bool:
-    return sys.platform == 'win32'
+    return sys.platform == "win32"
 
 
 def _windows_gateway_should_absorb_console_controls() -> bool:
@@ -1290,6 +1418,7 @@ def _profile_suffix() -> str:
     import hashlib
     import re
     from hermes_constants import get_default_hermes_root
+
     home = get_hermes_home().resolve()
     default = get_default_hermes_root().resolve()
     if home == default:
@@ -1307,7 +1436,7 @@ def _profile_suffix() -> str:
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
 
-def _profile_arg(hermes_home: str | None = None) -> str:
+def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
     """Return ``--profile <name>`` only when HERMES_HOME is a named profile.
 
     For ``~/.hermes/profiles/<name>``, returns ``"--profile <name>"``.
@@ -1317,11 +1446,16 @@ def _profile_arg(hermes_home: str | None = None) -> str:
         hermes_home: Optional explicit HERMES_HOME path. Defaults to the current
             ``get_hermes_home()`` value. Should be passed when generating a
             service definition for a different user (e.g. system service).
+        default_root: Optional Hermes root to compare against. Used when
+            generating a system service for another user from a sudo/root
+            process, where ``Path.home()`` and ``get_default_hermes_root()``
+            refer to root but the target profile lives under the service user.
     """
     import re
     from hermes_constants import get_default_hermes_root
+
     home = Path(hermes_home or str(get_hermes_home())).resolve()
-    default = get_default_hermes_root().resolve()
+    default = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
     if home == default:
         return ""
     profiles_root = (default / "profiles").resolve()
@@ -1335,6 +1469,16 @@ def _profile_arg(hermes_home: str | None = None) -> str:
     return ""
 
 
+def _profile_arg_for_target_user(hermes_home: str, target_home_dir: str) -> str:
+    """Return the profile arg for a system service running as another user."""
+    target_root = Path(target_home_dir) / ".hermes"
+    try:
+        Path(hermes_home).resolve().relative_to(target_root.resolve())
+        return _profile_arg(hermes_home, default_root=target_root)
+    except ValueError:
+        return _profile_arg(hermes_home)
+
+
 def get_service_name() -> str:
     """Derive a systemd service name scoped to this HERMES_HOME.
 
@@ -1346,7 +1490,6 @@ def get_service_name() -> str:
     if not suffix:
         return _SERVICE_BASE
     return f"{_SERVICE_BASE}-{suffix}"
-
 
 
 def get_systemd_unit_path(system: bool = False) -> Path:
@@ -1405,7 +1548,10 @@ def _user_systemd_socket_ready() -> bool:
     D-Bus session bus socket is absent. ``systemctl --user`` can still work in
     that configuration, so preflight checks must treat either socket as valid.
     """
-    return _user_dbus_socket_path().exists() or _user_systemd_private_socket_path().exists()
+    return (
+        _user_dbus_socket_path().exists()
+        or _user_systemd_private_socket_path().exists()
+    )
 
 
 def _ensure_user_systemd_env() -> None:
@@ -1517,7 +1663,9 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
                         f"  Or reboot and run: systemctl --user start {get_service_name()}"
                     ),
                 )
-            detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+            detail = (
+                result.stderr or result.stdout or f"exit {result.returncode}"
+            ).strip()
             _raise_user_systemd_unavailable(
                 username,
                 reason=f"loginctl enable-linger was denied: {detail}",
@@ -1534,7 +1682,9 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
     )
 
 
-def _raise_user_systemd_unavailable(username: str, *, reason: str, fix_hint: str) -> None:
+def _raise_user_systemd_unavailable(
+    username: str, *, reason: str, fix_hint: str
+) -> None:
     """Build a user-facing error message and raise UserSystemdUnavailableError."""
     msg = (
         f"{reason}\n"
@@ -1560,7 +1710,9 @@ def _journalctl_cmd(system: bool = False) -> list[str]:
     return ["journalctl"] if system else ["journalctl", "--user"]
 
 
-def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subprocess.CompletedProcess:
+def _run_systemctl(
+    args: list[str], *, system: bool = False, **kwargs
+) -> subprocess.CompletedProcess:
     """Run a systemctl command, raising RuntimeError if systemctl is missing.
 
     Defense-in-depth: callers are gated by ``supports_systemd_services()``,
@@ -1570,9 +1722,7 @@ def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subpro
     try:
         return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
     except FileNotFoundError:
-        raise RuntimeError(
-            "systemctl is not available on this system"
-        ) from None
+        raise RuntimeError("systemctl is not available on this system") from None
 
 
 def _service_scope_label(system: bool = False) -> str:
@@ -1763,7 +1913,9 @@ def remove_legacy_hermes_units(
             for name, path in system_units:
                 try:
                     _run_systemctl(["stop", name], system=True, check=False, timeout=90)
-                    _run_systemctl(["disable", name], system=True, check=False, timeout=30)
+                    _run_systemctl(
+                        ["disable", name], system=True, check=False, timeout=30
+                    )
                     path.unlink(missing_ok=True)
                     print(f"  ✓ Removed {path}")
                     removed += 1
@@ -1778,7 +1930,9 @@ def remove_legacy_hermes_units(
 
     print()
     if remaining:
-        print_warning(f"{len(remaining)} legacy unit(s) still present — see messages above.")
+        print_warning(
+            f"{len(remaining)} legacy unit(s) still present — see messages above."
+        )
     else:
         print_success(f"Removed {removed} legacy unit(s).")
 
@@ -1791,9 +1945,13 @@ def print_systemd_scope_conflict_warning() -> None:
         return
 
     rendered_scopes = " + ".join(scopes)
-    print_warning(f"Both user and system gateway services are installed ({rendered_scopes}).")
+    print_warning(
+        f"Both user and system gateway services are installed ({rendered_scopes})."
+    )
     print_info("  This is confusing and can make start/stop/status behavior ambiguous.")
-    print_info("  Default gateway commands target the user service unless you pass --system.")
+    print_info(
+        "  Default gateway commands target the user service unless you pass --system."
+    )
     print_info("  Keep one of these:")
     print_info("    hermes gateway uninstall")
     print_info("    sudo hermes gateway uninstall --system")
@@ -1812,14 +1970,26 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
     import grp
     import pwd
 
-    username = (run_as_user or os.getenv("SUDO_USER") or os.getenv("USER") or os.getenv("LOGNAME") or getpass.getuser()).strip()
+    username = (
+        run_as_user
+        or os.getenv("SUDO_USER")
+        or os.getenv("USER")
+        or os.getenv("LOGNAME")
+        or getpass.getuser()
+    ).strip()
     if not username:
-        raise ValueError("Could not determine which user the gateway service should run as")
+        raise ValueError(
+            "Could not determine which user the gateway service should run as"
+        )
     if username == "root" and not run_as_user:
-        raise ValueError("Refusing to install the gateway system service as root; pass --run-as-user root to override (e.g. in LXC containers)")
+        raise ValueError(
+            "Refusing to install the gateway system service as root; pass --run-as-user root to override (e.g. in LXC containers)"
+        )
     if username == "root":
         print_warning("Installing gateway service to run as root.")
-        print_info("  This is fine for LXC/container environments but not recommended on bare-metal hosts.")
+        print_info(
+            "  This is fine for LXC/container environments but not recommended on bare-metal hosts."
+        )
 
     try:
         user_info = pwd.getpwnam(username)
@@ -1869,17 +2039,25 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
     if scope == "system":
         run_as_user = _default_system_service_user()
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
-            print_warning("  System service install requires sudo, so Hermes can't create it from this user session.")
+            print_warning(
+                "  System service install requires sudo, so Hermes can't create it from this user session."
+            )
             if run_as_user:
-                print_info(f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}")
+                print_info(
+                    f"  After setup, run: sudo hermes gateway install --system --run-as-user {run_as_user}"
+                )
             else:
-                print_info("  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>")
+                print_info(
+                    "  After setup, run: sudo hermes gateway install --system --run-as-user <your-user>"
+                )
             print_info("  Then start it with: sudo hermes gateway start --system")
             return scope, False
 
         if not run_as_user:
             while True:
-                run_as_user = prompt("  Run the system gateway service as which user?", default="")
+                run_as_user = prompt(
+                    "  Run the system gateway service as which user?", default=""
+                )
                 run_as_user = (run_as_user or "").strip()
                 if run_as_user:
                     break
@@ -1912,6 +2090,7 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
     if not username:
         try:
             import pwd
+
             username = pwd.getpwuid(os.getuid()).pw_name  # windows-footgun: ok — POSIX loginctl helper, never invoked on Windows
         except Exception:
             return None, "could not determine current user"
@@ -1954,6 +2133,7 @@ def print_systemd_linger_guidance() -> None:
         print("  If you want the gateway user service to survive logout, run:")
         print("  sudo loginctl enable-linger $USER")
 
+
 def _launchd_user_home() -> Path:
     """Return the real macOS user home for launchd artifacts.
 
@@ -1974,6 +2154,7 @@ def get_launchd_plist_path() -> Path:
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
     return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
+
 
 def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
@@ -2024,13 +2205,14 @@ def get_python_path() -> str:
 # Systemd (Linux)
 # =============================================================================
 
+
 def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     """Return user-local bin dirs that exist and aren't already in *path_entries*."""
     candidates = [
-        str(home / ".local" / "bin"),       # uv, uvx, pip-installed CLIs
-        str(home / ".cargo" / "bin"),        # Rust/cargo tools
-        str(home / "go" / "bin"),            # Go tools
-        str(home / ".npm-global" / "bin"),   # npm global packages
+        str(home / ".local" / "bin"),  # uv, uvx, pip-installed CLIs
+        str(home / ".cargo" / "bin"),  # Rust/cargo tools
+        str(home / "go" / "bin"),  # Go tools
+        str(home / ".npm-global" / "bin"),  # npm global packages
     ]
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
@@ -2161,9 +2343,37 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _stable_service_working_dir() -> str:
+    """Return a WorkingDirectory that will not disappear out from under systemd.
+
+    The gateway does NOT need its cwd to be the source checkout — ``ExecStart``
+    uses an absolute python interpreter and ``-m hermes_cli.main``, so module
+    resolution does not depend on cwd. Pinning ``WorkingDirectory`` to
+    ``PROJECT_ROOT`` (``Path(__file__).parent.parent``) is actively harmful:
+    when the unit is generated from a transient checkout — a ``.worktrees/``
+    dir, or a clone that ``hermes update`` later relocates/removes — the path
+    rots. systemd then fails the start at the CHDIR step (``status=200/CHDIR``,
+    "Changing to the requested working directory failed") *before* Python
+    loads, so the on-boot ``refresh_systemd_unit_if_needed()`` self-heal never
+    runs and ``Restart=always`` crash-loops forever on a dead directory.
+
+    ``HERMES_HOME`` is the stable anchor: it is where config/state/logs live,
+    it never moves, and it is guaranteed to exist whenever the gateway is
+    meaningfully installed. Fall back to ``PROJECT_ROOT`` only if HERMES_HOME
+    cannot be resolved (it always can in practice).
+    """
+    try:
+        home = get_hermes_home()
+        if home and Path(home).is_dir():
+            return str(Path(home).resolve())
+    except Exception:
+        pass
+    return str(PROJECT_ROOT)
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
@@ -2174,7 +2384,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
 
-    common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    common_bin_paths = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ]
     # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
     # there's budget left for post-interrupt cleanup (tool subprocess kill,
     # adapter disconnect, session DB close) before systemd escalates to
@@ -2187,12 +2404,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
-        profile_arg = _profile_arg(hermes_home)
+        profile_arg = _profile_arg_for_target_user(hermes_home, home_dir)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
         python_path = _remap_path_for_user(python_path, home_dir)
-        working_dir = _remap_path_for_user(working_dir, home_dir)
+        # Anchor cwd to the target user's HERMES_HOME (stable, always exists)
+        # rather than a remapped source-checkout path that can rot. See
+        # _stable_service_working_dir() for the full rationale.
+        working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
@@ -2209,7 +2429,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2219,8 +2439,6 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -2247,15 +2465,13 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -2268,8 +2484,32 @@ StandardError=journal
 WantedBy=default.target
 """
 
+
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+# Directives that older systemd versions silently ignore/strip.  Normalize
+# them out of stale-check comparisons so a unit that differs only by these
+# directives is not perpetually flagged as outdated.
+_SYSTEMD_OPTIONAL_DIRECTIVES = (
+    "RestartMaxDelaySec",
+    "RestartSteps",
+)
+
+
+def _strip_optional_systemd_directives(text: str) -> str:
+    """Remove systemd directives that older hosts silently drop."""
+    lines = text.splitlines()
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            key = stripped.split("=", 1)[0].strip()
+            if key in _SYSTEMD_OPTIONAL_DIRECTIVES:
+                continue
+        filtered.append(line)
+    return "\n".join(filtered)
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
@@ -2284,8 +2524,8 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
 
     normalized = _normalize_service_definition(text)
     return re.sub(
-        r'(<key>PATH</key>\s*<string>)(.*?)(</string>)',
-        r'\1__HERMES_PATH__\3',
+        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)",
+        r"\1__HERMES_PATH__\3",
         normalized,
         flags=re.S,
     )
@@ -2299,8 +2539,75 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
-    return _normalize_service_definition(installed) == _normalize_service_definition(expected)
+    # Normalize out directives that older systemd versions silently drop
+    # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
+    # those directives is not perpetually flagged as outdated.
+    norm_installed = _normalize_service_definition(
+        _strip_optional_systemd_directives(installed)
+    )
+    norm_expected = _normalize_service_definition(
+        _strip_optional_systemd_directives(expected)
+    )
+    return norm_installed == norm_expected
 
+
+def _temp_home_in_service_definition(definition: str) -> str | None:
+    """Return the temp-dir HERMES_HOME baked into a service definition, or None.
+
+    A generated systemd unit / launchd plist carries the resolved HERMES_HOME
+    in its environment block. If that path lives under the system temp dir,
+    the definition was almost certainly generated by a test/E2E harness that
+    exported a throwaway ``HERMES_HOME=/tmp/...`` — writing it to the real
+    service file silently breaks the user's gateway on the next (re)start:
+    the gateway comes back "active (running)" but pointed at an empty temp
+    home ("No messaging platforms enabled"), deaf to every platform.
+    Seen live 2026-06-11: an E2E guard probe ran ``hermes gateway restart``
+    with ``HERMES_HOME=/tmp/hermes-e2e-<pr>`` exported; the restart path's
+    unit refresh baked the temp path into the production unit and the
+    post-update restart produced a zombie gateway for 7+ hours.
+
+    Matches both systemd ``Environment="HERMES_HOME=..."`` lines and launchd
+    ``<key>HERMES_HOME</key><string>...</string>`` pairs.
+    """
+    import re
+    import tempfile
+
+    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
+    candidates += re.findall(
+        r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S
+    )
+    temp_roots = {
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp"),
+        Path("/var/tmp"),
+        Path("/private/tmp"),
+        Path("/private/var/tmp"),
+    }
+    for raw in candidates:
+        try:
+            resolved = Path(raw.strip().strip('"')).resolve()
+        except (OSError, ValueError):
+            continue
+        for root in temp_roots:
+            if resolved == root or root in resolved.parents:
+                return raw.strip()
+    return None
+
+
+def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
+    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
+    temp_home = _temp_home_in_service_definition(definition)
+    if temp_home is None:
+        return False
+    print(
+        f"✗ Refusing to write the gateway {kind}: HERMES_HOME resolves to a "
+        f"temporary directory ({temp_home})."
+    )
+    print(
+        "  This usually means a test/E2E environment exported HERMES_HOME. "
+        "Unset it (or run from a clean shell) and retry."
+    )
+    return True
 
 
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
@@ -2328,16 +2635,23 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     # still works.
     if not system and (
         "/pytest-of-" in new_unit
-        or "/hermes_test\"" in new_unit
+        or '/hermes_test"' in new_unit
         or "/hermes_test/" in new_unit
     ):
         return False
 
+    # Structural variant of the same belt: refuse to bake ANY temp-dir
+    # HERMES_HOME into the unit (manual E2E homes like /tmp/hermes-e2e-NNN
+    # don't carry the pytest markers above but poison the unit identically).
+    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+        return False
+
     unit_path.write_text(new_unit, encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
-    print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
+    print(
+        f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install"
+    )
     return True
-
 
 
 def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:
@@ -2352,7 +2666,6 @@ def _print_linger_enable_warning(username: str, detail: str | None = None) -> No
     print("  Then restart the gateway:")
     print(f"    systemctl --user restart {get_service_name()}.service")
     print()
-
 
 
 def _ensure_linger_enabled() -> None:
@@ -2401,7 +2714,10 @@ def _ensure_linger_enabled() -> None:
 def _select_systemd_scope(system: bool = False) -> bool:
     if system:
         return True
-    return get_systemd_unit_path(system=True).exists() and not get_systemd_unit_path(system=False).exists()
+    return (
+        get_systemd_unit_path(system=True).exists()
+        and not get_systemd_unit_path(system=False).exists()
+    )
 
 
 def _system_scope_wizard_would_need_root(system: bool = False) -> bool:
@@ -2426,8 +2742,7 @@ def _print_system_scope_remediation(action: str) -> None:
     """
     svc = get_service_name()
     print_warning(
-        f"Gateway is installed as a system-wide service — "
-        f"{action} requires root."
+        f"Gateway is installed as a system-wide service — " f"{action} requires root."
     )
     print_info("  Options:")
     print_info(f"    1. {action.capitalize()} it this time:")
@@ -2486,7 +2801,9 @@ def systemd_install(
 
     if unit_path.exists() and not force:
         if not systemd_unit_is_current(system=system):
-            print(f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}")
+            print(
+                f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}"
+            )
             refresh_systemd_unit_if_needed(system=system)
             if enable_on_startup:
                 _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
@@ -2497,8 +2814,11 @@ def systemd_install(
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
+    new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
+    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+        return
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
-    unit_path.write_text(generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8")
+    unit_path.write_text(new_unit, encoding="utf-8")
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     if enable_on_startup:
@@ -2509,9 +2829,15 @@ def systemd_install(
     print(f"✓ {_service_scope_label(system).capitalize()} service {enable_label}!")
     print()
     print("Next steps:")
-    print(f"  {'sudo ' if system else ''}hermes gateway start{scope_flag}              # Start the service")
-    print(f"  {'sudo ' if system else ''}hermes gateway status{scope_flag}             # Check status")
-    print(f"  {'journalctl' if system else 'journalctl --user'} -u {get_service_name()} -f  # View logs")
+    print(
+        f"  {'sudo ' if system else ''}hermes gateway start{scope_flag}              # Start the service"
+    )
+    print(
+        f"  {'sudo ' if system else ''}hermes gateway status{scope_flag}             # Check status"
+    )
+    print(
+        f"  {'journalctl' if system else 'journalctl --user'} -u {get_service_name()} -f  # View logs"
+    )
     print()
 
     if system:
@@ -2531,7 +2857,9 @@ def systemd_uninstall(system: bool = False):
         _require_root_for_system_service("uninstall")
 
     _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=90)
-    _run_systemctl(["disable", get_service_name()], system=system, check=False, timeout=30)
+    _run_systemctl(
+        ["disable", get_service_name()], system=system, check=False, timeout=30
+    )
 
     unit_path = get_systemd_unit_path(system=system)
     if unit_path.exists():
@@ -2566,7 +2894,6 @@ def systemd_start(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 
 
-
 def systemd_stop(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
@@ -2575,13 +2902,16 @@ def systemd_stop(system: bool = False):
     _sync_hermes_home_from_systemd_unit(system=system)
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
+
         pid = get_running_pid(cleanup_stale=False)
         if pid is not None:
             write_planned_stop_marker(pid)
     except Exception:
         pass
     try:
-        _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
+        _run_systemctl(
+            ["stop", get_service_name()], system=system, check=True, timeout=90
+        )
     except subprocess.TimeoutExpired:
         label = _service_scope_label(system)
         print(
@@ -2590,7 +2920,6 @@ def systemd_stop(system: bool = False):
         )
         return
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
-
 
 
 def systemd_restart(system: bool = False):
@@ -2646,7 +2975,9 @@ def systemd_restart(system: bool = False):
         try:
             _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
         except subprocess.CalledProcessError as exc:
-            if _systemd_error_indicates_start_limit(exc) or _systemd_service_is_start_limited(system=system):
+            if _systemd_error_indicates_start_limit(
+                exc
+            ) or _systemd_service_is_start_limited(system=system):
                 _print_systemd_start_limit_wait(system=system)
                 return
             raise
@@ -2670,9 +3001,13 @@ def systemd_restart(system: bool = False):
         timeout=30,
     )
     try:
-        _run_systemctl(["restart", get_service_name()], system=system, check=True, timeout=90)
+        _run_systemctl(
+            ["restart", get_service_name()], system=system, check=True, timeout=90
+        )
     except subprocess.CalledProcessError as exc:
-        if _systemd_error_indicates_start_limit(exc) or _systemd_service_is_start_limited(system=system):
+        if _systemd_error_indicates_start_limit(
+            exc
+        ) or _systemd_service_is_start_limited(system=system):
             _print_systemd_start_limit_wait(system=system)
             return
         raise
@@ -2684,7 +3019,6 @@ def systemd_restart(system: bool = False):
         )
         return
     _wait_for_systemd_service_restart(system=system, previous_pid=pid)
-
 
 
 def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
@@ -2709,7 +3043,9 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
     if not systemd_unit_is_current(system=system):
         print("⚠ Installed gateway service definition is outdated")
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
+        print(
+            f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit"
+        )
         print()
 
     status_cmd = ["status", get_service_name(), "--no-pager"]
@@ -2734,9 +3070,13 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     status = result.stdout.strip()
 
     if status == "active":
-        print(f"✓ {_service_scope_label(system).capitalize()} gateway service is running")
+        print(
+            f"✓ {_service_scope_label(system).capitalize()} gateway service is running"
+        )
     else:
-        print(f"✗ {_service_scope_label(system).capitalize()} gateway service is stopped")
+        print(
+            f"✗ {_service_scope_label(system).capitalize()} gateway service is stopped"
+        )
         print(f"  Run: {'sudo ' if system else ''}hermes gateway start{scope_flag}")
 
     configured_user = _read_systemd_user_from_unit(unit_path) if system else None
@@ -2759,11 +3099,19 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print("  ⏳ Restart pending: systemd is waiting to relaunch the gateway")
     elif _systemd_unit_is_start_limited(unit_props):
         print("  ⏳ Restart pending: systemd is temporarily rate-limiting starts")
-        print(f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}")
-        print(f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}")
-    elif active_state == "failed" and exec_main_status == str(GATEWAY_SERVICE_RESTART_EXIT_CODE):
+        print(
+            f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
+        )
+        print(
+            f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}"
+        )
+    elif active_state == "failed" and exec_main_status == str(
+        GATEWAY_SERVICE_RESTART_EXIT_CODE
+    ):
         print("  ⚠ Planned restart is stuck in systemd failed state (exit 75)")
-        print(f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}")
+        print(
+            f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}"
+        )
     elif active_state == "failed" and result_code:
         print(f"  ⚠ Systemd unit result: {result_code}")
 
@@ -2782,7 +3130,13 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     if deep:
         print()
         print("Recent logs:")
-        log_cmd = _journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"]
+        log_cmd = _journalctl_cmd(system) + [
+            "-u",
+            get_service_name(),
+            "-n",
+            "20",
+            "--no-pager",
+        ]
         if full:
             log_cmd.append("-l")
         subprocess.run(log_cmd, timeout=10)
@@ -2792,19 +3146,193 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 # Launchd (macOS)
 # =============================================================================
 
+
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
     suffix = _profile_suffix()
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+# Cached launchd domain result — probing is cheap but should only run once per
+# process invocation (each ``hermes gateway start/stop/status`` call).
+_resolved_launchd_domain: str | None = None
+
+
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    """Return the launchd domain that actually manages the gateway service.
+
+    Probes ``gui/<uid>`` first (Aqua sessions), then ``user/<uid>``
+    (Background/SSH sessions).  When neither domain contains a loaded
+    service, falls back to ``launchctl managername`` as a heuristic.
+
+    The result is cached for the lifetime of the process so that repeated
+    calls (``start``, ``stop``, ``restart``) use a consistent domain.
+
+    See #40831, #23387.
+    """
+    global _resolved_launchd_domain
+    if _resolved_launchd_domain is not None:
+        return _resolved_launchd_domain
+
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    label = get_launchd_label()
+    gui_domain = f"gui/{uid}"
+    user_domain = f"user/{uid}"
+
+    # 1. Probe gui/<uid> first — in Aqua sessions the service is loaded here.
+    try:
+        subprocess.run(
+            ["launchctl", "print", f"{gui_domain}/{label}"],
+            check=True,
+            timeout=5,
+            capture_output=True,
+        )
+        _resolved_launchd_domain = gui_domain
+        return gui_domain
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 2. Probe user/<uid> — in Background/SSH sessions this is the working domain.
+    try:
+        subprocess.run(
+            ["launchctl", "print", f"{user_domain}/{label}"],
+            check=True,
+            timeout=5,
+            capture_output=True,
+        )
+        _resolved_launchd_domain = user_domain
+        return user_domain
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 3. Neither domain has the service loaded — use managername as heuristic.
+    #    Aqua → gui/<uid>, anything else (Background, loginwindow) → user/<uid>.
+    try:
+        result = subprocess.run(
+            ["launchctl", "managername"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if "Aqua" in (result.stdout or ""):
+            _resolved_launchd_domain = gui_domain
+            return gui_domain
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 4. Default to user/<uid> (matches the pre-probing behavior for
+    #    Background/SSH sessions and is the recommended domain on macOS 26+).
+    _resolved_launchd_domain = user_domain
+    return user_domain
+
+
+# On macOS, exit code 125 ("Domain does not support specified action") and
+# 3/113 ("Could not find service") all mean the job isn't currently loaded in
+# the target domain, so start/restart should re-bootstrap the plist and retry.
+_LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
+
+# When even a fresh bootstrap can't manage the domain, launchctl returns 5
+# ("Input/output error") or a persistent 125. On those hosts launchd cannot
+# supervise the gateway at all, so we degrade to a detached background process
+# (the documented `nohup hermes gateway run` workaround). See #23387.
+_LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
+
+
+def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
+    """True when launchctl failed because the job isn't loaded (retry bootstrap)."""
+    return exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
+
+
+def _launchctl_domain_unsupported(returncode: int) -> bool:
+    """True when launchctl can't manage the domain even after a fresh bootstrap.
+
+    Codes 5 and 125 persist on macOS hosts where neither `gui/<uid>` nor
+    `user/<uid>` supports service management; treat these as "launchd
+    unavailable" and degrade gracefully to a detached process.
+    """
+    return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
+
+
+def _gateway_run_command() -> list[str]:
+    """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
+
+    Profile-aware: honors the active HERMES_HOME via `_profile_arg()` so the
+    detached fallback launches into the same profile as the CLI invocation.
+    """
+    cmd = [get_python_path(), "-m", "hermes_cli.main"]
+    profile_arg = _profile_arg()
+    if profile_arg:
+        cmd.extend(profile_arg.split())
+    cmd.extend(["gateway", "run", "--replace"])
+    return cmd
+
+
+def _spawn_detached_gateway() -> bool:
+    """Launch the gateway as a detached background process (launchd fallback).
+
+    Used when launchctl can no longer bootstrap/kickstart the gateway on
+    macOS 26+ (issue #23387). Mirrors the `nohup hermes gateway run --replace`
+    workaround but keeps it CLI-managed: stdout/stderr go to the profile's
+    gateway logs and the PID is tracked via the gateway.pid file that
+    `run_gateway` writes, so stop/status/restart keep working.
+    """
+    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+
+    log_dir = get_hermes_home() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_path = log_dir / "gateway.log"
+    err_path = log_dir / "gateway.error.log"
+    try:
+        out = open(out_path, "ab")
+        err = open(err_path, "ab")
+    except OSError:
+        return False
+    try:
+        with out, err:
+            subprocess.Popen(
+                _gateway_run_command(),
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                **windows_detach_popen_kwargs(),
+            )
+    except OSError:
+        return False
+    return True
+
+
+def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) -> bool:
+    """Start the gateway detached when launchd can't manage it, with guidance.
+
+    Returns True if the detached gateway was launched. When it can't be
+    launched, prints the manual workaround and (by default) exits non-zero so
+    the failure surfaces instead of silently doing nothing.
+    """
+    from hermes_constants import display_hermes_home as _dhh
+
+    print(f"⚠ launchd cannot manage the gateway on this macOS version ({reason}).")
+    if _spawn_detached_gateway():
+        print("✓ Started gateway as a background process instead")
+        print("  It will NOT auto-start at login or auto-restart on crash.")
+        print(f"  Logs: {_dhh()}/logs/gateway.log")
+        print("  Stop it with: hermes gateway stop")
+        return True
+    print_error("Failed to start the gateway as a background process.")
+    print(
+        f"  Try manually: nohup hermes gateway run --replace "
+        f"> {_dhh()}/logs/gateway.log 2>&1 &"
+    )
+    if exit_on_failure:
+        sys.exit(1)
+    return False
 
 
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    # Stable cwd anchor — never the volatile source checkout. See
+    # _stable_service_working_dir() for the rationale (same rot risk applies
+    # to launchd's WorkingDirectory as to systemd's).
+    working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -2826,7 +3354,9 @@ def generate_launchd_plist() -> str:
         if resolved_node_dir not in priority_dirs:
             priority_dirs.append(resolved_node_dir)
     sane_path = ":".join(
-        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
+        dict.fromkeys(
+            priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]
+        )
     )
 
     # Build ProgramArguments array, including --profile when using a named profile
@@ -2838,11 +3368,13 @@ def generate_launchd_plist() -> str:
     if profile_arg:
         for part in profile_arg.split():
             prog_args.append(f"<string>{part}</string>")
-    prog_args.extend([
-        "<string>gateway</string>",
-        "<string>run</string>",
-        "<string>--replace</string>",
-    ])
+    prog_args.extend(
+        [
+            "<string>gateway</string>",
+            "<string>run</string>",
+            "<string>--replace</string>",
+        ]
+    )
     prog_args_xml = "\n        ".join(prog_args)
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -2869,15 +3401,18 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
+
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+        <string>Background</string>
+    </array>
     
     <key>RunAtLoad</key>
     <true/>
     
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -2888,6 +3423,7 @@ def generate_launchd_plist() -> str:
 </plist>
 """
 
+
 def launchd_plist_is_current() -> bool:
     """Check if the installed launchd plist matches the currently generated one."""
     plist_path = get_launchd_plist_path()
@@ -2896,7 +3432,9 @@ def launchd_plist_is_current() -> bool:
 
     installed = plist_path.read_text(encoding="utf-8")
     expected = generate_launchd_plist()
-    return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+    return _normalize_launchd_plist_for_comparison(
+        installed
+    ) == _normalize_launchd_plist_for_comparison(expected)
 
 
 def refresh_launchd_plist_if_needed() -> bool:
@@ -2910,18 +3448,78 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
-    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+    new_plist = generate_launchd_plist()
+    if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return False
+
+    plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
+
+    # If this refresh is running INSIDE the gateway's own launchd process tree
+    # (e.g. the agent triggered a self-update via its terminal tool), a direct
+    # `launchctl bootout` tears down the service's process group — which
+    # includes THIS CLI — before the follow-up `bootstrap` can run. The gateway
+    # then stays unloaded and KeepAlive can't revive it (#43842). Detect that
+    # case and hand the reload to a detached session that survives the bootout.
+    gateway_pid = None
+    try:
+        from gateway.status import get_running_pid
+        gateway_pid = get_running_pid()
+    except Exception:
+        gateway_pid = None
+
+    if (
+        gateway_pid is not None
+        and _is_pid_ancestor_of_current_process(gateway_pid)
+        and hasattr(os, "setsid")  # POSIX-only; launchd is macOS so always true here
+    ):
+        # Delegate to a new session: `start_new_session=True` detaches the
+        # helper from the gateway's process group, so the bootout that kills
+        # the gateway (and us) does not kill the helper before it bootstraps.
+        reload_script = (
+            f"sleep 2; "
+            f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
+            f"sleep 1; "
+            f"launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null"
+        )
+        try:
+            subprocess.Popen(
+                ["/bin/bash", "-c", reload_script],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.warning("Deferred launchd reload could not be spawned: %s", e)
+            return False
+        print(
+            "↻ Updated gateway launchd service definition; reload deferred to a "
+            "detached helper (refresh ran inside the gateway process tree)"
+        )
+        return True
+
     # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
-    print("↻ Updated gateway launchd service definition to match the current Hermes install")
+    subprocess.run(
+        ["launchctl", "bootout", target],
+        check=False,
+        timeout=90,
+    )
+    subprocess.run(
+        ["launchctl", "bootstrap", domain, str(plist_path)],
+        check=False,
+        timeout=30,
+    )
+    print(
+        "↻ Updated gateway launchd service definition to match the current Hermes install"
+    )
     return True
 
 
 def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
-    
+
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
@@ -2931,31 +3529,51 @@ def launchd_install(force: bool = False):
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")
         return
-    
+
     plist_path.parent.mkdir(parents=True, exist_ok=True)
+    new_plist = generate_launchd_plist()
+    if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(generate_launchd_plist())
-    
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-    
+    plist_path.write_text(new_plist)
+
+    try:
+        subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+            check=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        if not _launchctl_domain_unsupported(e.returncode):
+            raise
+        _launchd_fallback_to_detached(f"launchctl bootstrap exit {e.returncode}")
+        return
+
     print()
     print("✓ Service installed and loaded!")
     print()
     print("Next steps:")
     print("  hermes gateway status             # Check status")
     from hermes_constants import display_hermes_home as _dhh
+
     print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
+
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    
+    subprocess.run(
+        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
+        check=False,
+        timeout=90,
+    )
+
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
-    
+
     print("✓ Service uninstalled")
+
 
 def launchd_start():
     plist_path = get_launchd_plist_path()
@@ -2963,30 +3581,70 @@ def launchd_start():
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
+        new_plist = generate_launchd_plist()
+        if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+            sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        plist_path.write_text(new_plist, encoding="utf-8")
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(
+                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                check=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as e:
+            if not _launchctl_domain_unsupported(e.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e.returncode}")
+            return
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        subprocess.run(
+            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+            check=True,
+            timeout=30,
+        )
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
             raise
+        # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(
+                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                check=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as e2:
+            # Even a fresh bootstrap can't manage the domain on this host —
+            # degrade to a detached background process (issue #23387).
+            if not _launchctl_domain_unsupported(e2.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+            return
     print("✓ Service started")
+
 
 def launchd_stop():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
+
         pid = get_running_pid(cleanup_stale=False)
         if pid is not None:
             write_planned_stop_marker(pid)
@@ -2994,19 +3652,27 @@ def launchd_stop():
         pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
-    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # immediately restarts it because KeepAlive is unconditionally true.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
-        if e.returncode in {3, 113}:
-            pass  # Already unloaded — nothing to stop.
+        # Job already unloaded (3/113/125), or the domain can't be managed at
+        # all (5/125, macOS 26+ detached-fallback process, issue #23387) — in
+        # both cases just fall through to the PID-based kill below.
+        if _launchd_error_indicates_unloaded(e) or _launchctl_domain_unsupported(
+            e.returncode
+        ):
+            pass
         else:
             raise
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     print("✓ Service stopped")
 
-def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.0) -> bool:
+
+def _wait_for_gateway_exit(
+    timeout: float = 10.0, force_after: float | None = 5.0
+) -> bool:
     """Wait for the gateway process (by saved PID) to exit.
 
     Uses the PID from the gateway.pid file — not launchd labels — so this
@@ -3021,7 +3687,9 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     from gateway.status import get_running_pid
 
     deadline = time.monotonic() + timeout
-    force_deadline = (time.monotonic() + force_after) if force_after is not None else None
+    force_deadline = (
+        (time.monotonic() + force_after) if force_after is not None else None
+    )
     force_sent = False
 
     while time.monotonic() < deadline:
@@ -3029,7 +3697,11 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
         if pid is None:
             return True  # Process exited cleanly.
 
-        if force_after is not None and not force_sent and time.monotonic() >= force_deadline:
+        if (
+            force_after is not None
+            and not force_sent
+            and time.monotonic() >= force_deadline
+        ):
             # Grace period expired — force-kill the specific PID.
             try:
                 terminate_pid(pid, force=True)
@@ -3043,7 +3715,9 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     # Timed out even after force-kill.
     remaining_pid = get_running_pid()
     if remaining_pid is not None:
-        print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
+        print(
+            f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail"
+        )
         return False
     return True
 
@@ -3067,18 +3741,37 @@ def launchd_restart():
             if pid is not None:
                 exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
                 if not exited:
-                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
+                    print(
+                        f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
+                    )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
+            # Not a "job unloaded" code. If the domain is fundamentally
+            # unmanageable (error 5), degrade to detached; the old process was
+            # already drained/terminated above. Otherwise re-raise.
+            if _launchctl_domain_unsupported(e.returncode):
+                _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+                return
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        except subprocess.CalledProcessError as e2:
+            if not _launchctl_domain_unsupported(e2.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+            return
         print("✓ Service restarted")
+
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
@@ -3110,7 +3803,7 @@ def launchd_status(deep: bool = False):
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")
-    
+
     if deep:
         log_file = get_hermes_home() / "logs" / "gateway.log"
         if log_file.exists():
@@ -3123,6 +3816,7 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
+
 def _truthy_env(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -3132,6 +3826,181 @@ def _is_official_docker_checkout() -> bool:
         str(PROJECT_ROOT) == "/opt/hermes"
         and (PROJECT_ROOT / "docker" / "entrypoint.sh").is_file()
     )
+
+
+def _running_under_gateway_supervisor() -> bool:
+    """Return True when this process IS the gateway a service manager launched.
+
+    The conflict guard below must never fire on the service's own startup, or
+    it would wedge the unit into a respawn/refuse loop. Each supervisor exports
+    a reliable marker into the child's environment:
+
+      - systemd sets ``INVOCATION_ID`` for every unit it launches (the same
+        marker ``gateway/run.py`` already uses to pick the restart path).
+      - launchd sets ``XPC_SERVICE_NAME`` to the job label for jobs it spawns;
+        interactive shells inherit the sentinel ``"0"`` instead.
+      - the s6-overlay container longrun exports ``HERMES_S6_SUPERVISED_CHILD``.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        return True
+    xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
+    if xpc_service and xpc_service != "0":
+        return True
+    return False
+
+
+def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
+    """Refuse a named-profile gateway when a multiplexer is already serving it.
+
+    When the default profile's gateway runs with gateway.multiplex_profiles=on,
+    it is the sole inbound process for EVERY profile on the host. Starting a
+    separate gateway for a named profile would double-bind that profile's
+    platforms (two pollers on one bot token, port fights). In that mode a
+    named-profile ``hermes gateway run`` is always a misconfiguration, so we
+    hard-error with a pointer to the multiplexer. ``--force`` overrides.
+
+    Inert unless ALL of: (a) this invocation is a named profile, (b) a default-
+    profile gateway is running, (c) that gateway's config has multiplexing on.
+    """
+    if force:
+        return
+    # (a) Are we a named profile? Default/custom-hash homes return "".
+    try:
+        suffix = _profile_suffix()
+    except Exception:
+        return
+    if not suffix:
+        return  # default profile (or unrecognized) — this guard doesn't apply
+
+    try:
+        from hermes_constants import get_default_hermes_root
+        default_root = get_default_hermes_root()
+        # (b) Is the default-profile gateway running?
+        from gateway.status import get_running_pid as _default_running_pid  # noqa
+    except Exception:
+        return
+
+    try:
+        import yaml as _yaml
+        from gateway.status import _read_pid_record  # type: ignore
+
+        # (b) default gateway PID file present + alive
+        default_pid_path = default_root / "gateway.pid"
+        rec = _read_pid_record(default_pid_path)
+        if not rec:
+            return
+        from gateway.status import _pid_exists, _pid_from_record
+        pid = _pid_from_record(rec)
+        if not pid or not _pid_exists(pid):
+            return
+
+        # (c) default config has multiplexing on
+        cfg_path = default_root / "config.yaml"
+        if not cfg_path.exists():
+            return
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = _yaml.safe_load(f) or {}
+        multiplex = bool(
+            cfg.get("multiplex_profiles")
+            or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+        )
+        if not multiplex:
+            return
+    except Exception:
+        logger.debug("Multiplexer-conflict probe failed", exc_info=True)
+        return
+
+    print_error(
+        f"The default gateway is running as a profile multiplexer and already "
+        f"serves profile '{suffix}'."
+    )
+    print(
+        "  When gateway.multiplex_profiles is on, the default gateway is the\n"
+        "  single inbound process for every profile. Starting a separate\n"
+        "  gateway for this profile would double-bind its platforms (two\n"
+        "  pollers on one bot token, port conflicts).\n"
+    )
+    print("  Manage the multiplexer instead (from the default profile):")
+    print()
+    print("    hermes gateway restart")
+    print()
+    print("  Pass --force to start a separate profile gateway anyway (not")
+    print("  recommended while the multiplexer is running).")
+    sys.exit(1)
+
+
+def _guard_supervised_gateway_conflict(force: bool = False) -> None:
+    """Refuse a foreground gateway when a service manager already supervises one.
+
+    Running ``hermes gateway run [--replace]`` (or the manual-restart fallback)
+    from a shell on a systemd/launchd host spawns a second, long-lived
+    dispatcher that escapes the service cgroup, survives
+    ``systemctl restart``, and becomes a silent concurrent writer on the shared
+    kanban DB — the documented root cause of multi-writer SQLite WAL corruption
+    (issue #35240). Pass ``--force`` to start anyway.
+    """
+    if force or _running_under_gateway_supervisor():
+        return
+    try:
+        snapshot = get_gateway_runtime_snapshot()
+    except Exception:
+        # Best-effort guard: a probe failure must never block a real startup.
+        logger.debug("Supervised-gateway conflict probe failed", exc_info=True)
+        return
+    if not (snapshot.service_installed and snapshot.service_running):
+        return
+
+    print_error(
+        f"A gateway is already running under {snapshot.manager} for this profile."
+    )
+    print(
+        "  Starting another one from a shell leaves an orphan dispatcher that\n"
+        "  escapes the service, survives restarts, and writes to the same kanban\n"
+        "  DB concurrently — which can corrupt it. Restart the supervised gateway\n"
+        "  instead:"
+    )
+    print()
+    print("    hermes gateway restart")
+    print()
+    print(
+        "  Pass --force to start a foreground gateway anyway (not recommended\n"
+        "  while the service is running)."
+    )
+    sys.exit(1)
+
+
+def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
+    """Refuse duplicate foreground startup before importing gateway.run.
+
+    ``gateway.run`` performs the authoritative PID/lock check, but importing it
+    is expensive: it pulls in model_tools/plugin discovery first. On small
+    instances, a supervisor or dashboard loop repeatedly running bare
+    ``hermes gateway run`` can burn memory/CPU just to fail with "already
+    running" after plugin discovery. This cheap PID-file preflight preserves the
+    same user-facing contract while avoiding that startup work without scanning
+    unrelated gateway processes from other HERMES_HOME roots.
+    """
+    if replace or _running_under_gateway_supervisor():
+        return
+    try:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid()
+    except Exception:
+        logger.debug("Existing-gateway process probe failed", exc_info=True)
+        return
+    if pid is None:
+        return
+
+    print_error(
+        f"Another gateway instance is already running (PID {pid})."
+    )
+    print("  Use 'hermes gateway restart' to replace it,")
+    print("  or 'hermes gateway stop' first.")
+    print("  Or use 'hermes gateway run --replace' to auto-replace.")
+    sys.exit(1)
 
 
 def _guard_official_docker_root_gateway() -> None:
@@ -3155,21 +4024,28 @@ def _guard_official_docker_root_gateway() -> None:
         "  Running the gateway as root can leave root-owned files in "
         "$HERMES_HOME and break later non-root dashboard/gateway runs."
     )
-    print("  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk.")
+    print(
+        "  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk."
+    )
     sys.exit(1)
 
 
-def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground.
-    
+
     Args:
         verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
         quiet: Suppress all stderr log output.
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
+        force: Skip the supervised-gateway conflict guard and start even when a
+               systemd/launchd service is already supervising this profile.
     """
     _guard_official_docker_root_gateway()
+    _guard_named_profile_under_multiplexer(force=force)
+    _guard_supervised_gateway_conflict(force=force)
+    _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Detached Windows gateway runs must ignore console-control broadcasts
@@ -3201,6 +4077,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         # handlers above.
         try:
             import ctypes
+
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
             # BOOL SetConsoleCtrlHandler(NULL, Add)  —  Add=TRUE means
             # "install the NULL handler", which has the documented
@@ -3224,9 +4101,9 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
             refresh_systemd_unit_if_needed(system=False)
         except Exception:
             pass  # best-effort; don't block gateway startup
-    
+
     from gateway.run import start_gateway
-    
+
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
@@ -3234,7 +4111,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print("│  Press Ctrl+C to stop                                   │")
     print("└─────────────────────────────────────────────────────────┘")
     print()
-    
+
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=always will retry on transient errors
     verbosity = None if quiet else verbose
@@ -3258,6 +4135,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
             return
         try:
             from hermes_constants import get_hermes_home as _ghh
+
             log_dir = _ghh() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             ts = _dt.now(_tz.utc).isoformat()
@@ -3270,6 +4148,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                 **extra,
             }
             import json as _json
+
             with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
                 f.write(_json.dumps(line, default=str) + "\n")
         except Exception:
@@ -3302,8 +4181,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         print("\nGateway stopped.")
         return
     except SystemExit as e:
-        _exit_diag("asyncio.run.SystemExit", code=getattr(e, "code", None),
-                   traceback=_traceback.format_exc())
+        _exit_diag(
+            "asyncio.run.SystemExit",
+            code=getattr(e, "code", None),
+            traceback=_traceback.format_exc(),
+        )
         raise
     except BaseException as e:
         # Absolutely everything else: Exception, asyncio.CancelledError,
@@ -3340,13 +4222,25 @@ _PLATFORMS = [
             "4. To find your user ID: message @userinfobot — it replies with your numeric ID",
         ],
         "vars": [
-            {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Paste the token from @BotFather (step 3 above)."},
-            {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
-             "is_allowlist": True,
-             "help": "Paste your user ID from step 4 above."},
-            {"name": "TELEGRAM_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
+            {
+                "name": "TELEGRAM_BOT_TOKEN",
+                "prompt": "Bot token",
+                "password": True,
+                "help": "Paste the token from @BotFather (step 3 above).",
+            },
+            {
+                "name": "TELEGRAM_ALLOWED_USERS",
+                "prompt": "Allowed user IDs (comma-separated)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Paste your user ID from step 4 above.",
+            },
+            {
+                "name": "TELEGRAM_HOME_CHANNEL",
+                "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)",
+                "password": False,
+                "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat.",
+            },
         ],
     },
     # Discord moved to plugins/platforms/discord/ — its setup metadata is
@@ -3374,13 +4268,25 @@ _PLATFORMS = [
             "8. Invite the bot to channels: /invite @YourBot",
         ],
         "vars": [
-            {"name": "SLACK_BOT_TOKEN", "prompt": "Bot Token (xoxb-...)", "password": True,
-             "help": "Paste the bot token from step 3 above."},
-            {"name": "SLACK_APP_TOKEN", "prompt": "App Token (xapp-...)", "password": True,
-             "help": "Paste the app-level token from step 4 above."},
-            {"name": "SLACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
-             "is_allowlist": True,
-             "help": "Paste your member ID from step 7 above."},
+            {
+                "name": "SLACK_BOT_TOKEN",
+                "prompt": "Bot Token (xoxb-...)",
+                "password": True,
+                "help": "Paste the bot token from step 3 above.",
+            },
+            {
+                "name": "SLACK_APP_TOKEN",
+                "prompt": "App Token (xapp-...)",
+                "password": True,
+                "help": "Paste the app-level token from step 4 above.",
+            },
+            {
+                "name": "SLACK_ALLOWED_USERS",
+                "prompt": "Allowed user IDs (comma-separated)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Paste your member ID from step 7 above.",
+            },
         ],
     },
     {
@@ -3393,23 +4299,43 @@ _PLATFORMS = [
             "2. Create a bot user on your homeserver, or use your own account",
             "3. Get an access token: Element → Settings → Help & About → Access Token",
             "   Or via API: curl -X POST https://your-server/_matrix/client/v3/login \\",
-            "     -d '{\"type\":\"m.login.password\",\"user\":\"@bot:server\",\"password\":\"...\"}'",
+            '     -d \'{"type":"m.login.password","user":"@bot:server","password":"..."}\'',
             "4. Alternatively, provide user ID + password and Hermes will log in directly",
             "5. For E2EE: set MATRIX_ENCRYPTION=true (requires pip install 'mautrix[encryption]')",
             "6. To find your user ID: it's @username:your-server (shown in Element profile)",
         ],
         "vars": [
-            {"name": "MATRIX_HOMESERVER", "prompt": "Homeserver URL (e.g. https://matrix.example.org)", "password": False,
-             "help": "Your Matrix homeserver URL. Works with any self-hosted instance."},
-            {"name": "MATRIX_ACCESS_TOKEN", "prompt": "Access token (leave empty to use password login instead)", "password": True,
-             "help": "Paste your access token, or leave empty and provide user ID + password below."},
-            {"name": "MATRIX_USER_ID", "prompt": "User ID (@bot:server — required for password login)", "password": False,
-             "help": "Full Matrix user ID, e.g. @hermes:matrix.example.org"},
-            {"name": "MATRIX_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, e.g. @you:server)", "password": False,
-             "is_allowlist": True,
-             "help": "Matrix user IDs who can interact with the bot."},
-            {"name": "MATRIX_HOME_ROOM", "prompt": "Home room ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "Room ID (e.g. !abc123:server) for delivering cron results and notifications."},
+            {
+                "name": "MATRIX_HOMESERVER",
+                "prompt": "Homeserver URL (e.g. https://matrix.example.org)",
+                "password": False,
+                "help": "Your Matrix homeserver URL. Works with any self-hosted instance.",
+            },
+            {
+                "name": "MATRIX_ACCESS_TOKEN",
+                "prompt": "Access token (leave empty to use password login instead)",
+                "password": True,
+                "help": "Paste your access token, or leave empty and provide user ID + password below.",
+            },
+            {
+                "name": "MATRIX_USER_ID",
+                "prompt": "User ID (@bot:server — required for password login)",
+                "password": False,
+                "help": "Full Matrix user ID, e.g. @hermes:matrix.example.org",
+            },
+            {
+                "name": "MATRIX_ALLOWED_USERS",
+                "prompt": "Allowed user IDs (comma-separated, e.g. @you:server)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Matrix user IDs who can interact with the bot.",
+            },
+            {
+                "name": "MATRIX_HOME_ROOM",
+                "prompt": "Home room ID (for cron/notification delivery, or empty to set later with /set-home)",
+                "password": False,
+                "help": "Room ID (e.g. !abc123:server) for delivering cron results and notifications.",
+            },
         ],
     },
     {
@@ -3428,17 +4354,37 @@ _PLATFORMS = [
             "5. To get a channel ID: click the channel name → View Info → copy the ID",
         ],
         "vars": [
-            {"name": "MATTERMOST_URL", "prompt": "Server URL (e.g. https://mm.example.com)", "password": False,
-             "help": "Your Mattermost server URL. Works with any self-hosted instance."},
-            {"name": "MATTERMOST_TOKEN", "prompt": "Bot token", "password": True,
-             "help": "Paste the bot token from step 2 above."},
-            {"name": "MATTERMOST_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
-             "is_allowlist": True,
-             "help": "Your Mattermost user ID from step 4 above."},
-            {"name": "MATTERMOST_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
-             "help": "Channel ID where Hermes delivers cron results and notifications."},
-            {"name": "MATTERMOST_REPLY_MODE", "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)", "password": False,
-             "help": "off = flat channel messages, thread = replies nest under your message."},
+            {
+                "name": "MATTERMOST_URL",
+                "prompt": "Server URL (e.g. https://mm.example.com)",
+                "password": False,
+                "help": "Your Mattermost server URL. Works with any self-hosted instance.",
+            },
+            {
+                "name": "MATTERMOST_TOKEN",
+                "prompt": "Bot token",
+                "password": True,
+                "help": "Paste the bot token from step 2 above.",
+            },
+            {
+                "name": "MATTERMOST_ALLOWED_USERS",
+                "prompt": "Allowed user IDs (comma-separated)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Your Mattermost user ID from step 4 above.",
+            },
+            {
+                "name": "MATTERMOST_HOME_CHANNEL",
+                "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)",
+                "password": False,
+                "help": "Channel ID where Hermes delivers cron results and notifications.",
+            },
+            {
+                "name": "MATTERMOST_REPLY_MODE",
+                "prompt": "Reply mode — 'off' for flat messages, 'thread' for threaded replies (default: off)",
+                "password": False,
+                "help": "off = flat channel messages, thread = replies nest under your message.",
+            },
         ],
     },
     {
@@ -3466,17 +4412,37 @@ _PLATFORMS = [
             "4. IMAP must be enabled on your email account",
         ],
         "vars": [
-            {"name": "EMAIL_ADDRESS", "prompt": "Email address", "password": False,
-             "help": "The email address Hermes will use (e.g., hermes@gmail.com)."},
-            {"name": "EMAIL_PASSWORD", "prompt": "Email password (or app password)", "password": True,
-             "help": "For Gmail, use an App Password (not your regular password)."},
-            {"name": "EMAIL_IMAP_HOST", "prompt": "IMAP host", "password": False,
-             "help": "e.g., imap.gmail.com for Gmail, outlook.office365.com for Outlook."},
-            {"name": "EMAIL_SMTP_HOST", "prompt": "SMTP host", "password": False,
-             "help": "e.g., smtp.gmail.com for Gmail, smtp.office365.com for Outlook."},
-            {"name": "EMAIL_ALLOWED_USERS", "prompt": "Allowed sender emails (comma-separated)", "password": False,
-             "is_allowlist": True,
-             "help": "Only emails from these addresses will be processed."},
+            {
+                "name": "EMAIL_ADDRESS",
+                "prompt": "Email address",
+                "password": False,
+                "help": "The email address Hermes will use (e.g., hermes@gmail.com).",
+            },
+            {
+                "name": "EMAIL_PASSWORD",
+                "prompt": "Email password (or app password)",
+                "password": True,
+                "help": "For Gmail, use an App Password (not your regular password).",
+            },
+            {
+                "name": "EMAIL_IMAP_HOST",
+                "prompt": "IMAP host",
+                "password": False,
+                "help": "e.g., imap.gmail.com for Gmail, outlook.office365.com for Outlook.",
+            },
+            {
+                "name": "EMAIL_SMTP_HOST",
+                "prompt": "SMTP host",
+                "password": False,
+                "help": "e.g., smtp.gmail.com for Gmail, smtp.office365.com for Outlook.",
+            },
+            {
+                "name": "EMAIL_ALLOWED_USERS",
+                "prompt": "Allowed sender emails (comma-separated)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Only emails from these addresses will be processed.",
+            },
         ],
     },
     {
@@ -3493,17 +4459,37 @@ _PLATFORMS = [
             "   → Messaging → A MESSAGE COMES IN → Webhook → https://your-server:8080/webhooks/twilio",
         ],
         "vars": [
-            {"name": "TWILIO_ACCOUNT_SID", "prompt": "Twilio Account SID", "password": False,
-             "help": "Found on the Twilio Console dashboard."},
-            {"name": "TWILIO_AUTH_TOKEN", "prompt": "Twilio Auth Token", "password": True,
-             "help": "Found on the Twilio Console dashboard (click to reveal)."},
-            {"name": "TWILIO_PHONE_NUMBER", "prompt": "Twilio phone number (E.164 format, e.g. +15551234567)", "password": False,
-             "help": "The Twilio phone number to send SMS from."},
-            {"name": "SMS_ALLOWED_USERS", "prompt": "Allowed phone numbers (comma-separated, E.164 format)", "password": False,
-             "is_allowlist": True,
-             "help": "Only messages from these phone numbers will be processed."},
-            {"name": "SMS_HOME_CHANNEL", "prompt": "Home channel phone number (for cron/notification delivery, or empty)", "password": False,
-             "help": "Phone number to deliver cron job results and notifications to."},
+            {
+                "name": "TWILIO_ACCOUNT_SID",
+                "prompt": "Twilio Account SID",
+                "password": False,
+                "help": "Found on the Twilio Console dashboard.",
+            },
+            {
+                "name": "TWILIO_AUTH_TOKEN",
+                "prompt": "Twilio Auth Token",
+                "password": True,
+                "help": "Found on the Twilio Console dashboard (click to reveal).",
+            },
+            {
+                "name": "TWILIO_PHONE_NUMBER",
+                "prompt": "Twilio phone number (E.164 format, e.g. +15551234567)",
+                "password": False,
+                "help": "The Twilio phone number to send SMS from.",
+            },
+            {
+                "name": "SMS_ALLOWED_USERS",
+                "prompt": "Allowed phone numbers (comma-separated, E.164 format)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Only messages from these phone numbers will be processed.",
+            },
+            {
+                "name": "SMS_HOME_CHANNEL",
+                "prompt": "Home channel phone number (for cron/notification delivery, or empty)",
+                "password": False,
+                "help": "Phone number to deliver cron job results and notifications to.",
+            },
         ],
     },
     {
@@ -3518,10 +4504,18 @@ _PLATFORMS = [
             "4. Add the bot to a group chat or message it directly",
         ],
         "vars": [
-            {"name": "DINGTALK_CLIENT_ID", "prompt": "AppKey (Client ID)", "password": False,
-             "help": "The AppKey from your DingTalk application credentials."},
-            {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
-             "help": "The AppSecret from your DingTalk application credentials."},
+            {
+                "name": "DINGTALK_CLIENT_ID",
+                "prompt": "AppKey (Client ID)",
+                "password": False,
+                "help": "The AppKey from your DingTalk application credentials.",
+            },
+            {
+                "name": "DINGTALK_CLIENT_SECRET",
+                "prompt": "AppSecret (Client Secret)",
+                "password": True,
+                "help": "The AppSecret from your DingTalk application credentials.",
+            },
         ],
     },
     {
@@ -3538,19 +4532,43 @@ _PLATFORMS = [
             "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
         ],
         "vars": [
-            {"name": "FEISHU_APP_ID", "prompt": "App ID", "password": False,
-             "help": "The App ID from your Feishu/Lark application."},
-            {"name": "FEISHU_APP_SECRET", "prompt": "App Secret", "password": True,
-             "help": "The App Secret from your Feishu/Lark application."},
-            {"name": "FEISHU_DOMAIN", "prompt": "Domain — feishu or lark (default: feishu)", "password": False,
-             "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international."},
-            {"name": "FEISHU_CONNECTION_MODE", "prompt": "Connection mode — websocket or webhook (default: websocket)", "password": False,
-             "help": "websocket is recommended unless you specifically need webhook mode."},
-            {"name": "FEISHU_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
-             "is_allowlist": True,
-             "help": "Restrict which Feishu/Lark users can interact with the bot."},
-            {"name": "FEISHU_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
-             "help": "Chat ID for scheduled results and notifications."},
+            {
+                "name": "FEISHU_APP_ID",
+                "prompt": "App ID",
+                "password": False,
+                "help": "The App ID from your Feishu/Lark application.",
+            },
+            {
+                "name": "FEISHU_APP_SECRET",
+                "prompt": "App Secret",
+                "password": True,
+                "help": "The App Secret from your Feishu/Lark application.",
+            },
+            {
+                "name": "FEISHU_DOMAIN",
+                "prompt": "Domain — feishu or lark (default: feishu)",
+                "password": False,
+                "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international.",
+            },
+            {
+                "name": "FEISHU_CONNECTION_MODE",
+                "prompt": "Connection mode — websocket or webhook (default: websocket)",
+                "password": False,
+                "help": "websocket is recommended unless you specifically need webhook mode.",
+            },
+            {
+                "name": "FEISHU_ALLOWED_USERS",
+                "prompt": "Allowed user IDs (comma-separated, or empty)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Restrict which Feishu/Lark users can interact with the bot.",
+            },
+            {
+                "name": "FEISHU_HOME_CHANNEL",
+                "prompt": "Home chat ID (optional, for cron/notifications)",
+                "password": False,
+                "help": "Chat ID for scheduled results and notifications.",
+            },
         ],
     },
     {
@@ -3566,15 +4584,31 @@ _PLATFORMS = [
             "5. Restrict access with WECOM_ALLOWED_USERS for production use",
         ],
         "vars": [
-            {"name": "WECOM_BOT_ID", "prompt": "Bot ID", "password": False,
-             "help": "The Bot ID from your WeCom AI Bot."},
-            {"name": "WECOM_SECRET", "prompt": "Secret", "password": True,
-             "help": "The secret from your WeCom AI Bot."},
-            {"name": "WECOM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
-             "is_allowlist": True,
-             "help": "Restrict which WeCom users can interact with the bot."},
-            {"name": "WECOM_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
-             "help": "Chat ID for scheduled results and notifications."},
+            {
+                "name": "WECOM_BOT_ID",
+                "prompt": "Bot ID",
+                "password": False,
+                "help": "The Bot ID from your WeCom AI Bot.",
+            },
+            {
+                "name": "WECOM_SECRET",
+                "prompt": "Secret",
+                "password": True,
+                "help": "The secret from your WeCom AI Bot.",
+            },
+            {
+                "name": "WECOM_ALLOWED_USERS",
+                "prompt": "Allowed user IDs (comma-separated, or empty)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Restrict which WeCom users can interact with the bot.",
+            },
+            {
+                "name": "WECOM_HOME_CHANNEL",
+                "prompt": "Home chat ID (optional, for cron/notifications)",
+                "password": False,
+                "help": "Chat ID for scheduled results and notifications.",
+            },
         ],
     },
     {
@@ -3591,21 +4625,49 @@ _PLATFORMS = [
             "6. Restrict access with WECOM_CALLBACK_ALLOWED_USERS for production use",
         ],
         "vars": [
-            {"name": "WECOM_CALLBACK_CORP_ID", "prompt": "Corp ID", "password": False,
-             "help": "Your WeCom enterprise Corp ID."},
-            {"name": "WECOM_CALLBACK_CORP_SECRET", "prompt": "Corp Secret", "password": True,
-             "help": "The secret for your self-built application."},
-            {"name": "WECOM_CALLBACK_AGENT_ID", "prompt": "Agent ID", "password": False,
-             "help": "The Agent ID of your self-built application."},
-            {"name": "WECOM_CALLBACK_TOKEN", "prompt": "Callback Token", "password": True,
-             "help": "The Token from your WeCom callback configuration."},
-            {"name": "WECOM_CALLBACK_ENCODING_AES_KEY", "prompt": "Encoding AES Key", "password": True,
-             "help": "The EncodingAESKey from your WeCom callback configuration."},
-            {"name": "WECOM_CALLBACK_PORT", "prompt": "Callback server port (default: 8645)", "password": False,
-             "help": "Port for the HTTP callback server."},
-            {"name": "WECOM_CALLBACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
-             "is_allowlist": True,
-             "help": "Restrict which WeCom users can interact with the app."},
+            {
+                "name": "WECOM_CALLBACK_CORP_ID",
+                "prompt": "Corp ID",
+                "password": False,
+                "help": "Your WeCom enterprise Corp ID.",
+            },
+            {
+                "name": "WECOM_CALLBACK_CORP_SECRET",
+                "prompt": "Corp Secret",
+                "password": True,
+                "help": "The secret for your self-built application.",
+            },
+            {
+                "name": "WECOM_CALLBACK_AGENT_ID",
+                "prompt": "Agent ID",
+                "password": False,
+                "help": "The Agent ID of your self-built application.",
+            },
+            {
+                "name": "WECOM_CALLBACK_TOKEN",
+                "prompt": "Callback Token",
+                "password": True,
+                "help": "The Token from your WeCom callback configuration.",
+            },
+            {
+                "name": "WECOM_CALLBACK_ENCODING_AES_KEY",
+                "prompt": "Encoding AES Key",
+                "password": True,
+                "help": "The EncodingAESKey from your WeCom callback configuration.",
+            },
+            {
+                "name": "WECOM_CALLBACK_PORT",
+                "prompt": "Callback server port (default: 8645)",
+                "password": False,
+                "help": "Port for the HTTP callback server.",
+            },
+            {
+                "name": "WECOM_CALLBACK_ALLOWED_USERS",
+                "prompt": "Allowed user IDs (comma-separated, or empty)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Restrict which WeCom users can interact with the app.",
+            },
         ],
     },
     {
@@ -3631,15 +4693,31 @@ _PLATFORMS = [
             "   Share the code — the user sends it via iMessage to get approved",
         ],
         "vars": [
-            {"name": "BLUEBUBBLES_SERVER_URL", "prompt": "BlueBubbles server URL (e.g. http://192.168.1.10:1234)", "password": False,
-             "help": "The URL shown in BlueBubbles Settings → API."},
-            {"name": "BLUEBUBBLES_PASSWORD", "prompt": "BlueBubbles server password", "password": True,
-             "help": "The password shown in BlueBubbles Settings → API."},
-            {"name": "BLUEBUBBLES_ALLOWED_USERS", "prompt": "Pre-authorized phone numbers or iMessage IDs (comma-separated, or leave empty for DM pairing)", "password": False,
-             "is_allowlist": True,
-             "help": "Optional — pre-authorize specific users. Leave empty to use DM pairing instead (recommended)."},
-            {"name": "BLUEBUBBLES_HOME_CHANNEL", "prompt": "Home channel (phone number or iMessage ID for cron/notifications, or empty)", "password": False,
-             "help": "Phone number or Apple ID to deliver cron results and notifications to."},
+            {
+                "name": "BLUEBUBBLES_SERVER_URL",
+                "prompt": "BlueBubbles server URL (e.g. http://192.168.1.10:1234)",
+                "password": False,
+                "help": "The URL shown in BlueBubbles Settings → API.",
+            },
+            {
+                "name": "BLUEBUBBLES_PASSWORD",
+                "prompt": "BlueBubbles server password",
+                "password": True,
+                "help": "The password shown in BlueBubbles Settings → API.",
+            },
+            {
+                "name": "BLUEBUBBLES_ALLOWED_USERS",
+                "prompt": "Pre-authorized phone numbers or iMessage IDs (comma-separated, or leave empty for DM pairing)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Optional — pre-authorize specific users. Leave empty to use DM pairing instead (recommended).",
+            },
+            {
+                "name": "BLUEBUBBLES_HOME_CHANNEL",
+                "prompt": "Home channel (phone number or iMessage ID for cron/notifications, or empty)",
+                "password": False,
+                "help": "Phone number or Apple ID to deliver cron results and notifications to.",
+            },
         ],
     },
     {
@@ -3654,15 +4732,31 @@ _PLATFORMS = [
             "4. Configure sandbox or publish the bot",
         ],
         "vars": [
-            {"name": "QQ_APP_ID", "prompt": "QQ Bot App ID", "password": False,
-             "help": "Your QQ Bot App ID from q.qq.com."},
-            {"name": "QQ_CLIENT_SECRET", "prompt": "QQ Bot App Secret", "password": True,
-             "help": "Your QQ Bot App Secret from q.qq.com."},
-            {"name": "QQ_ALLOWED_USERS", "prompt": "Allowed user OpenIDs (comma-separated, leave empty for open access)", "password": False,
-             "is_allowlist": True,
-             "help": "Optional — restrict DM access to specific user OpenIDs."},
-            {"name": "QQBOT_HOME_CHANNEL", "prompt": "Home channel (user/group OpenID for cron delivery, or empty)", "password": False,
-             "help": "OpenID to deliver cron results and notifications to."},
+            {
+                "name": "QQ_APP_ID",
+                "prompt": "QQ Bot App ID",
+                "password": False,
+                "help": "Your QQ Bot App ID from q.qq.com.",
+            },
+            {
+                "name": "QQ_CLIENT_SECRET",
+                "prompt": "QQ Bot App Secret",
+                "password": True,
+                "help": "Your QQ Bot App Secret from q.qq.com.",
+            },
+            {
+                "name": "QQ_ALLOWED_USERS",
+                "prompt": "Allowed user OpenIDs (comma-separated, leave empty for open access)",
+                "password": False,
+                "is_allowlist": True,
+                "help": "Optional — restrict DM access to specific user OpenIDs.",
+            },
+            {
+                "name": "QQBOT_HOME_CHANNEL",
+                "prompt": "Home channel (user/group OpenID for cron delivery, or empty)",
+                "password": False,
+                "help": "OpenID to deliver cron results and notifications to.",
+            },
         ],
     },
     {
@@ -3677,13 +4771,23 @@ _PLATFORMS = [
             "4. Enter them below and Hermes will connect automatically over WebSocket",
         ],
         "vars": [
-            {"name": "YUANBAO_APP_ID", "prompt": "App ID", "password": False,
-             "help": "The App ID from your Yuanbao IM Bot credentials."},
-            {"name": "YUANBAO_APP_SECRET", "prompt": "App Secret", "password": True,
-             "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot."},
+            {
+                "name": "YUANBAO_APP_ID",
+                "prompt": "App ID",
+                "password": False,
+                "help": "The App ID from your Yuanbao IM Bot credentials.",
+            },
+            {
+                "name": "YUANBAO_APP_SECRET",
+                "prompt": "App Secret",
+                "password": True,
+                "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot.",
+            },
         ],
     },
 ]
+
+
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.
 
@@ -3710,6 +4814,7 @@ def _all_platforms() -> list[dict]:
     # opt-in via ``plugins.enabled`` (untrusted code).
     try:
         from hermes_cli.plugins import discover_plugins
+
         discover_plugins()
     except Exception as e:
         logger.debug("plugin discovery failed during platform enumeration: %s", e)
@@ -3730,14 +4835,16 @@ def _all_platforms() -> list[dict]:
     for entry in platform_registry.all_entries():
         if entry.name in by_key:
             continue  # built-in already covers it
-        platforms.append({
-            "key": entry.name,
-            "label": entry.label,
-            "emoji": entry.emoji,
-            "token_var": entry.required_env[0] if entry.required_env else "",
-            "install_hint": entry.install_hint,
-            "_registry_entry": entry,
-        })
+        platforms.append(
+            {
+                "key": entry.name,
+                "label": entry.label,
+                "emoji": entry.emoji,
+                "token_var": entry.required_env[0] if entry.required_env else "",
+                "install_hint": entry.install_hint,
+                "_registry_entry": entry,
+            }
+        )
     return platforms
 
 
@@ -3755,6 +4862,7 @@ def _platform_status(platform: dict) -> str:
         if entry.is_connected is not None:
             try:
                 from gateway.config import PlatformConfig
+
                 synthetic = PlatformConfig(enabled=True)
                 configured = bool(entry.is_connected(synthetic))
             except Exception:
@@ -3878,6 +4986,35 @@ def _setup_standard_platform(platform: dict):
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
+    auto_token_saved = False
+    auto_owner_user_id = None
+    if platform.get("key") == "telegram":
+        print()
+        print_info("  Telegram can be configured automatically with a managed bot:")
+        print_info("  [1] Automatic (scan QR → confirm in Telegram → done)")
+        print_info("  [2] Manual BotFather token")
+        choice = prompt("  Choice [1/2]", default="1")
+        if choice.strip() == "1":
+            try:
+                from hermes_cli.telegram_managed_bot import (
+                    auto_setup_telegram_bot_result,
+                    is_valid_telegram_bot_token,
+                )
+            except ImportError:
+                print_warning("  Automatic setup is unavailable in this install.")
+            else:
+                result = auto_setup_telegram_bot_result()
+                if result and is_valid_telegram_bot_token(result.token):
+                    save_env_value(token_var, result.token)
+                    print_success("  Saved TELEGRAM_BOT_TOKEN")
+                    auto_token_saved = True
+                    auto_owner_user_id = result.owner_user_id
+                else:
+                    if result:
+                        print_warning("  Automatic setup returned an invalid Telegram token.")
+                    print()
+                    print_info("  Falling back to manual setup...")
+
     allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
 
     for var in platform["vars"]:
@@ -3887,8 +5024,30 @@ def _setup_standard_platform(platform: dict):
         if existing and var["name"] != token_var:
             print_info(f"  Current: {existing}")
 
+        if auto_token_saved and var["name"] == token_var:
+            print_info("  Token saved by automatic setup.")
+            continue
+
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
+            if "TELEGRAM" in var["name"] and auto_owner_user_id:
+                detected_id = str(auto_owner_user_id)
+                print_success(f"  Detected your Telegram user ID: {detected_id}")
+                if prompt_yes_no("  Allow this Telegram account to use the bot?", True):
+                    extra = prompt(
+                        "  Additional allowed user IDs (comma-separated, optional)",
+                        password=False,
+                    )
+                    ids = [detected_id]
+                    for uid in extra.replace(" ", "").split(","):
+                        if uid and uid not in ids:
+                            ids.append(uid)
+                    cleaned = ",".join(ids)
+                    save_env_value(var["name"], cleaned)
+                    print_success("  Saved — only these users can interact with the bot.")
+                    allowed_val_set = cleaned
+                    continue
+
             print_info("  The gateway DENIES all users by default for security.")
             print_info("  Enter user IDs to create an allowlist, or leave empty")
             print_info("  and you'll be asked about open access next.")
@@ -3918,15 +5077,23 @@ def _setup_standard_platform(platform: dict):
                     "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
                     "Skip for now (bot will deny all users until configured)",
                 ]
-                access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, 1)
+                access_idx = prompt_choice(
+                    "  How should unauthorized users be handled?", access_choices, 1
+                )
                 if access_idx == 0:
                     save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
                     print_warning("  Open access enabled — anyone can use your bot!")
                 elif access_idx == 1:
-                    print_success("  DM pairing mode — users will receive a code to request access.")
-                    print_info("  Approve with: hermes pairing approve <platform> <code>")
+                    print_success(
+                        "  DM pairing mode — users will receive a code to request access."
+                    )
+                    print_info(
+                        "  Approve with: hermes pairing approve <platform> <code>"
+                    )
                 else:
-                    print_info("  Skipped — configure later with 'hermes gateway setup'")
+                    print_info(
+                        "  Skipped — configure later with 'hermes gateway setup'"
+                    )
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
@@ -3945,7 +5112,9 @@ def _setup_standard_platform(platform: dict):
     home_val = get_env_value(home_var)
     if allowed_val_set and not home_val and label == "Telegram":
         first_id = allowed_val_set.split(",")[0].strip()
-        if first_id and prompt_yes_no(f"  Use your user ID ({first_id}) as the home channel?", True):
+        if first_id and prompt_yes_no(
+            f"  Use your user ID ({first_id}) as the home channel?", True
+        ):
             save_env_value(home_var, first_id)
             print_success(f"  Home channel set to {first_id}")
 
@@ -3957,25 +5126,17 @@ def _setup_whatsapp():
     """Delegate to the existing WhatsApp setup flow."""
     from hermes_cli.main import cmd_whatsapp
     import argparse
+
     cmd_whatsapp(argparse.Namespace())
-
-
-def _setup_email():
-    """Configure Email via the standard platform setup."""
-    email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
-    _setup_standard_platform(email_platform)
-
-
-def _setup_sms():
-    """Configure SMS (Twilio) via the standard platform setup."""
-    sms_platform = next(p for p in _PLATFORMS if p["key"] == "sms")
-    _setup_standard_platform(sms_platform)
 
 
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
     from hermes_cli.setup import (
-        prompt_choice, prompt_yes_no, print_success, print_warning,
+        prompt_choice,
+        prompt_yes_no,
+        print_success,
+        print_warning,
     )
 
     dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")
@@ -4007,7 +5168,9 @@ def _setup_dingtalk():
         try:
             from hermes_cli.dingtalk_auth import dingtalk_qr_auth
         except ImportError as exc:
-            print_warning(f"  QR auth module failed to load ({exc}), falling back to manual input.")
+            print_warning(
+                f"  QR auth module failed to load ({exc}), falling back to manual input."
+            )
             _setup_standard_platform(dingtalk_platform)
             return
 
@@ -4046,7 +5209,9 @@ def _setup_wecom():
         "Scan QR code to obtain Bot ID and Secret automatically (recommended)",
         "Enter existing Bot ID and Secret manually",
     ]
-    method_idx = prompt_choice("  How would you like to set up WeCom?", method_choices, 0)
+    method_idx = prompt_choice(
+        "  How would you like to set up WeCom?", method_choices, 0
+    )
 
     bot_id = None
     secret = None
@@ -4082,7 +5247,9 @@ def _setup_wecom():
     # ── Manual credential input ──
     if not bot_id or not secret:
         print()
-        print_info("  1. Go to WeCom Application → Workspace → Smart Robot -> Create smart robots")
+        print_info(
+            "  1. Go to WeCom Application → Workspace → Smart Robot -> Create smart robots"
+        )
         print_info("  2. Select API Mode")
         print_info("  3. Copy the Bot ID and Secret from the bot's credentials info")
         print_info("  4. The bot connects via WebSocket — no public endpoint needed")
@@ -4117,14 +5284,18 @@ def _setup_wecom():
             "Disable direct messages",
             "Skip for now (bot will deny all users until configured)",
         ]
-        access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, 1)
+        access_idx = prompt_choice(
+            "  How should unauthorized users be handled?", access_choices, 1
+        )
         if access_idx == 0:
             save_env_value("WECOM_DM_POLICY", "open")
             save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
             print_warning("  Open access enabled — anyone can use your bot!")
         elif access_idx == 1:
             save_env_value("WECOM_DM_POLICY", "pairing")
-            print_success("  DM pairing mode — users will receive a code to request access.")
+            print_success(
+                "  DM pairing mode — users will receive a code to request access."
+            )
             print_info("  Approve with: hermes pairing approve <platform> <code>")
         elif access_idx == 2:
             save_env_value("WECOM_DM_POLICY", "disabled")
@@ -4144,20 +5315,18 @@ def _setup_wecom():
     print_success("💬 WeCom configured!")
 
 
-def _setup_yuanbao():
-    """Configure Yuanbao via the standard platform setup."""
-    yuanbao_platform = next(p for p in _PLATFORMS if p["key"] == "yuanbao")
-    _setup_standard_platform(yuanbao_platform)
-
-
 def _is_service_installed() -> bool:
     """Check if the gateway is installed as a system service."""
     if supports_systemd_services():
-        return get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()
+        return (
+            get_systemd_unit_path(system=False).exists()
+            or get_systemd_unit_path(system=True).exists()
+        )
     elif is_macos():
         return get_launchd_plist_path().exists()
     elif is_windows():
         from hermes_cli import gateway_windows
+
         return gateway_windows.is_installed()
     return False
 
@@ -4172,7 +5341,10 @@ def _is_service_running() -> bool:
             try:
                 result = _run_systemctl(
                     ["is-active", get_service_name()],
-                    system=False, capture_output=True, text=True, timeout=10,
+                    system=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 if result.stdout.strip() == "active":
                     return True
@@ -4183,7 +5355,10 @@ def _is_service_running() -> bool:
             try:
                 result = _run_systemctl(
                     ["is-active", get_service_name()],
-                    system=True, capture_output=True, text=True, timeout=10,
+                    system=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 if result.stdout.strip() == "active":
                     return True
@@ -4195,13 +5370,16 @@ def _is_service_running() -> bool:
         try:
             result = subprocess.run(
                 ["launchctl", "list", get_launchd_label()],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             return False
     elif is_windows():
         from hermes_cli import gateway_windows
+
         if gateway_windows.is_installed():
             # "installed" doesn't necessarily mean "running" on Windows. The
             # canonical check is whether a gateway process actually exists.
@@ -4217,8 +5395,12 @@ def _setup_weixin():
     print()
     print_info("  1. Hermes will open Tencent iLink QR login in this terminal.")
     print_info("  2. Use WeChat to scan and confirm the QR code.")
-    print_info("  3. Hermes will store the returned account_id/token in ~/.hermes/.env.")
-    print_info("  4. This adapter supports native text, image, video, and document delivery.")
+    print_info(
+        "  3. Hermes will store the returned account_id/token in ~/.hermes/.env."
+    )
+    print_info(
+        "  4. This adapter supports native text, image, video, and document delivery."
+    )
 
     existing_account = get_env_value("WEIXIN_ACCOUNT_ID")
     existing_token = get_env_value("WEIXIN_TOKEN")
@@ -4246,6 +5428,7 @@ def _setup_weixin():
         return
 
     import asyncio
+
     try:
         credentials = asyncio.run(qr_login(str(get_hermes_home())))
     except KeyboardInterrupt:
@@ -4269,7 +5452,10 @@ def _setup_weixin():
     save_env_value("WEIXIN_TOKEN", token)
     if base_url:
         save_env_value("WEIXIN_BASE_URL", base_url)
-    save_env_value("WEIXIN_CDN_BASE_URL", get_env_value("WEIXIN_CDN_BASE_URL") or "https://novac2c.cdn.weixin.qq.com/c2c")
+    save_env_value(
+        "WEIXIN_CDN_BASE_URL",
+        get_env_value("WEIXIN_CDN_BASE_URL") or "https://novac2c.cdn.weixin.qq.com/c2c",
+    )
 
     print()
     access_choices = [
@@ -4278,13 +5464,17 @@ def _setup_weixin():
         "Only allow listed user IDs",
         "Disable direct messages",
     ]
-    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    access_idx = prompt_choice(
+        "  How should direct messages be authorized?", access_choices, 0
+    )
     if access_idx == 0:
         save_env_value("WEIXIN_DM_POLICY", "pairing")
         save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
         save_env_value("WEIXIN_ALLOWED_USERS", "")
         print_success("  DM pairing enabled.")
-        print_info("  Unknown DM users can request access and you approve them with `hermes pairing approve`.")
+        print_info(
+            "  Unknown DM users can request access and you approve them with `hermes pairing approve`."
+        )
     elif access_idx == 1:
         save_env_value("WEIXIN_DM_POLICY", "open")
         save_env_value("WEIXIN_ALLOW_ALL_USERS", "true")
@@ -4292,7 +5482,9 @@ def _setup_weixin():
         print_warning("  Open DM access enabled for Weixin.")
     elif access_idx == 2:
         default_allow = user_id or ""
-        allowlist = prompt("  Allowed Weixin user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        allowlist = prompt(
+            "  Allowed Weixin user IDs (comma-separated)", default_allow, password=False
+        ).replace(" ", "")
         save_env_value("WEIXIN_DM_POLICY", "allowlist")
         save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
         save_env_value("WEIXIN_ALLOWED_USERS", allowlist)
@@ -4304,11 +5496,21 @@ def _setup_weixin():
         print_warning("  Direct messages disabled.")
 
     print()
-    print_info("  Note: QR login connects an iLink bot identity (e.g. ...@im.bot), not a")
-    print_info("  scriptable personal WeChat account. Ordinary WeChat groups typically cannot")
-    print_info("  invite an @im.bot identity, and iLink does not deliver ordinary-group events")
-    print_info("  to most bot accounts. The settings below only apply when iLink actually")
-    print_info("  delivers group events for your account type — otherwise DM remains the only")
+    print_info(
+        "  Note: QR login connects an iLink bot identity (e.g. ...@im.bot), not a"
+    )
+    print_info(
+        "  scriptable personal WeChat account. Ordinary WeChat groups typically cannot"
+    )
+    print_info(
+        "  invite an @im.bot identity, and iLink does not deliver ordinary-group events"
+    )
+    print_info(
+        "  to most bot accounts. The settings below only apply when iLink actually"
+    )
+    print_info(
+        "  delivers group events for your account type — otherwise DM remains the only"
+    )
     print_info("  working channel regardless of this choice.")
     group_choices = [
         "Disable group chats (recommended)",
@@ -4323,16 +5525,26 @@ def _setup_weixin():
     elif group_idx == 1:
         save_env_value("WEIXIN_GROUP_POLICY", "open")
         save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
-        print_warning("  All group chats enabled (only takes effect if iLink delivers group events).")
+        print_warning(
+            "  All group chats enabled (only takes effect if iLink delivers group events)."
+        )
     else:
-        allow_groups = prompt("  Allowed group chat IDs (comma-separated, not member user IDs)", "", password=False).replace(" ", "")
+        allow_groups = prompt(
+            "  Allowed group chat IDs (comma-separated, not member user IDs)",
+            "",
+            password=False,
+        ).replace(" ", "")
         save_env_value("WEIXIN_GROUP_POLICY", "allowlist")
         save_env_value("WEIXIN_GROUP_ALLOWED_USERS", allow_groups)
-        print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
+        print_success(
+            "  Group allowlist saved (only takes effect if iLink delivers group events)."
+        )
 
     if user_id:
         print()
-        if prompt_yes_no(f"  Use your Weixin user ID ({user_id}) as the home channel?", True):
+        if prompt_yes_no(
+            f"  Use your Weixin user ID ({user_id}) as the home channel?", True
+        ):
             save_env_value("WEIXIN_HOME_CHANNEL", user_id)
             print_success(f"  Home channel set to {user_id}")
 
@@ -4362,7 +5574,9 @@ def _setup_feishu():
         "Scan QR code to create a new bot automatically (recommended)",
         "Enter existing App ID and App Secret manually",
     ]
-    method_idx = prompt_choice("  How would you like to set up Feishu / Lark?", method_choices, 0)
+    method_idx = prompt_choice(
+        "  How would you like to set up Feishu / Lark?", method_choices, 0
+    )
 
     credentials = None
     used_qr = False
@@ -4392,8 +5606,12 @@ def _setup_feishu():
     # ── Manual credential input ──
     if not credentials:
         print()
-        print_info("  Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)")
-        print_info("  Create an app, enable the Bot capability, and copy the credentials.")
+        print_info(
+            "  Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)"
+        )
+        print_info(
+            "  Create an app, enable the Bot capability, and copy the credentials."
+        )
         print()
         app_id = prompt("  App ID", password=False)
         if not app_id:
@@ -4412,12 +5630,15 @@ def _setup_feishu():
         bot_name = None
         try:
             from gateway.platforms.feishu import probe_bot
+
             bot_info = probe_bot(app_id, app_secret, domain)
             if bot_info:
                 bot_name = bot_info.get("bot_name")
                 print_success(f"  Credentials verified — bot: {bot_name or 'unnamed'}")
             else:
-                print_warning("  Could not verify bot connection. Credentials saved anyway.")
+                print_warning(
+                    "  Could not verify bot connection. Credentials saved anyway."
+                )
         except Exception as exc:
             print_warning(f"  Credential verification skipped: {exc}")
 
@@ -4454,8 +5675,12 @@ def _setup_feishu():
         connection_mode = "webhook" if mode_idx == 1 else "websocket"
         if connection_mode == "webhook":
             print_info("  Webhook defaults: 127.0.0.1:8765/feishu/webhook")
-            print_info("  Override with FEISHU_WEBHOOK_HOST / FEISHU_WEBHOOK_PORT / FEISHU_WEBHOOK_PATH")
-            print_info("  For signature verification, set FEISHU_ENCRYPT_KEY and FEISHU_VERIFICATION_TOKEN")
+            print_info(
+                "  Override with FEISHU_WEBHOOK_HOST / FEISHU_WEBHOOK_PORT / FEISHU_WEBHOOK_PATH"
+            )
+            print_info(
+                "  For signature verification, set FEISHU_ENCRYPT_KEY and FEISHU_VERIFICATION_TOKEN"
+            )
     save_env_value("FEISHU_CONNECTION_MODE", connection_mode)
 
     if bot_name:
@@ -4469,12 +5694,16 @@ def _setup_feishu():
         "Allow all direct messages",
         "Only allow listed user IDs",
     ]
-    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    access_idx = prompt_choice(
+        "  How should direct messages be authorized?", access_choices, 0
+    )
     if access_idx == 0:
         save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
         save_env_value("FEISHU_ALLOWED_USERS", "")
         print_success("  DM pairing enabled.")
-        print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
+        print_info(
+            "  Unknown users can request access; approve with `hermes pairing approve`."
+        )
     elif access_idx == 1:
         save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
         save_env_value("FEISHU_ALLOWED_USERS", "")
@@ -4482,7 +5711,9 @@ def _setup_feishu():
     else:
         save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
         default_allow = open_id or ""
-        allowlist = prompt("  Allowed user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        allowlist = prompt(
+            "  Allowed user IDs (comma-separated)", default_allow, password=False
+        ).replace(" ", "")
         save_env_value("FEISHU_ALLOWED_USERS", allowlist)
         print_success("  Allowlist saved.")
 
@@ -4502,7 +5733,9 @@ def _setup_feishu():
 
     # ── Home channel ──
     print()
-    home_channel = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
+    home_channel = prompt(
+        "  Home chat ID (optional, for cron/notifications)", password=False
+    )
     if home_channel:
         save_env_value("FEISHU_HOME_CHANNEL", home_channel)
         print_success(f"  Home channel set to {home_channel}")
@@ -4534,7 +5767,9 @@ def _setup_qqbot():
         "Scan QR code to add bot automatically (recommended)",
         "Enter existing App ID and App Secret manually",
     ]
-    method_idx = prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0)
+    method_idx = prompt_choice(
+        "  How would you like to set up QQ Bot?", method_choices, 0
+    )
 
     credentials = None
 
@@ -4542,6 +5777,7 @@ def _setup_qqbot():
         # ── QR scan-to-configure ──
         try:
             from gateway.platforms.qqbot import qr_register
+
             credentials = qr_register()
         except KeyboardInterrupt:
             print()
@@ -4564,7 +5800,11 @@ def _setup_qqbot():
         if not app_secret:
             print_warning("  Skipped — QQ Bot won't work without an App Secret.")
             return
-        credentials = {"app_id": app_id.strip(), "client_secret": app_secret.strip(), "user_openid": ""}
+        credentials = {
+            "app_id": app_id.strip(),
+            "client_secret": app_secret.strip(),
+            "user_openid": "",
+        }
 
     # ── Save core credentials ──
     save_env_value("QQ_APP_ID", credentials["app_id"])
@@ -4579,12 +5819,16 @@ def _setup_qqbot():
         "Allow all direct messages",
         "Only allow listed user OpenIDs",
     ]
-    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    access_idx = prompt_choice(
+        "  How should direct messages be authorized?", access_choices, 0
+    )
     if access_idx == 0:
         save_env_value("QQ_ALLOW_ALL_USERS", "false")
         if user_openid:
             print()
-            if prompt_yes_no(f"  Add yourself ({user_openid}) to the allow list?", True):
+            if prompt_yes_no(
+                f"  Add yourself ({user_openid}) to the allow list?", True
+            ):
                 save_env_value("QQ_ALLOWED_USERS", user_openid)
                 print_success(f"  Allow list set to {user_openid}")
             else:
@@ -4592,14 +5836,18 @@ def _setup_qqbot():
         else:
             save_env_value("QQ_ALLOWED_USERS", "")
         print_success("  DM pairing enabled.")
-        print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
+        print_info(
+            "  Unknown users can request access; approve with `hermes pairing approve`."
+        )
     elif access_idx == 1:
         save_env_value("QQ_ALLOW_ALL_USERS", "true")
         save_env_value("QQ_ALLOWED_USERS", "")
         print_warning("  Open DM access enabled for QQ Bot.")
     else:
         default_allow = user_openid or ""
-        allowlist = prompt("  Allowed user OpenIDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        allowlist = prompt(
+            "  Allowed user OpenIDs (comma-separated)", default_allow, password=False
+        ).replace(" ", "")
         save_env_value("QQ_ALLOW_ALL_USERS", "false")
         save_env_value("QQ_ALLOWED_USERS", allowlist)
         print_success("  Allowlist saved.")
@@ -4607,12 +5855,16 @@ def _setup_qqbot():
     # ── Home channel ──
     if user_openid:
         print()
-        if prompt_yes_no(f"  Use your QQ user ID ({user_openid}) as the home channel?", True):
+        if prompt_yes_no(
+            f"  Use your QQ user ID ({user_openid}) as the home channel?", True
+        ):
             save_env_value("QQBOT_HOME_CHANNEL", user_openid)
             print_success(f"  Home channel set to {user_openid}")
     else:
         print()
-        home_channel = prompt("  Home channel OpenID (for cron/notifications, or empty)", password=False)
+        home_channel = prompt(
+            "  Home channel OpenID (for cron/notifications, or empty)", password=False
+        )
         if home_channel:
             save_env_value("QQBOT_HOME_CHANNEL", home_channel.strip())
             print_success(f"  Home channel set to {home_channel.strip()}")
@@ -4645,12 +5897,14 @@ def _setup_signal():
         print_warning("signal-cli not found on PATH.")
         print_info("  Signal requires signal-cli running as an HTTP daemon.")
         print_info("  Install options:")
-        print_info("    Linux:  download from https://github.com/AsamK/signal-cli/releases")
+        print_info(
+            "    Linux:  download from https://github.com/AsamK/signal-cli/releases"
+        )
         print_info("    macOS:  brew install signal-cli")
         print_info("    Docker: bbernhard/signal-cli-rest-api")
         print()
         print_info("  After installing, link your account and start the daemon:")
-        print_info("    signal-cli link -n \"HermesAgent\"")
+        print_info('    signal-cli link -n "HermesAgent"')
         print_info("    signal-cli --account +YOURNUMBER daemon --http 127.0.0.1:8080")
         print()
 
@@ -4668,6 +5922,7 @@ def _setup_signal():
     print_info("  Testing connection...")
     try:
         import httpx
+
         resp = httpx.get(f"{url.rstrip('/')}/api/v1/check", timeout=10.0)
         if resp.status_code == 200:
             print_success("  signal-cli daemon is reachable!")
@@ -4677,7 +5932,9 @@ def _setup_signal():
                 return
     except Exception as e:
         print_warning(f"  Could not reach signal-cli at {url}: {e}")
-        if not prompt_yes_no("  Save this URL anyway? (you can start signal-cli later)", True):
+        if not prompt_yes_no(
+            "  Save this URL anyway? (you can start signal-cli later)", True
+        ):
             return
 
     save_env_value("SIGNAL_HTTP_URL", url)
@@ -4688,7 +5945,9 @@ def _setup_signal():
     print_info("  Example: +15551234567")
     default_account = existing_account or ""
     try:
-        account = input(f"  Account number{f' [{default_account}]' if default_account else ''}: ").strip()
+        account = input(
+            f"  Account number{f' [{default_account}]' if default_account else ''}: "
+        ).strip()
         if not account:
             account = default_account
     except (EOFError, KeyboardInterrupt):
@@ -4708,7 +5967,9 @@ def _setup_signal():
     existing_allowed = get_env_value("SIGNAL_ALLOWED_USERS") or ""
     default_allowed = existing_allowed or account
     try:
-        allowed = input(f"  Allowed users [{default_allowed}]: ").strip() or default_allowed
+        allowed = (
+            input(f"  Allowed users [{default_allowed}]: ").strip() or default_allowed
+        )
     except (EOFError, KeyboardInterrupt):
         print("\n  Setup cancelled.")
         return
@@ -4717,12 +5978,18 @@ def _setup_signal():
 
     # Group messaging
     print()
-    if prompt_yes_no("  Enable group messaging? (disabled by default for security)", False):
+    if prompt_yes_no(
+        "  Enable group messaging? (disabled by default for security)", False
+    ):
         print()
         print_info("  Enter group IDs to allow, or * for all groups.")
         existing_groups = get_env_value("SIGNAL_GROUP_ALLOWED_USERS") or ""
         try:
-            groups = input(f"  Group IDs [{existing_groups or '*'}]: ").strip() or existing_groups or "*"
+            groups = (
+                input(f"  Group IDs [{existing_groups or '*'}]: ").strip()
+                or existing_groups
+                or "*"
+            )
         except (EOFError, KeyboardInterrupt):
             print("\n  Setup cancelled.")
             return
@@ -4733,7 +6000,9 @@ def _setup_signal():
     print_info(f"  URL: {url}")
     print_info(f"  Account: {account}")
     print_info("  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
-    print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
+    print_info(
+        f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}"
+    )
 
 
 def _builtin_setup_fn(key: str):
@@ -4743,6 +6012,7 @@ def _builtin_setup_fn(key: str):
     imports from this module for the remaining bespoke flows).
     """
     from hermes_cli import setup as _s
+
     return {
         "telegram": _s._setup_telegram,
         # discord moved into the plugin: setup_fn is registered by
@@ -4763,6 +6033,8 @@ def _builtin_setup_fn(key: str):
         "wecom": _setup_wecom,
         "qqbot": _setup_qqbot,
     }.get(key)
+
+
 def _configure_platform(platform: dict) -> None:
     """Run the interactive setup flow for a single platform.
 
@@ -4800,7 +6072,9 @@ def _configure_platform(platform: dict) -> None:
     if required:
         print_info(f"  Set these env vars in ~/.hermes/.env: {', '.join(required)}")
     else:
-        print_info(f"  Configure {label} in config.yaml under gateway.platforms.{platform['key']}")
+        print_info(
+            f"  Configure {label} in config.yaml under gateway.platforms.{platform['key']}"
+        )
     if platform.get("install_hint"):
         print_info(f"  {platform['install_hint']}")
 
@@ -4812,12 +6086,40 @@ def gateway_setup():
         return
 
     print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
-    print(color("│             ⚕ Gateway Setup                            │", Colors.MAGENTA))
-    print(color("├─────────────────────────────────────────────────────────┤", Colors.MAGENTA))
-    print(color("│  Configure messaging platforms and the gateway service. │", Colors.MAGENTA))
-    print(color("│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
+    print(
+        color(
+            "┌─────────────────────────────────────────────────────────┐",
+            Colors.MAGENTA,
+        )
+    )
+    print(
+        color(
+            "│             ⚕ Gateway Setup                            │", Colors.MAGENTA
+        )
+    )
+    print(
+        color(
+            "├─────────────────────────────────────────────────────────┤",
+            Colors.MAGENTA,
+        )
+    )
+    print(
+        color(
+            "│  Configure messaging platforms and the gateway service. │",
+            Colors.MAGENTA,
+        )
+    )
+    print(
+        color(
+            "│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA
+        )
+    )
+    print(
+        color(
+            "└─────────────────────────────────────────────────────────┘",
+            Colors.MAGENTA,
+        )
+    )
 
     # ── Gateway service status ──
     print()
@@ -4868,12 +6170,13 @@ def gateway_setup():
         platforms = _all_platforms()
 
         menu_items = [
-            f"{p['emoji']} {p['label']}  ({_platform_status(p)})"
-            for p in platforms
+            f"{p['emoji']} {p['label']}  ({_platform_status(p)})" for p in platforms
         ]
         menu_items.append("Done")
 
-        choice = prompt_choice("Select a platform to configure:", menu_items, len(menu_items) - 1)
+        choice = prompt_choice(
+            "Select a platform to configure:", menu_items, len(menu_items) - 1
+        )
         if choice == len(platforms):
             break
 
@@ -4892,9 +6195,7 @@ def gateway_setup():
             or s.startswith("plugin disabled")
         )
 
-    any_configured = any(
-        _is_progress(_platform_status(p)) for p in _all_platforms()
-    )
+    any_configured = any(_is_progress(_platform_status(p)) for p in _all_platforms())
 
     if any_configured:
         print()
@@ -4913,6 +6214,7 @@ def gateway_setup():
                         launchd_restart()
                     elif is_windows():
                         from hermes_cli import gateway_windows
+
                         gateway_windows.restart()
                     else:
                         stop_profile_gateway()
@@ -4937,6 +6239,7 @@ def gateway_setup():
                         launchd_start()
                     elif is_windows():
                         from hermes_cli import gateway_windows
+
                         gateway_windows.start()
                 except UserSystemdUnavailableError as e:
                     print_error("  Start failed — user systemd not reachable:")
@@ -4976,6 +6279,7 @@ def gateway_setup():
                             did_install = True
                         else:
                             from hermes_cli import gateway_windows
+
                             gateway_windows.install(force=False)
                             did_install = True
                         print()
@@ -4989,7 +6293,9 @@ def gateway_setup():
                                     from hermes_cli import gateway_windows
                                     gateway_windows.start()
                             except UserSystemdUnavailableError as e:
-                                print_error("  Start failed — user systemd not reachable:")
+                                print_error(
+                                    "  Start failed — user systemd not reachable:"
+                                )
                                 for line in str(e).splitlines():
                                     print(f"  {line}")
                             except subprocess.CalledProcessError as e:
@@ -5001,18 +6307,27 @@ def gateway_setup():
                     print_info("  Skipped start and auto-start setup.")
                     print_info("  You can install later: hermes gateway install")
                     if supports_systemd_services():
-                        print_info("  Or as a boot-time service: sudo hermes gateway install --system")
+                        print_info(
+                            "  Or as a boot-time service: sudo hermes gateway install --system"
+                        )
                     print_info("  Or run in foreground:  hermes gateway run")
             elif is_wsl():
                 print_info("  WSL detected but systemd is not running.")
                 print_info("  Run in foreground: hermes gateway run")
-                print_info("  For persistence:   tmux new -s hermes 'hermes gateway run'")
-                print_info("  To enable systemd: add systemd=true to /etc/wsl.conf, then 'wsl --shutdown'")
+                print_info(
+                    "  For persistence:   tmux new -s hermes 'hermes gateway run'"
+                )
+                print_info(
+                    "  To enable systemd: add systemd=true to /etc/wsl.conf, then 'wsl --shutdown'"
+                )
             elif is_termux():
                 from hermes_constants import display_hermes_home as _dhh
+
                 print_info("  Termux does not use systemd/launchd services.")
                 print_info("  Run in foreground: hermes gateway run")
-                print_info(f"  Or start it manually in the background (best effort): nohup hermes gateway run >{_dhh()}/logs/gateway.log 2>&1 &")
+                print_info(
+                    f"  Or start it manually in the background (best effort): nohup hermes gateway run >{_dhh()}/logs/gateway.log 2>&1 &"
+                )
             else:
                 print_info("  Service install not supported on this platform.")
                 print_info("  Run in foreground: hermes gateway run")
@@ -5129,6 +6444,7 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     return True
 
 
+
 def gateway_command(args):
     """Handle gateway subcommands."""
     try:
@@ -5150,15 +6466,133 @@ def gateway_command(args):
         sys.exit(1)
 
 
+def _maybe_redirect_run_to_s6_supervision(args) -> bool:
+    """Inside an s6 container, redirect bare ``gateway run`` to the
+    supervised path.
+
+    Background. Before the s6 image landed, ``docker run <image> gateway
+    run`` was the standard way to start a containerized gateway: the
+    gateway was the container's main process, tini reaped zombies, and
+    container exit code == gateway exit code. With s6-overlay as PID 1,
+    we'd much rather have the gateway run as a supervised s6 longrun
+    (auto-restart on crash, dashboard supervised alongside, multiple
+    profile gateways under the same /init). This redirect upgrades the
+    old invocation transparently — the user gets the new behavior
+    without changing their docker run command.
+
+    Three gates make this a no-op outside the intended scope:
+
+      1. ``_dispatch_via_service_manager_if_s6`` returns False unless
+         we're in a container with s6 as PID 1. Host runs of
+         ``hermes gateway run`` are unaffected.
+      2. ``HERMES_S6_SUPERVISED_CHILD`` is exported by
+         ``S6ServiceManager._render_run_script`` for the supervised
+         process itself — i.e. when s6-supervise execs ``hermes gateway
+         run --replace`` as a longrun, this guard short-circuits the
+         redirect so the supervised gateway actually runs in
+         foreground (otherwise we'd recurse: run → start → run → start
+         → ...).
+      3. ``--no-supervise`` (or ``HERMES_GATEWAY_NO_SUPERVISE=1``) opts
+         out for users who genuinely want pre-s6 semantics — CI smoke
+         tests, debugging the foreground startup path, etc.
+
+    Returns True iff dispatched (caller should ``return``).
+    """
+    no_supervise = getattr(args, "no_supervise", False) or \
+        os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
+    if no_supervise:
+        return False
+    if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        # We ARE the supervised child s6-supervise is running. Fall
+        # through to the foreground code path so the gateway actually
+        # starts.
+        return False
+    if not _dispatch_via_service_manager_if_s6("start"):
+        return False
+    # Loud breadcrumb: explain the upgrade and how to opt out. Print to
+    # stderr so it doesn't pollute stdout-parsing scripts. The
+    # supervised gateway's own logs are routed by s6-log to both
+    # `docker logs` and ${HERMES_HOME}/logs/gateways/<profile>/current,
+    # so the user sees a clear sequence: this banner first, then the
+    # gateway's own stdout/stderr from the supervisor.
+    print(
+        "→ gateway is now running under s6 supervision (auto-restart on crash,\n"
+        "  dashboard supervised alongside if HERMES_DASHBOARD is set).\n"
+        "  This is the recommended setup for the s6 container image — the\n"
+        "  gateway will keep running even if it crashes.\n"
+        "  Use `--no-supervise` (or HERMES_GATEWAY_NO_SUPERVISE=1) to opt out\n"
+        "  and get the pre-s6 foreground behavior instead.",
+        file=sys.stderr,
+        flush=True,
+    )
+    # Keep the CMD process alive as a no-op heartbeat. The supervised
+    # gateway's lifetime is independent of this process — s6-supervise
+    # restarts it on crash, and we don't want the container to exit when
+    # the gateway flaps. The CMD process keeps /init alive until
+    # `docker stop` sends SIGTERM, at which point /init runs stage 3
+    # shutdown (which tears down the supervised gateway cleanly).
+    #
+    # Prefer `sleep infinity` (matches the static main-hermes service's
+    # pattern in docker/s6-rc.d/main-hermes/run, and frees the Python
+    # interpreter — the heartbeat is a tiny `sleep` process, not a
+    # resident interpreter). But `os.execvp` does a PATH lookup for the
+    # `sleep` binary and historically crashed the whole container with
+    # FileNotFoundError when PATH was empty/truncated/clobbered at this
+    # point — e.g. after user customizations rewrote PATH, or on minimal
+    # images without `sleep` on PATH (issue #36208). Fall back to an
+    # in-process block (no external binary, can't fail on PATH) so the
+    # container keeps running instead of dying during boot.
+    try:
+        os.execvp("sleep", ["sleep", "infinity"])
+    except OSError:
+        # execvp only returns by raising; on success it replaces this
+        # process. ENOENT (no `sleep` on PATH) and any other exec error
+        # land here.
+        print(
+            "→ `sleep` is unavailable; keeping the s6 CMD process alive "
+            "in-process until the container is stopped.",
+            file=sys.stderr,
+            flush=True,
+        )
+        _block_until_terminated()
+    return True  # unreachable on the execvp success path
+
+
+def _block_until_terminated() -> None:
+    """Keep the s6 CMD process alive until the container is stopped.
+
+    Fallback heartbeat for when ``os.execvp("sleep", ...)`` can't run
+    (``sleep`` missing from PATH — issue #36208). Installs a SIGTERM
+    handler that exits with the conventional 128+signum code so
+    ``docker stop`` produces a clean, expected exit, then blocks on
+    ``signal.pause()``. Falls back to ``threading.Event().wait()`` on
+    platforms without ``signal.pause()`` (e.g. Windows) — although this
+    path only runs inside the s6 Linux container image, the fallback
+    keeps the helper safe to import and unit-test anywhere.
+    """
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
+    pause = getattr(signal, "pause", None)
+    if pause is not None:
+        while True:
+            pause()
+    else:  # pragma: no cover - non-Unix fallback, not exercised in the s6 image
+        import threading
+
+        threading.Event().wait()
+
+
 def _gateway_command_inner(args):
-    subcmd = getattr(args, 'gateway_command', None)
-    
+    subcmd = getattr(args, "gateway_command", None)
+
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
-        verbose = getattr(args, 'verbose', 0)
-        quiet = getattr(args, 'quiet', False)
-        replace = getattr(args, 'replace', False)
-        run_gateway(verbose, quiet=quiet, replace=replace)
+        if _maybe_redirect_run_to_s6_supervision(args):
+            return  # unreachable; execvp doesn't return
+        verbose = getattr(args, "verbose", 0)
+        quiet = getattr(args, "quiet", False)
+        replace = getattr(args, "replace", False)
+        force = getattr(args, "force", False)
+        run_gateway(verbose, quiet=quiet, replace=replace, force=force)
         return
 
     if subcmd == "setup":
@@ -5170,18 +6604,24 @@ def _gateway_command_inner(args):
         if is_managed():
             managed_error("install gateway service (managed by NixOS)")
             return
-        force = getattr(args, 'force', False)
-        system = getattr(args, 'system', False)
-        run_as_user = getattr(args, 'run_as_user', None)
+        force = getattr(args, "force", False)
+        system = getattr(args, "system", False)
+        run_as_user = getattr(args, "run_as_user", None)
         if is_termux():
             print("Gateway service installation is not supported on Termux.")
             print("Run manually: hermes gateway")
             sys.exit(1)
         if supports_systemd_services():
             if is_wsl():
-                print_warning("WSL detected — systemd services may not survive WSL restarts.")
-                print_info("  Consider running in foreground instead: hermes gateway run")
-                print_info("  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'")
+                print_warning(
+                    "WSL detected — systemd services may not survive WSL restarts."
+                )
+                print_info(
+                    "  Consider running in foreground instead: hermes gateway run"
+                )
+                print_info(
+                    "  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'"
+                )
                 print()
             start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
             start_on_login = prompt_yes_no("Start the gateway automatically on login/boot with systemd?", True)
@@ -5197,6 +6637,7 @@ def _gateway_command_inner(args):
             launchd_install(force)
         elif is_windows():
             from hermes_cli import gateway_windows
+
             gateway_windows.install(
                 force=force,
                 start_now=getattr(args, 'start_now', None),
@@ -5205,12 +6646,20 @@ def _gateway_command_inner(args):
             )
         elif is_wsl():
             print("WSL detected but systemd is not running.")
-            print("Either enable systemd (add systemd=true to /etc/wsl.conf and restart WSL)")
+            print(
+                "Either enable systemd (add systemd=true to /etc/wsl.conf and restart WSL)"
+            )
             print("or run the gateway in foreground mode:")
             print()
-            print("  hermes gateway run                              # direct foreground")
-            print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
-            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+            print(
+                "  hermes gateway run                              # direct foreground"
+            )
+            print(
+                "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
+            )
+            print(
+                "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
+            )
             sys.exit(1)
         elif is_container():
             # Phase 4: inside a container with s6 the gateway service is
@@ -5229,9 +6678,13 @@ def _gateway_command_inner(args):
             # /init, k8s plain runs, etc.) — the historical guidance still
             # applies.
             print("Service installation is not needed inside a Docker container.")
-            print("The container runtime is your service manager — use Docker restart policies instead:")
+            print(
+                "The container runtime is your service manager — use Docker restart policies instead:"
+            )
             print()
-            print("  docker run --restart unless-stopped ...   # auto-restart on crash/reboot")
+            print(
+                "  docker run --restart unless-stopped ...   # auto-restart on crash/reboot"
+            )
             print("  docker restart <container>                # manual restart")
             print()
             print("To run the gateway: hermes gateway run")
@@ -5240,14 +6693,16 @@ def _gateway_command_inner(args):
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
             sys.exit(1)
-    
+
     elif subcmd == "uninstall":
         if is_managed():
             managed_error("uninstall gateway service (managed by NixOS)")
             return
-        system = getattr(args, 'system', False)
+        system = getattr(args, "system", False)
         if is_termux():
-            print("Gateway service uninstall is not supported on Termux because there is no managed service to remove.")
+            print(
+                "Gateway service uninstall is not supported on Termux because there is no managed service to remove."
+            )
             print("Stop manual runs with: hermes gateway stop")
             sys.exit(1)
         if supports_systemd_services():
@@ -5256,6 +6711,7 @@ def _gateway_command_inner(args):
             launchd_uninstall()
         elif is_windows():
             from hermes_cli import gateway_windows
+
             gateway_windows.uninstall()
         elif is_container():
             from hermes_cli.service_manager import detect_service_manager
@@ -5276,8 +6732,8 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "start":
-        system = getattr(args, 'system', False)
-        start_all = getattr(args, 'all', False)
+        system = getattr(args, "system", False)
+        start_all = getattr(args, "all", False)
 
         # Phase 4: inside a container with s6, dispatch via the service
         # manager instead of falling through to systemd/launchd/windows.
@@ -5291,11 +6747,15 @@ def _gateway_command_inner(args):
             # Kill all stale gateway processes across all profiles before starting
             killed = kill_gateway_processes(all_profiles=True)
             if killed:
-                print(f"✓ Killed {killed} stale gateway process(es) across all profiles")
+                print(
+                    f"✓ Killed {killed} stale gateway process(es) across all profiles"
+                )
                 _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
         if is_termux():
-            print("Gateway service start is not supported on Termux because there is no system service manager.")
+            print(
+                "Gateway service start is not supported on Termux because there is no system service manager."
+            )
             print("Run manually: hermes gateway")
             sys.exit(1)
         if supports_systemd_services():
@@ -5304,16 +6764,25 @@ def _gateway_command_inner(args):
             launchd_start()
         elif is_windows():
             from hermes_cli import gateway_windows
+
             gateway_windows.start()
         elif is_wsl():
             print("WSL detected but systemd is not available.")
             print("Run the gateway in foreground mode instead:")
             print()
-            print("  hermes gateway run                              # direct foreground")
-            print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
-            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+            print(
+                "  hermes gateway run                              # direct foreground"
+            )
+            print(
+                "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
+            )
+            print(
+                "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
+            )
             print()
-            print("To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell.")
+            print(
+                "To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell."
+            )
             sys.exit(1)
         elif is_container():
             # Reached only when s6 ISN'T running (the early dispatch
@@ -5334,8 +6803,18 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "stop":
-        stop_all = getattr(args, 'all', False)
-        system = getattr(args, 'system', False)
+        # Defense: refuse self-targeting gateway stop from inside the gateway.
+        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
+        if os.getenv("_HERMES_GATEWAY") == "1":
+            print_error(
+                "Refusing to stop the gateway from inside the gateway process.\n"
+                "This command was blocked to prevent restart loops.\n"
+                "Use `hermes gateway stop` from a shell outside the running gateway."
+            )
+            sys.exit(1)
+
+        stop_all = getattr(args, "all", False)
+        system = getattr(args, "system", False)
 
         # Phase 4: inside a container with s6, dispatch via the service
         # manager. ``--all`` iterates every registered profile gateway
@@ -5349,7 +6828,10 @@ def _gateway_command_inner(args):
         if stop_all:
             # --all: kill every gateway process on the machine
             service_available = False
-            if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+            if supports_systemd_services() and (
+                get_systemd_unit_path(system=False).exists()
+                or get_systemd_unit_path(system=True).exists()
+            ):
                 try:
                     systemd_stop(system=system)
                     service_available = True
@@ -5363,6 +6845,7 @@ def _gateway_command_inner(args):
                     pass
             elif is_windows():
                 from hermes_cli import gateway_windows
+
                 if gateway_windows.is_installed():
                     try:
                         gateway_windows.stop()
@@ -5378,7 +6861,10 @@ def _gateway_command_inner(args):
         else:
             # Default: stop only the current profile's gateway
             service_available = False
-            if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+            if supports_systemd_services() and (
+                get_systemd_unit_path(system=False).exists()
+                or get_systemd_unit_path(system=True).exists()
+            ):
                 try:
                     systemd_stop(system=system)
                     service_available = True
@@ -5392,6 +6878,7 @@ def _gateway_command_inner(args):
                     pass
             elif is_windows():
                 from hermes_cli import gateway_windows
+
                 if gateway_windows.is_installed():
                     try:
                         gateway_windows.stop()
@@ -5407,12 +6894,22 @@ def _gateway_command_inner(args):
                     print("✗ No gateway running for this profile")
             else:
                 print(f"✓ Stopped {get_service_name()} service")
-    
+
     elif subcmd == "restart":
+        # Defense: refuse self-targeting gateway restart from inside the gateway.
+        # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
+        if os.getenv("_HERMES_GATEWAY") == "1":
+            print_error(
+                "Refusing to restart the gateway from inside the gateway process.\n"
+                "This command was blocked to prevent restart loops.\n"
+                "Use `hermes gateway restart` from a shell outside the running gateway."
+            )
+            sys.exit(1)
+
         # Try service first, fall back to killing and restarting
         service_available = False
-        system = getattr(args, 'system', False)
-        restart_all = getattr(args, 'all', False)
+        system = getattr(args, "system", False)
+        restart_all = getattr(args, "all", False)
         service_configured = False
 
         # Phase 4: inside a container with s6, dispatch via the service
@@ -5428,7 +6925,10 @@ def _gateway_command_inner(args):
         if restart_all:
             # --all: stop every gateway process across all profiles, then start fresh
             service_stopped = False
-            if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+            if supports_systemd_services() and (
+                get_systemd_unit_path(system=False).exists()
+                or get_systemd_unit_path(system=True).exists()
+            ):
                 try:
                     systemd_stop(system=system)
                     service_stopped = True
@@ -5442,6 +6942,7 @@ def _gateway_command_inner(args):
                     pass
             elif is_windows():
                 from hermes_cli import gateway_windows
+
                 if gateway_windows.is_installed():
                     try:
                         gateway_windows.stop()
@@ -5456,12 +6957,16 @@ def _gateway_command_inner(args):
 
             # Start the current profile's service fresh
             print("Starting gateway...")
-            if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+            if supports_systemd_services() and (
+                get_systemd_unit_path(system=False).exists()
+                or get_systemd_unit_path(system=True).exists()
+            ):
                 systemd_start(system=system)
             elif is_macos() and get_launchd_plist_path().exists():
                 launchd_start()
             elif is_windows():
                 from hermes_cli import gateway_windows
+
                 # On Windows, even without a registered Scheduled Task / Startup
                 # entry, gateway_windows.start() uses the safe detached
                 # pythonw.exe launcher.  Do not fall back to run_gateway() here:
@@ -5472,8 +6977,11 @@ def _gateway_command_inner(args):
             else:
                 run_gateway(verbose=0)
             return
-        
-        if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+
+        if supports_systemd_services() and (
+            get_systemd_unit_path(system=False).exists()
+            or get_systemd_unit_path(system=True).exists()
+        ):
             service_configured = True
             try:
                 systemd_restart(system=system)
@@ -5489,6 +6997,7 @@ def _gateway_command_inner(args):
                 pass
         elif is_windows():
             from hermes_cli import gateway_windows
+
             # Prefer the Windows-specific restart path: it supports both
             # registered Scheduled Task / Startup installs and no-service
             # detached restarts.  In the normal successful Telegram-triggered
@@ -5502,17 +7011,22 @@ def _gateway_command_inner(args):
                 return
             except (subprocess.CalledProcessError, RuntimeError, OSError):
                 pass
-        
+
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue
             if supports_systemd_services():
                 linger_ok, _detail = get_systemd_linger_status()
                 if linger_ok is not True:
                     import getpass
+
                     _username = getpass.getuser()
                     print()
-                    print("⚠ Cannot restart gateway as a service — linger is not enabled.")
-                    print("  The gateway user service requires linger to function on headless servers.")
+                    print(
+                        "⚠ Cannot restart gateway as a service — linger is not enabled."
+                    )
+                    print(
+                        "  The gateway user service requires linger to function on headless servers."
+                    )
                     print()
                     print(f"  Run:  sudo loginctl enable-linger {_username}")
                     print()
@@ -5523,7 +7037,9 @@ def _gateway_command_inner(args):
             if service_configured:
                 print()
                 print("✗ Gateway service restart failed.")
-                print("  The service definition exists, but the service manager did not recover it.")
+                print(
+                    "  The service definition exists, but the service manager did not recover it."
+                )
                 print("  Fix the service, then retry: hermes gateway start")
                 sys.exit(1)
 
@@ -5536,19 +7052,23 @@ def _gateway_command_inner(args):
             # Start fresh
             print("Starting gateway...")
             run_gateway(verbose=0)
-    
+
     elif subcmd == "status":
-        deep = getattr(args, 'deep', False)
-        full = getattr(args, 'full', False)
-        system = getattr(args, 'system', False)
+        deep = getattr(args, "deep", False)
+        full = getattr(args, "full", False)
+        system = getattr(args, "system", False)
         snapshot = get_gateway_runtime_snapshot(system=system)
-        
+
         # Check for service first
         _windows_service_installed = False
         if is_windows():
             from hermes_cli import gateway_windows
+
             _windows_service_installed = gateway_windows.is_installed()
-        if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+        if supports_systemd_services() and (
+            get_systemd_unit_path(system=False).exists()
+            or get_systemd_unit_path(system=True).exists()
+        ):
             systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)
         elif is_macos() and get_launchd_plist_path().exists():
@@ -5556,6 +7076,7 @@ def _gateway_command_inner(args):
             _print_gateway_process_mismatch(snapshot)
         elif _windows_service_installed:
             from hermes_cli import gateway_windows
+
             gateway_windows.status(deep=deep)
             _print_gateway_process_mismatch(snapshot)
         else:
@@ -5576,10 +7097,16 @@ def _gateway_command_inner(args):
                     print("  Android may stop background jobs when Termux is suspended")
                 elif is_wsl():
                     print("WSL note:")
-                    print("  The gateway is running in foreground/manual mode (recommended for WSL).")
-                    print("  Use tmux or screen for persistence across terminal closes.")
+                    print(
+                        "  The gateway is running in foreground/manual mode (recommended for WSL)."
+                    )
+                    print(
+                        "  Use tmux or screen for persistence across terminal closes."
+                    )
                 elif is_windows():
-                    print("To install as a Windows Scheduled Task (auto-start on login):")
+                    print(
+                        "To install as a Windows Scheduled Task (auto-start on login):"
+                    )
                     print("  hermes gateway install")
                 else:
                     print("To install as a service:")
@@ -5597,15 +7124,25 @@ def _gateway_command_inner(args):
                 print("To start:")
                 print("  hermes gateway run      # Run in foreground")
                 if is_termux():
-                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # Best-effort background start")
+                    print(
+                        "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # Best-effort background start"
+                    )
                 elif is_wsl():
-                    print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
-                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+                    print(
+                        "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux"
+                    )
+                    print(
+                        "  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background"
+                    )
                 elif is_windows():
-                    print("  hermes gateway install  # Install as Windows Scheduled Task (auto-start on login)")
+                    print(
+                        "  hermes gateway install  # Install as Windows Scheduled Task (auto-start on login)"
+                    )
                 else:
                     print("  hermes gateway install  # Install as user service")
-                    print("  sudo hermes gateway install --system  # Install as boot-time system service")
+                    print(
+                        "  sudo hermes gateway install --system  # Install as boot-time system service"
+                    )
 
         # Show other profiles' gateway status for multi-profile awareness
         _print_other_profiles_gateway_status()
@@ -5617,8 +7154,8 @@ def _gateway_command_inner(args):
         # Stop, disable, and remove legacy Hermes gateway unit files from
         # pre-rename installs (e.g. hermes.service). Profile units and
         # unrelated third-party services are never touched.
-        dry_run = getattr(args, 'dry_run', False)
-        yes = getattr(args, 'yes', False)
+        dry_run = getattr(args, "dry_run", False)
+        yes = getattr(args, "yes", False)
         if not supports_systemd_services() and not is_macos():
             print("Legacy unit migration only applies to systemd-based Linux hosts.")
             return

@@ -68,7 +68,7 @@ hermes memory setup        # select "honcho" — runs the Honcho-specific post-s
 
 The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
 
-**Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
+**Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 <details>
 <summary>Full config reference</summary>
@@ -95,6 +95,9 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
 | `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, `global` |
+| `pinUserPeer` | `false` | Gateway only. When `true`, every non-agent gateway user collapses to `peerName`; the pin overrides all aliases |
+| `userPeerAliases` | `{}` | Gateway only. Maps runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
+| `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |
 
 </details>
 
@@ -199,6 +202,18 @@ Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win o
 
 See the [Honcho page](./honcho.md#observation-directional-vs-unified) for the full observation reference.
 
+### Gateway identity mapping
+
+The peer model above covers CLI, TUI, and desktop sessions, where every conversation resolves to `peerName`. The [gateway](../../developer-guide/gateway-internals.md) adds a second axis: users arrive with platform-native runtime IDs (Telegram UID, Discord snowflake, Slack user), and three keys decide which peer each ID resolves to.
+
+| Key | Effect |
+|-----|--------|
+| `pinUserPeer: true` | Every non-agent gateway user collapses to `peerName`. The pin is checked first, so it overrides all aliases — pick it only when no user-side identity needs its own peer |
+| `userPeerAliases` | Maps specific runtime IDs to peers (`{"7654321": "alice"}`). The home for routing distinct identities — including agents that each carry their own peer |
+| `runtimePeerPrefix` | Namespaces any unmapped runtime ID (`telegram_7654321`) so platforms with same-shaped IDs don't collide |
+
+Off-gateway these keys do nothing. `hermes memory setup` only prompts for them when it detects a connected gateway platform. See the [Honcho page](./honcho.md#gateway-identity-mapping) for the resolver ladder and the setup flow.
+
 <details>
 <summary>Full honcho.json example (multi-profile)</summary>
 
@@ -255,7 +270,7 @@ See the [Honcho page](./honcho.md#observation-directional-vs-unified) for the fu
 
 </details>
 
-See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
+See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 
 ---
@@ -284,12 +299,17 @@ hermes memory setup    # select "openviking"
 # Or manually:
 hermes config set memory.provider openviking
 echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
+# Authenticated servers should use a user/admin API key:
+echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 ```
 
 **Key features:**
 - Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
 - Automatic memory extraction on session commit (profile, preferences, entities, events, cases, patterns)
 - `viking://` URI scheme for hierarchical knowledge browsing
+
+`OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
+`OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
 
 ---
 
@@ -498,11 +518,11 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 **Key features:**
 - Automatic context fencing — strips recalled memories from captured turns to prevent recursive memory pollution
-- Session-end conversation ingest for richer graph-level knowledge building
+- Full-session ingest — the entire conversation is sent once at session boundaries
+- Session-end conversation ingest (to `/v4/conversations`) for richer profile + graph building in Supermemory
 - Profile facts injected on first turn and at configurable intervals
-- Trivial message filtering (skips "ok", "thanks", etc.)
 - **Profile-scoped containers** — use `{identity}` in `container_tag` (e.g. `hermes-{identity}` → `hermes-coder`) to isolate memories per Hermes profile
-- **Multi-container mode** — enable `enable_custom_container_tags` with a `custom_containers` list to let the agent read/write across named containers. Automatic operations (sync, prefetch) stay on the primary container.
+- **Multi-container mode** — enable `enable_custom_container_tags` with a `custom_containers` list to let the agent read/write across named containers. Automatic operations stay on the primary container.
 
 <details>
 <summary>Multi-container example</summary>
@@ -520,6 +540,27 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 **Support:** [Discord](https://supermemory.link/discord) · [support@supermemory.com](mailto:support@supermemory.com)
 
+### Memori
+
+Structured long-term memory using Memori Cloud, with background completed-turn capture, tool-aware turn context, and explicit recall tools for facts, summaries, quota, signup, and feedback.
+
+| | |
+|---|---|
+| **Best for** | Agent-controlled recall with structured project and session attribution |
+| **Requires** | `pip install hermes-memori` + `hermes-memori install` + [Memori API key](https://app.memorilabs.ai/signup) |
+| **Data storage** | Memori Cloud |
+| **Cost** | Memori pricing |
+
+**Tools:** `memori_recall` (search long-term memory), `memori_recall_summary` (summarized context), `memori_quota` (usage/quota), `memori_signup` (request signup email), `memori_feedback` (send integration feedback)
+
+**Setup:**
+```bash
+pip install hermes-memori
+hermes-memori install
+hermes config set memory.provider memori
+hermes memory setup
+```
+
 ---
 
 ## Provider Comparison
@@ -534,6 +575,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
+| **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
 
 ## Profile Isolation
 

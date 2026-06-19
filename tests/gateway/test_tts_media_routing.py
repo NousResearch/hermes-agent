@@ -8,7 +8,7 @@ only renders as a voice bubble when explicitly flagged) and via
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -76,7 +76,7 @@ async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender(tm
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
         file_path=str(media_file),
-        metadata=None,
+        metadata={"notify": True},
     )
     adapter.send_voice.assert_not_awaited()
 
@@ -95,7 +95,7 @@ async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
         file_path=str(media_file),
-        metadata=None,
+        metadata={"notify": True},
     )
     adapter.send_voice.assert_not_awaited()
 
@@ -116,7 +116,7 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
         audio_path=str(media_file),
-        metadata=None,
+        metadata={"notify": True},
     )
     adapter.send_document.assert_not_awaited()
 
@@ -234,9 +234,12 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
         "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
         (allowed_root,),
     )
-    # This test exercises the strict-allowlist path; disable recency trust so
-    # the freshly-written tmp_path file is not auto-accepted by the trust
-    # window. (Recency trust is covered separately in test_platform_base.py.)
+    # This test exercises the strict-allowlist path; force strict mode on
+    # and disable recency trust so the freshly-written tmp_path file is not
+    # auto-accepted by the trust window. (Recency trust is covered separately
+    # in test_platform_base.py. The public default flipped to non-strict in
+    # 2026-05; this test pins strict on explicitly.)
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
     monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
     adapter = SimpleNamespace(
         name="test",

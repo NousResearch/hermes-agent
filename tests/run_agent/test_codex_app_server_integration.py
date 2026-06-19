@@ -12,7 +12,7 @@ Verifies that:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -84,6 +84,56 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-usage-1",
+                thread_id="thread-usage-1",
+                token_usage_last={
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+                model_context_window=200000,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-usage-1"
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == 1
+        assert result["prompt_tokens"] == 100
+        assert result["completion_tokens"] == 25
+        assert result["total_tokens"] == 130
+        assert result["input_tokens"] == 80
+        assert result["output_tokens"] == 25
+        assert result["cache_read_tokens"] == 20
+        assert result["cache_write_tokens"] == 0
+        assert result["reasoning_tokens"] == 5
+        assert result["last_prompt_tokens"] == 100
+
+        assert agent.session_api_calls == 1
+        assert agent.session_prompt_tokens == 100
+        assert agent.session_completion_tokens == 25
+        assert agent.session_total_tokens == 130
+        assert agent.session_input_tokens == 80
+        assert agent.session_output_tokens == 25
+        assert agent.session_cache_read_tokens == 20
+        assert agent.session_cache_write_tokens == 0
+        assert agent.session_reasoning_tokens == 5
+        assert agent.context_compressor.last_prompt_tokens == 100
+        assert agent.context_compressor.last_completion_tokens == 25
+        assert agent.context_compressor.last_total_tokens == 130
+        assert agent.context_compressor.context_length == 200000
+
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
         with patch.object(agent, "_spawn_background_review", return_value=None):
@@ -97,6 +147,17 @@ class TestRunConversationCodexPath:
         final = [m for m in msgs if m.get("role") == "assistant"
                  and m.get("content") == "echo: hello"]
         assert final, f"expected final assistant message in {msgs}"
+
+    def test_projected_messages_are_synced_to_external_memory(self, fake_session):
+        agent = _make_codex_agent()
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        agent._memory_manager.sync_all.assert_called_once()
+        assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
 
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across

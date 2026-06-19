@@ -9,7 +9,13 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 from typing import Any, Dict, List
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,7 +30,7 @@ from tests.tools.conftest import register_all_web_providers
 class TestWebProviderABCs:
     """The unified WebSearchProvider ABC enforces the interface contract.
 
-    After PR #25182, all seven providers are subclasses of
+    After PR #25182, web providers are subclasses of
     :class:`agent.web_search_provider.WebSearchProvider`. The legacy
     in-tree ABCs at ``tools.web_providers.base`` (separate
     ``WebSearchProvider`` + ``WebExtractProvider``) were deleted in the
@@ -137,6 +143,15 @@ class TestWebProviderABCs:
 class TestPerCapabilityBackendSelection:
     """_get_search_backend and _get_extract_backend read per-capability config."""
 
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
     def test_search_backend_overrides_generic(self, monkeypatch):
         from tools import web_tools
 
@@ -200,6 +215,256 @@ class TestPerCapabilityBackendSelection:
         assert web_tools._get_search_backend() == "tavily"
         assert web_tools._get_extract_backend() == "tavily"
 
+    def test_camofox_shared_backend_wins_over_ddgs_when_configured(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "camofox"})
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        assert web_tools._get_search_backend() == "camofox"
+        assert web_tools._get_extract_backend() == "camofox"
+
+    def test_camofox_per_capability_backends_win_over_shared_ddgs(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "ddgs",
+            "search_backend": "camofox",
+            "extract_backend": "camofox",
+        })
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        assert web_tools._get_search_backend() == "camofox"
+        assert web_tools._get_extract_backend() == "camofox"
+
+    def test_check_web_api_key_tracks_camofox_url_for_configured_backend(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "camofox"})
+        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+
+        assert web_tools.check_web_api_key() is False
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        assert web_tools.check_web_api_key() is True
+
+
+class TestColdWebProviderPluginDiscovery:
+    """Configured plugin providers route even before global plugin discovery."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_registry(self):
+        from agent.web_search_registry import _reset_for_tests
+
+        _reset_for_tests()
+        yield
+        _reset_for_tests()
+
+    def test_configured_camofox_backend_forces_registry_population(self, monkeypatch):
+        from agent.web_search_registry import get_provider
+        from tools import web_tools
+
+        assert get_provider("camofox") is None
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {
+                "backend": "camofox",
+                "search_backend": "camofox",
+                "extract_backend": "camofox",
+            },
+        )
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        assert web_tools._get_backend() == "camofox"
+        assert web_tools._get_search_backend() == "camofox"
+        assert web_tools._get_extract_backend() == "camofox"
+        assert web_tools.check_web_api_key() is True
+        assert get_provider("camofox") is not None
+
+    def test_web_search_tool_dispatches_configured_camofox_from_cold_registry(
+        self, monkeypatch
+    ):
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        from tools import web_tools
+
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"search_backend": "camofox"},
+        )
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+        calls = []
+
+        def fake_search(self, query: str, limit: int = 5):
+            calls.append((query, limit))
+            return {
+                "success": True,
+                "data": {
+                    "web": [
+                        {
+                            "title": "ok",
+                            "url": "https://example.com",
+                            "description": "",
+                            "position": 1,
+                        }
+                    ]
+                },
+            }
+
+        monkeypatch.setattr(CamofoxWebSearchProvider, "search", fake_search)
+
+        result = json.loads(web_tools.web_search_tool("camofox query", limit=1))
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "ok"
+        assert calls == [("camofox query", 1)]
+
+    @pytest.mark.asyncio
+    async def test_web_extract_tool_dispatches_configured_camofox_from_cold_registry(
+        self, monkeypatch
+    ):
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        from tools import web_tools
+
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"extract_backend": "camofox"},
+        )
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setattr(web_tools, "check_auxiliary_model", lambda: False)
+
+        calls = []
+
+        def fake_extract(self, urls, **kwargs):
+            calls.append((list(urls), kwargs))
+            return [
+                {
+                    "url": urls[0],
+                    "title": "ok",
+                    "content": "body",
+                    "raw_content": "body",
+                }
+            ]
+
+        monkeypatch.setattr(CamofoxWebSearchProvider, "extract", fake_extract)
+
+        result = json.loads(
+            await web_tools.web_extract_tool(
+                ["https://example.com"], use_llm_processing=False
+            )
+        )
+
+        assert result["results"][0]["title"] == "ok"
+        assert calls == [(["https://example.com"], {"format": None})]
+
+    def test_temp_hermes_home_cold_import_dispatches_configured_camofox(
+        self, tmp_path: Path
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "web:\n"
+            "  backend: camofox\n"
+            "  search_backend: camofox\n"
+            "  extract_backend: camofox\n",
+            encoding="utf-8",
+        )
+        script = textwrap.dedent(
+            """
+            import asyncio
+            import json
+
+            from agent.web_search_registry import get_provider, list_providers
+
+            assert [p.name for p in list_providers()] == []
+
+            from tools import interrupt, web_tools
+
+            assert web_tools._get_backend() == "camofox"
+            assert web_tools._get_search_backend() == "camofox"
+            assert web_tools._get_extract_backend() == "camofox"
+            assert web_tools.check_web_api_key() is True
+            assert get_provider("camofox") is not None
+
+            from plugins.web.camofox.provider import CamofoxWebSearchProvider
+
+            interrupt.is_interrupted = lambda: False
+            search_calls = []
+
+            def fake_search(self, query, limit=5):
+                search_calls.append((self.name, query, limit))
+                return {
+                    "success": True,
+                    "data": {
+                        "web": [
+                            {
+                                "title": "camofox search",
+                                "url": "https://example.com/search",
+                                "description": "",
+                                "position": 1,
+                            }
+                        ]
+                    },
+                }
+
+            CamofoxWebSearchProvider.search = fake_search
+            search_result = json.loads(web_tools.web_search_tool("cold camofox", limit=2))
+            assert search_result["data"]["web"][0]["title"] == "camofox search"
+            assert search_calls == [("camofox", "cold camofox", 2)]
+
+            extract_calls = []
+            to_thread_calls = []
+
+            def fake_extract(self, urls, **kwargs):
+                extract_calls.append((self.name, list(urls), kwargs))
+                return [
+                    {
+                        "url": urls[0],
+                        "title": "camofox extract",
+                        "content": "body",
+                        "raw_content": "body",
+                    }
+                ]
+
+            async def fake_to_thread(func, *args, **kwargs):
+                to_thread_calls.append(getattr(func, "__name__", repr(func)))
+                return func(*args, **kwargs)
+
+            CamofoxWebSearchProvider.extract = fake_extract
+            web_tools.asyncio.to_thread = fake_to_thread
+            extract_result = json.loads(
+                asyncio.run(
+                    web_tools.web_extract_tool(
+                        ["https://example.com"], use_llm_processing=False
+                    )
+                )
+            )
+            assert extract_result["results"][0]["title"] == "camofox extract"
+            assert extract_calls == [("camofox", ["https://example.com"], {"format": None})]
+            assert to_thread_calls[-1:] == ["fake_extract"]
+
+            print(json.dumps({"ok": True}))
+            """
+        )
+        env = os.environ.copy()
+        env.update(
+            {
+                "HERMES_HOME": str(tmp_path),
+                "CAMOFOX_URL": "http://localhost:9377",
+            }
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
 
 # ---------------------------------------------------------------------------
 # Config key presence in DEFAULT_CONFIG
@@ -229,43 +494,36 @@ class TestDefaultConfig:
 
 
 class TestWebSearchUsesSearchBackend:
-    """web_search_tool dispatches through _get_search_backend not _get_backend."""
+    """web_search_tool dispatches through registry provider resolution."""
 
-    def test_search_tool_calls_search_backend(self, monkeypatch):
+    def test_search_tool_calls_registry_resolution(self, monkeypatch):
         from tools import web_tools
 
+        fake_provider = MagicMock(name="fake_web_provider")
+        fake_provider.name = "firecrawl"
+        fake_provider.search.return_value = {"success": True, "data": {"web": []}}
+
         called_with = []
-        original_get_search = web_tools._get_search_backend
 
-        def tracking_get_search():
-            result = original_get_search()
-            called_with.append(("search", result))
-            return result
+        def tracking_resolve(capability: str):
+            called_with.append(capability)
+            return fake_provider
 
-        monkeypatch.setattr(web_tools, "_get_search_backend", tracking_get_search)
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
-        monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
+        monkeypatch.setattr(web_tools, "_resolve_web_provider", tracking_resolve)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
 
-        # The function will fail at Firecrawl client level but we just
-        # need to verify _get_search_backend was called
-        try:
-            web_tools.web_search_tool("test", 1)
-        except Exception:
-            pass
+        result = json.loads(web_tools.web_search_tool("test", 1))
 
-        assert len(called_with) > 0
-        assert called_with[0][0] == "search"
+        assert result == {"success": True, "data": {"web": []}}
+        assert called_with == ["search"]
+        fake_provider.search.assert_called_once_with("test", 1)
 
 
 class TestUnconfiguredErrorEnvelopeParity:
-    """Regression tests for PR #25182: the post-migration dispatcher must
-    emit the same top-level error envelope as pre-migration main when no
-    web backend is configured.
+    """Regression tests for provider-resolution failures.
 
-    Plugin-level error wrapping is correct for in-flight errors (per-page
-    SDK exceptions, scrape timeouts) but PRE-FLIGHT configuration errors
-    must surface at the top level so function-calling models that check
-    ``result.get("error")`` detect the failure cleanly.
+    The dispatcher must surface a top-level error when registry resolution finds
+    no provider instead of burying the setup failure in per-result payloads.
     """
 
     _register_providers = staticmethod(register_all_web_providers)
@@ -288,6 +546,8 @@ class TestUnconfiguredErrorEnvelopeParity:
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
             "TOOL_GATEWAY_DOMAIN",
+            "XAI_API_KEY",
+            "CAMOFOX_URL",
         ):
             monkeypatch.delenv(k, raising=False)
 

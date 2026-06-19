@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled plugins (brave-free, camofox, ddgs, searxng, exa,
+  parallel, tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -45,6 +45,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "CAMOFOX_URL",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -68,15 +69,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_bundled_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "camofox",
             "ddgs",
             "exa",
             "firecrawl",
@@ -90,6 +92,7 @@ class TestBundledPluginsRegister:
         "plugin_name,expected_search,expected_extract",
         [
             ("brave-free", True, False),
+            ("camofox", True, True),
             ("ddgs", True, False),
             ("searxng", True, False),
             ("exa", True, True),
@@ -116,7 +119,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "camofox", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +132,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "camofox", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -246,6 +249,129 @@ class TestIsAvailable:
         monkeypatch.setenv("XAI_API_KEY", "real")
         assert p.is_available() is True
 
+    def test_camofox_requires_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("camofox")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        assert p.is_available() is True
+
+    def test_camofox_setup_schema_reuses_camofox_install_flow(self) -> None:
+        """Selecting Web Camofox should run the same setup hook as Browser Camofox."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("camofox")
+        assert p is not None
+        schema = p.get_setup_schema()
+        assert schema["post_setup"] == "camofox"
+        assert schema["env_vars"] == [
+            {
+                "key": "CAMOFOX_URL",
+                "prompt": "Camofox server URL",
+                "default": "http://localhost:9377",
+                "url": "https://github.com/jo-inc/camofox-browser",
+            }
+        ]
+
+
+class TestCamofoxProviderUsesSharedBrowserLayer:
+    def test_search_uses_shared_tab_helpers_and_closes_tab(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        import plugins.web.camofox.provider as mod
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        calls: List[Any] = []
+
+        def fake_create_tab(user_id: str, session_key: str, url: str | None = None, **kwargs: Any) -> Dict[str, Any]:
+            calls.append(("create", user_id, session_key, url, kwargs))
+            return {"tabId": "tab-web"}
+
+        def fake_navigate(user_id: str, tab_id: str, url: str, **kwargs: Any) -> Dict[str, Any]:
+            calls.append(("navigate", user_id, tab_id, url, kwargs))
+            return {"url": url}
+
+        def fake_snapshot(user_id: str, tab_id: str, **kwargs: Any) -> Dict[str, Any]:
+            calls.append(("snapshot", user_id, tab_id, kwargs))
+            return {
+                "snapshot": (
+                    '- heading "Example Result" [level=2]\n'
+                    '  - link "Example"\n'
+                    '    /url: https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com\n'
+                    '  - text: Useful summary'
+                )
+            }
+
+        def fake_close_tab(user_id: str, tab_id: str, **kwargs: Any) -> None:
+            calls.append(("close", user_id, tab_id, kwargs))
+
+        monkeypatch.setattr("tools.camofox_client.camofox_create_tab", fake_create_tab)
+        monkeypatch.setattr(mod, "camofox_tab_navigate", fake_navigate)
+        monkeypatch.setattr(
+            mod,
+            "camofox_tab_evaluate",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("old server")),
+        )
+        monkeypatch.setattr(mod, "camofox_tab_snapshot", fake_snapshot)
+        monkeypatch.setattr("tools.camofox_client.camofox_close_tab", fake_close_tab)
+
+        result = CamofoxWebSearchProvider().search("example", limit=1)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["url"] == "https://example.com"
+        assert [call[0] for call in calls] == ["create", "navigate", "snapshot", "close"]
+        assert calls[0][2] == "web_search"
+        assert calls[0][3] is None
+
+    def test_search_closes_tab_when_navigation_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        import plugins.web.camofox.provider as mod
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        closed: List[tuple[str, str]] = []
+
+        monkeypatch.setattr("tools.camofox_client.camofox_create_tab", lambda *args, **kwargs: {"tabId": "tab-web"})
+
+        def fail_navigate(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+            raise RuntimeError("Camofox request failed")
+
+        monkeypatch.setattr(mod, "camofox_tab_navigate", fail_navigate)
+        monkeypatch.setattr("tools.camofox_client.camofox_close_tab", lambda user_id, tab_id, **kwargs: closed.append((user_id, tab_id)))
+
+        result = CamofoxWebSearchProvider().search("example", limit=1)
+
+        assert result["success"] is False
+        assert "Camofox search failed" in result["error"]
+        assert len(closed) == 1
+        assert closed[0][1] == "tab-web"
+
+    def test_extract_returns_error_when_tab_creation_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        import plugins.web.camofox.provider as mod
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        def fail_create_tab(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+            raise RuntimeError("Camofox did not return a tabId")
+
+        monkeypatch.setattr("tools.camofox_client.camofox_create_tab", fail_create_tab)
+        monkeypatch.setattr("tools.camofox_client.camofox_close_tab", lambda *args, **kwargs: pytest.fail("nothing to close"))
+
+        result = CamofoxWebSearchProvider().extract(["https://example.com"])
+
+        assert result == [
+            {
+                "url": "https://example.com",
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": "Camofox extract failed: Camofox did not return a tabId",
+            }
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Registry resolution semantics (Option B — conservative smart fallback)
@@ -310,23 +436,22 @@ class TestRegistryResolution:
         assert result.supports_extract() is True
         assert result.is_available() is True
 
-    def test_no_config_no_credentials_returns_none(
+    def test_no_config_no_credentials_returns_legacy_firecrawl_default(
         self,
     ) -> None:
-        """No backend configured AND no available providers → typically None.
+        """No backend configured and no available providers → Firecrawl default.
 
-        ``ddgs`` is the no-credential fallback; if its ``ddgs`` Python
-        package is installed in the test env, ddgs will be picked.
-        Otherwise the resolver returns None. Either outcome is correct.
+        This preserves legacy ``tools.web_tools._get_backend()`` behavior: the
+        dispatcher still selects Firecrawl so missing-credential calls surface
+        Firecrawl's precise setup error instead of a generic "no provider".
         """
         _ensure_plugins_loaded()
         from agent.web_search_registry import _resolve
 
         result = _resolve(None, capability="search")
-        if result is not None:
-            # The only no-credential provider is ddgs; anything else
-            # means an env var leaked in.
-            assert result.is_available() is True
+        assert result is not None
+        assert result.name == "firecrawl"
+        assert result.is_available() is False
 
 
 # ---------------------------------------------------------------------------

@@ -209,6 +209,7 @@ class TestBraveFreeBackendWiring:
         assert web_tools._get_backend() == "brave-free"
 
     def test_auto_detect_picks_brave_free_when_only_key_set(self, monkeypatch):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
@@ -216,7 +217,7 @@ class TestBraveFreeBackendWiring:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: False)
         assert web_tools._get_backend() == "brave-free"
 
     def test_brave_free_does_not_override_paid_provider(self, monkeypatch):

@@ -3,17 +3,24 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 from tools.browser_camofox import (
     camofox_back,
     camofox_click,
     camofox_close,
+    camofox_close_tab,
     camofox_console,
+    camofox_create_tab,
     camofox_get_images,
     camofox_navigate,
     camofox_press,
     camofox_scroll,
     camofox_snapshot,
+    camofox_tab_evaluate,
+    camofox_tab_navigate,
+    camofox_tab_snapshot,
     camofox_type,
     camofox_vision,
     check_camofox_available,
@@ -51,6 +58,82 @@ class TestCamofoxMode:
     def test_health_check_unreachable(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
         assert check_camofox_available() is False
+
+
+class TestCamofoxSharedTabHelpers:
+    @patch("tools.browser_camofox.requests.post")
+    def test_create_tab_posts_identity_and_returns_payload(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab-shared"})
+
+        data = camofox_create_tab("web-user", "web-search", url="https://example.com")
+
+        assert data["tabId"] == "tab-shared"
+        mock_post.assert_called_once_with(
+            "http://localhost:9377/tabs",
+            json={"userId": "web-user", "sessionKey": "web-search", "url": "https://example.com"},
+            timeout=30,
+        )
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_create_tab_rejects_missing_tab_id(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"ok": True})
+
+        with pytest.raises(RuntimeError, match="tabId"):
+            camofox_create_tab("web-user", "web-search")
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_tab_navigate_uses_shared_request_shape(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"url": "https://example.com"})
+
+        data = camofox_tab_navigate("web-user", "tab-shared", "https://example.com", timeout=60)
+
+        assert data["url"] == "https://example.com"
+        mock_post.assert_called_once_with(
+            "http://localhost:9377/tabs/tab-shared/navigate",
+            json={"userId": "web-user", "url": "https://example.com"},
+            timeout=60,
+        )
+
+    @patch("tools.browser_camofox.requests.get")
+    def test_tab_snapshot_uses_shared_request_shape(self, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_get.return_value = _mock_response(json_data={"snapshot": "ok"})
+
+        assert camofox_tab_snapshot("web-user", "tab-shared")["snapshot"] == "ok"
+        mock_get.assert_called_once_with(
+            "http://localhost:9377/tabs/tab-shared/snapshot",
+            params={"userId": "web-user"},
+            timeout=30,
+        )
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_tab_evaluate_uses_shared_request_shape(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"result": "ok"})
+
+        assert camofox_tab_evaluate("web-user", "tab-shared", "() => document.title")["result"] == "ok"
+        mock_post.assert_called_once_with(
+            "http://localhost:9377/tabs/tab-shared/evaluate",
+            json={"userId": "web-user", "expression": "() => document.title"},
+            timeout=30,
+        )
+
+    @patch("tools.browser_camofox.requests.delete")
+    def test_close_tab_is_best_effort(self, mock_delete, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_delete.side_effect = RuntimeError("server already dropped it")
+
+        camofox_close_tab("web-user", "tab-shared")
+
+        mock_delete.assert_called_once_with(
+            "http://localhost:9377/tabs/tab-shared",
+            json=None,
+            params={"userId": "web-user"},
+            timeout=10,
+        )
 
 
 # ---------------------------------------------------------------------------

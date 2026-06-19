@@ -735,6 +735,26 @@ def test_fresh_install_tts_default_is_free_edge_not_paid_nous():
     assert _detect_active_provider_index(providers, {}) == 0
 
 
+def test_web_camofox_provider_picker_metadata_runs_install_flow(monkeypatch):
+    """The Web Camofox row should mirror Browser Camofox setup metadata."""
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_nous_subscription_features",
+        lambda config, *, force_fresh=False: SimpleNamespace(
+            nous_auth_present=False,
+            account_info=None,
+            features={},
+        ),
+    )
+
+    providers = _visible_providers(TOOL_CATEGORIES["web"], {})
+    camofox = next(provider for provider in providers if provider.get("web_backend") == "camofox")
+
+    assert camofox["web_search_plugin_name"] == "camofox"
+    assert camofox["post_setup"] == "camofox"
+    assert camofox["env_vars"][0]["key"] == "CAMOFOX_URL"
+    assert camofox["env_vars"][0]["default"] == "http://localhost:9377"
+
+
 def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
     config = {"platform_toolsets": {"cli": ["web"]}}
     seen = {}

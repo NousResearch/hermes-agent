@@ -693,31 +693,20 @@ class TestXAIBackendWiring:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "xai"})
         assert web_tools._get_backend() == "xai"
 
-    def test_xai_not_in_legacy_backend_candidate_chain(self, monkeypatch):
-        """The hardcoded ``backend_candidates`` tuple in ``_get_backend()``
-        does not include xAI — by design, since the no-config legacy
-        chain is for users who set env vars but never ran ``hermes tools``,
-        and we don't want a stray ``XAI_API_KEY`` (perhaps set for chat
-        inference) to silently re-route web_search through Grok.
-
-        Note: this does NOT prevent the registry's single-provider
-        shortcut (``agent.web_search_registry._resolve``) from selecting
-        xAI when it's the only available web provider. That path is the
-        normal "pick the one provider the user actually configured"
-        behavior shared by every other backend.
-        """
+    def test_xai_not_selected_by_no_config_registry_fallback(self, monkeypatch):
+        """A stray xAI key must not reroute web search unless xAI is configured."""
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in (
             "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
             "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY",
+            "CAMOFOX_URL",
         ):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
-        assert web_tools._get_backend() != "xai"
+        with patch("plugins.web.ddgs.provider.DDGSWebSearchProvider.is_available", return_value=False):
+            assert web_tools._get_backend() != "xai"
 
 
 # ---------------------------------------------------------------------------

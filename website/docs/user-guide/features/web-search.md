@@ -313,7 +313,7 @@ web:
     timeout: 90                  # seconds (default)
 ```
 
-**Search-only** — pair with Firecrawl / Tavily / Exa / Parallel if you also need `web_extract`. On 401 the provider performs a single forced OAuth-token refresh and retries (covers mid-window revocation and opaque tokens the proactive expiry check can't decode); env-var credentials skip the retry.
+**Search-only** — pair with Firecrawl / Camofox / Tavily / Exa / Parallel if you also need `web_extract`. On 401 the provider performs a single forced OAuth-token refresh and retries (covers mid-window revocation and opaque tokens the proactive expiry check can't decode); env-var credentials skip the retry.
 
 :::caution Trust model
 Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-engine results, xAI is an LLM choosing which URLs to surface and writing the titles and descriptions itself. The *content* of the query influences the output, so a maliciously crafted query (e.g. injected via untrusted upstream input the agent picked up) can in principle steer Grok into emitting attacker-chosen URLs. Treat returned URLs the same way you'd treat any model-generated link — validate before fetching, especially if the query came from untrusted input.
@@ -330,7 +330,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: "searxng"   # firecrawl | camofox | searxng | brave-free | ddgs | tavily | exa | parallel | xai
 ```
 
 ### Per-capability configuration

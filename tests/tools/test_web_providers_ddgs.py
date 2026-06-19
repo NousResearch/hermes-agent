@@ -163,23 +163,27 @@ class TestDDGSProviderSearch:
 
 class TestDDGSBackendWiring:
     def test_is_backend_available_true_when_package_importable(self, monkeypatch):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
         from tools import web_tools
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: True)
         assert web_tools._is_backend_available("ddgs") is True
 
     def test_is_backend_available_false_when_package_missing(self, monkeypatch):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
         from tools import web_tools
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: False)
         assert web_tools._is_backend_available("ddgs") is False
 
     def test_configured_backend_accepted(self, monkeypatch):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: True)
         assert web_tools._get_backend() == "ddgs"
 
     def test_ddgs_trails_paid_providers_in_auto_detect(self, monkeypatch):
         """Exa (priority) should win over ddgs in auto-detect."""
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
@@ -187,23 +191,25 @@ class TestDDGSBackendWiring:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("EXA_API_KEY", "exa-key")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: True)
         assert web_tools._get_backend() == "exa"
 
     def test_auto_detect_picks_ddgs_as_last_resort(self, monkeypatch):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
                     "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: True)
         assert web_tools._get_backend() == "ddgs"
 
     def test_check_web_api_key_true_when_ddgs_configured(self, monkeypatch):
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+        monkeypatch.setattr(DDGSWebSearchProvider, "is_available", lambda self: True)
         assert web_tools.check_web_api_key() is True
 
 
@@ -227,7 +233,6 @@ class TestDDGSSearchOnlyErrors:
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         async def _allow_ssrf(_url: str) -> bool:
             return True

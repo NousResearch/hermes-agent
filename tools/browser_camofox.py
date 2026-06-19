@@ -38,6 +38,21 @@ import requests
 
 from hermes_cli.config import cfg_get, load_config
 from tools.browser_camofox_state import get_camofox_identity
+from tools.camofox_client import (
+    camofox_close_tab,
+    camofox_connection_help,
+    camofox_create_tab,
+    camofox_tab_evaluate,
+    camofox_tab_navigate,
+    camofox_tab_snapshot,
+    check_camofox_available,
+    delete_json as _delete,
+    get_camofox_url,
+    get_json as _get,
+    get_raw as _get_raw,
+    get_vnc_url,
+    post_json as _post,
+)
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -46,15 +61,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT = 30  # seconds per HTTP request
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
-_vnc_url: Optional[str] = None  # cached from /health response
-_vnc_url_checked = False  # only probe once per process
-
-
-def get_camofox_url() -> str:
-    """Return the configured Camofox server URL, or empty string."""
-    return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
 def is_camofox_mode() -> bool:
@@ -69,37 +76,6 @@ def is_camofox_mode() -> bool:
         return False
     return bool(get_camofox_url())
 
-
-def check_camofox_available() -> bool:
-    """Verify the Camofox server is reachable."""
-    global _vnc_url, _vnc_url_checked
-    url = get_camofox_url()
-    if not url:
-        return False
-    try:
-        resp = requests.get(f"{url}/health", timeout=5)
-        if resp.status_code == 200 and not _vnc_url_checked:
-            try:
-                data = resp.json()
-                vnc_port = data.get("vncPort")
-                if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(url)
-                    host = parsed.hostname or "localhost"
-                    _vnc_url = f"http://{host}:{vnc_port}"
-            except (ValueError, KeyError):
-                pass
-            _vnc_url_checked = True
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
-def get_vnc_url() -> Optional[str]:
-    """Return the VNC URL if the Camofox server exposes one, or None."""
-    if not _vnc_url_checked:
-        check_camofox_available()
-    return _vnc_url
 
 
 def _get_camofox_config() -> Dict[str, Any]:
@@ -340,19 +316,8 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     session = _get_session(task_id)
     if session["tab_id"]:
         return session
-    base = get_camofox_url()
-    resp = requests.post(
-        f"{base}/tabs",
-        json={
-            "userId": session["user_id"],
-            "sessionKey": session["session_key"],
-            "url": url,
-        },
-        timeout=_DEFAULT_TIMEOUT,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    session["tab_id"] = data.get("tabId")
+    data = camofox_create_tab(session["user_id"], session["session_key"], url=url)
+    session["tab_id"] = data["tabId"]
     return session
 
 
@@ -381,44 +346,9 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers
-# ---------------------------------------------------------------------------
-
-def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
-    """POST JSON to camofox and return parsed response."""
-    url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
-    """GET from camofox and return parsed response."""
-    url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
-    """GET from camofox and return raw response (for binary data)."""
-    url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
-    resp.raise_for_status()
-    return resp
-
-
-def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
-    """DELETE to camofox and return parsed response."""
-    url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
-
-
-# ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
+
 
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
@@ -480,9 +410,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     except requests.ConnectionError:
         return json.dumps({
             "success": False,
-            "error": f"Cannot connect to Camofox at {get_camofox_url()}. "
-                     "Is the server running? Start with: npm start (in camofox-browser dir) "
-                     "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser",
+            "error": camofox_connection_help(),
         })
     except Exception as e:
         return tool_error(str(e), success=False)

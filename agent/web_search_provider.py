@@ -13,8 +13,8 @@ Providers live in ``<repo>/plugins/web/<name>/`` (built-in, auto-loaded as
 ``plugins.enabled``).
 
 This ABC is the SINGLE plugin-facing surface for web providers — every
-provider in the tree (brave-free, ddgs, searxng, exa, parallel, tavily,
-firecrawl) implements it. The legacy in-tree ``tools.web_providers.base``
+provider in the tree (brave-free, camofox, ddgs, searxng, exa, parallel,
+tavily, firecrawl, xai) implements it. The legacy in-tree ``tools.web_providers.base``
 ABCs were deleted in PR #25182 along with the per-vendor inline helpers
 in ``tools/web_tools.py``; the response-shape contract documented below
 is preserved bit-for-bit so the tool wrapper does not have to translate.

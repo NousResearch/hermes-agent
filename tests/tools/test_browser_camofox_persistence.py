@@ -40,11 +40,12 @@ def _enable_persistence():
 @pytest.fixture(autouse=True)
 def _clear_session_state():
     import tools.browser_camofox as mod
+    import tools.camofox_client as client
     yield
     with mod._sessions_lock:
         mod._sessions.clear()
-    mod._vnc_url = None
-    mod._vnc_url_checked = False
+    client._vnc_url = None
+    client._vnc_url_checked = False
 
 
 class TestManagedPersistenceToggle:
@@ -341,9 +342,9 @@ class TestVncUrlDiscovery:
     def test_navigate_includes_vnc_hint(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        import tools.browser_camofox as mod
-        mod._vnc_url = "http://localhost:6080"
-        mod._vnc_url_checked = True
+        import tools.camofox_client as client
+        client._vnc_url = "http://localhost:6080"
+        client._vnc_url_checked = True
 
         with patch("tools.browser_camofox.requests.post", return_value=_mock_response(
             json_data={"tabId": "t1", "url": "https://example.com"}

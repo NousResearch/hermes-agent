@@ -21,6 +21,7 @@ def register_all_web_providers():
     """
     from agent.web_search_registry import register_provider, _reset_for_tests
     from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+    from plugins.web.camofox.provider import CamofoxWebSearchProvider
     from plugins.web.ddgs.provider import DDGSWebSearchProvider
     from plugins.web.exa.provider import ExaWebSearchProvider
     from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
@@ -32,6 +33,7 @@ def register_all_web_providers():
     _reset_for_tests()
     for cls in (
         BraveFreeWebSearchProvider,
+        CamofoxWebSearchProvider,
         DDGSWebSearchProvider,
         ExaWebSearchProvider,
         FirecrawlWebSearchProvider,

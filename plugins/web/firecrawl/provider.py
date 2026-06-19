@@ -170,7 +170,9 @@ def check_firecrawl_api_key() -> bool:
     Re-exported by :mod:`tools.web_tools` for backward compatibility with
     existing tests and the ``hermes tools`` setup flow.
     """
-    return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
+    import tools.web_tools as _wt
+
+    return _has_direct_firecrawl_config() or _wt._is_tool_gateway_ready()
 
 
 def _firecrawl_backend_help_suffix() -> str:

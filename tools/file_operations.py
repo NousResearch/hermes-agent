@@ -2258,11 +2258,20 @@ class ShellFileOperations(FileOperations):
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
-        cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
+        cmd_parts = ["grep", "-rnHE"]  # -H forces filename; -E enables ERE (|, +, ?, etc.)
         
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
-        cmd_parts.append("--exclude-dir='.*'")
+        # GNU grep's --exclude-dir also matches command-line directories, so
+        # an unconditional exclude returns nothing when the search path has a
+        # hidden ancestor (e.g. ~/.hermes/workspace). Mirror _search_files:
+        # only exclude hidden descendants when the root is visible. (#18473)
+        has_hidden_path_ancestor = any(
+            part not in {".", ".."} and part.startswith(".")
+            for part in Path(path).parts
+        )
+        if not has_hidden_path_ancestor:
+            cmd_parts.append("--exclude-dir='.*'")
         
         # Add context if requested
         if context > 0:

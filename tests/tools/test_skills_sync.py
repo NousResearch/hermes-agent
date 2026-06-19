@@ -301,6 +301,7 @@ class TestSyncSkills:
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
+        (bundled / "old-skill" / "DESCRIPTION.md").write_text("Old skill desc")
 
         with self._patches(bundled, skills_dir, manifest_file), \
                 patch("tools.skills_sync._read_suppressed_names", return_value={"old-skill"}):
@@ -310,6 +311,7 @@ class TestSyncSkills:
         assert "old-skill" in result["suppressed"]
         assert "old-skill" not in result["copied"]
         assert not (skills_dir / "old-skill").exists()
+        assert not (skills_dir / "old-skill" / "DESCRIPTION.md").exists()
         # The non-suppressed bundled skill is still copied normally.
         assert "new-skill" in result["copied"]
         assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()

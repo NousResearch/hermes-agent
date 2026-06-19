@@ -636,8 +636,13 @@ def sync_skills(quiet: bool = False) -> dict:
     for name in cleaned:
         del manifest[name]
 
-    # Also copy DESCRIPTION.md files for categories (if not already present)
+    # Also copy DESCRIPTION.md files for categories (if not already present).
+    # Skill-local DESCRIPTION.md files must not be copied on their own: if a
+    # bundled skill was suppressed or deleted, copying only that metadata file
+    # recreates a non-loadable shadow directory under ~/.hermes/skills.
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
+        if (desc_md.parent / "SKILL.md").exists():
+            continue
         rel = desc_md.relative_to(bundled_dir)
         dest_desc = SKILLS_DIR / rel
         if not dest_desc.exists():

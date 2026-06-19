@@ -1311,6 +1311,33 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_get_status_uses_gateway_process_scan_when_pid_file_is_missing(
+        self, monkeypatch
+    ):
+        import gateway.config as gateway_config
+        import hermes_cli.gateway as gateway_mod
+        import hermes_cli.web_server as web_server
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return []
+
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", "")
+        monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda: [4800])
+        monkeypatch.setattr(
+            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 4800
+
     def test_cron_delivery_targets_lists_configured_platforms(self, monkeypatch):
         """The cron dropdown endpoint returns Local + configured platforms dynamically."""
         import gateway.config as gateway_config

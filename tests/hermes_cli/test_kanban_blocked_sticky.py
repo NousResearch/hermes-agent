@@ -1,27 +1,22 @@
-"""Regression tests for #28712 — kanban dispatcher must not auto-promote
-worker-initiated ``kanban_block`` (sticky blocks), but must keep
-auto-recovering circuit-breaker blocks.
+"""Regression tests for #28712 and related ``recompute_ready`` behavior.
 
-The bug: when a worker called ``kanban_block(reason="review-required:
+The historical bug: when a worker called ``kanban_block(reason="review-required:
 ...")`` to hand off to a human, the dispatcher's ``recompute_ready``
 would promote the task back to ``ready`` on the next tick.  The fresh
-worker found nothing to do (work already applied), exited cleanly, and
-got recorded as a ``protocol_violation`` → ``gave_up`` → promote → loop
-until manual intervention.
+worker found nothing to do (work already applied), exited cleanly, and got
+recorded as a ``protocol_violation`` → ``gave_up`` → promote → loop until
+manual intervention.
 
 These tests pin down:
 
-* Worker / operator-initiated blocks are sticky and survive
-  ``recompute_ready``.
-* Circuit-breaker blocks (``gave_up`` event, status flipped via
-  ``_record_task_failure``) still auto-recover — the original intent
-  of #40c1decb3 is preserved.
+* Worker / operator-initiated blocks are sticky and survive ``recompute_ready``.
+* Circuit-breaker blocks that have emitted ``gave_up``/``protocol_violation`` are
+  also sticky until explicit unblock, preventing deterministic failure loops.
 * An explicit ``kanban_unblock`` clears the sticky state.
-* The full block → promote → crash → ``gave_up`` loop is broken after
-  this fix: subsequent ticks leave the task blocked.
+* The full block → promote → crash → ``gave_up`` loop is broken.
 
-The tangentially related schema-init ordering bug originally reported
-in #28712 (``init_db`` crashing on legacy DBs that pre-dated the
+The tangentially related schema-init ordering bug originally reported in
+#28712 (``init_db`` crashing on legacy DBs that pre-dated the
 ``session_id`` migration) is covered separately by
 ``test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes``,
 landed via #28754 / #28781 ahead of this fix.
@@ -143,20 +138,26 @@ def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
         assert task.consecutive_failures == 1
 
 
-def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> None:
-    """The circuit-breaker emits ``gave_up`` (not ``blocked``).  Make
-    sure ``_has_sticky_block`` doesn't accidentally treat ``gave_up``
-    as sticky — otherwise we'd regress the safety net for genuinely
-    transient crashes."""
+def test_gave_up_event_alone_stays_blocked_until_unblocked(kanban_home: Path) -> None:
+    """The circuit-breaker emits ``gave_up``/``protocol_violation`` (not
+    ``blocked``) when breaker thresholds are reached. A blocked task with those
+    events should not auto-promote; an explicit unblock remains the recovery
+    mechanism.
+
+    This blocks the deterministic failure loop shape:
+    ``blocked -> promote -> protocol violation -> gave_up -> blocked``.
+    """
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")
         child = kb.create_task(conn, title="child", parents=[parent])
         kb.complete_task(conn, parent, result="ok")
 
-        # Status + event match what _record_task_failure writes when
-        # the breaker trips.
+        # Mimic a deterministic protocol failure that crossed breaker threshold.
+        # The breaker increments failures and emits ``gave_up``; without the
+        # sticky guard this task would loop forever once parents are clear.
         conn.execute(
-            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 WHERE id=?",
+            (child,),
         )
         conn.execute(
             "INSERT INTO task_events (task_id, kind, payload, created_at) "
@@ -166,8 +167,8 @@ def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> No
         conn.commit()
 
         promoted = kb.recompute_ready(conn)
-        assert promoted == 1
-        assert kb.get_task(conn, child).status == "ready"
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
 
 
 # ---------------------------------------------------------------------------

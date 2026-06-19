@@ -2841,8 +2841,7 @@ def _synthesize_ended_run(
 # ---------------------------------------------------------------------------
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return True when ``task_id`` is sticky-blocked by an explicit
-    worker/operator ``kanban_block`` call (#28712).
+    """Return True when ``task_id`` should stay blocked in ``recompute_ready``.
 
     A ``blocked`` status can come from two very different sources:
 
@@ -2852,31 +2851,36 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       should stay blocked until an operator unblocks it.  The block tool
       emits a ``"blocked"`` event row in ``task_events``.
 
-    * **Circuit-breaker** — ``_record_task_failure`` tripped after
-      repeated crashes / spawn failures / timeouts.  This emits
-      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
-      automatically once the underlying conditions change (e.g. parents
-      finish, transient infra error clears).
+    * **Circuit-breaker / protocol failures** — ``_record_task_failure``
+      tripped after repeated crashes / spawn failures / timeouts.  This
+      usually emits ``"gave_up"`` (or ``"protocol_violation"``) and, in
+      deterministic-failure cases, should stay blocked until explicit
+      unblocking.  Otherwise a single deterministic failure can loop forever
+      (block → promote → protocol violation → gave_up → promote ...).
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    We treat ``blocked`` (without a later ``unblocked``) and the latest
+    ``gave_up`` / ``protocol_violation`` event as sticky states.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Returns ``False`` only when there is no sticky marker.  This preserves
+    the auto-recover behavior for dependency-only/manual ``blocked`` updates
+    while preventing infinite retry loops for deterministic failures.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked', 'gave_up', 'protocol_violation') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
-
+    if not row:
+        return False
+    kind = row["kind"]
+    if kind == "unblocked":
+        return False
+    if kind in ("gave_up", "protocol_violation"):
+        # A deterministic failure that reached breaker threshold should not
+        # auto-recover across dispatcher ticks.
+        return True
+    return kind == "blocked"
 
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,

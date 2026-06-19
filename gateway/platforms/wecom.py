@@ -477,6 +477,23 @@ class WeComAdapter(BasePlatformAdapter):
         return ""
 
     @staticmethod
+    def _text_dedup_key(chat_id: str, sender_id: str, message_type: MessageType, text: str) -> str:
+        """Fallback dedup key for messages without a stable ID.
+
+        WeCom callback payloads can sometimes arrive with no ``msgid`` and no
+        request ID header. In that case, two gateway deliveries for a single
+        user message can be processed independently.  Falling back to a
+        normalized text signature keeps retries idempotent while still scoping
+        by chat + sender + message type.
+        """
+
+        normalized = re.sub(r"\s+", " ", (text or "").strip())
+        if not normalized:
+            return ""
+        digest = hashlib.sha256(f"{chat_id}|{sender_id}|{message_type.value}|{normalized}".encode("utf-8")).hexdigest()
+        return f"wecom-text-{digest}"
+
+    @staticmethod
     def _parse_json(raw: Any) -> Optional[Dict[str, Any]]:
         try:
             payload = json.loads(raw)
@@ -495,11 +512,13 @@ class WeComAdapter(BasePlatformAdapter):
         if not isinstance(body, dict):
             return
 
-        msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
-        if self._dedup.is_duplicate(msg_id):
+        payload_req_id = self._payload_req_id(payload).strip()
+        msg_id = str(body.get("msgid") or "").strip()
+        if not msg_id:
+            msg_id = payload_req_id
+        if msg_id and self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
             return
-        self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
 
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
@@ -517,11 +536,6 @@ class WeComAdapter(BasePlatformAdapter):
             logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
-        # Cache the inbound req_id after policy checks so proactive sends to
-        # this chat can fall back to APP_CMD_RESPONSE (required for groups —
-        # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
-        self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
-
         text, reply_text = self._extract_text(body)
         # Strip leading @mention in group chats so slash commands like
         # "@BotName /approve" are correctly recognized as "/approve".
@@ -531,6 +545,29 @@ class WeComAdapter(BasePlatformAdapter):
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
         has_reply_context = bool(reply_text and (text or media_urls))
+
+        if not msg_id:
+            dedup_key = self._text_dedup_key(
+                chat_id=chat_id,
+                sender_id=sender_id,
+                message_type=message_type,
+                text=text or "",
+            )
+            if dedup_key and self._dedup.is_duplicate(dedup_key):
+                logger.debug(
+                    "[%s] Duplicate content for chat %s sender %s ignored",
+                    self.name,
+                    chat_id,
+                    sender_id,
+                )
+                return
+            msg_id = dedup_key or uuid.uuid4().hex
+
+        # Cache the inbound req_id after policy checks so proactive sends to
+        # this chat can fall back to APP_CMD_RESPONSE (required for groups —
+        # WeCom AI Bots cannot initiate APP_CMD_SEND in group chats).
+        self._remember_chat_req_id(chat_id, payload_req_id)
+        self._remember_reply_req_id(msg_id, payload_req_id)
 
         if not text and reply_text and not media_urls:
             text = reply_text

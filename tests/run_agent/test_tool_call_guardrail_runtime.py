@@ -36,7 +36,12 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
-def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None = None) -> AIAgent:
+def _make_agent(
+    *tool_names: str,
+    max_iterations: int = 10,
+    config: dict | None = None,
+    platform: str | None = None,
+) -> AIAgent:
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
         patch("run_agent.check_toolset_requirements", return_value={}),
@@ -50,6 +55,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            platform=platform or "cli",
         )
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
@@ -84,6 +90,17 @@ def _hard_stop_config(**overrides) -> dict:
     }
     cfg["tool_loop_guardrails"].update(overrides)
     return cfg
+
+
+def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
+    agent = _make_agent("web_search", platform="telegram")
+    args = {"query": "same"}
+
+    _seed_exact_failures(agent, "web_search", args, count=5)
+
+    decision = getattr(agent, "_tool_guardrails").before_call("web_search", args)
+    assert decision.action == "block"
+    assert decision.code == "repeated_exact_failure_block"
 
 
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():

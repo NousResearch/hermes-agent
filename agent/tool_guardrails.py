@@ -65,12 +65,14 @@ class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
     Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    stay opt-in for interactive CLI/TUI sessions, but default on for
+    non-interactive gateway/cron platforms where nobody is present to interrupt
+    a model that ignores loop warnings.
     """
 
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
+    non_interactive_hard_stop_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
@@ -81,10 +83,10 @@ class ToolCallGuardrailConfig:
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
+    def from_mapping(cls, data: Mapping[str, Any] | None, *, platform: str | None = None) -> "ToolCallGuardrailConfig":
         """Build config from the `tool_loop_guardrails` config.yaml section."""
         if not isinstance(data, Mapping):
-            return cls()
+            data = {}
 
         warn_after = data.get("warn_after")
         if not isinstance(warn_after, Mapping):
@@ -94,9 +96,18 @@ class ToolCallGuardrailConfig:
             hard_stop_after = {}
 
         defaults = cls()
+        hard_stop_enabled = _as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled)
+        non_interactive_hard_stop_enabled = _as_bool(
+            data.get("non_interactive_hard_stop_enabled"),
+            defaults.non_interactive_hard_stop_enabled,
+        )
+        if _is_non_interactive_platform(platform) and non_interactive_hard_stop_enabled:
+            hard_stop_enabled = True
+
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
-            hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
+            hard_stop_enabled=hard_stop_enabled,
+            non_interactive_hard_stop_enabled=non_interactive_hard_stop_enabled,
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
@@ -122,6 +133,13 @@ class ToolCallGuardrailConfig:
                 defaults.no_progress_block_after,
             ),
         )
+
+
+def _is_non_interactive_platform(platform: str | None) -> bool:
+    """Return true for gateway/cron sessions where tool loops are unattended."""
+    if not isinstance(platform, str) or not platform.strip():
+        return False
+    return platform.strip().lower() not in {"cli", "tui"}
 
 
 @dataclass(frozen=True)

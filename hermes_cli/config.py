@@ -1224,6 +1224,7 @@ DEFAULT_CONFIG = {
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
+        "non_interactive_hard_stop_enabled": True,
         "warn_after": {
             "exact_failure": 2,
             "same_tool_failure": 3,

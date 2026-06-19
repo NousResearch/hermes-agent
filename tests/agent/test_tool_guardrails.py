@@ -38,6 +38,7 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
 
     assert cfg.warnings_enabled is True
     assert cfg.hard_stop_enabled is False
+    assert cfg.non_interactive_hard_stop_enabled is True
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
@@ -72,6 +73,26 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
+
+
+def test_gateway_platform_defaults_to_hard_stop_without_changing_cli_default():
+    cli_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cli")
+    telegram_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="telegram")
+    cron_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cron")
+
+    assert cli_cfg.hard_stop_enabled is False
+    assert telegram_cfg.hard_stop_enabled is True
+    assert cron_cfg.hard_stop_enabled is True
+
+
+def test_non_interactive_hard_stop_can_be_disabled_explicitly():
+    cfg = ToolCallGuardrailConfig.from_mapping(
+        {"non_interactive_hard_stop_enabled": False},
+        platform="telegram",
+    )
+
+    assert cfg.hard_stop_enabled is False
+    assert cfg.non_interactive_hard_stop_enabled is False
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():

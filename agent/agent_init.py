@@ -1100,7 +1100,8 @@ def init_agent(
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
-                _agent_cfg.get("tool_loop_guardrails", {})
+                _agent_cfg.get("tool_loop_guardrails", {}),
+                platform=platform,
             )
         )
     except Exception as _tlg_err:

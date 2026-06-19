@@ -3926,6 +3926,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
+            _status_meta = {**(thread_meta or {}), "matrix_msgtype": "m.notice"}
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
@@ -3936,7 +3937,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and event.source.thread_id
                     else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
                 ),
-                metadata=thread_meta,
+                metadata=_status_meta,
             )
             return True
 
@@ -4126,6 +4127,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        _status_meta = {**(thread_meta or {}), "matrix_msgtype": "m.notice"}
         try:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -4137,7 +4139,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and event.source.thread_id
                     else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
                 ),
-                metadata=thread_meta,
+                metadata=_status_meta,
             )
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
@@ -14134,7 +14136,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
-        ) if _progress_thread_id else None
+        ) if _progress_thread_id else {}
+        # Mark progress messages as m.notice for Matrix to prevent
+        # bot-to-bot ping-pong loops (#43047).
+        if _progress_metadata is not None:
+            _progress_metadata["matrix_msgtype"] = "m.notice"
+        else:
+            _progress_metadata = {"matrix_msgtype": "m.notice"}
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id

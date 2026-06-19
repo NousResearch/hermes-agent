@@ -4359,3 +4359,90 @@ class TestCreateMatrixSession:
                     assert session.connector is fake_connector
                 finally:
                     await session.close()
+
+
+# ---------------------------------------------------------------------------
+# matrix_msgtype metadata: m.notice for status/progress messages (#43047)
+# ---------------------------------------------------------------------------
+
+class TestMatrixNoticeMsgtype:
+    """Verify that matrix_msgtype metadata overrides msgtype in send()."""
+
+    @pytest.mark.asyncio
+    async def test_send_with_notice_metadata_uses_m_notice(self):
+        """When metadata contains matrix_msgtype='m.notice', send() should
+        build the message content with msgtype=m.notice."""
+        adapter = _make_adapter()
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$event_notice")
+        adapter._client = fake_client
+
+        result = await adapter.send(
+            "!room:example.org",
+            "⚡ Interrupting current task",
+            metadata={"matrix_msgtype": "m.notice"},
+        )
+
+        assert result.success is True
+        # Verify the content dict passed to send_message_event uses m.notice
+        call_args = fake_client.send_message_event.call_args
+        content = call_args[0][2]  # third positional arg is the content dict
+        assert content["msgtype"] == "m.notice"
+        assert content["body"] == "⚡ Interrupting current task"
+
+    @pytest.mark.asyncio
+    async def test_send_without_notice_metadata_uses_m_text(self):
+        """Without matrix_msgtype metadata, send() defaults to m.text."""
+        adapter = _make_adapter()
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$event_text")
+        adapter._client = fake_client
+
+        result = await adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        call_args = fake_client.send_message_event.call_args
+        content = call_args[0][2]
+        assert content["msgtype"] == "m.text"
+
+    @pytest.mark.asyncio
+    async def test_send_with_empty_metadata_uses_m_text(self):
+        """Empty metadata dict should not change the default m.text."""
+        adapter = _make_adapter()
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$event_text")
+        adapter._client = fake_client
+
+        result = await adapter.send(
+            "!room:example.org", "hello", metadata={},
+        )
+
+        assert result.success is True
+        call_args = fake_client.send_message_event.call_args
+        content = call_args[0][2]
+        assert content["msgtype"] == "m.text"
+
+    @pytest.mark.asyncio
+    async def test_send_notice_preserves_thread_metadata(self):
+        """matrix_msgtype should coexist with thread_id in metadata."""
+        adapter = _make_adapter()
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(return_value="$event_t")
+        adapter._client = fake_client
+
+        result = await adapter.send(
+            "!room:example.org",
+            "⏳ Working...",
+            metadata={
+                "thread_id": "$thread_event",
+                "matrix_msgtype": "m.notice",
+            },
+        )
+
+        assert result.success is True
+        call_args = fake_client.send_message_event.call_args
+        content = call_args[0][2]
+        assert content["msgtype"] == "m.notice"
+        relates = content.get("m.relates_to", {})
+        assert relates.get("rel_type") == "m.thread"
+        assert relates.get("event_id") == "$thread_event"

@@ -1517,9 +1517,15 @@ class MatrixAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
 
+        # Allow callers to override msgtype via metadata (e.g. m.notice
+        # for gateway status messages so receiving bots don't respond).
+        _notice_msgtype = (metadata or {}).get("matrix_msgtype")
+
         last_event_id = None
         for i, chunk in enumerate(chunks):
-            msg_content = self._build_text_message_content(chunk)
+            msg_content = self._build_text_message_content(
+                chunk, msgtype=_notice_msgtype or "m.text",
+            )
 
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 

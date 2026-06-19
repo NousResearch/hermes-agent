@@ -286,11 +286,11 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
             "chat_id": "-1001",
             "content": '💻 terminal: "pwd"',
             "reply_to": None,
-            "metadata": {"thread_id": "17585"},
+            "metadata": {"thread_id": "17585", "matrix_msgtype": "m.notice"},
         }
     ]
     assert adapter.edits
-    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
+    assert all(call["metadata"] == {"thread_id": "17585", "matrix_msgtype": "m.notice"} for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -328,7 +328,7 @@ async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypa
 
     assert result["final_response"] == "done"
     assert adapter.edits
-    assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.edits)
+    assert all(call["metadata"] == {"thread_id": "17585", "matrix_msgtype": "m.notice"} for call in adapter.edits)
 
 
 @pytest.mark.asyncio
@@ -369,8 +369,8 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    assert adapter.sent[0]["metadata"] is None
-    assert all(call["metadata"] is None for call in adapter.typing)
+    assert adapter.sent[0]["metadata"] == {"matrix_msgtype": "m.notice"}
+    assert all(call["metadata"] == {"matrix_msgtype": "m.notice"} for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -419,8 +419,8 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
-    assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+    assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001", "matrix_msgtype": "m.notice"}
+    assert all(call["metadata"] == {"thread_id": "1234567890.000001", "matrix_msgtype": "m.notice"} for call in adapter.typing)
 
 
 @pytest.mark.asyncio
@@ -462,7 +462,7 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     assert result["final_response"] == "done"
     assert adapter.sent
     assert adapter.sent[0]["reply_to"] == "om_triggering_user_message"
-    assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585"}
+    assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585", "matrix_msgtype": "m.notice"}
     assert adapter.edits
     assert adapter.edits[0]["message_id"] == "progress-1"
 

@@ -566,6 +566,7 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
         "telegram_dm_topic_reply_fallback": True,
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "463",
+        "matrix_msgtype": "m.notice",
     }
 
 

@@ -184,7 +184,7 @@ scripts/run_tests.sh
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
-- 🔌 [TokenTelemetry](https://github.com/VasiHemanth/tokentelemetry-hermes-plugin) — Dashboard plugin that adds a TokenTelemetry tab inside Hermes Dashboard. Local cost, token, and trace observability for Hermes Agent plus 9 coding agents (Claude Code, Codex, Gemini CLI, Cursor, Copilot, Qwen, OpenCode, Vibe, Antigravity). Install with `hermes plugins install VasiHemanth/tokentelemetry-hermes-plugin`.
+- 🔌 [TokenTelemetry](https://github.com/VasiHemanth/tokentelemetry-hermes-plugin) — Dashboard plugin that adds a TokenTelemetry tab inside Hermes Dashboard for local cost, token, and trace observability. Install with `hermes plugins install VasiHemanth/tokentelemetry-hermes-plugin`.
 
 ---
 

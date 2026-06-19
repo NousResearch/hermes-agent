@@ -414,7 +414,7 @@ def _resolve_runtime_from_pool_entry(
         provider=provider, api_mode=api_mode, model_cfg=model_cfg
     )
 
-    return {
+    result = {
         "provider": provider,
         "api_mode": api_mode,
         "base_url": base_url,
@@ -423,6 +423,16 @@ def _resolve_runtime_from_pool_entry(
         "credential_pool": pool,
         "requested_provider": requested_provider,
     }
+    # When using a custom provider, preserve the user-configured model name
+    # through pool-backed resolution. Without this, the runtime picks up a
+    # pool-internal name and downstream consumers (context detection, model
+    # picker, footer) see a generic model instead of the configured alias.
+    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    if provider == "custom" or configured_provider.startswith("custom:"):
+        configured_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        if configured_model:
+            result["model"] = configured_model
+    return result
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
@@ -1034,6 +1044,12 @@ def _resolve_openrouter_runtime(
             provider_name=requested_provider if requested_norm != "custom" else None,
         )
         if pool_result:
+            # Preserve the user-specified model from config. The pool
+            # resolves to a generic internal name that downstream
+            # consumers (context detection, model picker) can't use.
+            configured_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+            if configured_model:
+                pool_result["model"] = configured_model
             return pool_result
 
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:

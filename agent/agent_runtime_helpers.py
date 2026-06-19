@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
+from agent.memory_write_bridge import collect_memory_write_notifications
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
@@ -1838,29 +1839,24 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 operations=operations,
                 store=agent._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes.
-            # Covers both the single-op shape and each add/replace inside a batch.
+            # Bridge: notify external memory providers of successful built-in
+            # memory writes. Covers the single-op shape and each mutating op
+            # inside a successful batch.
             if agent._memory_manager:
-                if operations:
-                    _mem_ops = [
-                        op for op in operations
-                        if isinstance(op, dict) and op.get("action") in {"add", "replace"}
-                    ]
-                else:
-                    _mem_ops = (
-                        [{"action": next_args.get("action"), "content": next_args.get("content")}]
-                        if next_args.get("action") in {"add", "replace"} else []
-                    )
+                _mem_ops = collect_memory_write_notifications(result, next_args)
                 for _op in _mem_ops:
                     try:
+                        metadata = agent._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=tool_call_id,
+                        )
+                        if _op.get("old_text"):
+                            metadata["old_text"] = _op["old_text"]
                         agent._memory_manager.on_memory_write(
                             _op.get("action", ""),
-                            target,
+                            _op.get("target", target),
                             _op.get("content", "") or "",
-                            metadata=agent._build_memory_write_metadata(
-                                task_id=effective_task_id,
-                                tool_call_id=tool_call_id,
-                            ),
+                            metadata=metadata,
                         )
                     except Exception:
                         pass

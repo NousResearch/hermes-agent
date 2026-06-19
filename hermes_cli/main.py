@@ -11081,7 +11081,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "evolution", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
@@ -11953,6 +11953,21 @@ def main():
                     plugin_parser.set_defaults(func=cmd_info["handler_fn"])
         except Exception as _exc:
             logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
+
+    # =========================================================================
+    # evolution command — local self-evolution event log
+    # =========================================================================
+    evolution_parser = subparsers.add_parser(
+        "evolution",
+        help="Inspect Hermes self-evolution events",
+        description="Enable, inspect, and maintain the local self-evolution event log.",
+    )
+    try:
+        from hermes_cli.evolution import register_cli as _register_evolution_cli
+
+        _register_evolution_cli(evolution_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("evolution CLI wiring failed: %s", _exc)
 
     # =========================================================================
     # curator command — background skill maintenance

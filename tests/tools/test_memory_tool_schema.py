@@ -52,3 +52,12 @@ def test_memory_schema_is_well_formed():
 
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)
+
+
+def test_memory_schema_includes_evolution_summary_and_reason_guidance():
+    props = MEMORY_SCHEMA["parameters"]["properties"]
+
+    assert props["summary"]["type"] == "string"
+    assert "hermes evolution" in props["summary"]["description"]
+    assert props["reason"]["type"] == "string"
+    assert "hermes evolution" in props["reason"]["description"]

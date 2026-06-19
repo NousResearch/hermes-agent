@@ -843,6 +843,8 @@ def memory_tool(
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
+    summary: str = None,
+    reason: str = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -887,6 +889,20 @@ def memory_tool(
     if gate_result is not None:
         return gate_result
 
+    # --- Self-evolution tracking -----------------------------------------
+    evolution_enabled = False
+    evolution_before = ""
+    try:
+        from agent.evolution_log import is_enabled
+
+        evolution_enabled = is_enabled()
+        if evolution_enabled:
+            path = store._path_for(target)
+            evolution_before = path.read_text(encoding="utf-8") if path.exists() else ""
+    except Exception:
+        evolution_enabled = False
+        evolution_before = ""
+
     if action == "add":
         result = store.add(target, content)
 
@@ -898,6 +914,23 @@ def memory_tool(
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+
+    if result.get("success") and evolution_enabled:
+        try:
+            from agent.evolution_log import record_memory_event
+
+            path = store._path_for(target)
+            evolution_after = path.read_text(encoding="utf-8") if path.exists() else ""
+            record_memory_event(
+                action,
+                target,
+                evolution_before,
+                evolution_after,
+                summary=summary,
+                reason=reason,
+            )
+        except Exception:
+            pass
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -991,6 +1024,14 @@ MEMORY_SCHEMA = {
                     "required": ["action"],
                 },
             },
+            "summary": {
+                "type": "string",
+                "description": "User-facing one-line description of what evolved. Optional; used by `hermes evolution`.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this durable memory update is being made; mention the trigger or lesson learned. Optional; used by `hermes evolution`.",
+            },
         },
         "required": ["target"],
     },
@@ -1010,7 +1051,9 @@ registry.register(
         content=args.get("content"),
         old_text=args.get("old_text"),
         operations=args.get("operations"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        summary=args.get("summary"),
+        reason=args.get("reason")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

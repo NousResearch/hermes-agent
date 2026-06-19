@@ -926,6 +926,55 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     }
 
 
+def _read_text_for_evolution(path: Optional[Path]) -> str:
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+    except Exception:
+        return ""
+
+
+def _skill_target_rel_for_evolution(path: Optional[Path], skill_dir: Optional[Path], fallback: str) -> str:
+    if path is None:
+        return fallback
+    try:
+        root = _containing_skills_root(skill_dir or path.parent)
+        return "skills/" + str(path.relative_to(root)).replace(os.sep, "/")
+    except Exception:
+        pass
+    try:
+        return "skills/" + str(path.relative_to(SKILLS_DIR)).replace(os.sep, "/")
+    except Exception:
+        return fallback
+
+
+def _evolution_target_for_action(
+    action: str,
+    name: str,
+    category: Optional[str],
+    file_path: Optional[str],
+) -> tuple[Optional[Path], str]:
+    if action == "create":
+        skill_dir = _resolve_skill_dir(name, category)
+        rel = f"{category}/{name}/SKILL.md" if category else f"{name}/SKILL.md"
+        return skill_dir / "SKILL.md", f"skills/{rel}"
+
+    existing = _find_skill(name)
+    if not existing:
+        suffix = file_path if file_path else "SKILL.md"
+        return None, f"skills/{name}/{suffix}"
+
+    skill_dir = existing["path"]
+    if action in {"patch", "write_file", "remove_file"} and file_path:
+        target, err = _resolve_skill_target(skill_dir, file_path)
+        if err:
+            return None, f"skills/{name}/{file_path}"
+    else:
+        target = skill_dir / "SKILL.md"
+    return target, _skill_target_rel_for_evolution(target, skill_dir, f"skills/{name}/{target.name}")
+
+
 # =============================================================================
 # Main entry point
 # =============================================================================
@@ -1010,6 +1059,8 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    summary: str = None,
+    reason: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -1028,6 +1079,24 @@ def skill_manage(
     )
     if gate_result is not None:
         return gate_result
+
+    # --- Self-evolution tracking -----------------------------------------
+    evolution_enabled = False
+    evolution_before = ""
+    evolution_target_rel = None
+    evolution_target_path = None
+    try:
+        from agent.evolution_log import is_enabled
+
+        evolution_enabled = is_enabled()
+        if evolution_enabled:
+            evolution_target_path, evolution_target_rel = _evolution_target_for_action(action, name, category, file_path)
+            evolution_before = _read_text_for_evolution(evolution_target_path)
+    except Exception:
+        evolution_enabled = False
+        evolution_before = ""
+        evolution_target_rel = None
+        evolution_target_path = None
 
     if action == "create":
         if not content:
@@ -1088,6 +1157,37 @@ def skill_manage(
                 forget(name)
         except Exception:
             pass
+
+        if evolution_enabled:
+            try:
+                from agent.evolution_log import record_skill_event
+
+                after_path = evolution_target_path
+                target_rel = evolution_target_rel or f"skills/{name}/SKILL.md"
+                if action == "create" and result.get("skill_md"):
+                    after_path = Path(result["skill_md"])
+                    target_rel = _skill_target_rel_for_evolution(after_path, after_path.parent, target_rel)
+                elif action == "write_file" and result.get("path"):
+                    after_path = Path(result["path"])
+                    target_rel = _skill_target_rel_for_evolution(after_path, after_path.parent, target_rel)
+
+                if action in {"delete", "remove_file"}:
+                    evolution_after = ""
+                else:
+                    evolution_after = _read_text_for_evolution(after_path)
+
+                record_skill_event(
+                    action,
+                    name,
+                    target_rel,
+                    evolution_before,
+                    evolution_after,
+                    summary=summary,
+                    reason=reason,
+                    delete_omits_diff=(action == "delete"),
+                )
+            except Exception:
+                pass
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1205,6 +1305,14 @@ SKILL_MANAGE_SCHEMA = {
                     "rewriting) will have to guess at intent."
                 )
             },
+            "summary": {
+                "type": "string",
+                "description": "User-facing one-line description of what evolved. Optional; used by `hermes evolution`.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this durable skill update is being made; mention the trigger or lesson learned. Optional; used by `hermes evolution`.",
+            },
         },
         "required": ["action", "name"],
     },
@@ -1228,6 +1336,8 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        summary=args.get("summary"),
+        reason=args.get("reason")),
     emoji="📝",
 )

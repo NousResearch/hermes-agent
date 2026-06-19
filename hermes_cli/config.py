@@ -886,6 +886,12 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    "evolution": {
+        "enabled": False,
+        "record_diff": True,
+        "redact": True,
+        "max_diff_chars": 20000,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

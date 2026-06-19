@@ -100,6 +100,17 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return False, str(exc)
 
 
+def _ensure_cloud_client_dependency() -> None:
+    """Install the Hindsight cloud client lazily before importing it."""
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("memory.hindsight", prompt=False)
+    except ImportError:
+        pass
+    except Exception as exc:
+        raise ImportError(str(exc)) from exc
+
+
 # ---------------------------------------------------------------------------
 # Hindsight API capability probe — mirrors hindsight-integrations/openclaw.
 # ---------------------------------------------------------------------------
@@ -990,6 +1001,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
+                _ensure_cloud_client_dependency()
                 from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}

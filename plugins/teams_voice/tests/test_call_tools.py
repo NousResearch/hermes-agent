@@ -58,3 +58,22 @@ def test_call_me_back_without_caller():
     r = CallToolRunner(_FakeHandler())  # no bridge/caller
     out = asyncio.run(r.run_tool("call_me_back", {"message": "the result"}))
     assert "can't call you back" in out.lower()
+
+
+def test_agent_task_delivers_result_to_chat(monkeypatch):
+    import plugins.teams_voice.meeting as meeting
+
+    delivered = {}
+
+    async def fake_deliver(conv, text):
+        delivered["conv"] = conv
+        delivered["text"] = text
+        return True
+
+    monkeypatch.setattr(meeting, "_deliver_to_teams", fake_deliver)
+    h = _FakeHandler()
+    h._thread_id = "19:abc@thread.v2"
+    r = CallToolRunner(h)
+    asyncio.run(r._run_background_task("do X", None))  # no caller, but a postable thread
+    assert delivered["conv"] == "19:abc@thread.v2"
+    assert "CONSULT:do X" in delivered["text"]  # result delivered to chat, no call-back

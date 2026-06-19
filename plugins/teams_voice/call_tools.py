@@ -152,16 +152,18 @@ class CallToolRunner:
         return "Okay — I'll call you right back with that."
 
     async def _agent_task(self, query: str) -> str:
-        """Run a long job in the background; deliver the result via a call-back."""
+        """Run a long job in the background; deliver the result to the Teams chat
+        (preferred) or via a voice call-back."""
         h = self._h
         query = query.strip()
         caller = h._caller
         if not query:
             return "What would you like me to work on?"
-        if h._bridge is None or caller is None or not caller.aad_id:
-            return await h._consult.ask(query)  # no call-back possible → inline
+        # Need either a postable thread (chat delivery) or an AAD id (call-back).
+        if h._bridge is None or (not getattr(h, "_thread_id", "") and (caller is None or not caller.aad_id)):
+            return await h._consult.ask(query)  # no delivery path → inline
         asyncio.create_task(self._run_background_task(query, caller))
-        return "Got it — I'll work on that in the background and call you back with the result."
+        return "Got it — I'll work on that in the background and send you the result."
 
     async def _run_background_task(self, query: str, caller) -> None:
         h = self._h
@@ -170,7 +172,15 @@ class CallToolRunner:
         except Exception:  # noqa: BLE001
             logger.error("[teams_voice] background task failed", exc_info=True)
             result = "I couldn't complete that task."
-        if h._bridge is None or not caller.aad_id:
+        # Prefer delivering the result to the Teams chat (no call-back needed);
+        # fall back to a voice call-back when there's no postable thread.
+        thread = getattr(h, "_thread_id", "")
+        if thread:
+            from .meeting import _deliver_to_teams
+
+            if await _deliver_to_teams(thread, f"✅ {result}"):
+                return
+        if h._bridge is None or caller is None or not caller.aad_id:
             return
         tenant = caller.tenant_id or h._bridge.tenant_id
         if not tenant:

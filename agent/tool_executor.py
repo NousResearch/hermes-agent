@@ -1023,8 +1023,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     store=agent._memory_store,
                 )
                 # Bridge: notify external memory provider of built-in memory writes.
-                # Covers both the single-op shape and each add/replace inside a batch.
-                if agent._memory_manager:
+                # Only forward writes that actually committed — skip failed
+                # batches (budget exceeded, malformed ops) and staged-but-not-
+                # yet-approved writes so external providers stay in sync with
+                # the built-in store.
+                _bridge = False
+                try:
+                    _parsed = json.loads(result) if isinstance(result, str) else result
+                    _bridge = (
+                        isinstance(_parsed, dict)
+                        and _parsed.get("success") is True
+                        and not _parsed.get("staged")
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+                if agent._memory_manager and _bridge:
                     if operations:
                         _mem_ops = [
                             op for op in operations

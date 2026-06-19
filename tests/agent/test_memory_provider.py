@@ -1491,3 +1491,76 @@ class TestContextEngineToolsetGate:
         """Gate is moot without a context_compressor."""
         tools, names, engine_names = self._run_context_engine_injection(None, None)
         assert tools == []
+
+
+# ---------------------------------------------------------------------------
+# Memory bridge result-gating — phantom-write prevention
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryBridgeResultGating:
+    """The external-provider bridge in tool_executor / agent_runtime_helpers
+    must only forward writes that actually committed to the built-in store.
+    Failed batches (budget exceeded, malformed ops) and staged-but-not-yet-
+    approved writes must NOT be forwarded, otherwise the external provider
+    diverges from the built-in store.
+
+    These tests exercise the gating logic directly rather than going through
+    the full agent loop.
+    """
+
+    @staticmethod
+    def _should_bridge(result: str) -> bool:
+        """Reproduce the gating logic from tool_executor.py."""
+        import json as _json
+        try:
+            parsed = _json.loads(result) if isinstance(result, str) else result
+            return (
+                isinstance(parsed, dict)
+                and parsed.get("success") is True
+                and not parsed.get("staged")
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return False
+
+    def test_successful_single_op_bridges(self):
+        result = json.dumps({"success": True, "message": "Added."})
+        assert self._should_bridge(result) is True
+
+    def test_successful_batch_bridges(self):
+        result = json.dumps({"success": True, "message": "Applied 3 operation(s)."})
+        assert self._should_bridge(result) is True
+
+    def test_failed_batch_does_not_bridge(self):
+        result = json.dumps({
+            "success": False,
+            "error": "Over the limit.",
+            "current_entries": [],
+            "usage": "5000/4000",
+        })
+        assert self._should_bridge(result) is False
+
+    def test_staged_batch_does_not_bridge(self):
+        result = json.dumps({
+            "success": True,
+            "staged": True,
+            "pending_id": "abc123",
+            "message": "Queued for approval.",
+        })
+        assert self._should_bridge(result) is False
+
+    def test_staged_single_op_does_not_bridge(self):
+        result = json.dumps({
+            "success": True,
+            "staged": True,
+            "pending_id": "xyz789",
+            "message": "Memory write queued for review.",
+        })
+        assert self._should_bridge(result) is False
+
+    def test_malformed_result_does_not_bridge(self):
+        assert self._should_bridge("not json at all") is False
+
+    def test_error_string_does_not_bridge(self):
+        result = json.dumps({"error": "Memory is not available.", "success": False})
+        assert self._should_bridge(result) is False

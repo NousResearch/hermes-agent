@@ -18,6 +18,8 @@ callback and assert ``config.yaml`` is (or isn't) updated — exercising the exa
 closure the PR changed, against a real temp ``HERMES_HOME``.
 """
 
+import types
+
 import yaml
 import pytest
 
@@ -25,10 +27,6 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-
-
-class _FakePickerResult:
-    success = True
 
 
 class _FakePickerAdapter:
@@ -45,7 +43,7 @@ class _FakePickerAdapter:
     async def send_model_picker(self, *, on_model_selected, **kwargs):
         # Stash the closure the handler built so the test can fire a "tap".
         self.captured_callback = on_model_selected
-        return _FakePickerResult()
+        return types.SimpleNamespace(success=True)
 
 
 def _make_runner(adapter):
@@ -96,9 +94,29 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value):
 
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    # The picker-setup path calls list_picker_providers, which otherwise hits
+    # the network (OpenRouter model catalog). Stub it to a minimal list — these
+    # tests capture and fire the on_model_selected callback and don't assert on
+    # picker contents. The handler imports it as a local alias at call time, so
+    # patching the source-module attribute takes effect.
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers",
+        lambda **kw: [{"slug": "openrouter", "name": "OpenRouter", "models": ["gpt-5.5"]}],
+    )
+    # switch_model is imported as a local alias inside the handler
+    # (`from hermes_cli.model_switch import switch_model as _switch_model`),
+    # so patching the source-module attribute takes effect at call time.
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **kw: _fake_switch_result(),
+    )
+    # The confirmation builder resolves context length for display, which
+    # otherwise makes real outbound HTTP calls (Ollama /api/show + the
+    # OpenRouter models catalog). Stub it — these tests don't assert on the
+    # displayed context, and the closure imports it lazily from this module.
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_display_context_length",
+        lambda *a, **k: 272000,
     )
     # save_config writes to ``get_hermes_home() / config.yaml`` — point it here.
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
@@ -118,19 +136,33 @@ async def _drive_picker(runner, event):
 
 
 @pytest.mark.asyncio
-async def test_picker_tap_persists_by_default(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "seed_model",
+    [
+        # Already-nested dict (common case).
+        {"default": "old-model", "provider": "openai-codex"},
+        # Flat-string model: must be coerced to a nested dict on a tap (same
+        # scalar-``model:`` guard the text path has) instead of raising
+        # ``TypeError`` on assignment.
+        "deepseek-v4-flash",
+    ],
+    ids=["nested-dict", "flat-string"],
+)
+async def test_picker_tap_persists_by_default(tmp_path, monkeypatch, seed_model):
     """Tapping a model in the picker (bare /model) persists to config.yaml,
-    matching the typed ``/model`` default — this is the #49176 fix."""
+    matching the typed ``/model`` default — this is the #49176 fix. The written
+    ``model:`` must always end up a nested dict regardless of the seed shape."""
     adapter = _FakePickerAdapter()
-    cfg_path = _setup_isolated_home(
-        tmp_path, monkeypatch, {"default": "old-model", "provider": "openai-codex"}
-    )
+    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, seed_model)
 
     confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
 
     assert confirmation is not None
     assert "gpt-5.5" in confirmation
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert isinstance(written["model"], dict), (
+        "model: should be coerced to a dict, got %r" % (written["model"],)
+    )
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
     assert written["model"]["base_url"] == "https://openrouter.ai/api/v1"
@@ -139,38 +171,25 @@ async def test_picker_tap_persists_by_default(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_picker_tap_session_flag_does_not_persist(tmp_path, monkeypatch):
     """``/model --session`` then a picker tap stays in-memory only — config
-    untouched."""
+    untouched, but the in-memory session override must still be applied (the
+    switch worked, it just wasn't persisted)."""
     adapter = _FakePickerAdapter()
     cfg_path = _setup_isolated_home(
         tmp_path, monkeypatch, {"default": "old-model", "provider": "openai-codex"}
     )
+    runner = _make_runner(adapter)
 
-    confirmation = await _drive_picker(
-        _make_runner(adapter), _make_event("/model --session")
-    )
+    confirmation = await _drive_picker(runner, _make_event("/model --session"))
 
     assert confirmation is not None
     assert "gpt-5.5" in confirmation
+    # The session override IS applied in-memory (proves the path didn't no-op).
+    assert runner._session_model_overrides, "session override should be set"
+    assert any(
+        ov.get("model") == "gpt-5.5"
+        for ov in runner._session_model_overrides.values()
+    )
+    # But config.yaml is untouched — the override is in-memory only.
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    # Config untouched — the session override is in-memory only.
     assert written["model"]["default"] == "old-model"
     assert written["model"]["provider"] == "openai-codex"
-
-
-@pytest.mark.asyncio
-async def test_picker_tap_coerces_flat_string_model(tmp_path, monkeypatch):
-    """A flat-string ``model:`` in config.yaml is coerced to a nested dict on a
-    picker tap (the same scalar-``model:`` guard the text path has), instead of
-    raising ``TypeError`` on assignment."""
-    adapter = _FakePickerAdapter()
-    cfg_path = _setup_isolated_home(tmp_path, monkeypatch, "deepseek-v4-flash")
-
-    confirmation = await _drive_picker(_make_runner(adapter), _make_event("/model"))
-
-    assert confirmation is not None
-    written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert isinstance(written["model"], dict), (
-        "model: should be coerced to a dict, got %r" % (written["model"],)
-    )
-    assert written["model"]["default"] == "gpt-5.5"
-    assert written["model"]["provider"] == "openrouter"

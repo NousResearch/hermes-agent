@@ -76,8 +76,15 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
 
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
-    input_tokens = _coerce_usage_int(usage.get("inputTokens"))
+    # codex app-server reports ``inputTokens`` as the FULL prompt total, which
+    # already includes ``cachedInputTokens`` (codex-rs convention:
+    # ``non_cached_input() = input_tokens - cached_input_tokens``). CanonicalUsage
+    # adds cache_read back on top in ``prompt_tokens``, so feeding the full total
+    # in as ``input_tokens`` double-counts cached tokens. Subtract first, exactly
+    # like the codex_responses parser in usage_pricing.py does.
+    input_total = _coerce_usage_int(usage.get("inputTokens"))
     cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
+    input_tokens = max(0, input_total - cache_read_tokens)
     output_tokens = _coerce_usage_int(usage.get("outputTokens"))
     reasoning_tokens = _coerce_usage_int(usage.get("reasoningOutputTokens"))
     reported_total = _coerce_usage_int(usage.get("totalTokens"))

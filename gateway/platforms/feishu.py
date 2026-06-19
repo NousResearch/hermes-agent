@@ -609,6 +609,145 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
+# ---------------------------------------------------------------------------
+# Table-to-Card rendering
+# ---------------------------------------------------------------------------
+
+# Regex to detect a complete markdown table block (header + separator + body)
+_TABLE_BLOCK_RE = re.compile(
+    r"(^\|.+\|\n\|[-|: ]+\|\n(\|.+\|\n?)*)",
+    re.MULTILINE,
+)
+
+
+def _parse_table_block(table_text: str) -> Dict[str, Any]:
+    """Parse a GFM markdown table into header + rows structure.
+
+    Input::
+
+        | Name | Value |
+        | --- | --- |
+        | A | 1 |
+        | B | 2 |
+
+    Returns::
+
+        {"header": ["Name", "Value"], "rows": [["A", "1"], ["B", "2"]]}
+    """
+    lines = table_text.strip().splitlines()
+    if len(lines) < 2:
+        return {"header": [], "rows": []}
+
+    def _split_row(line: str) -> List[str]:
+        line = line.strip()
+        if line.startswith("|"):
+            line = line[1:]
+        if line.endswith("|"):
+            line = line[:-1]
+        return [cell.strip() for cell in line.split("|")]
+
+    header = _split_row(lines[0])
+    rows = [_split_row(line) for line in lines[2:]]
+    return {"header": header, "rows": rows}
+
+
+def _split_content_by_tables(content: str) -> List[Dict[str, Any]]:
+    """Split content into text blocks and table blocks, preserving order."""
+    parts: List[Dict[str, Any]] = []
+    last_end = 0
+    for match in _TABLE_BLOCK_RE.finditer(content):
+        start, end = match.start(), match.end()
+        if start > last_end:
+            text_before = content[last_end:start].strip()
+            if text_before:
+                parts.append({"type": "text", "content": text_before})
+        table_text = content[start:end].strip()
+        if table_text:
+            parts.append({"type": "table", "content": table_text})
+        last_end = end
+    if last_end < len(content):
+        text_after = content[last_end:].strip()
+        if text_after:
+            parts.append({"type": "text", "content": text_after})
+    return parts
+
+
+def _build_table_row_card(
+    cells: List[str],
+    *,
+    is_header: bool = False,
+    num_columns: int = 0,
+) -> Dict[str, Any]:
+    """Build a ``column_set`` card element for one table row."""
+    if not cells:
+        return {"tag": "markdown", "content": " "}
+    n = num_columns or len(cells)
+    weight = max(1, 12 // n)
+    columns = []
+    for cell in cells:
+        content = f"**{cell}**" if is_header else (cell or " ")
+        columns.append({
+            "tag": "column",
+            "width": "weighted",
+            "weight": weight,
+            "elements": [{"tag": "markdown", "content": content}],
+        })
+    row: Dict[str, Any] = {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": columns,
+    }
+    if is_header:
+        row["background_style"] = "grey"
+    return row
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Convert content with markdown tables into a Feishu interactive card JSON string.
+
+    Non-table content is preserved as ``markdown`` card elements.  Tables are
+    rendered as ``column_set`` layouts for native Feishu display.
+
+    Returns an empty string when no tables are found, allowing callers to
+    fall back to the default ``text`` behaviour.
+    """
+    if not content or not content.strip():
+        return ""
+    parts = _split_content_by_tables(content)
+    if not parts:
+        return ""
+    if not any(p["type"] == "table" for p in parts):
+        return ""
+
+    elements: List[Dict[str, Any]] = []
+    for part in parts:
+        if part["type"] == "text":
+            text = part["content"]
+            if text:
+                elements.append({"tag": "markdown", "content": text})
+        elif part["type"] == "table":
+            table = _parse_table_block(part["content"])
+            num_cols = max(
+                len(table["header"]) if table["header"] else 0,
+                max((len(r) for r in table["rows"]), default=0),
+            )
+            if num_cols == 0:
+                continue
+            if table["header"]:
+                elements.append(
+                    _build_table_row_card(table["header"], is_header=True, num_columns=num_cols)
+                )
+            for row in table["rows"]:
+                elements.append(
+                    _build_table_row_card(row, is_header=False, num_columns=num_cols)
+                )
+
+    if not elements:
+        return ""
+    card = {"config": {"wide_screen_mode": True}, "elements": elements}
+    return json.dumps(card, ensure_ascii=False)
+
+
 def parse_feishu_post_payload(
     payload: Any,
     *,
@@ -4374,10 +4513,15 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Try rendering markdown tables as Feishu interactive cards (column_set
+        # layouts).  If the card payload is empty (no table found), fall through
+        # to the regular post/text logic.
         if _MARKDOWN_TABLE_RE.search(content):
+            card_payload = _build_table_card_payload(content)
+            if card_payload:
+                return "interactive", card_payload
+            # Table detected but card building failed — send as plain text so
+            # the user at least sees the raw content rather than a blank message.
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):

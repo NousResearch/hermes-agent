@@ -541,13 +541,23 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
 
     finish_reason = "tool_calls" if tool_calls else _map_gemini_finish_reason(str(cand.get("finishReason") or ""))
     usage_meta = resp.get("usageMetadata") or {}
+    # Gemini reports thinking-model tokens separately as ``thoughtsTokenCount``;
+    # ``candidatesTokenCount`` is visible-output only, and
+    # ``totalTokenCount == promptTokenCount + candidatesTokenCount + thoughtsTokenCount``.
+    # Hermes treats ``completion_tokens`` as reasoning-inclusive (OpenAI convention)
+    # and bills output tokens at the output rate, reading ``reasoning_tokens`` from
+    # ``output_tokens_details`` as a subset — so thoughts must be folded into
+    # completion and surfaced as reasoning, else output tokens/cost are undercounted
+    # and ``prompt + completion == total`` breaks for thinking models.
+    thoughts_tokens = int(usage_meta.get("thoughtsTokenCount") or 0)
     usage = SimpleNamespace(
         prompt_tokens=int(usage_meta.get("promptTokenCount") or 0),
-        completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0),
+        completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0) + thoughts_tokens,
         total_tokens=int(usage_meta.get("totalTokenCount") or 0),
         prompt_tokens_details=SimpleNamespace(
             cached_tokens=int(usage_meta.get("cachedContentTokenCount") or 0),
         ),
+        output_tokens_details=SimpleNamespace(reasoning_tokens=thoughts_tokens),
     )
     reasoning = "".join(reasoning_pieces) or None
     message = SimpleNamespace(
@@ -714,13 +724,17 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         # non-streaming path in translate_gemini_response).
         usage_meta = event.get("usageMetadata") or {}
         if usage_meta:
+            # Fold ``thoughtsTokenCount`` into completion and surface it as
+            # reasoning, matching the non-streaming path above (see comment there).
+            thoughts_tokens = int(usage_meta.get("thoughtsTokenCount") or 0)
             finish_chunk.usage = SimpleNamespace(
                 prompt_tokens=int(usage_meta.get("promptTokenCount") or 0),
-                completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0),
+                completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0) + thoughts_tokens,
                 total_tokens=int(usage_meta.get("totalTokenCount") or 0),
                 prompt_tokens_details=SimpleNamespace(
                     cached_tokens=int(usage_meta.get("cachedContentTokenCount") or 0),
                 ),
+                output_tokens_details=SimpleNamespace(reasoning_tokens=thoughts_tokens),
             )
         chunks.append(finish_chunk)
     return chunks

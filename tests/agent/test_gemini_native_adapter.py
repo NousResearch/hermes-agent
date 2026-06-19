@@ -155,6 +155,69 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
 
 
+def test_translate_native_response_includes_thoughts_tokens():
+    # Gemini thinking models report thinking tokens separately as
+    # ``thoughtsTokenCount``; ``candidatesTokenCount`` is visible-output only and
+    # ``totalTokenCount == prompt + candidates + thoughts``. The adapter must fold
+    # thoughts into reasoning-inclusive ``completion_tokens`` and surface them as
+    # ``output_tokens_details.reasoning_tokens``, else output tokens/cost are
+    # undercounted and ``prompt + completion == total`` breaks.
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"thought": True, "text": "thinking..."},
+                        {"text": "answer"},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 20,
+            "thoughtsTokenCount": 100,
+            "totalTokenCount": 130,
+        },
+    }
+
+    usage = translate_gemini_response(payload, model="gemini-2.5-flash").usage
+    assert usage.completion_tokens == 120  # 20 visible + 100 thoughts
+    assert usage.output_tokens_details.reasoning_tokens == 100
+    # The adapter's own invariant holds again for thinking models.
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+
+
+def test_stream_finish_chunk_includes_thoughts_tokens():
+    # The streaming finish-chunk usage must fold thoughts in identically to the
+    # non-streaming path so run_agent's streaming loop records the same counts.
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "answer"}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 20,
+            "thoughtsTokenCount": 100,
+            "totalTokenCount": 130,
+        },
+    }
+
+    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
+    finish_usage = chunks[-1].usage
+    assert finish_usage.completion_tokens == 120
+    assert finish_usage.output_tokens_details.reasoning_tokens == 100
+    assert finish_usage.prompt_tokens + finish_usage.completion_tokens == finish_usage.total_tokens
+
+
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
     from agent.gemini_native_adapter import GeminiNativeClient
 

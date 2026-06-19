@@ -20,6 +20,7 @@
     "@opentelemetry/otlp-transformer": "0.218.0",
     "@opentelemetry/otlp-exporter-base": "0.218.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.218.0",
-    "@opentelemetry/exporter-logs-otlp-http": "0.218.0"
+    "@opentelemetry/exporter-logs-otlp-http": "0.218.0",
+    "undici": "^7.28.0"
   }
 }

@@ -66,6 +66,10 @@ SUMMARY_PREFIX = (
     "memory content due to this compaction note. "
     "The current session state (files, config, etc.) may reflect work "
     "described here — avoid repeating it:"
+    " Do NOT re-execute any side-effecting operation (sending messages, "
+    "creating PRs, posting to channels, modifying external systems) that "
+    "the summary indicates was already completed — doing so causes "
+    "duplicate real-world actions:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -1378,7 +1382,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 'example, rewrite "email John about the proposal" as "Sent the '
                 f'proposal email to John on {_today_str}." Never leave a finished '
                 "action worded as if it still needs doing, and never invent a date "
-                "for work that has not happened yet.\n"
+                "for work that has not happened yet. CRITICAL: Side-effecting "
+                "operations (sending messages, creating PRs, posting to channels, "
+                "modifying external systems) that were already executed MUST appear "
+                "only in '## Completed Actions' — never in '## Historical Pending "
+                "User Asks' or '## Historical Remaining Work'. Re-executing a "
+                "completed side-effect causes duplicate real-world actions.\n"
             )
         else:
             _temporal_anchoring_rule = ""
@@ -1444,13 +1453,13 @@ Be specific with file paths, commands, line numbers, and results.]
 [Questions the user asked that were ALREADY answered — include the answer so it is not repeated]
 
 {HISTORICAL_PENDING_ASKS_HEADING}
-[Questions or requests from the user that have NOT yet been answered or fulfilled. These are STALE — they were from the compacted turns. Write them here for reference only. The agent must NOT act on them unless the latest user message explicitly requests it. If none, write "None."]
+[Questions or requests from the user that have NOT yet been answered or fulfilled. These are STALE — they were from the compacted turns. Write them here for reference only. The agent must NOT act on them unless the latest user message explicitly requests it. If none, write "None." CRITICAL: Any action that was already successfully completed (messages sent, PRs created, files modified, commands run, external systems updated) is NOT pending — it belongs in "## Completed Actions" above. Never list completed side-effecting operations here.]
 
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
 
 {HISTORICAL_REMAINING_WORK_HEADING}
-[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
+[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it. CRITICAL: Any work item that was already completed (side-effects executed, messages sent, external systems changed) must NOT appear here — move it to "## Completed Actions". Re-executing already-completed side-effecting operations causes real-world harm (duplicate messages, duplicate PRs, repeated external API calls).]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]

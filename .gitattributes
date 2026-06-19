@@ -4,5 +4,7 @@ web/package-lock.json linguist-generated=true
 # Shell scripts MUST stay LF-terminated — otherwise the Linux kernel
 # tries to exec "#!/bin/bash\r" and fails with "no such file or
 # directory" (surfaces on Windows checkouts entering the Docker image).
-*.sh text eol=lf
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf

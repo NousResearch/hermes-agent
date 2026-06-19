@@ -20,6 +20,7 @@ Provides guidance for training and analyzing Sparse Autoencoders (SAEs) using SA
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `sae-lens>=6.0.0`, `transformer-lens>=2.0.0`, `torch>=2.0.0` |
+| Platforms | linux, macos, windows |
 | Tags | `Sparse Autoencoders`, `SAE`, `Mechanistic Interpretability`, `Feature Discovery`, `Superposition` |
 
 ## Reference: full SKILL.md

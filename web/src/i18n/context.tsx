@@ -2,14 +2,79 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
+import { zhHant } from "./zh-hant";
+import { ja } from "./ja";
+import { de } from "./de";
+import { es } from "./es";
+import { fr } from "./fr";
+import { tr } from "./tr";
+import { uk } from "./uk";
+import { af } from "./af";
+import { ko } from "./ko";
+import { it } from "./it";
+import { ga } from "./ga";
+import { pt } from "./pt";
+import { ru } from "./ru";
+import { hu } from "./hu";
 
-const TRANSLATIONS: Record<Locale, Translations> = { en, zh };
+const TRANSLATIONS: Record<Locale, Translations> = {
+  en,
+  zh,
+  "zh-hant": zhHant,
+  ja,
+  de,
+  es,
+  fr,
+  tr,
+  uk,
+  af,
+  ko,
+  it,
+  ga,
+  pt,
+  ru,
+  hu,
+};
+
+// Display metadata for the language picker — endonym (native name) so users
+// recognize their language even if they don't speak the current UI language.
+// Exposed as a constant so the LanguageSwitcher and any future settings page
+// can share the same list.
+//
+// We intentionally do NOT pair locales with country flags. Languages are not
+// countries (English ≠ GB, Portuguese ≠ PT, Spanish ≠ ES, Chinese variants ≠
+// any single jurisdiction). Endonyms are unambiguous and avoid the political
+// mismapping that flag pairings inevitably create.
+export const LOCALE_META: Record<Locale, { name: string }> = {
+  en: { name: "English" },
+  zh: { name: "简体中文" },
+  "zh-hant": { name: "繁體中文" },
+  ja: { name: "日本語" },
+  de: { name: "Deutsch" },
+  es: { name: "Español" },
+  fr: { name: "Français" },
+  tr: { name: "Türkçe" },
+  uk: { name: "Українська" },
+  af: { name: "Afrikaans" },
+  ko: { name: "한국어" },
+  it: { name: "Italiano" },
+  ga: { name: "Gaeilge" },
+  pt: { name: "Português" },
+  ru: { name: "Русский" },
+  hu: { name: "Magyar" },
+};
+
+const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
 const STORAGE_KEY = "hermes-locale";
+
+function isLocale(value: string): value is Locale {
+  return (SUPPORTED_LOCALES as string[]).includes(value);
+}
 
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "en" || stored === "zh") return stored;
+    if (stored && isLocale(stored)) return stored;
   } catch {
     // SSR or privacy mode
   }

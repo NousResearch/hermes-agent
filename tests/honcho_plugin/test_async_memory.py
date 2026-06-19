@@ -10,19 +10,14 @@ Covers:
 """
 
 import json
-import queue
-import threading
 import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
-    _ASYNC_SHUTDOWN,
 )
 
 
@@ -254,9 +249,12 @@ class TestFlushAll:
         mgr = _make_manager(write_frequency="async")
         sess = _make_session()
         sess.add_message("user", "pending")
-        mgr._async_queue.put(sess)
 
         with patch.object(mgr, "_flush_session") as mock_flush:
+            # Put the item AFTER the mock is installed so the background
+            # writer thread (if it dequeues before flush_all) still hits
+            # the mock rather than the real _flush_session.
+            mgr._async_queue.put(sess)
             mgr.flush_all()
             # Called at least once for the queued item
             assert mock_flush.call_count >= 1

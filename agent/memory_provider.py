@@ -1,17 +1,16 @@
 """Abstract base class for pluggable memory providers.
 
-Memory providers give the agent persistent recall across sessions. One
-external provider is active at a time alongside the always-on built-in
-memory (MEMORY.md / USER.md). The MemoryManager enforces this limit.
+Memory providers give the agent persistent recall across sessions.
+The MemoryManager enforces a one-external-provider limit to prevent
+tool schema bloat and conflicting memory backends.
 
-Built-in memory is always active as the first provider and cannot be removed.
-External providers (Honcho, Hindsight, Mem0, etc.) are additive — they never
-disable the built-in store. Only one external provider runs at a time to
-prevent tool schema bloat and conflicting memory backends.
+External providers (Honcho, Hindsight, Mem0, etc.) are registered
+and managed via MemoryManager. Only one external provider runs at a
+time.
 
 Registration:
-  1. Built-in: BuiltinMemoryProvider — always present, not removable.
-  2. Plugins: Ship in plugins/memory/<name>/, activated by memory.provider config.
+  Plugins ship in plugins/memory/<name>/ and are activated via
+  the memory.provider config key.
 
 Lifecycle (called by MemoryManager, wired in run_agent.py):
   initialize()          — connect, create resources, warm up
@@ -79,6 +78,7 @@ class MemoryProvider(ABC):
           - agent_workspace (str): Shared workspace name (e.g. "hermes").
           - parent_session_id (str): For subagents, the parent's session_id.
           - user_id (str): Platform user identifier (gateway sessions).
+          - user_id_alt (str): Optional alternate stable platform user identifier.
         """
 
     def system_prompt_block(self) -> str:
@@ -112,11 +112,22 @@ class MemoryProvider(ABC):
         that do background prefetching should override this.
         """
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         """Persist a completed turn to the backend.
 
         Called after each turn. Should be non-blocking — queue for
         background processing if the backend has latency.
+
+        ``messages`` is the OpenAI-style conversation message list as of the
+        completed turn, including any assistant tool calls and tool results.
+        Providers that do not need raw turn context can ignore it.
         """
 
     @abstractmethod
@@ -167,6 +178,7 @@ class MemoryProvider(ABC):
         *,
         parent_session_id: str = "",
         reset: bool = False,
+        rewound: bool = False,
         **kwargs,
     ) -> None:
         """Called when the agent switches session_id mid-process.
@@ -196,6 +208,10 @@ class MemoryProvider(ABC):
             (``_session_turns``, ``_turn_counter``, etc.) when this is
             set. ``False`` for ``/resume`` / ``/branch`` / compression
             where the logical conversation continues under the new id.
+        rewound:
+            ``True`` if session_id is unchanged but the transcript was
+            truncated; providers caching per-turn document state should
+            invalidate.
 
         Default is no-op for backward compatibility.
         """

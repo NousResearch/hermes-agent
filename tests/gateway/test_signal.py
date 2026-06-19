@@ -1,7 +1,6 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -769,6 +768,153 @@ class TestSignalMediaExtraction:
         assert type(adapter).send_video is not BasePlatformAdapter.send_video
         assert type(adapter).send_document is not BasePlatformAdapter.send_document
         assert type(adapter).send_image is not BasePlatformAdapter.send_image
+
+
+# ---------------------------------------------------------------------------
+# Inbound attachment message type classification
+# ---------------------------------------------------------------------------
+
+def _make_dm_envelope(sender: str, attachments: list, text: str = "") -> dict:
+    """Build a minimal signal-cli DM envelope with the given attachments."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Test User",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": text,
+                "expiresInSeconds": 0,
+                "viewOnce": False,
+                "attachments": attachments,
+            },
+        }
+    }
+
+
+class TestSignalInboundMessageTypeClassification:
+    """_handle_envelope must set MessageType.DOCUMENT for application/* and text/* attachments.
+
+    Before the fix, PDFs and other documents left msg_type as MessageType.TEXT,
+    so run.py's document-context injection (which gates on MessageType.DOCUMENT)
+    silently dropped the file and the agent never saw it.
+    """
+
+    async def _dispatch_single_attachment(self, monkeypatch, content_type: str,
+                                          att_id: str, fetch_path: str, fetch_ext: str):
+        """Helper: run _handle_envelope with one attachment and return the dispatched event."""
+        envelope = _make_dm_envelope(
+            sender="+15559876543",
+            attachments=[{
+                "contentType": content_type,
+                "id": att_id,
+                "size": 1024,
+                "filename": None,
+                "width": None,
+                "height": None,
+                "caption": None,
+                "uploadTimestamp": 1700000000000,
+            }],
+        )
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        adapter._fetch_attachment = AsyncMock(return_value=(fetch_path, fetch_ext))
+        await adapter._handle_envelope(envelope)
+        assert dispatched, "_handle_envelope did not dispatch any event"
+        return dispatched[0]
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_sets_document_type(self, monkeypatch):
+        """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="application/pdf",
+            att_id="6zLO3b-6Yf3zVWeLDctA.pdf",
+            fetch_path="/tmp/report.pdf",
+            fetch_ext=".pdf",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "PDFs must be classified as DOCUMENT so run.py injects file context."
+        )
+        assert "/tmp/report.pdf" in event.media_urls
+
+    @pytest.mark.asyncio
+    async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
+        """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/plain",
+            att_id="notes.txt",
+            fetch_path="/tmp/notes.txt",
+            fetch_ext=".txt",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/plain must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_text_html_attachment_sets_document_type(self, monkeypatch):
+        """A text/html attachment must produce MessageType.DOCUMENT (covers the text/* wildcard)."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/html",
+            att_id="page.html",
+            fetch_path="/tmp/page.html",
+            fetch_ext=".html",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/html must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_video_attachment_sets_video_type(self, monkeypatch):
+        """A video/mp4 attachment must produce MessageType.VIDEO."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="video/mp4",
+            att_id="clip.mp4",
+            fetch_path="/tmp/clip.mp4",
+            fetch_ext=".mp4",
+        )
+
+        assert event.message_type == MessageType.VIDEO
+
+    @pytest.mark.asyncio
+    async def test_unknown_mime_attachment_falls_back_to_document(self, monkeypatch):
+        """Unknown/exotic MIME types fall through to DOCUMENT (catch-all),
+        matching the WhatsApp/Slack/BlueBubbles classification pattern."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="chemical/x-pdb",
+            att_id="molecule.pdb",
+            fetch_path="/tmp/molecule.pdb",
+            fetch_ext=".pdb",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT
 
 
 # ---------------------------------------------------------------------------
@@ -1649,3 +1795,148 @@ class TestSignalSendTimeout:
         # 32 attachments × 5s = 160s; ought to comfortably outlast a
         # serial upload of an attachment-heavy batch.
         assert _signal_send_timeout(32) == 160.0
+
+
+# ---------------------------------------------------------------------------
+# Contentless Envelope Filtering (profile key updates, empty messages)
+# ---------------------------------------------------------------------------
+
+class TestSignalContentlessEnvelope:
+    """Verify that profile key updates and empty Signal messages are skipped."""
+
+    @pytest.mark.asyncio
+    async def test_skips_profile_key_update_no_message_field(self, monkeypatch):
+        """Profile key updates may carry a dataMessage without 'message' field.
+        Must be skipped to avoid triggering agent turns for metadata."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Profile key update: dataMessage exists but has no "message" field
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    # No "message" field — profile key update metadata only
+                    "profileKey": "some-profile-key-data",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Profile key update should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_message(self, monkeypatch):
+        """Empty text messages (message='') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Empty message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_whitespace_only_message(self, monkeypatch):
+        """Whitespace-only messages ('   ') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "   \n\t  ",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Whitespace-only message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_allows_message_with_attachment_no_text(self, monkeypatch):
+        """Messages with attachments but no text should still be processed."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Mock attachment fetch to return a cached image
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        b64_data = base64.b64encode(png_data).decode()
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+            await adapter._handle_envelope({
+                "envelope": {
+                    "sourceNumber": "+155****9999",
+                    "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                    "sourceName": "Elliott McManis",
+                    "timestamp": 1777600696077,
+                    "dataMessage": {
+                        "message": "",  # No text
+                        "attachments": [{"id": "att-123", "size": 200}],
+                    },
+                }
+            })
+
+        assert "event" in captured, "Message with attachment should NOT be skipped"
+        assert captured["event"].media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.asyncio
+    async def test_allows_normal_text_message(self, monkeypatch):
+        """Normal text messages should still flow through."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "hello world",
+                },
+            }
+        })
+
+        assert "event" in captured, "Normal message should NOT be skipped"
+        assert captured["event"].text == "hello world"

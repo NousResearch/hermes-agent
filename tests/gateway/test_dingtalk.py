@@ -1,13 +1,86 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
-import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+
+
+class _FakeDingTalkModel:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _FakeChatbotMessage(SimpleNamespace):
+    @classmethod
+    def from_dict(cls, data):
+        data = data or {}
+        return cls(
+            message_id=data.get("msgId") or data.get("messageId") or data.get("message_id") or "",
+            conversation_id=data.get("conversationId") or data.get("conversation_id") or "",
+            conversation_type=str(data.get("conversationType") or data.get("conversation_type") or "1"),
+            sender_id=data.get("senderId") or data.get("sender_id") or "",
+            sender_staff_id=data.get("senderStaffId") or data.get("sender_staff_id") or data.get("senderId") or "",
+            sender_nick=data.get("senderNick") or data.get("sender_nick") or "",
+            text=data.get("text") or "",
+            rich_text=data.get("richText") or data.get("rich_text"),
+            rich_text_content=data.get("richTextContent") or data.get("rich_text_content"),
+            session_webhook=data.get("sessionWebhook") or data.get("session_webhook") or "",
+            session_webhook_expired_time=data.get("sessionWebhookExpiredTime") or data.get("session_webhook_expired_time") or 0,
+            create_at=data.get("createAt") or data.get("create_at") or 0,
+            at_users=data.get("atUsers") or data.get("at_users") or [],
+            is_in_at_list=bool(data.get("isInAtList") or data.get("is_in_at_list")),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _fake_dingtalk_optional_sdks(monkeypatch):
+    """Keep DingTalk adapter tests hermetic when optional SDKs are absent."""
+    from gateway.platforms import dingtalk as dt
+
+    card_models = SimpleNamespace(**{
+        name: _FakeDingTalkModel
+        for name in (
+            "CreateCardRequest",
+            "CreateCardRequestCardData",
+            "CreateCardRequestImGroupOpenSpaceModel",
+            "CreateCardRequestImRobotOpenSpaceModel",
+            "CreateCardHeaders",
+            "DeliverCardRequest",
+            "DeliverCardRequestImGroupOpenDeliverModel",
+            "DeliverCardRequestImRobotOpenDeliverModel",
+            "DeliverCardHeaders",
+            "StreamingUpdateRequest",
+            "StreamingUpdateHeaders",
+        )
+    })
+    robot_models = SimpleNamespace(**{
+        name: _FakeDingTalkModel
+        for name in (
+            "RobotReplyEmotionRequestTextEmotion",
+            "RobotReplyEmotionRequest",
+            "RobotReplyEmotionHeaders",
+            "RobotRecallEmotionRequestTextEmotion",
+            "RobotRecallEmotionRequest",
+            "RobotRecallEmotionHeaders",
+            "RobotMessageFileDownloadRequest",
+            "RobotMessageFileDownloadHeaders",
+        )
+    })
+
+    monkeypatch.setattr(dt, "ChatbotMessage", _FakeChatbotMessage, raising=False)
+    monkeypatch.setattr(
+        dt,
+        "AckMessage",
+        SimpleNamespace(STATUS_OK=200, STATUS_SYSTEM_EXCEPTION=500),
+        raising=False,
+    )
+    monkeypatch.setattr(dt, "tea_util_models", SimpleNamespace(RuntimeOptions=_FakeDingTalkModel), raising=False)
+    monkeypatch.setattr(dt, "dingtalk_card_models", card_models, raising=False)
+    monkeypatch.setattr(dt, "dingtalk_robot_models", robot_models, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -18,7 +91,8 @@ from gateway.config import Platform, PlatformConfig
 class TestDingTalkRequirements:
 
     def test_returns_false_when_sdk_missing(self, monkeypatch):
-        with patch.dict("sys.modules", {"dingtalk_stream": None}):
+        with patch.dict("sys.modules", {"dingtalk_stream": None}), \
+             patch("tools.lazy_deps.ensure", side_effect=ImportError("dingtalk_stream unavailable")):
             monkeypatch.setattr(
                 "gateway.platforms.dingtalk.DINGTALK_STREAM_AVAILABLE", False
             )
@@ -223,6 +297,51 @@ class TestSend:
         assert result.success is False
         assert "400" in result.error
 
+    @pytest.mark.asyncio
+    async def test_send_image_renders_markdown_image(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+
+        result = await adapter.send_image(
+            "chat-123",
+            "https://example.com/demo.png",
+            caption="Screenshot",
+            metadata={"session_webhook": "https://dingtalk.example/webhook"},
+        )
+
+        assert result.success is True
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["msgtype"] == "markdown"
+        assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_returns_explicit_unsupported_error(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter.send_image_file("chat-123", "/tmp/demo.png")
+
+        assert result.success is False
+        assert result.error and "do not support local image uploads" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_document_returns_explicit_unsupported_error(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
+
+        assert result.success is False
+        assert result.error and "do not support local file attachments" in result.error
+
 
 # ---------------------------------------------------------------------------
 # Connect / disconnect
@@ -285,6 +404,36 @@ class TestConnect:
         await adapter.disconnect()
         assert len(adapter._session_webhooks) == 0
         assert len(adapter._dedup._seen) == 0
+        assert adapter._http_client is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_finalizes_open_streaming_cards(self):
+        """Streaming cards must be finalized before HTTP client closes."""
+        from unittest.mock import AsyncMock, patch
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._stream_task = None
+        adapter._streaming_cards = {
+            "chat-1": {"track-a": "last content"},
+            "chat-2": {"track-b": "other"},
+        }
+
+        close_calls = []
+
+        async def fake_close_siblings(chat_id):
+            # HTTP client must still be alive at call time.
+            assert adapter._http_client is not None, (
+                "HTTP client was already closed before card finalization"
+            )
+            close_calls.append(chat_id)
+            adapter._streaming_cards.pop(chat_id, None)
+
+        with patch.object(adapter, "_close_streaming_siblings", side_effect=fake_close_siblings):
+            await adapter.disconnect()
+
+        assert set(close_calls) == {"chat-1", "chat-2"}
+        assert adapter._streaming_cards == {}
         assert adapter._http_client is None
 
 
@@ -420,6 +569,58 @@ class TestExtractText:
         msg.rich_text_content = None
         msg.rich_text = None
         assert DingTalkAdapter._extract_text(msg) == ""
+
+
+class TestExtractMedia:
+    """_extract_media must split native voice rich-text items (auto-STT)
+    from generic audio file uploads (kept as attachments, no STT)."""
+
+    def _msg_with_rich_text(self, items):
+        msg = MagicMock()
+        msg.text = None
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = items
+        return msg
+
+    def test_voice_rich_text_item_classified_as_voice(self):
+        """Native DingTalk voice notes (type=voice) must enter the auto-STT
+        path via MessageType.VOICE — the gateway skips STT for AUDIO."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [{"type": "voice", "downloadCode": "dl_voice_abc"}]
+        )
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.VOICE
+        assert urls == ["dl_voice_abc"]
+        assert mtypes == ["audio"]
+
+    def test_audio_rich_text_item_stays_audio(self):
+        """Generic audio uploads (e.g. an mp3 the user attached) must NOT
+        be auto-transcribed — they stay MessageType.AUDIO."""
+        from gateway.platforms.dingtalk import DingTalkAdapter, DINGTALK_TYPE_MAPPING
+        from gateway.platforms.base import MessageType
+
+        # Simulate a future/non-voice audio rich-text item by extending the
+        # mapping so item_type != "voice" but still routes through the
+        # ``mapped == "audio"`` branch.
+        DINGTALK_TYPE_MAPPING["audio"] = "audio"
+        try:
+            msg = self._msg_with_rich_text(
+                [{"type": "audio", "downloadCode": "dl_audio_xyz"}]
+            )
+            msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+                DingTalkAdapter, msg
+            )
+            assert msg_type == MessageType.AUDIO
+            assert urls == ["dl_audio_xyz"]
+            assert mtypes == ["audio"]
+        finally:
+            del DINGTALK_TYPE_MAPPING["audio"]
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,16 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en'],
+    locales: ['en', 'zh-Hans'],
+    localeConfigs: {
+      en: {
+        label: 'English',
+      },
+      'zh-Hans': {
+        label: '简体中文',
+        htmlLang: 'zh-Hans',
+      },
+    },
   },
 
   themes: [
@@ -34,7 +43,7 @@ const config: Config = {
       /** @type {import("@easyops-cn/docusaurus-search-local").PluginOptions} */
       ({
         hashed: true,
-        language: ['en'],
+        language: ['en', 'zh'],
         indexBlog: false,
         docsRouteBasePath: '/',
         // Disabled: appends ?_highlight=... to URLs (before the #anchor),
@@ -54,6 +63,23 @@ const config: Config = {
           /^user-guide\/skills\/optional\//,
         ],
       }),
+    ],
+  ],
+
+  plugins: [
+    [
+      '@docusaurus/plugin-client-redirects',
+      {
+        // Static-host redirects for renamed doc pages (GitHub Pages can't
+        // do server-side redirects). Paths are relative to baseUrl (/docs/).
+        redirects: [
+          {
+            // Renamed in #44470 (Automation Blueprints terminology rebrand)
+            from: '/guides/automation-templates',
+            to: '/guides/automation-blueprints',
+          },
+        ],
+      },
     ],
   ],
 
@@ -105,6 +131,15 @@ const config: Config = {
           position: 'left',
         },
         {
+          href: 'https://hermes-agent.nousresearch.com/',
+          label: 'Download',
+          position: 'left',
+        },
+        {
+          type: 'localeDropdown',
+          position: 'right',
+        },
+        {
           href: 'https://hermes-agent.nousresearch.com',
           label: 'Home',
           position: 'right',
@@ -137,13 +172,14 @@ const config: Config = {
           title: 'Community',
           items: [
             { label: 'Discord', href: 'https://discord.gg/NousResearch' },
-            { label: 'GitHub Discussions', href: 'https://github.com/NousResearch/hermes-agent/discussions' },
+            { label: 'GitHub Issues', href: 'https://github.com/NousResearch/hermes-agent/issues' },
             { label: 'Skills Hub', href: 'https://agentskills.io' },
           ],
         },
         {
           title: 'More',
           items: [
+            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/' },
             { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],

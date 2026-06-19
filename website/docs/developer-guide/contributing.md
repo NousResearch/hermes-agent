@@ -22,7 +22,8 @@ We value contributions in this order:
 
 ## Common contribution paths
 
-- Building a new tool? Start with [Adding Tools](./adding-tools.md)
+- Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md)
+- Building a new built-in core tool for Hermes itself? Start with [Adding Tools](./adding-tools.md)
 - Building a new skill? Start with [Creating Skills](./creating-skills.md)
 - Building a new inference provider? Start with [Adding Providers](./adding-providers.md)
 
@@ -32,15 +33,49 @@ We value contributions in this order:
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
+| **Git** | With the `git-lfs` extension installed |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
-### Clone and Install
+### Install with the standard installer
+
+For most contributors, the best development bootstrap is the same path users
+take: run the standard installer, then work inside the repository it cloned.
+The installer creates the Hermes venv, wires the `hermes` command, stamps the
+install method for `hermes update`, and clones the full git project into
+`$HERMES_HOME/hermes-agent` (usually `~/.hermes/hermes-agent`). That keeps your
+development environment on the same layout the CLI, updater, lazy dependency
+installer, gateway, and docs assume.
 
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+
+# Add dev/test extras on top of the standard install.
+uv pip install -e ".[all,dev]"
+
+# Optional: browser tools / docs site dependencies.
+npm install
+```
+
+After that, create branches and run tests from that checkout:
+
+```bash
+git checkout -b fix/description
+scripts/run_tests.sh
+```
+
+### Manual clone fallback
+
+Use this only if you intentionally do not want Hermes' managed install layout
+(for example, a throwaway clone inside a container or CI job). If you install
+this way, make sure you run the `hermes` entrypoint from this venv; running the
+system `python3 -m hermes_cli.main` can pick up unrelated system Python
+packages.
+
+```bash
+git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
 # Create venv with Python 3.11
@@ -49,7 +84,6 @@ export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
-uv pip install -e "./tinker-atropos"
 
 # Optional: browser tools
 npm install
@@ -69,19 +103,23 @@ echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
 ### Run
 
 ```bash
-# Symlink for global access
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-
-# Verify
+# The standard installer already put `hermes` on PATH.
 hermes doctor
 hermes chat -q "Hello"
+```
+
+If you used the manual clone fallback, run `./hermes` from the checkout or
+symlink this clone's venv explicitly:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ```
 
 ### Run Tests
 
 ```bash
-pytest tests/ -v
+scripts/run_tests.sh
 ```
 
 ## Code Style
@@ -94,7 +132,17 @@ pytest tests/ -v
 
 ## Cross-Platform Compatibility
 
-Hermes officially supports Linux, macOS, and WSL2. Native Windows is **not supported**, but the codebase includes some defensive coding patterns to avoid hard crashes in edge cases. Key rules:
+Hermes officially supports **Linux, macOS, WSL2, and native Windows (via PowerShell install)**.  Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands.  A few features require POSIX kernel primitives and are gated: the dashboard's embedded PTY terminal pane (`/chat` tab) is WSL2-only. If you're doing Windows-heavy dev, run the Windows-footgun lint (`scripts/check-windows-footguns.py`) before pushing.
+
+When contributing code, keep these rules in mind:
+
+- **Don't add unguarded `signal.SIGKILL` references.** It's not defined on Windows.  Either route through `gateway.status.terminate_pid(pid, force=True)` (the centralized primitive that does `taskkill /T /F` on Windows and SIGKILL on POSIX), or fall back with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
+- **Catch `OSError` alongside `ProcessLookupError` on `os.kill(pid, 0)` probes.** Windows raises `OSError` (WinError 87, "parameter is incorrect") for an already-gone PID instead of `ProcessLookupError`.
+- **Don't force the terminal to POSIX semantics.** `os.setsid`, `os.killpg`, `os.getpgid`, `os.fork` all raise on Windows — gate them with `if sys.platform != "win32":` or `if os.name != "nt":`.
+- **Open files with an explicit `encoding="utf-8"`.** The Python default on Windows is the system locale (often cp1252), which mojibakes or crashes on non-Latin text.
+- **Use `pathlib.Path` / `os.path.join` — never manually concat with `/`.** This matters less for strings the OS gives us back and more for strings we construct to hand to subprocesses.
+
+Key patterns:
 
 ### 1. `termios` and `fcntl` are Unix-only
 

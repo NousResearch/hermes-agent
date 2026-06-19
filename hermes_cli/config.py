@@ -13,22 +13,208 @@ This module provides:
 """
 
 import copy
+import json
 import logging
 import os
 import platform
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+from hermes_cli.secret_prompt import masked_secret_prompt
+
 logger = logging.getLogger(__name__)
+
+# Track which (config_path, mtime_ns, size) tuples we've already warned about
+# so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
+# every time. Cleared automatically when the file changes (different mtime).
+_CONFIG_PARSE_WARNED: set = set()
+
+
+def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
+    """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
+
+    When the YAML can't be parsed, ``load_config()`` silently falls back to
+    ``DEFAULT_CONFIG`` and the user's broken file stays on disk untouched.
+    That file is still the user's only copy of their intended overrides — if
+    they re-run the setup wizard or ``hermes config set`` (which rewrites
+    ``config.yaml``), the broken-but-recoverable content is gone for good.
+
+    This snapshots the corrupted file to ``config.yaml.corrupt.<ts>.bak`` so
+    the user can diff/repair it. Unlike Gemini CLI's policy-file recovery
+    (which resets the live file to a clean state), we deliberately leave
+    ``config.yaml`` in place: hermes never silently mutates the user's config,
+    and leaving it means a hand-fixed file is re-read on the next load. The
+    backup is best-effort — any failure (permissions, symlink, disk full) is
+    swallowed so config loading is never blocked by backup problems.
+
+    Returns the backup path on success, else ``None``. Symlinks are not
+    followed/copied (mirrors the Gemini #21541 lstat guard) to avoid
+    clobbering whatever a malicious/misconfigured symlink points at.
+    """
+    try:
+        if config_path.is_symlink():
+            return None
+        st = config_path.stat()
+        if st.st_size == 0:
+            # Empty file isn't worth preserving and yaml.safe_load returns {}
+            # for it anyway (so it wouldn't reach here), but guard regardless.
+            return None
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        backup_path = config_path.with_name(f"{config_path.name}.corrupt.{ts}.bak")
+        # Don't clobber an existing backup from the same second; if there's
+        # already a corrupt backup for this exact mtime, assume we've snapshotted
+        # this corruption already and skip (the dedup cache normally prevents a
+        # second call, but a process restart can clear it).
+        sibling_baks = list(
+            config_path.parent.glob(f"{config_path.name}.corrupt.*.bak")
+        )
+        for existing in sibling_baks:
+            try:
+                if existing.stat().st_size == st.st_size:
+                    # Same size as the current broken file — likely the same
+                    # corruption already preserved. Avoid backup churn.
+                    return None
+            except OSError:
+                continue
+        if backup_path.exists():
+            return None
+        shutil.copy2(config_path, backup_path)
+        return backup_path
+    except Exception:
+        return None
+
+
+def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
+    """Surface a config.yaml parse failure to user, log, and stderr.
+
+    A YAML parse error in ``~/.hermes/config.yaml`` causes ``load_config()``
+    to silently fall back to ``DEFAULT_CONFIG``, which means every user
+    override (auxiliary providers, fallback chain, model overrides, etc.)
+    is dropped. Before this helper that was a one-line ``print(...)`` that
+    scrolled off-screen on the first invocation and was never seen again.
+
+    Now: warn once per (path, mtime_ns, size) on stderr **and** in
+    ``agent.log`` / ``errors.log`` at WARNING level so ``hermes logs``
+    surfaces it. Re-warns automatically if the file changes (different
+    mtime/size), so users editing the config see the next failure. On the
+    first warning for a given broken file we also snapshot it to a
+    timestamped ``.bak`` (best-effort) so the user's recoverable content
+    survives any later rewrite of ``config.yaml`` by the setup wizard or
+    ``hermes config set``.
+    """
+    try:
+        st = config_path.stat()
+        key = (str(config_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (str(config_path), 0, 0)
+    if key in _CONFIG_PARSE_WARNED:
+        return
+    _CONFIG_PARSE_WARNED.add(key)
+
+    backup_path = _backup_corrupt_config(config_path)
+
+    msg = (
+        f"Failed to parse {config_path}: {exc}. "
+        f"Falling back to default config — every user override "
+        f"(auxiliary providers, fallback chain, model settings) is being IGNORED. "
+        f"Fix the YAML and restart."
+    )
+    if backup_path is not None:
+        msg += f" A copy of the corrupted file was saved to {backup_path}."
+    logger.warning(msg)
+    try:
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Env var names that influence how the next subprocess executes —
+# never writable through ``save_env_value``. Anything that controls
+# the loader, interpreter, shell, or replacement editor counts:
+#
+# * ``LD_PRELOAD`` / ``LD_LIBRARY_PATH`` / ``LD_AUDIT`` — Linux dynamic
+#   loader. ``DYLD_*`` — macOS equivalent. Planting a path here means
+#   the next ``subprocess.run([...])`` Hermes makes loads attacker code
+#   before main().
+# * ``PYTHONPATH`` / ``PYTHONHOME`` / ``PYTHONSTARTUP`` /
+#   ``PYTHONUSERBASE`` — Python interpreter init. Hermes itself starts
+#   from one of these on every restart.
+# * ``NODE_OPTIONS`` / ``NODE_PATH`` — Node interpreter; affects npm,
+#   ``hermes update``, the TUI build.
+# * ``PATH`` — too broad to allow. The dashboard never needs to rewrite
+#   the operator's PATH; if a tool can't be found, the fix is to add an
+#   absolute path in the integration config, not to mutate PATH globally.
+# * ``GIT_SSH_COMMAND`` / ``GIT_EXEC_PATH`` — git rewrites that fire
+#   on every plugin install / ``hermes update``.
+# * ``BROWSER`` / ``EDITOR`` / ``VISUAL`` / ``PAGER`` — commands the
+#   shell or CLI invokes implicitly. Wrong values here = RCE on next
+#   ``$EDITOR``.
+# * ``SHELL`` — what subprocess uses with ``shell=True`` (we try to
+#   avoid that, but defense in depth).
+# * ``HERMES_HOME`` / ``HERMES_PROFILE`` / ``HERMES_CONFIG`` /
+#   ``HERMES_ENV`` — Hermes runtime location flags. Writing these into
+#   ``.env`` would relocate state in ways the user did not request from
+#   the dashboard. ``config.yaml`` is the supported surface for these.
+#
+# IMPORTANT: ``HERMES_*`` overall is NOT blocked. Many legitimate
+# integration credentials follow that prefix (HERMES_GEMINI_CLIENT_ID,
+# HERMES_LANGFUSE_PUBLIC_KEY, HERMES_SPOTIFY_CLIENT_ID, ...). The
+# denylist is name-by-name on purpose so the gate stays narrow and
+# doesn't accidentally break provider setup wizards.
+#
+# This is enforced on *write* only — values already in ``.env`` (set
+# by the operator out-of-band, or pre-existing) keep working. The
+# point is that the dashboard's writable surface cannot escalate by
+# planting them.
+_ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
+    # Loader / linker
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
+    # Python
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE",
+    # Node
+    "NODE_OPTIONS", "NODE_PATH",
+    # General
+    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER",
+    # Git
+    "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
+    # Hermes runtime location — never via dashboard env writer.
+    # NOT a HERMES_* blanket: integration credentials (HERMES_GEMINI_*,
+    # HERMES_LANGFUSE_*, HERMES_SPOTIFY_*, ...) ARE allowed.
+    "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+})
+
+
+def _reject_denylisted_env_var(key: str) -> None:
+    """Raise if ``key`` is in :data:`_ENV_VAR_NAME_DENYLIST`.
+
+    Centralised so both the regular and "secure" env writers share the
+    same gate, and so the message is consistent for callers.
+    """
+    if key in _ENV_VAR_NAME_DENYLIST:
+        raise ValueError(
+            f"Environment variable {key!r} is on the writer denylist. "
+            "Names that influence subprocess execution (LD_PRELOAD, "
+            "PYTHONPATH, PATH, EDITOR, ...) or Hermes runtime location "
+            "(HERMES_HOME, HERMES_PROFILE, ...) cannot be persisted via "
+            "the env writer. If you really need this, edit "
+            "~/.hermes/.env directly."
+        )
+
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # (path, mtime_ns, size) -> cached expanded config dict.
 # load_config() returns a deepcopy of the cached value when the file
@@ -42,6 +228,14 @@ _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Serializes all config read/write paths. libyaml's C extension is not
+# thread-safe for concurrent safe_load() on the same file, and multiple
+# tool threads (approval.py, browser_tool.py, setup flows) hit
+# load_config / read_raw_config / save_config from different threads
+# during long agent runs. RLock (not Lock) because save_config internally
+# calls read_raw_config. Also covers mutation of the module-level cache
+# dicts above.
+_CONFIG_LOCK = threading.RLock()
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -76,6 +270,11 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    # Deprecated tool-progress env vars — replaced by display.tool_progress in
+    # config.yaml. Kept known here so .env sanitization/reload still handle
+    # them for existing users (gateway reads them as a back-compat fallback),
+    # without surfacing them in user-facing OPTIONAL_ENV_VARS listings.
+    "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -138,19 +337,246 @@ def is_managed() -> bool:
     return get_managed_system() is not None
 
 
+_NIX_UPDATE_MSG = "Update your Nix flake input and rebuild (e.g. nix flake update, nixos-rebuild, or home-manager switch)"
+
+
 def get_managed_update_command() -> Optional[str]:
     """Return the preferred upgrade command for a managed install."""
     managed_system = get_managed_system()
     if managed_system == "Homebrew":
         return "brew upgrade hermes-agent"
     if managed_system == "NixOS":
-        return "sudo nixos-rebuild switch"
+        return _NIX_UPDATE_MSG
     return None
+
+
+def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
+    """Resolve the directory that holds the *running code* (the install tree).
+
+    This is the parent of ``hermes_cli/`` — i.e. the git checkout for source
+    installs, ``/opt/hermes`` inside the published image, the venv's
+    site-packages root for pip installs. It is a property of the running
+    interpreter, NOT of ``$HERMES_HOME``, which is why a code-scoped stamp
+    here is immune to two installs sharing one data directory.
+    """
+    if project_root is not None:
+        return project_root
+    return Path(__file__).parent.parent.resolve()
+
+
+def detect_install_method(project_root: Optional[Path] = None) -> str:
+    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
+
+    Resolution order:
+    1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
+       running code) — the authoritative marker.
+    2. Legacy home-scoped stamp ``$HERMES_HOME/.install_method`` — read for
+       backward compatibility, but a ``docker`` value is IGNORED when we are
+       not actually running inside a container (see below).
+    3. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
+    4. .git directory presence -> 'git'
+    5. Fallback -> 'pip'
+
+    Why the stamp is code-scoped, not home-scoped (issue: shared ``~/.hermes``)
+    --------------------------------------------------------------------------
+    The install method describes *the binary that is running*, but
+    ``$HERMES_HOME`` is a shared DATA directory — the Docker docs deliberately
+    bind-mount it (``~/.hermes:/opt/data``) so config/sessions/memory persist
+    and can be shared with a host-side Desktop/CLI install. When a
+    containerised gateway and a host install share one ``$HERMES_HOME``, a
+    home-scoped stamp is a single slot describing two different installs:
+    the container stamps ``docker`` on every boot, the host install then reads
+    ``docker`` and ``hermes update`` refuses to run ("doesn't apply inside the
+    Docker container") even though the host binary is a perfectly updatable
+    git/pip install. Scoping the stamp to the install tree gives each install
+    its own truthful marker.
+
+    Self-healing for already-poisoned homes: a legacy ``docker`` value in the
+    home-scoped stamp is only honoured when we are genuinely in a container.
+    On a host install that read a contaminating ``docker`` stamp, we fall
+    through to managed/.git/pip detection instead — so existing shared-home
+    setups recover without the user touching anything.
+
+    Note: running inside a container is NOT treated as "docker" on its own.
+    The supported installs self-identify via the code-scoped stamp:
+      - the curl installer (scripts/install.sh, the README/website install
+        command) git-clones the repo and stamps ``git`` next to the code;
+      - the published ``nousresearch/hermes-agent`` image bakes a ``docker``
+        stamp into ``/opt/hermes`` at build time.
+    An unsupported manual install dropped into a container (no stamp) falls
+    through to the ``.git``/pip checks and behaves like any off-path install.
+    See issue #34397.
+    """
+    root = _install_method_project_root(project_root)
+
+    # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
+    try:
+        method = (root / ".install_method").read_text(encoding="utf-8").strip().lower()
+        if method:
+            return method
+    except OSError:
+        pass
+
+    # 2. Legacy home-scoped stamp — back-compat. Ignore a ``docker`` value
+    #    when we are not actually containerised: that is the signature of a
+    #    host install whose shared $HERMES_HOME was stamped by a co-located
+    #    container, and honouring it wrongly blocks ``hermes update``.
+    try:
+        method = (
+            (get_hermes_home() / ".install_method")
+            .read_text(encoding="utf-8")
+            .strip()
+            .lower()
+        )
+        if method and not (method == "docker" and not _running_in_container()):
+            return method
+    except OSError:
+        pass
+
+    managed = get_managed_system()
+    if managed:
+        return managed.lower().replace(" ", "-")
+    if (root / ".git").is_dir():
+        return "git"
+    return "pip"
+
+
+def _running_in_container() -> bool:
+    """Thin wrapper around ``hermes_constants.is_container`` (import-safe)."""
+    try:
+        from hermes_constants import is_container
+
+        return is_container()
+    except Exception:
+        return False
+
+
+def stamp_install_method(method: str, project_root: Optional[Path] = None) -> None:
+    """Write the install method next to the running code (code-scoped stamp).
+
+    The stamp lives in the install tree (``<install tree>/.install_method``),
+    not in ``$HERMES_HOME``, so that two installs sharing one data directory
+    do not overwrite each other's marker. See ``detect_install_method`` for
+    the full rationale.
+
+    Best-effort: if the install tree is read-only (e.g. the immutable
+    ``/opt/hermes`` in the published image, which instead bakes the stamp at
+    build time) the write silently no-ops and detection falls back to its
+    other signals.
+    """
+    root = _install_method_project_root(project_root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".install_method").write_text(method + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def is_uv_tool_install() -> bool:
+    """Return True when the *running* Hermes lives in a ``uv tool`` layout.
+
+    ``uv tool install hermes-agent`` places the install at
+    ``.../uv/tools/hermes-agent/...`` (default ``~/.local/share/uv/tools``,
+    or ``$UV_TOOL_DIR/...``). Such installs live outside any virtualenv, so
+    ``uv pip install`` fails with ``No virtual environment found`` and the
+    update path must use ``uv tool upgrade`` instead.
+
+    Detection is intentionally restricted to properties of the running
+    interpreter (``sys.prefix`` / ``sys.executable``). We deliberately do
+    NOT consult ``uv tool list``: it would also return True when
+    ``hermes-agent`` happens to be uv-tool-installed on the machine while
+    the *active* Hermes is a regular pip/venv install, causing
+    ``hermes update`` to upgrade the wrong copy. It would also block on a
+    subprocess call (~seconds) just to compute a recommendation string.
+    """
+    def _has_uv_tool_marker(path: str) -> bool:
+        norm = os.path.normpath(path).replace(os.sep, "/").lower()
+        return "/uv/tools/hermes-agent/" in norm + "/"
+
+    if _has_uv_tool_marker(sys.prefix):
+        return True
+    if _has_uv_tool_marker(sys.executable or ""):
+        return True
+    return False
+
+
+def recommended_update_command_for_method(method: str) -> str:
+    """Return the update command or guidance for a given install method."""
+    if method == "nixos":
+        return _NIX_UPDATE_MSG
+    if method == "homebrew":
+        return "brew upgrade hermes-agent"
+    if method == "docker":
+        return "docker pull nousresearch/hermes-agent:latest"
+    if method == "pip":
+        if is_uv_tool_install():
+            return "uv tool upgrade hermes-agent"
+        import shutil
+        if shutil.which("uv"):
+            return "uv pip install --upgrade hermes-agent"
+        return "pip install --upgrade hermes-agent"
+    return "hermes update"
 
 
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
-    return get_managed_update_command() or "hermes update"
+    managed_cmd = get_managed_update_command()
+    if managed_cmd:
+        return managed_cmd
+    method = detect_install_method()
+    return recommended_update_command_for_method(method)
+
+
+# Long-form text for ``hermes update`` / ``--check`` when running inside the
+# Docker image.  Surfaced by ``cmd_update`` and ``_cmd_update_check`` in
+# hermes_cli/main.py; lives here so the wording stays consistent and we
+# don't grow two slightly-different copies.
+#
+# Why this matters:
+#   - The published image excludes ``.git`` (see .dockerignore), so the
+#     git-based update path can never succeed inside the container.
+#   - The pre-existing fallback message ("✗ Not a git repository. Please
+#     reinstall: curl ... install.sh") is actively misleading inside Docker
+#     — that script installs a *new* host-side Hermes, it doesn't update
+#     the running container.
+#   - The right action is ``docker pull`` + restart the container; this
+#     helper spells that out, with notes on tag pinning and config
+#     persistence so users don't get blindsided.
+_DOCKER_UPDATE_MESSAGE = """\
+✗ ``hermes update`` doesn't apply inside the Docker container.
+
+Hermes Agent runs as a published image (nousresearch/hermes-agent), not a
+git checkout — the container has no working tree to pull into.  Update by
+pulling a fresh image and restarting your container instead:
+
+  docker pull nousresearch/hermes-agent:latest
+  # then restart whatever started the container, e.g.:
+  docker compose up -d --force-recreate hermes-agent
+  # or, for ad-hoc runs, exit the current container and `docker run` again
+
+Verify the new version after restart:
+  docker run --rm nousresearch/hermes-agent:latest --version
+
+Notes:
+  • If you pinned a specific tag (e.g. ``:v0.14.0``) the ``:latest`` tag
+    won't move your container — pull the newer tag you actually want, or
+    switch to ``:latest`` / ``:main`` for rolling updates.  See available
+    tags at https://hub.docker.com/r/nousresearch/hermes-agent/tags
+  • Your config and session history live under ``$HERMES_HOME`` (``/opt/data``
+    in the container, typically bind-mounted from the host) and persist
+    across image upgrades — re-pulling doesn't lose any state.
+  • Running a fork?  Build your own image with this repo's ``Dockerfile``
+    and replace the ``docker pull`` step with your build/push pipeline."""
+
+
+def format_docker_update_message() -> str:
+    """Return the user-facing message for ``hermes update`` inside Docker.
+
+    Centralised so ``cmd_update`` (the apply path) and ``_cmd_update_check``
+    (the dry-run path) share the same wording.  See ``_DOCKER_UPDATE_MESSAGE``
+    above for the full rationale.
+    """
+    return _DOCKER_UPDATE_MESSAGE
 
 
 def format_managed_message(action: str = "modify this Hermes installation") -> str:
@@ -212,7 +638,7 @@ def get_container_exec_info() -> Optional[dict]:
 
     try:
         info = {}
-        with open(container_mode_file, "r") as f:
+        with open(container_mode_file, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -255,6 +681,65 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
+def _resolve_hermes_uid_gid() -> tuple[Optional[int], Optional[int]]:
+    """Read the HERMES_UID / HERMES_GID env vars set by Docker deployments.
+
+    Docker containers running Hermes commonly set these to map the in-container
+    user to a host user so volume-mounted state files end up with the right
+    ownership. The entrypoint chowns the top-level HERMES_HOME once, but
+    subdirectories created at runtime by ``ensure_hermes_home()`` (especially
+    for profile namespaces under ``profiles/<name>/``) need the same chown
+    or they land as ``root:root`` and block subsequent uid-mapped workers
+    with ``PermissionError [Errno 13]``. See #34107.
+
+    Returns ``(uid, gid)`` parsed from the env vars, or ``(None, None)``
+    when either is missing/invalid. Returns ``(None, None)`` on Windows
+    too (where chown is a no-op anyway).
+    """
+    if sys.platform == "win32":
+        return None, None
+    uid_str = os.environ.get("HERMES_UID", "").strip()
+    gid_str = os.environ.get("HERMES_GID", "").strip()
+    try:
+        uid = int(uid_str) if uid_str else None
+    except ValueError:
+        uid = None
+    try:
+        gid = int(gid_str) if gid_str else None
+    except ValueError:
+        gid = None
+    return uid, gid
+
+
+def _chown_to_hermes_uid(path) -> None:
+    """Chown ``path`` to ``HERMES_UID:HERMES_GID`` if those env vars are set.
+
+    No-op when:
+      - Either env var is unset/invalid
+      - The current process isn't root (chown will EPERM — silently ignored)
+      - On Windows (chown semantics don't apply)
+
+    Used by :func:`_secure_dir` to keep ownership consistent across all
+    directories created by :func:`ensure_hermes_home` on Docker deployments.
+    See #34107.
+    """
+    uid, gid = _resolve_hermes_uid_gid()
+    if uid is None and gid is None:
+        return
+    try:
+        # os.chown with -1 means "don't change" for that field.
+        os.chown(
+            path,
+            uid if uid is not None else -1,
+            gid if gid is not None else -1,
+        )
+    except (OSError, AttributeError, NotImplementedError):
+        # OSError covers EPERM (not running as root) and ENOENT (race),
+        # both of which are non-fatal — the dir is still created and
+        # the entrypoint's startup chown -R will fix it on next restart.
+        pass
+
+
 def _secure_dir(path):
     """Set directory to owner-only access (0700 by default). No-op on Windows.
 
@@ -267,6 +752,11 @@ def _secure_dir(path):
     caddy, etc.) needs to traverse HERMES_HOME to reach a served subdirectory.
     The execute-only bit on a directory permits cd-through without exposing
     directory listings.
+
+    Also applies ``HERMES_UID``/``HERMES_GID``-based ownership when those env
+    vars are set (#34107 — Docker deployments need this so profile subdirs
+    created at runtime by kanban workers don't land as root:root and block
+    subsequent uid-mapped workers).
     """
     if is_managed():
         return
@@ -279,6 +769,7 @@ def _secure_dir(path):
         os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
+    _chown_to_hermes_uid(path)
 
 
 def _is_container() -> bool:
@@ -297,7 +788,7 @@ def _is_container() -> bool:
         return True
     # LXC / cgroup-based detection
     try:
-        with open("/proc/1/cgroup", "r") as f:
+        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
             cgroup_content = f.read()
         if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
             return True
@@ -350,7 +841,10 @@ def ensure_hermes_home():
     else:
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
-        for subdir in ("cron", "sessions", "logs", "logs/curator", "memories"):
+        for subdir in (
+            "cron", "sessions", "logs", "logs/curator", "memories",
+            "pairing", "hooks", "image_cache", "audio_cache", "skills",
+        ):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
@@ -389,6 +883,9 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Global active chat session cap across CLI, TUI/dashboard, and messaging.
+    # None/0 = unbounded.
+    "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -400,7 +897,12 @@ DEFAULT_CONFIG = {
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
-        "restart_drain_timeout": 60,
+        #
+        # 180s is calibrated for realistic in-flight agent turns: a typical
+        # coding conversation mid-reasoning runs 60–150s per call, so a 60s
+        # budget routinely interrupted legitimate work on /restart. Raise
+        # further in config.yaml if you run very-long-reasoning models.
+        "restart_drain_timeout": 180,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries
@@ -417,10 +919,61 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Universal "finish the job" guidance — short prompt block applied to
+        # all models that targets two cross-family failure modes: (1) stopping
+        # after a stub instead of finishing the artifact, (2) fabricating
+        # plausible-looking output when a real path is blocked.  Costs ~80
+        # tokens in the cached system prompt.  Set False to disable globally.
+        "task_completion_guidance": True,
+        # Universal parallel-tool-call guidance — short prompt block applied to
+        # all models that tells the model to batch independent tool calls
+        # (reads, searches, web fetches, read-only commands) into one turn
+        # instead of one call per turn.  The runtime already runs independent
+        # calls concurrently, so this just steers the model to produce the
+        # batch — cutting round-trips and the resent-context cost that
+        # compounds over a long conversation.  Costs ~70 tokens in the cached
+        # system prompt.  Set False to disable globally.
+        "parallel_tool_call_guidance": True,
+        # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
+        # state in the system prompt when something non-default is detected
+        # (e.g. python3 has no pip module, pip→python version mismatch, PEP
+        # 668 enforcement without uv).  Costs zero tokens when the env is
+        # clean (probe emits nothing).  Skipped for remote terminal backends
+        # (docker/modal/ssh — they have their own probe).  Set False to
+        # disable entirely.
+        "environment_probe": True,
+        # Embedder-supplied environment description appended to the system
+        # prompt's environment-hints block. Lets a host that wraps Hermes
+        # (sandbox runner, managed platform) explain the runtime environment
+        # — proxy, credential handling, mount layout — without editing the
+        # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
+        # env var overrides this (build-time/container mechanism).
+        "environment_hint": "",
+        # Coding posture — on interactive coding surfaces (CLI, TUI, desktop
+        # app, ACP) in a code workspace, Hermes adds a coding operating brief
+        # + a live git/workspace snapshot to the system prompt. See
+        # agent/coding_context.py.
+        #   "auto" (default) — prompt-only posture when the surface is
+        #                      interactive AND cwd is a code workspace.
+        #                      Toolsets are never touched; messaging platforms
+        #                      unaffected.
+        #   "focus"          — auto + collapse the toolset to the lean coding
+        #                      set (+ enabled MCP servers) + demote non-coding
+        #                      skill categories to names-only in the prompt's
+        #                      skill index. Explicit opt-in.
+        #   "on"             — force the prompt posture everywhere.
+        #   "off"            — disable entirely.
+        "coding_context": "auto",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Maximum time (seconds) the gateway will block an agent waiting for
+        # a clarify-tool response from the user.  Hit this and the agent
+        # unblocks with "[user did not respond within Xm]" so it can adapt
+        # rather than pinning the running-agent guard forever.  CLI clarify
+        # blocks indefinitely (input() is synchronous) and ignores this.
+        "clarify_timeout": 600,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
@@ -457,6 +1010,7 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        "disabled_toolsets": [],
     },
     
     "terminal": {
@@ -468,6 +1022,13 @@ DEFAULT_CONFIG = {
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.
         "env_passthrough": [],
+        # HOME handling for host tool subprocesses:
+        #   auto    — host keeps the real OS-user HOME; containers use
+        #             HERMES_HOME/home for persistent state (default)
+        #   real    — force the real OS-user HOME
+        #   profile — force HERMES_HOME/home when it exists (old strict
+        #             per-profile CLI config isolation)
+        "home_mode": "auto",
         # Extra files to source in the login shell when building the
         # per-session environment snapshot.  Use this when tools like nvm,
         # pyenv, asdf, or custom PATH entries are registered by files that
@@ -505,8 +1066,7 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
+        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -522,13 +1082,15 @@ DEFAULT_CONFIG = {
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.
         "docker_mount_cwd_to_workspace": False,
+        "docker_extra_args": [],        # Extra flags passed verbatim to docker run
         # Explicit opt-in: run the Docker container as the host user's uid:gid
         # (via `--user`).  When enabled, files written into bind-mounted dirs
         # (docker_volumes, the persistent workspace, or the auto-mounted cwd)
         # are owned by your host user instead of root, which avoids needing
         # `sudo chown` after container runs. Default off to preserve behavior
         # for images whose entrypoints expect to start as root (e.g. the
-        # bundled Hermes image, which drops to the `hermes` user via gosu).
+        # bundled Hermes image, which drops to the `hermes` user via
+        # s6-setuidgid inside each supervised service).
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
@@ -538,12 +1100,25 @@ DEFAULT_CONFIG = {
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
     },
-    
+
+    "web": {
+        "backend": "",           # shared fallback — applies to both search and extract
+        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
+        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+    },
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        # Browser engine for local mode.  Passed as ``--engine <value>`` to
+        # agent-browser v0.25.3+.
+        # "auto"       — use Chrome (default, don't pass --engine at all)
+        # "lightpanda" — use Lightpanda (1.3-5.8x faster navigation, no screenshots)
+        # "chrome"     — explicitly request Chrome
+        # Also settable via AGENT_BROWSER_ENGINE env var.
+        "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
@@ -557,29 +1132,66 @@ DEFAULT_CONFIG = {
             # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
+            # Optional externally managed Camofox identity. Useful when another
+            # app owns the visible browser and Hermes should operate in it.
+            "user_id": "",
+            "session_key": "",
+            # Rehydrate tab_id from Camofox before creating a new tab.
+            "adopt_existing_tab": False,
+            # Docker Camofox opens page URLs from inside the container. Enable
+            # this to rewrite loopback page URLs (localhost/127.0.0.1/::1) to a
+            # host alias while leaving CAMOFOX_URL itself unchanged.
+            "rewrite_loopback_urls": False,
+            "loopback_host_alias": "host.docker.internal",
         },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
-    # When enabled, the agent takes a snapshot of the working directory once per
-    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
+    # When enabled, the agent takes a snapshot of the working directory once
+    # per conversation turn (on first write_file/patch call).  Use /rollback
+    # to restore.
+    #
+    # Defaults changed in v2 (single shared shadow store, real pruning):
+    #   - enabled: True -> False   (opt-in; most users never use /rollback)
+    #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
+    #   - auto_prune:   False -> True (orphans/stale pruned automatically)
+    # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
     "checkpoints": {
-        "enabled": True,
-        "max_snapshots": 50,  # Max checkpoints to keep per directory
-        # Auto-maintenance: shadow repos accumulate forever under
-        # ~/.hermes/checkpoints/ (one per cd'd working directory). Field
-        # reports put the typical offender at 1000+ repos / ~12 GB. When
-        # auto_prune is on, hermes sweeps at startup (at most once per
-        # min_interval_hours) and deletes:
-        #   * orphan repos: HERMES_WORKDIR no longer exists on disk
-        #   * stale repos:  newest mtime older than retention_days
-        # Opt-in so users who rely on /rollback against long-ago sessions
-        # never lose data silently.
-        "auto_prune": False,
+        "enabled": False,
+        # Max checkpoints to keep per working directory.  Pre-v2 this only
+        # limited the `/rollback` listing; v2 actually rewrites the ref and
+        # garbage-collects older commits.
+        "max_snapshots": 20,
+        # Hard ceiling on total ``~/.hermes/checkpoints/`` size (MB).  When
+        # exceeded, the oldest checkpoint per project is dropped in a
+        # round-robin pass until total size falls under the cap.
+        # 0 disables the size cap.
+        "max_total_size_mb": 500,
+        # Skip any single file larger than this when staging a checkpoint.
+        # Prevents accidental snapshotting of datasets, model weights, and
+        # other large generated assets.  0 disables the filter.
+        "max_file_size_mb": 10,
+        # Auto-maintenance: hermes sweeps the checkpoint base at startup
+        # (at most once per ``min_interval_hours``) and:
+        #   * deletes project entries whose workdir no longer exists (orphan)
+        #   * deletes project entries whose last_touch is older than
+        #     ``retention_days``
+        #   * GCs the single shared store to reclaim unreachable objects
+        #   * enforces ``max_total_size_mb`` across remaining projects
+        #   * deletes ``legacy-*`` archives older than ``retention_days``
+        "auto_prune": True,
         "retention_days": 7,
         "delete_orphans": True,
         "min_interval_hours": 24,
     },
+
+    # Hard cap (chars) for a single automatic context file such as SOUL.md,
+    # AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes applies
+    # head/tail truncation. ``null`` (the default) lets the cap scale with the
+    # model's context window (floor 20K, ceiling 500K) so large-context models
+    # rarely truncate a project doc. Set a positive integer to pin a fixed cap
+    # and override the dynamic behavior. Separate from read_file tool limits.
+    "context_file_max_chars": None,
 
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
@@ -606,18 +1218,99 @@ DEFAULT_CONFIG = {
         "max_line_length": 2000,
     },
 
+    # Tool loop guardrails nudge models when they repeat failed or
+    # non-progressing tool calls. Soft warnings are always-on by default;
+    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    "tool_loop_guardrails": {
+        "warnings_enabled": True,
+        "hard_stop_enabled": False,
+        "warn_after": {
+            "exact_failure": 2,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 2,
+        },
+        "hard_stop_after": {
+            "exact_failure": 5,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 5,
+        },
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "protect_first_n": 3,         # non-system head messages always preserved
+                                      # verbatim, in ADDITION to the system prompt
+                                      # (which is always implicitly protected). Set to
+                                      # 0 for long-running rolling-compaction sessions
+                                      # where you want nothing pinned except the
+                                      # system prompt + rolling summary + recent tail.
+        "abort_on_summary_failure": False,  # When True, auto-compression that fails
+                                      # to generate a summary (aux LLM errored / returned
+                                      # non-JSON / timed out) aborts entirely instead of
+                                      # dropping the middle window with a static
+                                      # "summary unavailable" placeholder.  Messages are
+                                      # preserved unchanged and the session "freezes" at
+                                      # its current size until the user runs /compress
+                                      # (which bypasses the failure cooldown) or /new.
+                                      # Default False matches historical behavior; set to
+                                      # True if you'd rather pause than silently lose
+                                      # context turns when your aux model is flaky.
+        "codex_gpt55_autoraise": True,  # When True, gpt-5.5 on the ChatGPT Codex OAuth
+                                      # route raises its compaction trigger to 85% (vs the
+                                      # global `threshold` above). Codex hard-caps gpt-5.5
+                                      # at a 272K window, so the default 50% would compact
+                                      # at ~136K and waste half the usable context. Set to
+                                      # False to opt back down to the global threshold
+                                      # (e.g. 0.50) for Codex gpt-5.5 sessions. Only this
+                                      # exact route is affected — gpt-5.5 on OpenAI's
+                                      # direct API, OpenRouter, and Copilot keep the
+                                      # global threshold regardless.
+    },
+
+    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
+    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
+    # implementations. Per-platform notification opt-out is handled by the
+    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
+    "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
         "cache_ttl": "5m",
+    },
+
+    # OpenRouter-specific settings.
+    # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
+    #   When enabled, identical requests return cached responses for free (zero billing).
+    #   This is separate from Anthropic prompt caching and works alongside it.
+    #   See: https://openrouter.ai/docs/guides/features/response-caching
+    # response_cache_ttl: how long cached responses remain valid, in seconds (1-86400).
+    #   Default 300 (5 minutes). Only used when response_cache is enabled.
+    # min_coding_score: knob for the openrouter/pareto-code router (0.0-1.0).
+    #   Only applied when model.model is "openrouter/pareto-code". Higher
+    #   values route to stronger (more expensive) coders; lower values open
+    #   up cheaper, faster options. Default 0.65 lands on the mid-tier
+    #   coder on the current Pareto frontier. Empty string = let OpenRouter
+    #   pick the strongest available coder (router's documented default
+    #   when the plugins block is omitted).
+    #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
+    "openrouter": {
+        "response_cache": True,
+        "response_cache_ttl": 300,
+        "min_coding_score": 0.65,
     },
 
     # AWS Bedrock provider configuration.
@@ -646,6 +1339,26 @@ DEFAULT_CONFIG = {
     # Empty model = use provider's default auxiliary model.
     # All tasks fall back to openrouter:google/gemini-3-flash-preview if
     # the configured provider is unavailable.
+    #
+    # extra_body: forwarded verbatim as request body fields on every aux call
+    # for that task. Use this to set provider-specific knobs (independent of
+    # main-agent settings). On OpenRouter you can set provider routing prefs
+    # and the Pareto Code coding-score floor here. Example:
+    #
+    #   auxiliary:
+    #     compression:
+    #       provider: openrouter
+    #       model: openrouter/pareto-code
+    #       extra_body:
+    #         provider:           # OpenRouter provider routing
+    #           order: [anthropic, google]
+    #           sort: throughput  # or price | latency
+    #         plugins:            # OpenRouter Pareto Code router
+    #           - id: pareto-router
+    #             min_coding_score: 0.5
+    #
+    # Each aux task is independent — main-agent provider_routing and
+    # openrouter.min_coding_score do NOT propagate to aux calls by design.
     "auxiliary": {
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
@@ -672,15 +1385,10 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
         },
-        "session_search": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
-        },
+        # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
+        # single-shape tool returns DB content directly). The old
+        # ``auxiliary.session_search.*`` block was removed here. Existing
+        # values in user config.yaml files are harmless leftovers and ignored.
         "skills_hub": {
             "provider": "auto",
             "model": "",
@@ -713,6 +1421,52 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        "tts_audio_tags": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
+        # Triage specifier — flesh out a rough one-liner in the Kanban
+        # Triage column into a concrete spec, then promote it to ``todo``.
+        # Invoked by ``hermes kanban specify`` (single id or --all). Set a
+        # cheap, capable model here (gemini-flash works well); the main
+        # model is overkill for short spec expansion.
+        "triage_specifier": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+        },
+        # Kanban decomposer — decomposes a triage task into a graph of
+        # child tasks routed to specialist profiles by description.
+        # Invoked by ``hermes kanban decompose`` and the kanban
+        # auto-decompose dispatcher tick. Returns a JSON task graph;
+        # uses more tokens than the specifier so allow more headroom.
+        "kanban_decomposer": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 180,
+            "extra_body": {},
+        },
+        # Profile describer — auto-generates a 1-2 sentence description
+        # of what a profile is good at. Invoked by
+        # ``hermes profile describe <name> --auto`` and the dashboard's
+        # auto-generate button. Short, cheap call.
+        "profile_describer": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        },
         # Curator — skill-usage review fork. Timeout is generous because the
         # review pass can take several minutes on reasoning models (umbrella
         # building over hundreds of candidate skills). "auto" = use main chat
@@ -726,25 +1480,104 @@ DEFAULT_CONFIG = {
             "timeout": 600,
             "extra_body": {},
         },
+        # Monitor — urgency/importance classifier used by the important-mail
+        # monitor catalog automation (cron/scripts/classify_items.py). Scores
+        # candidate items 0-10 against the user's criteria so only above-
+        # threshold items get delivered. "auto" = main chat model; override to
+        # a cheap fast model (e.g. openrouter google/gemini-3-flash-preview,
+        # haiku) since per-item scoring is high-volume and a small model is fine.
+        "monitor": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        },
     },
     
     "display": {
         "compact": False,
-        "personality": "kawaii",
+        "personality": "",
         "resume_display": "full",
+        # Recap tuning for /resume and startup resume. The defaults match the
+        # historical hardcoded values; expose them as config so power users can
+        # widen or tighten the snapshot to taste.
+        "resume_exchanges": 10,            # max user+assistant pairs to show
+        "resume_max_user_chars": 300,      # truncate user message text
+        "resume_max_assistant_chars": 200, # truncate non-last assistant text
+        "resume_max_assistant_lines": 3,   # truncate non-last assistant lines
+        # When True (default), assistant entries that are *only* tool calls
+        # (no visible text) are skipped in the recap. This prevents the recap
+        # from being dominated by `[2 tool calls: terminal, read_file]` lines
+        # when an exchange was tool-heavy. Set False to restore the legacy
+        # behavior of showing tool-call summaries inline.
+        "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # Which interface bare `hermes` (and `hermes chat`) launches by default:
+        #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
+        #   "tui" — the modern Ink TUI (same as passing `--tui`)
+        # Explicit flags always win over this setting: `--cli` forces the classic
+        # REPL and `--tui` (or HERMES_TUI=1) forces the TUI regardless of config.
+        "interface": "cli",
         # When true, `hermes --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
         # Mirrors `hermes -c` muscle memory.  Default off so existing
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # When true (default), `hermes --tui` drops a one-time hint
+        # ("subagents working · /agents to watch live") the first time a turn
+        # starts delegating, nudging the user toward the live spawn-tree
+        # dashboard. Set false to suppress the hint.
+        "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # Background self-improvement review notifications surfaced in chat.
+        #   "off"     — no chat notification (the review still runs and writes)
+        #   "on"      — generic "💾 Memory updated" line (default)
+        #   "verbose" — include a compact content preview of what changed
+        # Per-platform overrides via display.platforms.<platform>.memory_notifications.
+        "memory_notifications": "on",
         "streaming": False,
+        "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
+        # Preserve recent classic CLI output across Ctrl+L, /redraw, and
+        # terminal resize full-screen clears. Disable if a terminal emulator
+        # behaves badly with replayed scrollback.
+        "persistent_output": True,
+        "persistent_output_max_lines": 200,
+        # Print a one-line summary of resolved modal prompts (approval /
+        # clarify) into scrollback so the question and decision survive the
+        # panel repaint. Set false to keep scrollback untouched.
+        "persist_prompts": True,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        # File-mutation verifier footer.  When true (default), the agent
+        # appends a one-line advisory to its final response whenever a
+        # write_file / patch call failed during the turn and was never
+        # superseded by a successful write to the same path.  This catches
+        # the "batch of parallel patches, half fail, model claims success"
+        # class of over-claim that otherwise forces users to run
+        # `git status` to verify edits landed.  Set false to suppress.
+        "file_mutation_verifier": True,
+        # Nous credits status-bar notices (usage bands, grant-spent, depleted /
+        # restored).  When false, no credits notices are emitted — balance data
+        # is still captured and /usage keeps working.  Off switch for sub +
+        # top-up users who find the gauge noisy.
+        "credits_notices": True,
+        # Turn-completion explainer.  When true (default), the agent appends a
+        # one-line explanation to its final response whenever a turn ends
+        # abnormally with no usable reply — empty content after retries, a
+        # partial/truncated stream, a still-pending tool result, or an
+        # iteration/budget limit.  Replaces the bare "(empty)" sentinel so the
+        # failure isn't silent from the UI's perspective.  Set false to suppress.
+        "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        # UI language for static user-facing messages (approval prompts, a
+        # handful of gateway slash-command replies).  Does NOT affect agent
+        # responses, log lines, tool outputs, or slash-command descriptions.
+        # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+        "language": "en",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
@@ -756,7 +1589,41 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
-        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
+        # How gateway tool-progress is grouped on platforms that support message
+        # editing: "accumulate" (default) edits one bubble in place; "separate"
+        # sends one message per tool (the pre-v0.9 behavior, noisier). Only
+        # applies where tool_progress is already enabled. Per-platform override
+        # via display.platforms.<platform>.tool_progress_grouping.
+        "tool_progress_grouping": "accumulate",
+        # Auto-delete system-notice replies (e.g. "✨ New session started!",
+        # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
+        # that support message deletion (currently Telegram; other platforms
+        # ignore and leave the message in place).  Only affects slash-command
+        # replies wrapped with gateway.platforms.base.EphemeralReply — agent
+        # responses and content messages are never touched.  Default 0
+        # (disabled) preserves prior behavior.
+        "ephemeral_system_ttl": 0,
+        # Per-platform display/streaming overrides. Each key is a gateway
+        # platform ("telegram", "discord", "slack", …) mapping to a dict of
+        # display settings that override the global value for that platform
+        # only. A setting left unset here falls through to the global default.
+        #
+        # Shipped defaults encode the streaming experience that works best
+        # per platform:
+        #   - Telegram has native animated draft streaming (sendMessageDraft),
+        #     which is smooth, so streaming is on by default there.
+        #   - Discord/Slack/etc. only have edit-based streaming (repeated
+        #     editMessage), which flickers and is noticeably jankier, so
+        #     streaming is off by default there.
+        # These are gap-fillers: a user who explicitly sets, e.g.,
+        # display.platforms.discord.streaming: true keeps their value
+        # (config deep-merge has user values win over defaults). The global
+        # streaming.enabled master switch still gates everything — these
+        # per-platform flags only take effect once streaming is enabled.
+        "platforms": {
+            "telegram": {"streaming": True},
+            "discord": {"streaming": False},
+        },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
         # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
@@ -765,11 +1632,93 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Hide the token/cost analytics surfaces (Analytics page, token bars and
+        # cost figures on the Models page) by default.  The numbers shown there
+        # are a local debug estimate: they only count successful main-agent
+        # responses with a usable ``response.usage``, and silently exclude every
+        # auxiliary call (context compression, title generation, vision,
+        # session search, web extract, smart approval, MCP routing, plugin LLM
+        # access) plus provider-side retries, fallback attempts, and any call
+        # whose usage block didn't come back.  Cache writes are also missing
+        # from the API response.  On models with heavy auxiliary traffic
+        # (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than
+        # the provider bill, which is worse than hiding the numbers entirely
+        # because they look precise enough to compare against the provider.
+        # Set this to True to re-enable the surfaces with the understanding
+        # that the numbers are a local lower-bound estimate, not billing.
+        "show_token_analytics": False,
+        # OAuth gate configuration (engaged when ``--host`` is set and
+        # ``--insecure`` is not). The bundled Nous Portal plugin reads
+        # both keys at startup; they are the canonical surface for these
+        # settings. Each can be overridden by an environment variable —
+        # ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` and
+        # ``HERMES_DASHBOARD_PORTAL_URL`` respectively — and the env var
+        # wins when set to a non-empty value. The override path is what
+        # Fly.io's platform-secret injection uses to push the per-deploy
+        # client_id at provisioning time without operators needing to
+        # touch config.yaml. Local dev / non-Fly deploys can set either
+        # surface; missing values fall through to the plugin's defaults
+        # (no provider registered when ``client_id`` is empty;
+        # ``portal_url`` defaults to https://portal.nousresearch.com).
+        "oauth": {
+            "client_id": "",  # agent:{instance_id} — Portal provisions this
+            "portal_url": "",  # blank → use plugin default (production Portal)
+        },
+        # Username/password gate configuration — read by the bundled
+        # ``dashboard_auth/basic`` plugin (a self-hosted "just put a
+        # password on my dashboard" provider that needs no OAuth IDP).
+        # The plugin registers a password provider when ``username`` plus
+        # either ``password_hash`` (preferred — no plaintext at rest) or
+        # ``password`` (plaintext, hashed in-memory at load) are set. Each
+        # key is overridable by an env var
+        # (``HERMES_DASHBOARD_BASIC_AUTH_USERNAME`` /
+        # ``_PASSWORD_HASH`` / ``_PASSWORD`` / ``_SECRET`` /
+        # ``_TTL_SECONDS``), env winning when non-empty. Leave ``username``
+        # empty (the default) to keep the plugin a no-op — loopback /
+        # ``--insecure`` operators and OAuth users are unaffected.
+        #
+        # ``secret`` is the HMAC key used to sign the stateless session
+        # tokens this provider mints. When empty, a random per-process key
+        # is generated — fine for a single process, but sessions then
+        # don't survive a restart or span multiple workers. Set an
+        # explicit ``secret`` (32+ random bytes, base64/hex/raw) for
+        # stable multi-worker / restart-surviving sessions. Compute a
+        # ``password_hash`` with
+        # ``python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"``.
+        "basic_auth": {
+            "username": "",  # blank → plugin no-op (no password provider)
+            "password_hash": "",  # scrypt$... (preferred — no plaintext at rest)
+            "password": "",  # plaintext fallback (hashed in-memory at load)
+            "secret": "",  # token-signing key; blank → random per-process
+            "session_ttl_seconds": 0,  # 0 → plugin default (12h)
+        },
+        # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
+        # When set, this is the complete authority — scheme + host +
+        # optional path prefix (e.g. ``https://example.com/hermes``) —
+        # the OAuth ``redirect_uri`` is built from. Set this for deploys
+        # behind reverse proxies that don't reliably forward
+        # ``X-Forwarded-Host`` / ``X-Forwarded-Proto`` / ``X-Forwarded-Prefix``
+        # (manual nginx setups, on-prem ingresses, custom-domain Fly
+        # deploys without proper proxy headers). When set,
+        # ``X-Forwarded-Prefix`` is IGNORED on the OAuth path because
+        # the operator has declared the public URL — we no longer need
+        # to guess from proxy headers, and stacking the prefix on top
+        # would double-prefix the common case where the prefix is
+        # already baked into ``public_url``. Leave empty to use the
+        # existing proxy-header reconstruction (the default).
+        #
+        # Validation: rejects values without ``http(s)://`` scheme or
+        # without a host, and any string containing quote / angle /
+        # whitespace / control characters. A malformed value silently
+        # falls through to request reconstruction rather than breaking
+        # the login flow.
+        "public_url": "",
     },
 
     # Privacy settings
@@ -781,7 +1730,7 @@ DEFAULT_CONFIG = {
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
@@ -797,8 +1746,21 @@ DEFAULT_CONFIG = {
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
+        "gemini": {
+            "model": "gemini-2.5-flash-preview-tts",
+            "voice": "Kore",
+            # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
+            # pass to insert freeform square-bracket audio tags into the TTS
+            # script. Visible chat replies are unchanged.
+            "audio_tags": False,
+            # Optional local Markdown/text file with Gemini TTS performance
+            # direction. It may include AUDIO PROFILE, SCENE, DIRECTOR'S NOTES,
+            # SAMPLE CONTEXT, and either a `{transcript}` placeholder or no
+            # transcript section; Hermes appends the live transcript when absent.
+            "persona_prompt_file": "",
+        },
         "xai": {
-            "voice_id": "eve",
+            "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
             "language": "en",
             "sample_rate": 24000,
             "bit_rate": 128000,
@@ -830,7 +1792,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -840,6 +1802,12 @@ DEFAULT_CONFIG = {
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+        },
+        "elevenlabs": {
+            "model_id": "scribe_v2",  # scribe_v2, scribe_v1
+            "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
+            "tag_audio_events": False,
+            "diarize": False,
         },
     },
 
@@ -872,6 +1840,19 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Approval gate for memory writes (add/replace/remove), applied to BOTH
+        # foreground agent turns and the background self-improvement review fork
+        # (the source of unprompted "wrong assumption" saves users reported).
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: foreground writes prompt inline
+        #                     (entries are small enough to review in a chat
+        #                     bubble); background-review writes are staged
+        #                     instead of committed (a daemon thread cannot block
+        #                     on a prompt). Review staged entries with
+        #                     /memory pending, /memory approve <id>,
+        #                     /memory reject <id>.
+        # To disable memory entirely, use memory_enabled: false instead.
+        "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
@@ -890,6 +1871,10 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
+                           # "codex_responses", or "anthropic_messages". Empty = auto-detect
+                           # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
+                           # explicitly for non-standard endpoints the heuristic can't detect.
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
@@ -898,17 +1883,19 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
-        "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
-                                       # no ceiling). High-reasoning models on large tasks
-                                       # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
-                                       # raise if children time out before producing output.
+        "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
+                                     # = no timeout: children fail only from real errors
+                                     # (API, tools, iteration budget), never a delegation
+                                     # stopwatch. Set a positive number of seconds
+                                     # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
+        "max_async_children": 3,  # max concurrent background (background=true) subagents; new dispatches rejected at capacity
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
-        # and _get_orchestrator_enabled).  Values are clamped to [1, 3] with a
-        # warning log if out of range.
-        "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
+        # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
+        # raise deliberately, each level multiplies API cost.
+        "max_spawn_depth": 1,        # depth (1 = flat [default], 2 = orchestrator→leaf, 3+ = deeper)
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
         # When a subagent hits a dangerous-command approval prompt, the parent's
         # prompt_toolkit TUI owns stdin — a thread-local input() call from the
@@ -925,7 +1912,23 @@ DEFAULT_CONFIG = {
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
-    
+
+    # Goals — persistent cross-turn goals (Ralph-style loop).
+    # After every turn, a lightweight judge call asks the auxiliary model
+    # whether the active /goal is satisfied by the assistant's last
+    # response. If not, Hermes feeds a continuation prompt back into the
+    # same session and keeps working until the goal is done, the turn
+    # budget is exhausted, or the user pauses/clears it. Judge failures
+    # fail OPEN (continue) so a flaky judge never wedges progress — the
+    # turn budget is the real backstop.
+    "goals": {
+        # Max continuation turns before Hermes auto-pauses the goal and
+        # asks the user to /goal resume. Protects against judge false
+        # negatives (goal actually done but judge says continue) and
+        # unbounded model spend on fuzzy / unachievable goals.
+        "max_turns": 20,
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -956,6 +1959,18 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Approval gate for skill_manage (create/edit/patch/write_file/delete/
+        # remove_file), applied to BOTH foreground agent turns and the
+        # background self-improvement review fork.
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: stage the write for review
+        #                     instead of committing (a SKILL.md is too large to
+        #                     review inline, so skills always stage rather than
+        #                     prompt). List with /skills pending, inspect with
+        #                     /skills diff <id> (full diff — CLI/dashboard/file,
+        #                     never crammed into a chat bubble), apply with
+        #                     /skills approve <id> or drop with /skills reject <id>.
+        "write_approval": False,
     },
 
     # Curator — background skill maintenance.
@@ -979,6 +1994,33 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Run the LLM consolidation (umbrella-building) pass. OFF by default.
+        # When off, a curator run does ONLY the deterministic inactivity prune
+        # (mark stale / archive long-unused skills) and skips the forked
+        # aux-model review entirely — no umbrella-building, no aux-model cost.
+        # Set to true to opt back into merging overlapping skills into
+        # class-level umbrellas. `hermes curator run --consolidate` overrides
+        # this for a single invocation.
+        "consolidate": False,
+        # Also prune (archive) bundled built-in skills after the inactivity
+        # period, not just agent-created ones. ON by default. Built-ins are
+        # normally restored on every `hermes update`, so pruning them only
+        # sticks because a suppression list tells the re-seeder to leave them
+        # archived. Hub-installed skills are NEVER pruned here — they have an
+        # external upstream owner. Built-ins accrue usage telemetry and their
+        # inactivity clock starts the first time the curator sees them, so a
+        # long-unused built-in is archived only after archive_after_days of
+        # genuine non-use (never a mass-prune on the first run). Set to false
+        # to keep all bundled built-ins permanently.
+        "prune_builtins": True,
+        # Pre-run backup: before every real curator pass (dry-run is
+        # skipped), snapshot ~/.hermes/skills/ into
+        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
+        # user can roll back with `hermes curator rollback`.
+        "backup": {
+            "enabled": True,
+            "keep": 5,  # retain last N regular snapshots
+        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -990,14 +2032,31 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
+    # Slack platform settings (gateway mode)
+    "slack": {
+        "require_mention": True,       # Require @mention to respond in channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
+        "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
+        "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
+        # authorizes only guild messages in the role's own guild — DMs require
+        # DISCORD_ALLOWED_USERS. Set dm_role_auth_guild to a guild ID to also
+        # authorize DMs from members of that one trusted guild holding the
+        # allowed role. Unset / empty / 0 = secure default (DM role-auth off).
+        "dm_role_auth_guild": "",
         # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
@@ -1006,6 +2065,40 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
+        # When True, any uploaded file is cached to disk with mime
+        # application/octet-stream and the path is surfaced to the agent so it
+        # can use terminal/read_file/etc. against it. Default False preserves
+        # the historical allowlist behaviour.
+        # Env override: DISCORD_ALLOW_ANY_ATTACHMENT.
+        "allow_any_attachment": False,
+        # Maximum bytes per attachment the gateway will cache. The whole file
+        # is held in memory while being written, so unlimited uploads carry a
+        # real memory cost. Default 32 MiB matches the historical hardcoded
+        # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
+        "max_attachment_bytes": 33554432,
+        # Voice-channel audio effects (the continuous mixer). OFF by default.
+        # When enabled, the bot installs a software mixer on the outgoing voice
+        # stream so a low ambient "thinking" bed, verbal acknowledgements, and
+        # TTS replies can OVERLAP (ducking the ambient under speech) instead of
+        # stop-and-swap — the Grok-voice-mode feel. discord.py ships no mixer;
+        # this is implemented in plugins/platforms/discord/voice_mixer.py.
+        "voice_fx": {
+            "enabled": False,         # master switch for the mixer subsystem
+            "ambient_enabled": True,  # play the idle "thinking" bed while tools run
+            "ambient_path": "",       # custom loop audio file; "" = synthesised pad
+            "ambient_gain": 0.18,     # idle bed loudness, 0.0–1.0
+            "duck_gain": 0.06,        # ambient loudness while speech plays
+            "speech_gain": 1.0,       # TTS / ack loudness, 0.0–1.0
+            "ack_enabled": True,      # speak a short phrase before the first tool call
+            "ack_phrases": [          # picked at random; set [] to disable phrases
+                "Let me look into that.",
+                "One moment.",
+                "Checking on that now.",
+                "Give me a sec.",
+                "On it.",
+            ],
+        },
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -1020,16 +2113,25 @@ DEFAULT_CONFIG = {
     "telegram": {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
-    },
-
-    # Slack platform settings (gateway mode)
-    "slack": {
-        "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
+        "extra": {
+            "rich_messages": True,      # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
+        },
     },
 
     # Mattermost platform settings (gateway mode)
     "mattermost": {
+        "require_mention": True,       # Require @mention to respond in channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+    },
+
+    # Matrix platform settings (gateway mode)
+    "matrix": {
+        "require_mention": True,       # Require @mention to respond in rooms
+        "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
+        "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
     },
 
     # Approval mode for dangerous commands:
@@ -1052,12 +2154,37 @@ DEFAULT_CONFIG = {
         # "Always Approve" to silence the prompt permanently; that flips
         # this key to false.
         "mcp_reload_confirm": True,
+        # When true, destructive session slash commands (/clear, /new, /reset,
+        # /undo) ask the user to confirm before discarding conversation state.
+        # Three-option prompt (Approve Once / Always Approve / Cancel) routed
+        # through tools.slash_confirm — native yes/no buttons on Telegram,
+        # Discord, and Slack; text fallback elsewhere.  Users click "Always
+        # Approve" to silence the prompt permanently; that flips this key to
+        # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
+        # opt out there).
+        "destructive_slash_confirm": True,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
+
+    # Per-platform system-prompt hint overrides. Lets an admin append to or
+    # replace Hermes' built-in platform hint for a single messaging platform
+    # (WhatsApp, Slack, Telegram, ...) without affecting other platforms.
+    # Useful for enterprise/managed profiles that ship platform-aware skills.
+    # Each key is a platform name; the value is either:
+    #   { "append": "extra text" }   — keep the default hint, append text
+    #   { "replace": "full text" }   — substitute the default hint entirely
+    #   "extra text"                 — shorthand for { "append": ... }
+    # `replace` wins over `append` if both are given. Example:
+    #   platform_hints:
+    #     whatsapp:
+    #       append: >
+    #         When tabular output would be useful, invoke the
+    #         table_formatting skill instead of emitting a Markdown table.
+    "platform_hints": {},
 
     # Shell-script hooks — declarative bridge that invokes shell scripts
     # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
@@ -1081,7 +2208,7 @@ DEFAULT_CONFIG = {
     # Pre-exec security scanning via tirith
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
-        "redact_secrets": False,
+        "redact_secrets": True,
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -1091,6 +2218,21 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+        # Acknowledged supply-chain security advisories. Each entry is the
+        # ID of an advisory the user has read and acted on (uninstalled the
+        # compromised package, rotated credentials). Acked advisories no
+        # longer trigger the startup banner. Add via `hermes doctor --ack
+        # <id>`; remove by editing the list directly. See
+        # ``hermes_cli/security_advisories.py`` for the catalog.
+        "acked_advisories": [],
+        # Allow Hermes to lazy-install opt-in backend packages from PyPI
+        # the first time the user enables a backend that needs them
+        # (e.g. installing ``elevenlabs`` when the user picks ElevenLabs as
+        # their TTS provider). Set to false to require explicit
+        # ``pip install`` for everything beyond the base set — appropriate
+        # for restricted networks, audited environments, or air-gapped
+        # systems where any runtime install is unacceptable.
+        "allow_lazy_installs": True,
     },
 
     "cron": {
@@ -1120,6 +2262,49 @@ DEFAULT_CONFIG = {
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
+        # Auto-block after this many consecutive non-success attempts for the
+        # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
+        # resets the streak for the new profile.
+        "failure_limit": 2,
+        # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
+        # the historical 2 MiB + one-backup behavior; long-running workers can
+        # raise these to keep more early failure evidence.
+        "worker_log_rotate_bytes": 2 * 1024 * 1024,
+        "worker_log_backup_count": 1,
+        # Profile assigned to the root/orchestration task after Triage
+        # decomposition. When unset, falls back to the default profile (the
+        # one `hermes` launches with no -p flag). This does not control the
+        # decomposer prompt, model, or skills; configure that LLM path under
+        # auxiliary.kanban_decomposer.
+        "orchestrator_profile": "",
+        # Where a child task lands if the orchestrator can't match an
+        # assignee to any installed profile. When unset, falls back to the
+        # default profile. A task never ends up with assignee=None.
+        "default_assignee": "",
+        # Per-profile concurrency cap (#21582). When set to a positive int,
+        # no single profile can have more than N workers running at once,
+        # even if the global max_in_progress / max_spawn caps would allow
+        # it. Tasks blocked this way defer to the next dispatcher tick.
+        # Unset (None) means "no per-profile cap" — backward-compatible
+        # with existing installs. Useful for fan-out workflows that would
+        # otherwise saturate one profile's local model / API quota /
+        # browser pool while leaving other profiles idle.
+        "max_in_progress_per_profile": None,
+        # When true, the kanban dispatcher auto-runs the decomposer on
+        # tasks that land in Triage (every dispatcher tick). When false,
+        # decomposition is manual via `hermes kanban decompose <id>` or
+        # the dashboard's Decompose button.
+        "auto_decompose": True,
+        # Max triage tasks to decompose per dispatcher tick. Prevents a
+        # large bulk-load of triage tasks from spending a burst of aux
+        # LLM calls in one tick. Excess tasks defer to the next tick.
+        "auto_decompose_per_tick": 3,
+        # Stale detection: running tasks that have exceeded this many
+        # seconds without a heartbeat (since ``last_heartbeat_at``) are
+        # auto-reclaimed to ``ready`` on the next dispatcher tick. The
+        # worker process (if still running host-locally) is terminated
+        # before the reclaim.  0 disables stale detection entirely.
+        "dispatch_stale_timeout_seconds": 14400,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -1134,6 +2319,38 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+    },
+
+    # Tool Search (progressive disclosure for large tool surfaces).
+    # When the model is connected to many MCP servers or non-core plugin
+    # tools, their JSON schemas can consume a substantial fraction of the
+    # context window on every turn. When enabled, those tools are replaced
+    # in the model-facing tools array with three bridge tools —
+    # tool_search / tool_describe / tool_call — and surfaced on demand.
+    #
+    # Core Hermes tools (terminal, read_file, write_file, patch,
+    # search_files, todo, memory, browser_*, etc.) are NEVER deferred.
+    # See tools/tool_search.py for full design notes and the
+    # openclaw-tool-search-report PDF in this PR for the rationale.
+    "tools": {
+        "tool_search": {
+            # "auto" (default) — activate only when deferrable tool schemas
+            #   exceed ``threshold_pct`` of the active model's context length,
+            #   so small toolsets pay no overhead.
+            # "on"  — always activate when there is at least one deferrable
+            #   tool. Use when you have many MCP servers and want maximum
+            #   token reduction unconditionally.
+            # "off" — disable entirely. Tools-array assembly is a pass-through.
+            "enabled": "auto",
+            # Percentage of context length at which "auto" mode kicks in.
+            # 10 matches the Claude Code default. Range 0..100.
+            "threshold_pct": 10,
+            # When the model calls tool_search without a ``limit`` argument,
+            # how many hits to return. Range 1..max_search_limit.
+            "search_default_limit": 5,
+            # Hard upper bound the model can request via ``limit``. Range 1..50.
+            "max_search_limit": 20,
+        },
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.
@@ -1155,7 +2372,7 @@ DEFAULT_CONFIG = {
         # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
         # next /model or `hermes model` invocation; network failures
         # silently fall back to the stale cache.
-        "ttl_hours": 24,
+        "ttl_hours": 1,
         # Optional per-provider override URLs for third parties that want
         # to self-host their own curation list using the same schema.
         # Example:
@@ -1171,6 +2388,98 @@ DEFAULT_CONFIG = {
         # Python tries AAAA records first and hangs for the full TCP timeout
         # before falling back to IPv4.  Set to true to skip IPv6 entirely.
         "force_ipv4": False,
+    },
+
+    # Gateway settings — control how messaging platforms (Telegram, Discord,
+    # Slack, etc.) deliver agent-produced files as native attachments.
+    "gateway": {
+        # Inject a human-readable timestamp prefix (e.g.
+        # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
+        # CONTEXT so the agent has temporal awareness of when each message was
+        # sent. Off by default — when off, the model sees clean message text.
+        # Persisted transcripts always stay clean (the timestamp is stored as
+        # message metadata regardless of this toggle), so turning it on later
+        # surfaces send-times for past messages too.
+        "message_timestamps": {
+            "enabled": False,
+        },
+
+        # When false (default), any file path the agent emits is delivered
+        # as a native attachment as long as it isn't under the credential /
+        # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
+        # auth.json, etc.). This matches the symmetry of inbound delivery
+        # — we accept any document type the user uploads, and the agent
+        # can hand back any file that isn't a credential.
+        #
+        # When true, fall back to the older allowlist+recency-window
+        # behavior: files must live under the Hermes cache, under
+        # ``media_delivery_allow_dirs``, or be freshly produced inside the
+        # ``trust_recent_files_seconds`` window. Recommended for
+        # public-facing gateways where prompt injection from one user
+        # shouldn't be able to exfiltrate the host's secrets to that same
+        # user. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
+        "strict": False,
+        # Extra directories from which model-emitted bare file paths may be
+        # uploaded as native gateway attachments. Files inside the Hermes
+        # cache (~/.hermes/cache/{documents,images,audio,video,screenshots})
+        # are always trusted; this list adds operator-controlled roots
+        # (project dirs, scratch dirs, mounted shares). Accepts a list of
+        # absolute paths or a single os.pathsep-separated string. Bridged
+        # to HERMES_MEDIA_ALLOW_DIRS at gateway startup. Tilde paths are
+        # expanded. Honored in both default and strict mode.
+        "media_delivery_allow_dirs": [],
+        # When true, files whose mtime is within ``trust_recent_files_seconds``
+        # of "now" are trusted for native delivery even outside the cache /
+        # operator allowlist — useful for ``pandoc -o /tmp/report.pdf`` or
+        # PDFs the agent writes into a working directory. System paths
+        # (/etc, /proc, ~/.ssh, ~/.aws, etc.) remain blocked regardless.
+        # Disable to fall back to pure-allowlist mode. Bridged to
+        # HERMES_MEDIA_TRUST_RECENT_FILES. Only consulted when ``strict``
+        # is true; in default mode the denylist alone gates delivery.
+        "trust_recent_files": True,
+        # Recency window in seconds. 600 (10 min) comfortably covers a
+        # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
+        # Only consulted when ``strict`` is true.
+        "trust_recent_files_seconds": 600,
+    },
+
+    # Real-time token streaming to messaging platforms (Telegram, Discord,
+    # Slack, etc.). Read at the top level by the gateway; absent this block the
+    # gateway falls back to these same defaults, so adding it here only makes
+    # the feature discoverable in config.yaml — it does not change behavior.
+    #
+    # Disabled by default: streaming costs extra edit/draft API calls per
+    # response. Set ``enabled: true`` and restart the gateway to turn it on.
+    "streaming": {
+        # Master switch. When false, each response is delivered as a single
+        # final message (no progressive updates).
+        "enabled": False,
+        # Transport selection:
+        #   "auto"  — prefer native draft streaming where the platform
+        #             supports it (Telegram DMs via sendMessageDraft,
+        #             Bot API 9.5+) and fall back to edit-based elsewhere.
+        #             Safe global default: platforms without draft support
+        #             (Discord, Slack, Matrix, Telegram groups) transparently
+        #             use the edit path, so "auto" only upgrades chats that
+        #             can render the smoother native preview.
+        #   "draft" — explicitly request native drafts; falls back to edit
+        #             when the platform/chat doesn't support them.
+        #   "edit"  — progressive editMessageText only (legacy behavior).
+        #   "off"   — disable streaming entirely (same as enabled: false).
+        "transport": "auto",
+        # Minimum seconds between progressive edits — tuned for Telegram's
+        # ~1 edit/s flood envelope.
+        "edit_interval": 0.8,
+        # Flush the buffer to the platform once this many characters have
+        # accumulated, so short replies feel near-instant.
+        "buffer_threshold": 24,
+        # Cursor glyph appended to the in-progress message while streaming.
+        "cursor": " \u2589",
+        # When >0, the final edit for a long-running streamed response is
+        # delivered as a fresh message if the preview has been visible at
+        # least this many seconds, so the platform timestamp reflects
+        # completion time. Telegram only; other platforms ignore it.
+        "fresh_final_after_seconds": 0.0,
     },
 
     # Session storage — controls automatic cleanup of ~/.hermes/state.db.
@@ -1199,6 +2508,15 @@ DEFAULT_CONFIG = {
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
         "min_interval_hours": 24,
+        # Legacy per-session JSON snapshot writer.  When true, the agent
+        # rewrites ``~/.hermes/sessions/session_{sid}.json`` on every turn
+        # boundary with the full message list.  state.db is canonical and
+        # has every field the snapshot stored (plus per-message timestamps
+        # and token counts), so this is off by default — the snapshots had
+        # no consumer outside their own overwrite guard and accumulated
+        # GBs of disk on heavy users.  Opt in only if you have an external
+        # tool that consumes the JSON files directly.
+        "write_json_snapshots": False,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
@@ -1206,24 +2524,178 @@ DEFAULT_CONFIG = {
     # never fires again.  Users can wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
+        # Structured profile-build path offered on the very first gateway
+        # message ever. "ask" (default) -> offer to build a user profile
+        # (opt-in, consent-gated; the agent asks before any lookup and never
+        # reads connected accounts silently). "off" -> plain intro only.
+        # The offer fires at most once (latched under onboarding.seen).
+        "profile_build": "ask",
     },
 
     # ``hermes update`` behaviour.
     "updates": {
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Off by default —
-        # on large HERMES_HOME directories the zip can add minutes to every
-        # update.  Set to true to re-enable, or pass ``--backup`` to opt in
-        # for a single update run.
-        "pre_update_backup": False,
+        # can be restored with ``hermes import <path>``.  Defaults to true
+        # after the #48200 incident: a ``hermes update --yes`` run that
+        # computed a wrong path silently wiped the user's ``.env``,
+        # ``MEMORY.md``, ``kanban.db``, custom skills, and scripts in one
+        # go.  The cost of a few minutes of zip time per update is
+        # negligible compared to the alternative.  Set to false to opt
+        # out, or pass ``--no-backup`` for a single update run.
+        "pre_update_backup": True,
         # How many pre-update backup zips to retain.  Older ones are pruned
-        # automatically after each successful backup.
+        # automatically after each successful backup.  Values below 1 are
+        # floored to 1 — the backup just created is always preserved.  To
+        # disable backups entirely, set ``pre_update_backup: false`` above
+        # rather than ``backup_keep: 0``.
         "backup_keep": 5,
+        # What `hermes update` does with uncommitted local changes to the
+        # source tree when it runs NON-interactively — i.e. triggered from
+        # the desktop/chat app or the gateway, where there's no TTY to answer
+        # a restore prompt. Interactive (terminal) updates are unaffected:
+        # they always stash the changes and ask whether to restore, exactly
+        # as they always have.
+        #   "stash"   — auto-stash the changes, pull, then auto-restore them
+        #               on top of the updated code (the safe default; nothing
+        #               is ever lost — conflicts are preserved in a git stash).
+        #   "discard" — auto-stash the changes and throw the stash away after
+        #               the pull. Use this only if you never intend to keep
+        #               local edits to the source tree on this machine.
+        #               Stash-and-drop (not `reset --hard` + `clean -fd`) so
+        #               ignored paths — node_modules, venv, build outputs —
+        #               are never touched.
+        "non_interactive_local_changes": "stash",
     },
 
+    # Language Server Protocol — semantic diagnostics from real
+    # language servers (pyright, gopls, rust-analyzer, etc.) wired
+    # into the post-write lint check used by ``write_file`` and
+    # ``patch``.
+    #
+    # LSP is gated on git-workspace detection: when the agent's
+    # cwd (or the file being edited) is inside a git worktree, LSP
+    # runs against that workspace.  When neither is in a git repo,
+    # LSP stays dormant and the in-process syntax check is the only
+    # tier — handy for Telegram/Discord chats where the cwd is the
+    # user's home directory.
+    "lsp": {
+        # Master toggle.  Setting this to false disables the entire
+        # subsystem — no servers spawn, no background event loop, no
+        # cost.
+        "enabled": True,
+
+        # Diagnostic-wait mode for the post-write check.
+        # ``"document"`` waits up to ``wait_timeout`` seconds for the
+        # current file's diagnostics; ``"full"`` additionally requests
+        # workspace-wide diagnostics (slower).
+        "wait_mode": "document",
+        "wait_timeout": 5.0,
+
+        # How to handle missing server binaries.
+        # ``"auto"`` — try to install via npm/go/pip into
+        #              ``<HERMES_HOME>/lsp/bin/`` on first use.
+        # ``"manual"`` — only use binaries already on PATH.
+        # ``"off"`` — alias for ``manual``.
+        "install_strategy": "auto",
+
+        # Per-server overrides.  Each key is a server_id from the
+        # registry (``pyright``, ``typescript``, ``gopls``,
+        # ``rust-analyzer``, etc.) and accepts:
+        #   disabled: true
+        #     — skip this server even when its extensions match
+        #   command: ["full/path/to/server", "--stdio"]
+        #     — pin a custom binary path; bypasses auto-install
+        #   env: {"KEY": "value"}
+        #     — extra env vars passed to the spawned process
+        #   initialization_options: {...}
+        #     — merged into the LSP ``initializationOptions``
+        # Empty by default; the registry defaults work for typical
+        # setups.
+        "servers": {},
+    },
+
+
+    # X (Twitter) Search via xAI's built-in x_search Responses tool.
+    # The tool registers when xAI credentials are available (SuperGrok
+    # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
+    # `hermes tools`. These settings tune the backing Responses API call.
+    "x_search": {
+        # xAI model used for the Responses call. grok-4.20-reasoning is
+        # the recommended default; any Grok model with x_search tool
+        # access works.
+        "model": "grok-4.20-reasoning",
+        # Request timeout in seconds (minimum 30). x_search can take
+        # 60-120s for complex queries — the default is generous.
+        "timeout_seconds": 180,
+        # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
+        # Each retry backs off (1.5x attempt seconds, capped at 5s).
+        "retries": 2,
+    },
+
+    # =========================================================================
+    # External secret sources
+    # =========================================================================
+    # Pull credentials from external secret managers at process startup
+    # rather than storing them in ~/.hermes/.env.
+    "secrets": {
+        "bitwarden": {
+            # Master switch.  When false, BSM is never contacted and the
+            # bws binary is never auto-installed — same as not having
+            # this section at all.
+            "enabled": False,
+            # Name of the env var that holds the Bitwarden machine-account
+            # access token.  This is the one bootstrap secret; it lives
+            # in ~/.hermes/.env (or your shell) and never in config.yaml.
+            "access_token_env": "BWS_ACCESS_TOKEN",
+            # UUID of the BSM project to sync from.
+            "project_id": "",
+            # Seconds to cache fetched secrets in-process.  0 disables.
+            "cache_ttl_seconds": 300,
+            # When True, BSM values overwrite existing env vars.  Default
+            # True because the point of using BSM is centralized rotation —
+            # if .env had the final say, rotating in Bitwarden wouldn't
+            # take effect until you also cleared the matching .env line.
+            "override_existing": True,
+            # When True, the bws binary is auto-downloaded into
+            # ~/.hermes/bin/ on first use.  When False you must install
+            # bws yourself and have it on PATH.
+            "auto_install": True,
+            # Bitwarden region / self-hosted endpoint.  Empty string
+            # means use the bws CLI default (US Cloud,
+            # https://vault.bitwarden.com).  Set to
+            # https://vault.bitwarden.eu for EU Cloud, or your own URL
+            # for self-hosted Bitwarden.  Plumbed into the bws subprocess
+            # as BWS_SERVER_URL.  Prompted for during
+            # `hermes secrets bitwarden setup`.
+            "server_url": "",
+        },
+    },
+
+    # Paste collapse thresholds (TUI + CLI).
+    #
+    # paste_collapse_threshold (default 5)
+    #   Bracketed-paste handler. Pastes with this many newlines or more
+    #   collapse to a file reference. Set 0 to disable.
+    #
+    # paste_collapse_threshold_fallback (default 5)
+    #   Fallback heuristic for terminals without bracketed paste support.
+    #   Same line count test but heuristically gated by chars-added /
+    #   newlines-added to avoid false positives from normal typing.
+    #   Set 0 to disable.
+    #
+    # paste_collapse_char_threshold (default 2000)
+    #   Long single-line paste guard. Pastes whose total char length
+    #   reaches this value collapse to a file reference even if line
+    #   count is below the line threshold. Catches the "8000 chars of
+    #   minified JSON / log output on one line" case. Set 0 to disable.
+    "paste_collapse_threshold": 5,
+    "paste_collapse_threshold_fallback": 5,
+    "paste_collapse_char_threshold": 2000,
+
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 30,
 }
 
 # =============================================================================
@@ -1712,10 +3184,26 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "TAVILY_API_KEY": {
-        "description": "Tavily API key for AI-native web search, extract, and crawl",
+        "description": "Tavily API key for AI-native web search and extract",
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
-        "tools": ["web_search", "web_extract", "web_crawl"],
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "SEARXNG_URL": {
+        "description": "URL of your SearXNG instance for free self-hosted web search",
+        "prompt": "SearXNG URL (e.g. http://localhost:8080)",
+        "url": "https://searxng.github.io/searxng/",
+        "tools": ["web_search"],
+        "password": False,
+        "category": "tool",
+    },
+    "BRAVE_SEARCH_API_KEY": {
+        "description": "Brave Search API subscription token (free tier: 2,000 queries/mo)",
+        "prompt": "Brave Search subscription token",
+        "url": "https://brave.com/search/api/",
+        "tools": ["web_search"],
         "password": True,
         "category": "tool",
     },
@@ -1750,6 +3238,15 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
     },
+    "AGENT_BROWSER_ENGINE": {
+        "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
+        "prompt": "Browser engine (auto/lightpanda/chrome)",
+        "url": "https://github.com/vercel-labs/agent-browser",
+        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
     "CAMOFOX_URL": {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "prompt": "Camofox server URL",
@@ -1759,26 +3256,18 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "FAL_KEY": {
-        "description": "FAL API key for image generation",
+        "description": "FAL API key for image and video generation",
         "prompt": "FAL API key",
         "url": "https://fal.ai/",
+        "tools": ["image_generate", "video_generate"],
+        "password": True,
+        "category": "tool",
+    },
+    "KREA_API_KEY": {
+        "description": "Krea API key for Krea 2 image generation (Medium + Large)",
+        "prompt": "Krea API key",
+        "url": "https://www.krea.ai/settings/api-tokens",
         "tools": ["image_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "TINKER_API_KEY": {
-        "description": "Tinker API key for RL training",
-        "prompt": "Tinker API key",
-        "url": "https://tinker-console.thinkingmachines.ai/keys",
-        "tools": ["rl_start_training", "rl_check_status", "rl_stop_training"],
-        "password": True,
-        "category": "tool",
-    },
-    "WANDB_API_KEY": {
-        "description": "Weights & Biases API key for experiment tracking",
-        "prompt": "WandB API key",
-        "url": "https://wandb.ai/authorize",
-        "tools": ["rl_get_results", "rl_check_status"],
         "password": True,
         "category": "tool",
     },
@@ -1791,9 +3280,10 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "ELEVENLABS_API_KEY": {
-        "description": "ElevenLabs API key for premium text-to-speech voices",
+        "description": "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
+        "tools": ["elevenlabs_tts", "voice_transcription"],
         "password": True,
         "category": "tool",
     },
@@ -1828,7 +3318,7 @@ OPTIONAL_ENV_VARS = {
     "LINEAR_API_KEY": {
         "description": "Linear personal API key (used by the `linear` skill)",
         "prompt": "Linear API key",
-        "url": "https://linear.app/settings/api",
+        "url": "https://linear.app/settings/account/security",
         "password": True,
         "category": "skill",
         "advanced": True,
@@ -2182,8 +3672,8 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "API_SERVER_KEY": {
-        "description": "Bearer token for API server authentication. Required for non-loopback binding; server refuses to start without it. On loopback (127.0.0.1), all requests are allowed if empty.",
-        "prompt": "API server auth key (required for network access)",
+        "description": "Bearer token for API server authentication. Required whenever the API server is enabled; server refuses to start without it.",
+        "prompt": "API server auth key",
         "url": None,
         "password": True,
         "category": "messaging",
@@ -2198,7 +3688,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "API_SERVER_HOST": {
-        "description": "Host/bind address for the API server (default: 127.0.0.1). Use 0.0.0.0 for network access — server refuses to start without API_SERVER_KEY.",
+        "description": "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still required even on loopback binds.",
         "prompt": "API server host",
         "url": None,
         "password": False,
@@ -2261,30 +3751,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "setting",
     },
-    "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 90)",
-        "prompt": "Max iterations",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
     # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
     # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
-    # Gateway falls back to these env vars for backward compatibility.
-    "HERMES_TOOL_PROGRESS": {
-        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
-        "prompt": "Tool progress (deprecated — use config.yaml)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
-    "HERMES_TOOL_PROGRESS_MODE": {
-        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
-        "prompt": "Progress mode (deprecated — use config.yaml)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
+    # The gateway still falls back to these env vars for backward compatibility,
+    # so they live in _EXTRA_ENV_KEYS (known to .env sanitization/reload) but
+    # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing
+    # surfaces (dashboard keys page, setup checklists) and deprecated knobs
+    # shouldn't be offered there.
     "HERMES_PREFILL_MESSAGES_FILE": {
         "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
         "prompt": "Prefill messages file path",
@@ -2418,7 +3891,17 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-    all_vars = discover_all_skill_config_vars()
+    try:
+        all_vars = discover_all_skill_config_vars()
+    except Exception as e:
+        # A malformed SKILL.md, unreadable external skill dir, or similar
+        # should never break `hermes update`.  Skill-config prompting is a
+        # post-migration nicety, not a blocker.
+        import logging
+        logging.getLogger(__name__).debug(
+            "discover_all_skill_config_vars failed: %s", e
+        )
+        return []
     if not all_vars:
         return []
 
@@ -2473,6 +3956,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "discover_models", "extra_body",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2563,7 +4047,51 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    discover_models = entry.get("discover_models")
+    if isinstance(discover_models, bool):
+        normalized["discover_models"] = discover_models
+
+    extra_body = entry.get("extra_body")
+    if isinstance(extra_body, dict):
+        normalized["extra_body"] = dict(extra_body)
+
     return normalized
+
+
+def _custom_provider_entry_to_provider_config(
+    entry: Any,
+    *,
+    provider_key: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Translate a legacy custom provider entry to the v12 providers shape."""
+    normalized = _normalize_custom_provider_entry(
+        dict(entry) if isinstance(entry, dict) else entry,
+        provider_key=provider_key,
+    )
+    if normalized is None:
+        return None
+
+    provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
+
+    for field in (
+        "name",
+        "api_key",
+        "key_env",
+        "models",
+        "context_length",
+        "rate_limit_delay",
+        "discover_models",
+        "extra_body",
+    ):
+        if field in normalized:
+            provider_entry[field] = normalized[field]
+
+    if "model" in normalized:
+        provider_entry["default_model"] = normalized["model"]
+    if "api_mode" in normalized:
+        provider_entry["transport"] = normalized["api_mode"]
+
+    return provider_entry
 
 
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
@@ -2695,15 +4223,46 @@ def get_custom_provider_context_length(
     return None
 
 
+def _coerce_config_version(value: Any) -> int:
+    """Return a safe integer config version, treating invalid values as legacy."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        version = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(version, 0)
+
+
 def check_config_version() -> Tuple[int, int]:
     """
-    Check config version.
-    
+    Check the raw on-disk config schema version.
+
+    ``load_config()`` deliberately starts from ``DEFAULT_CONFIG`` and deep-merges
+    the user's file, which is correct for runtime reads but wrong for deciding
+    whether the user's persisted schema has been migrated. A config file with no
+    raw ``_config_version`` must remain visible as legacy instead of inheriting
+    the latest default version in memory.
+
     Returns (current_version, latest_version).
     """
-    config = load_config()
-    current = config.get("_config_version", 0)
-    latest = DEFAULT_CONFIG.get("_config_version", 1)
+    latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
+    config_path = get_config_path()
+    if not config_path.exists():
+        return latest, latest
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception as e:
+        # Invalid YAML needs a parse warning, not an automatic schema rewrite
+        # that could replace the user's broken file with defaults.
+        _warn_config_parse_failure(config_path, e)
+        return latest, latest
+
+    if not isinstance(config, dict):
+        config = {}
+    current = _coerce_config_version(config.get("_config_version"))
     return current, latest
 
 
@@ -2717,13 +4276,13 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay",
+    "context_length", "rate_limit_delay", "extra_body",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",
@@ -2926,7 +4485,7 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
     terminal_cfg = config.get("terminal", {})
     config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
     # Only warn if config.yaml doesn't have an explicit path
-    config_has_explicit_cwd = config_cwd not in (".", "auto", "cwd", "")
+    config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
 
     lines: list[str] = []
     if messaging_cwd:
@@ -2986,10 +4545,10 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if "tool_progress" not in display:
             old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
             old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
-            if old_enabled and old_enabled.lower() in ("false", "0", "no"):
+            if old_enabled and old_enabled.lower() in {"false", "0", "no"}:
                 display["tool_progress"] = "off"
                 results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
-            elif old_mode and old_mode.lower() in ("new", "all"):
+            elif old_mode and old_mode.lower() in {"new", "all"}:
                 display["tool_progress"] = old_mode.lower()
                 results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
             else:
@@ -3041,8 +4600,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not isinstance(entry, dict):
                     continue
                 old_name = entry.get("name", "")
-                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
-                old_key = entry.get("api_key", "")
+                old_url = entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "") or ""
                 if not old_url:
                     continue  # skip entries with no URL
 
@@ -3062,20 +4620,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         key = f"endpoint-{migrated_count}"
 
                 # Don't overwrite existing entries
-                if key in providers_dict:
-                    key = f"{key}-{migrated_count}"
+                base_key = key
+                suffix = migrated_count
+                while key in providers_dict:
+                    key = f"{base_key}-{suffix}"
+                    suffix += 1
 
-                new_entry = {"api": old_url}
-                if old_name:
-                    new_entry["name"] = old_name
-                if old_key and old_key not in ("no-key", "no-key-required", ""):
-                    new_entry["api_key"] = old_key
-
-                # Carry over model and api_mode if present
-                if entry.get("model"):
-                    new_entry["default_model"] = entry["model"]
-                if entry.get("api_mode"):
-                    new_entry["transport"] = entry["api_mode"]
+                new_entry = _custom_provider_entry_to_provider_config(
+                    entry,
+                    provider_key=key,
+                )
+                if new_entry is None:
+                    continue
+                if not old_name:
+                    new_entry.pop("name", None)
+                if new_entry.get("api_key") in {"no-key", "no-key-required", ""}:
+                    new_entry.pop("api_key", None)
 
                 providers_dict[key] = new_entry
                 migrated_count += 1
@@ -3126,7 +4686,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             stt.pop("model", None)
             # Place it in the appropriate provider section only if the
             # user didn't already set a model there
-            if provider in ("local", "local_command"):
+            if provider in {"local", "local_command"}:
                 # Don't migrate an OpenAI model name into the local section
                 _local_models = {
                     "tiny.en", "tiny", "base.en", "base", "small.en", "small",
@@ -3210,7 +4770,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not aux_comp.get("model"):
                     aux_comp["model"] = str(s_model).strip()
                     migrated_keys.append(f"model={s_model}")
-            if s_provider and str(s_provider).strip() not in ("", "auto"):
+            if s_provider and str(s_provider).strip() not in {"", "auto"}:
                 aux = config.setdefault("auxiliary", {})
                 aux_comp = aux.setdefault("compression", {})
                 if not aux_comp.get("provider") or aux_comp.get("provider") == "auto":
@@ -3267,7 +4827,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         if not manifest_file.exists():
                             continue
                         try:
-                            with open(manifest_file) as _mf:
+                            with open(manifest_file, encoding="utf-8") as _mf:
                                 manifest = yaml.safe_load(_mf) or {}
                         except Exception:
                             manifest = {}
@@ -3380,6 +4940,105 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         f"{', '.join(added_aux)}"
                     )
 
+    # ── Version 24 → 25: lower model_catalog TTL 24h → 1h ──
+    # The model picker now refreshes its curated list hourly so freshly
+    # published model-catalog.json deploys reach users without a day-long
+    # stale window. Only rewrite the OLD default (24) — never clobber a
+    # value the user deliberately customized.
+    if current_ver < 25:
+        config = read_raw_config()
+        raw_mc = config.get("model_catalog")
+        if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 24:
+            raw_mc["ttl_hours"] = 1
+            config["model_catalog"] = raw_mc
+            save_config(config)
+            results["config_added"].append("model_catalog.ttl_hours 24→1")
+            if not quiet:
+                print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
+
+    # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
+    # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
+    # write_approval (default false = gate off, writes flow freely; true =
+    # require approval). Only an explicit "approve" carried gating intent, so
+    # it maps to true; everything else (on/off/unset) → false. The old
+    # "off = block all writes" mode is dropped — memory_enabled: false disables
+    # memory entirely. Only rewrite a key the user actually persisted; never
+    # invent one.
+    if current_ver < 29:
+        config = read_raw_config()
+        touched = False
+        for subsystem in ("memory", "skills"):
+            sub = config.get(subsystem)
+            if not isinstance(sub, dict) or "write_mode" not in sub:
+                continue
+            old = sub.pop("write_mode")
+            old_norm = old.strip().lower() if isinstance(old, str) else old
+            sub["write_approval"] = (old_norm == "approve")
+            config[subsystem] = sub
+            touched = True
+            results["config_added"].append(
+                f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
+            )
+        if touched:
+            save_config(config)
+            if not quiet:
+                print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+
+    # ── Version 29 → 30: seed curator.consolidate (default false) ──
+    # Consolidation (the LLM umbrella-building fork) is now an opt-in toggle,
+    # OFF by default. The deterministic inactivity prune still runs whenever
+    # the curator is enabled; only the opinionated, aux-model-cost LLM pass is
+    # gated. The runtime deep-merge already supplies the default, but we seed
+    # the key so it's visible/editable in config.yaml. Existing installs that
+    # WANT the old always-consolidate behavior must set it to true explicitly.
+    # Only add the key when a curator section exists and lacks it — never
+    # clobber a value the user already set.
+    if current_ver < 30:
+        config = read_raw_config()
+        raw_curator = config.get("curator")
+        if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
+            raw_curator["consolidate"] = False
+            config["curator"] = raw_curator
+            save_config(config)
+            results["config_added"].append("curator.consolidate=false")
+            if not quiet:
+                print(
+                    "  ✓ Seeded curator.consolidate: false "
+                    "(LLM consolidation is now opt-in; pruning stays on)"
+                )
+
+    # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
+    # Users can hand-edit mcp_servers, and older installs may already contain a
+    # malicious entry. Preserve the stanza for auditability but mark it
+    # disabled so the next startup will not spawn it. (#45620)
+    config = read_raw_config()
+    raw_mcp_servers = config.get("mcp_servers")
+    if isinstance(raw_mcp_servers, dict):
+        try:
+            from hermes_cli.mcp_security import validate_mcp_server_entry as _validate_mcp_server_entry
+        except Exception:
+            _validate_mcp_server_entry = None
+        if _validate_mcp_server_entry:
+            mcp_touched = False
+            for server_name, entry in raw_mcp_servers.items():
+                if not isinstance(entry, dict):
+                    continue
+                issues = _validate_mcp_server_entry(server_name, entry)
+                if not issues:
+                    continue
+                entry["enabled"] = False
+                mcp_touched = True
+                results["warnings"].append(
+                    f"Disabled suspicious MCP server '{server_name}'"
+                )
+                if not quiet:
+                    for issue in issues:
+                        print(f"  ⚠ {issue}")
+                    print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
+            if mcp_touched:
+                config["mcp_servers"] = raw_mcp_servers
+                save_config(config)
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -3398,8 +5057,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(f"  Get your key at: {var['url']}")
             
             if var.get("password"):
-                import getpass
-                value = getpass.getpass(f"  {var['prompt']}: ")
+                value = masked_secret_prompt(f"  {var['prompt']}: ")
             else:
                 value = input(f"  {var['prompt']}: ").strip()
             
@@ -3441,7 +5099,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             except (EOFError, KeyboardInterrupt):
                 answer = "n"
 
-            if answer in ("y", "yes"):
+            if answer in {"y", "yes"}:
                 print()
                 for name, info in new_and_unset:
                     if info.get("url"):
@@ -3450,8 +5108,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     else:
                         print(f"  {info.get('description', name)}")
                     if info.get("password"):
-                        import getpass
-                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
+                        value = masked_secret_prompt(
+                            f"  {info.get('prompt', name)} (Enter to skip): "
+                        )
                     else:
                         value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
                     if value:
@@ -3502,7 +5161,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         except (EOFError, KeyboardInterrupt):
             answer = "n"
 
-        if answer in ("y", "yes"):
+        if answer in {"y", "yes"}:
             print()
             config = load_config()
             try:
@@ -3756,28 +5415,30 @@ def read_raw_config() -> Dict[str, Any]:
     ``load_config()``. Returns a deepcopy on every call since some callers
     mutate the result before passing to ``save_config()``.
     """
-    try:
-        config_path = get_config_path()
-        st = config_path.stat()
-        cache_key = (st.st_mtime_ns, st.st_size)
-    except (FileNotFoundError, OSError):
-        return {}
+    with _CONFIG_LOCK:
+        try:
+            config_path = get_config_path()
+            st = config_path.stat()
+            cache_key = (st.st_mtime_ns, st.st_size)
+        except (FileNotFoundError, OSError):
+            return {}
 
-    path_key = str(config_path)
-    cached = _RAW_CONFIG_CACHE.get(path_key)
-    if cached is not None and cached[:2] == cache_key:
-        return copy.deepcopy(cached[2])
+        path_key = str(config_path)
+        cached = _RAW_CONFIG_CACHE.get(path_key)
+        if cached is not None and cached[:2] == cache_key:
+            return copy.deepcopy(cached[2])
 
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except Exception:
-        return {}
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            _warn_config_parse_failure(config_path, e)
+            return {}
 
-    if not isinstance(data, dict):
-        data = {}
-    _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
-    return data
+        if not isinstance(data, dict):
+            data = {}
+        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
+        return data
 
 
 def load_config() -> Dict[str, Any]:
@@ -3789,55 +5450,190 @@ def load_config() -> Dict[str, Any]:
     The cache is keyed on ``str(config_path)`` so profile switches
     (which change ``HERMES_HOME`` and therefore ``get_config_path()``)
     don't collide.
+
+    Read-only callers should use ``load_config_readonly()`` to skip the
+    defensive deepcopy — that path matters in agent-loop hot spots like
+    ``get_provider_request_timeout`` which is called once per API turn.
     """
-    ensure_hermes_home()
-    config_path = get_config_path()
-    path_key = str(config_path)
+    return _load_config_impl(want_deepcopy=True)
 
-    try:
-        st = config_path.stat()
-        cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
-    except FileNotFoundError:
-        cache_key = None
 
-    cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is not None and cache_key is not None and cached[:2] == cache_key:
-        return copy.deepcopy(cached[2])
+def load_config_readonly() -> Dict[str, Any]:
+    """Fast-path variant of ``load_config()`` for callers that ONLY READ.
 
-    config = copy.deepcopy(DEFAULT_CONFIG)
+    Returns the cached config dict directly without the defensive deepcopy
+    that ``load_config()`` applies. **Mutating the returned dict (or any
+    nested structure) corrupts the in-process cache for every subsequent
+    caller** — only use this when you are absolutely sure your code path
+    will not write to the result. If you need to mutate or pass to
+    ``save_config``, call ``load_config()`` instead.
 
-    if cache_key is not None:
+    Why this exists: ``load_config()`` cache-hit cost is ~265us per call,
+    half of which (~135us) is the defensive deepcopy. The agent loop calls
+    into config reads (timeouts, thresholds, feature flags) ~20-50x per
+    conversation; skipping deepcopy here removes a measurable allocation
+    source and the GC pressure that comes with it.
+
+    Note: this returns a plain ``dict`` (not ``MappingProxyType``) so
+    existing ``isinstance(x, dict)`` guards downstream keep working. The
+    safety guarantee is purely documented, not enforced — be careful.
+    """
+    return _load_config_impl(want_deepcopy=False)
+
+
+TERMINAL_CONFIG_ENV_MAP = {
+    "backend": "TERMINAL_ENV",
+    "modal_mode": "TERMINAL_MODAL_MODE",
+    "cwd": "TERMINAL_CWD",
+    "timeout": "TERMINAL_TIMEOUT",
+    "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+    "docker_image": "TERMINAL_DOCKER_IMAGE",
+    "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+    "modal_image": "TERMINAL_MODAL_IMAGE",
+    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "ssh_host": "TERMINAL_SSH_HOST",
+    "ssh_user": "TERMINAL_SSH_USER",
+    "ssh_port": "TERMINAL_SSH_PORT",
+    "ssh_key": "TERMINAL_SSH_KEY",
+    "container_cpu": "TERMINAL_CONTAINER_CPU",
+    "container_memory": "TERMINAL_CONTAINER_MEMORY",
+    "container_disk": "TERMINAL_CONTAINER_DISK",
+    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+    "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+    "docker_env": "TERMINAL_DOCKER_ENV",
+    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+    "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
+    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+    "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+    "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+}
+
+
+def _terminal_env_value(value: Any) -> str:
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
+    return str(value)
+
+
+def terminal_config_env_var_for_key(key: str) -> Optional[str]:
+    """Return the env var mirrored by a ``terminal.*`` config key."""
+    prefix = "terminal."
+    if not key.startswith(prefix):
+        return None
+    return TERMINAL_CONFIG_ENV_MAP.get(key[len(prefix):])
+
+
+def apply_terminal_config_to_env(
+    *,
+    env: Optional[Dict[str, str]] = None,
+    config: Optional[Dict[str, Any]] = None,
+    override: Optional[bool] = None,
+) -> Dict[str, str]:
+    """Bridge ``terminal.*`` config into the env vars terminal tools read.
+
+    ``tools.terminal_tool`` is intentionally environment-driven because it also
+    runs in child processes (TUI, dashboard PTY, gateway workers).  This helper
+    gives those child-process launch paths the same config bridge as classic
+    CLI without importing ``cli.py`` and paying for its startup side effects.
+
+    When the user config contains a ``terminal`` section, config.yaml is
+    authoritative and overrides existing env values.  Otherwise defaults only
+    backfill missing env vars so exported/.env values keep working.
+    """
+    target = os.environ if env is None else env
+
+    raw_config = read_raw_config()
+    file_has_terminal_config = isinstance(raw_config.get("terminal"), dict)
+    should_override = file_has_terminal_config if override is None else override
+
+    cfg = config if config is not None else load_config_readonly()
+    terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(terminal_cfg, dict):
+        return target
+
+    for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
+        if cfg_key not in terminal_cfg:
+            continue
+        value = terminal_cfg[cfg_key]
+        if cfg_key == "cwd":
+            raw_cwd = str(value or "").strip()
+            if raw_cwd in {".", "auto", "cwd"}:
+                continue
+            if isinstance(value, str):
+                value = os.path.expanduser(value)
+        if should_override or env_var not in target:
+            target[env_var] = _terminal_env_value(value)
+    return target
+
+
+def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    with _CONFIG_LOCK:
+        ensure_hermes_home()
+        config_path = get_config_path()
+        path_key = str(config_path)
+
         try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
+            st = config_path.stat()
+            cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            cache_key = None
 
-            if "max_turns" in user_config:
-                agent_user_config = dict(user_config.get("agent") or {})
-                if agent_user_config.get("max_turns") is None:
-                    agent_user_config["max_turns"] = user_config["max_turns"]
-                user_config["agent"] = agent_user_config
-                user_config.pop("max_turns", None)
+        cached = _LOAD_CONFIG_CACHE.get(path_key)
+        if cached is not None and cache_key is not None and cached[:2] == cache_key:
+            return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
 
-            config = _deep_merge(config, user_config)
-        except Exception as e:
-            print(f"Warning: Failed to load config: {e}")
+        config = copy.deepcopy(DEFAULT_CONFIG)
 
-    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-    expanded = _expand_env_vars(normalized)
-    _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
-    if cache_key is not None:
-        _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(expanded))
-    else:
-        _LOAD_CONFIG_CACHE.pop(path_key, None)
-    return expanded
+        if cache_key is not None:
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+
+                if "max_turns" in user_config:
+                    agent_user_config = dict(user_config.get("agent") or {})
+                    if agent_user_config.get("max_turns") is None:
+                        agent_user_config["max_turns"] = user_config["max_turns"]
+                    user_config["agent"] = agent_user_config
+                    user_config.pop("max_turns", None)
+
+                config = _deep_merge(config, user_config)
+            except Exception as e:
+                _warn_config_parse_failure(config_path, e)
+
+        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        expanded = _expand_env_vars(normalized)
+        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        if cache_key is not None:
+            # Cache stores a separate deepcopy so subsequent ``load_config()``
+            # (deepcopy=True) callers can mutate freely without affecting the
+            # cached value, and ``load_config_readonly()`` (deepcopy=False)
+            # callers all see the same stable cached object.
+            cached_copy = copy.deepcopy(expanded)
+            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+            # On the readonly path return the same cached object subsequent
+            # calls will see — keeps "two readonly calls return the same
+            # object" invariant that callers may rely on for identity checks.
+            if not want_deepcopy:
+                return cached_copy
+        else:
+            _LOAD_CONFIG_CACHE.pop(path_key, None)
+        # First-load result is a fresh dict (not aliased to the cache); safe
+        # to return directly. For the deepcopy=True path this is the
+        # canonical "freshly-built mutable result" the function has always
+        # returned. For the deepcopy=False path with no cache (e.g. config
+        # file missing), it's also fine — callers get an isolated object.
+        return expanded
 
 
 _SECURITY_COMMENT = """
 # ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is OFF by default — tool output (terminal stdout,
-# read_file results, web content) passes through unmodified. Set
-# redact_secrets to true to mask strings that look like API keys, tokens,
-# and passwords before they enter the model context and logs.
+# Secret redaction is ON by default — strings that look like API keys,
+# tokens, and passwords are masked in tool output, logs, and chat
+# responses before the model or user ever sees them. Set redact_secrets
+# to false to disable (e.g. when developing the redactor itself).
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
@@ -3865,6 +5661,7 @@ _FALLBACK_COMMENT = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -3876,8 +5673,8 @@ _FALLBACK_COMMENT = """
 
 _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is OFF by default. Set to true to mask strings that
-# look like API keys, tokens, and passwords in tool output and logs.
+# Secret redaction is ON by default. Set to false to pass tool output,
+# logs, and chat responses through unmodified (e.g. for redactor dev).
 #
 # security:
 #   redact_secrets: true
@@ -3896,6 +5693,7 @@ _COMMENTED_SECTIONS = """
 #   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   bedrock      (AWS IAM / boto3)     — AWS Bedrock (Converse API)
 #
 # For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
@@ -3907,45 +5705,46 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
-    if is_managed():
-        managed_error("save configuration")
-        return
-    from utils import atomic_yaml_write
+    with _CONFIG_LOCK:
+        if is_managed():
+            managed_error("save configuration")
+            return
+        from utils import atomic_yaml_write
 
-    ensure_hermes_home()
-    config_path = get_config_path()
-    current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-    normalized = current_normalized
-    raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
-    if raw_existing:
-        normalized = _preserve_env_ref_templates(
+        ensure_hermes_home()
+        config_path = get_config_path()
+        current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        normalized = current_normalized
+        raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
+        if raw_existing:
+            normalized = _preserve_env_ref_templates(
+                normalized,
+                raw_existing,
+                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            )
+
+        # Build optional commented-out sections for features that are off by
+        # default or only relevant when explicitly configured.
+        parts = []
+        sec = normalized.get("security", {})
+        if not sec or sec.get("redact_secrets") is None:
+            parts.append(_SECURITY_COMMENT)
+        fb = normalized.get("fallback_model", {})
+        fb_is_valid = False
+        if isinstance(fb, list):
+            fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
+        elif isinstance(fb, dict):
+            fb_is_valid = bool(fb.get("provider") and fb.get("model"))
+        if not fb_is_valid:
+            parts.append(_FALLBACK_COMMENT)
+
+        atomic_yaml_write(
+            config_path,
             normalized,
-            raw_existing,
-            _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            extra_content="".join(parts) if parts else None,
         )
-
-    # Build optional commented-out sections for features that are off by
-    # default or only relevant when explicitly configured.
-    parts = []
-    sec = normalized.get("security", {})
-    if not sec or sec.get("redact_secrets") is None:
-        parts.append(_SECURITY_COMMENT)
-    fb = normalized.get("fallback_model", {})
-    fb_is_valid = False
-    if isinstance(fb, list):
-        fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
-    elif isinstance(fb, dict):
-        fb_is_valid = bool(fb.get("provider") and fb.get("model"))
-    if not fb_is_valid:
-        parts.append(_FALLBACK_COMMENT)
-
-    atomic_yaml_write(
-        config_path,
-        normalized,
-        extra_content="".join(parts) if parts else None,
-    )
-    _secure_file(config_path)
-    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        _secure_file(config_path)
+        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
 def load_env() -> Dict[str, str]:
@@ -3955,14 +5754,39 @@ def load_env() -> Dict[str, str]:
     concatenated KEY=VALUE pairs on a single line) are handled
     gracefully instead of producing mangled values such as duplicated
     bot tokens.  See #8908.
+
+    The parsed dict is memoised keyed on the .env file mtime, because
+    ``get_env_value()`` is called dozens-to-hundreds of times per
+    interactive menu render (`hermes tools`, `hermes setup`, status
+    panels). Sanitisation is O(lines × known-keys), so re-parsing the
+    same file on every call was burning ~300ms of CPU per `hermes tools`
+    menu paint on top of the OAuth-refresh slowness. The mtime check
+    invalidates the cache when the user edits .env mid-process.
     """
+    global _env_cache
     env_path = get_env_path()
-    env_vars = {}
-    
+
+    try:
+        mtime = env_path.stat().st_mtime
+        size = env_path.stat().st_size
+        cache_key = (str(env_path), mtime, size)
+    except FileNotFoundError:
+        cache_key = (str(env_path), None, None)
+    except Exception:
+        cache_key = None
+
+    if cache_key is not None and _env_cache is not None:
+        cached_key, cached_vars = _env_cache
+        if cached_key == cache_key:
+            return dict(cached_vars)
+
+    env_vars: Dict[str, str] = {}
+
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
-        # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
-        open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+        # fail on UTF-8 .env files. Always use explicit UTF-8; tolerate BOM
+        # via utf-8-sig since users may edit .env in Notepad which adds one.
+        open_kw = {"encoding": "utf-8-sig", "errors": "replace"}
         with open(env_path, **open_kw) as f:
             raw_lines = f.readlines()
         # Sanitize before parsing: split concatenated lines & drop stale
@@ -3973,8 +5797,31 @@ def load_env() -> Dict[str, str]:
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = value.strip().strip('"\'')
-    
+
+    if cache_key is not None:
+        _env_cache = (cache_key, dict(env_vars))
+
     return env_vars
+
+
+# Module-level memo for load_env(), keyed on (path, mtime, size).
+# Editing .env bumps mtime → next load_env() rebuilds. invalidate_env_cache()
+# is the explicit knob for writers that update .env via this module
+# (set_env_value, save_env, etc.) without relying on filesystem mtime
+# resolution.
+_env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
+
+
+def invalidate_env_cache() -> None:
+    """Clear the load_env() process-level memo.
+
+    Writers that mutate .env (set_env_value, save_env, etc.) call this
+    to guarantee the next load_env() sees their change even on
+    filesystems with coarse mtime resolution. Reads invalidate naturally
+    via the mtime/size check.
+    """
+    global _env_cache
+    _env_cache = None
 
 
 def _sanitize_env_lines(lines: list) -> list:
@@ -4047,8 +5894,8 @@ def sanitize_env_file() -> int:
     if not env_path.exists():
         return 0
 
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     with open(env_path, **read_kw) as f:
         original_lines = f.readlines()
@@ -4079,6 +5926,7 @@ def sanitize_env_file() -> int:
             pass
         raise
     _secure_file(env_path)
+    invalidate_env_cache()
     return fixes
 
 
@@ -4129,6 +5977,7 @@ def save_env_value(key: str, value: str):
         return
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
+    _reject_denylisted_env_var(key)
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
@@ -4137,8 +5986,8 @@ def save_env_value(key: str, value: str):
 
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     lines = []
     if env_path.exists():
@@ -4175,21 +6024,24 @@ def save_env_value(key: str, value: str):
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
-        # Restore original permissions before _secure_file may tighten them.
+        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
+        # instead of letting _secure_file unconditionally tighten to 0600.
         if original_mode is not None:
             try:
                 os.chmod(env_path, original_mode)
             except OSError:
                 pass
+        else:
+            _secure_file(env_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-    _secure_file(env_path)
 
     os.environ[key] = value
+    invalidate_env_cache()
 
 
 def remove_env_value(key: str) -> bool:
@@ -4207,8 +6059,8 @@ def remove_env_value(key: str) -> bool:
         os.environ.pop(key, None)
         return False
 
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     with open(env_path, **read_kw) as f:
         lines = f.readlines()
@@ -4231,20 +6083,25 @@ def remove_env_value(key: str) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, env_path)
+            # Preserve the original file mode (e.g. 0640 for Docker volume
+            # mounts) instead of letting _secure_file unconditionally tighten
+            # to 0600. Mirrors save_env_value().
             if original_mode is not None:
                 try:
                     os.chmod(env_path, original_mode)
                 except OSError:
                     pass
+            else:
+                _secure_file(env_path)
         except BaseException:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
             raise
-        _secure_file(env_path)
 
     os.environ.pop(key, None)
+    invalidate_env_cache()
     return found
 
 
@@ -4369,13 +6226,27 @@ def show_config():
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
-    print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
+    _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
+    print(f"  Max turns:    {_cfg_max_turns}")
+    # Warn on stale HERMES_MAX_ITERATIONS ghost in .env that disagrees with
+    # config.yaml (issue #17534). Read the .env FILE directly so we catch the
+    # ghost even when the gateway bridge already overrode os.environ.
+    try:
+        _env_ghost = load_env().get("HERMES_MAX_ITERATIONS")
+        if _env_ghost is not None and str(_env_ghost).strip() != str(_cfg_max_turns).strip():
+            print(color(
+                f"                ⚠ .env has stale HERMES_MAX_ITERATIONS={_env_ghost} "
+                f"(run 'hermes doctor --fix' to remove)",
+                Colors.YELLOW,
+            ))
+    except Exception:
+        pass
     
     # Display
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
-    print(f"  Personality:  {display.get('personality', 'kawaii')}")
+    print(f"  Personality:  {display.get('personality') or 'none'}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
     ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
@@ -4403,9 +6274,6 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
-    elif terminal.get('backend') == 'vercel_sandbox':
-        print(f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}")
-        print(f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -4431,6 +6299,7 @@ def show_config():
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
+        print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")
         _aux_comp = config.get('auxiliary', {}).get('compression', {})
         _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")
@@ -4509,11 +6378,19 @@ def edit_config():
     
     # Find editor
     editor = os.getenv('EDITOR') or os.getenv('VISUAL')
-    
+
     if not editor:
-        # Try common editors
-        for cmd in ['nano', 'vim', 'vi', 'code', 'notepad']:
-            import shutil
+        # Try common editors — order is platform-aware so Windows users
+        # land on a working editor (notepad) even without Git Bash or nano
+        # installed.  On POSIX, prefer nano/vim over code/notepad because
+        # it's more likely to be present on headless / server systems.
+        import shutil
+        import sys as _sys
+        if _sys.platform == "win32":
+            candidates = ['notepad', 'code', 'vim', 'vi', 'nano']
+        else:
+            candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
+        for cmd in candidates:
             if shutil.which(cmd):
                 editor = cmd
                 break
@@ -4542,8 +6419,7 @@ def set_config_value(key: str, value: str):
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
-        'TINKER_API_KEY',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY',
     ]
     
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
@@ -4569,9 +6445,9 @@ def set_config_value(key: str, value: str):
     # inline navigation here silently overwrote lists with dicts.
 
     # Convert value to appropriate type
-    if value.lower() in ('true', 'yes', 'on'):
+    if value.lower() in {'true', 'yes', 'on'}:
         value = True
-    elif value.lower() in ('false', 'no', 'off'):
+    elif value.lower() in {'false', 'no', 'off'}:
         value = False
     elif value.isdigit():
         value = int(value)
@@ -4587,27 +6463,9 @@ def set_config_value(key: str, value: str):
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
-    _config_to_env_sync = {
-        "terminal.backend": "TERMINAL_ENV",
-        "terminal.modal_mode": "TERMINAL_MODAL_MODE",
-        "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
-        "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
-        "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-        "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-        "terminal.cwd": "TERMINAL_CWD",
-        "terminal.timeout": "TERMINAL_TIMEOUT",
-        "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        "terminal.container_cpu": "TERMINAL_CONTAINER_CPU",
-        "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
-        "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-    }
-    if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+    env_var = terminal_config_env_var_for_key(key)
+    if env_var and key != "terminal.cwd":
+        save_env_value(env_var, _terminal_env_value(value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
 
@@ -4751,3 +6609,142 @@ def config_command(args):
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")
         sys.exit(1)
+
+
+# ── Profile-driven env var injection ─────────────────────────────────────────
+# Any provider registered in providers/ with auth_type="api_key" automatically
+# gets its env_vars exposed in OPTIONAL_ENV_VARS without editing this file.
+# Runs once at import time.
+
+_profile_env_vars_injected = False
+
+
+def _inject_profile_env_vars() -> None:
+    """Populate OPTIONAL_ENV_VARS from provider profiles not already listed.
+
+    Called once at module load time. Idempotent — repeated calls are no-ops.
+    """
+    global _profile_env_vars_injected
+    if _profile_env_vars_injected:
+        return
+    _profile_env_vars_injected = True
+    try:
+        from providers import list_providers
+        for _pp in list_providers():
+            if _pp.auth_type not in {"api_key",}:
+                continue
+            for _var in _pp.env_vars:
+                if _var in OPTIONAL_ENV_VARS:
+                    continue
+                _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
+                OPTIONAL_ENV_VARS[_var] = {
+                    "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
+                    "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
+                    "url": _pp.signup_url or None,
+                    "password": _is_key,
+                    "category": "provider",
+                    "advanced": True,
+                }
+    except Exception:
+        pass
+
+
+# Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
+_inject_profile_env_vars()
+
+
+# ── Platform-plugin env var injection ────────────────────────────────────────
+# Bundled platform plugins under ``plugins/platforms/*/plugin.yaml`` declare
+# their required env vars via ``requires_env``.  This mirror of
+# ``_inject_profile_env_vars`` surfaces them in ``hermes config`` UI so users
+# can configure Teams / IRC / Google Chat without the core repo ever needing
+# to know they exist.
+#
+# Each ``requires_env`` entry may be a bare string (name only) or a dict:
+#
+#   requires_env:
+#     - TEAMS_CLIENT_ID                          # minimal
+#     - name: TEAMS_CLIENT_SECRET                # rich
+#       description: "Teams bot client secret"
+#       url: "https://portal.azure.com/"
+#       password: true
+#       prompt: "Teams client secret"
+#
+# An optional ``optional_env`` block surfaces non-required vars the same way
+# (e.g. allowlist, home channel).
+
+_platform_plugin_env_vars_injected = False
+
+
+def _inject_platform_plugin_env_vars() -> None:
+    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
+
+    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Failures are swallowed so a malformed plugin.yaml can't break CLI import.
+    """
+    global _platform_plugin_env_vars_injected
+    if _platform_plugin_env_vars_injected:
+        return
+    _platform_plugin_env_vars_injected = True
+    try:
+        import yaml  # type: ignore
+
+        # Resolve the bundled plugins dir from this file's location so the
+        # injector works regardless of CWD.
+        repo_root = Path(__file__).resolve().parents[1]
+        platforms_dir = repo_root / "plugins" / "platforms"
+        if not platforms_dir.is_dir():
+            return
+        for child in platforms_dir.iterdir():
+            if not child.is_dir():
+                continue
+            manifest_path = child / "plugin.yaml"
+            if not manifest_path.exists():
+                manifest_path = child / "plugin.yml"
+            if not manifest_path.exists():
+                continue
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+            label = manifest.get("label") or manifest.get("name") or child.name
+            # Merge required + optional env var declarations.
+            entries = list(manifest.get("requires_env") or [])
+            entries.extend(manifest.get("optional_env") or [])
+            for entry in entries:
+                if isinstance(entry, str):
+                    name = entry
+                    meta: dict = {}
+                elif isinstance(entry, dict) and entry.get("name"):
+                    name = entry["name"]
+                    meta = entry
+                else:
+                    continue
+                if name in OPTIONAL_ENV_VARS:
+                    continue  # hardcoded entry wins (back-compat)
+                # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
+                # is a password field unless explicitly overridden.
+                name_upper = name.upper()
+                is_secret = bool(meta.get("password") or meta.get("secret"))
+                if not is_secret and not meta.get("password") is False:
+                    is_secret = any(
+                        name_upper.endswith(suf)
+                        for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
+                    )
+                OPTIONAL_ENV_VARS[name] = {
+                    "description": (
+                        meta.get("description")
+                        or f"{label} configuration"
+                    ),
+                    "prompt": meta.get("prompt") or name,
+                    "url": meta.get("url") or None,
+                    "password": is_secret,
+                    "category": meta.get("category") or "messaging",
+                }
+    except Exception:
+        pass
+
+
+# Eagerly inject so that platform plugin env vars show up in the setup wizard.
+_inject_platform_plugin_env_vars()

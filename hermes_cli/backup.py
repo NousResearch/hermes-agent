@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Directory names to skip entirely (matched against each path component)
+# ``hermes-agent`` is special-cased to root level only in ``_should_exclude``
+# so that skill directories like ``skills/autonomous-ai-agents/hermes-agent/``
+# are not accidentally excluded.
 _EXCLUDED_DIRS = {
     "hermes-agent",     # the codebase repo — re-clone instead
     "__pycache__",      # bytecode caches — regenerated on import
@@ -61,15 +64,56 @@ _EXCLUDED_NAMES = {
     "cron.pid",
 }
 
+# File names that ``hermes import`` must never overwrite, matched by basename so
+# they're caught for the root profile (``gateway_state.json``) and for named
+# profiles alike (``profiles/<name>/gateway_state.json``).
+#
+# These hold *volatile gateway/process runtime state that is namespaced to the
+# machine or container the backup was taken on* — PIDs in a dead process
+# namespace, a runtime lock, the process registry, and the gateway's last
+# recorded run/desired state. Restoring them onto a different host (or a hosted
+# container) is at best meaningless and at worst actively harmful:
+#
+#   - ``gateway_state.json`` drives the container-boot reconciler
+#     (``container_boot._read_desired_state``), which only auto-starts a
+#     gateway whose recorded state is ``running``. A backup taken from a
+#     machine where the gateway was stopped (or carrying a stale/foreign
+#     value) overwrites the container's own state and leaves the gateway
+#     stuck "starting"/"cooking", disconnecting it from the Nous portal
+#     (NS-508 / the second half of NS-501).
+#   - ``gateway.pid`` / ``cron.pid`` / ``gateway.lock`` / ``processes.json``
+#     reference PIDs and locks in the *source* machine's process namespace; a
+#     numerically-equal PID in the new environment is a different process.
+#     These mirror exactly what ``container_boot._STALE_RUNTIME_FILES`` already
+#     sweeps on every container boot.
+#
+# Older backups predate the backup-side exclusions, so we filter on import too
+# rather than trusting the archive's contents.
+_IMPORT_SKIP_NAMES = {
+    "gateway_state.json",
+    "gateway.pid",
+    "cron.pid",
+    "gateway.lock",
+    "processes.json",
+}
+
+# zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+
 
 def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
-    # Any path component matches an excluded dir name
     for part in parts:
-        if part in _EXCLUDED_DIRS:
-            return True
+        if part not in _EXCLUDED_DIRS:
+            continue
+        # ``hermes-agent`` only matches at the root level (first component).
+        # Nested directories with the same name — e.g.
+        # ``skills/autonomous-ai-agents/hermes-agent/`` — must be preserved.
+        if part == "hermes-agent" and part != parts[0]:
+            continue
+        return True
 
     name = rel_path.name
 
@@ -80,6 +124,22 @@ def _should_exclude(rel_path: Path) -> bool:
         return True
 
     return False
+
+
+def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
+    """Return True when a candidate file should not be written to a backup zip."""
+    if _should_exclude(rel_path):
+        return True
+
+    # zipfile.write() follows file symlinks, so skip links before any archive
+    # write can copy data from outside HERMES_HOME.
+    if abs_path.is_symlink():
+        return True
+
+    try:
+        return abs_path.resolve() == out_path.resolve()
+    except (OSError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -158,10 +218,13 @@ def run_backup(args) -> None:
         rel_dir = dp.relative_to(hermes_root)
 
         # Prune excluded directories in-place so os.walk doesn't descend
+        # ``hermes-agent`` is only pruned at the root level; nested dirs
+        # with the same name (e.g. in skills/) must be preserved.
+        is_root = rel_dir == Path(".")
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS
+            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -170,15 +233,8 @@ def run_backup(args) -> None:
             fpath = dp / fname
             rel = fpath.relative_to(hermes_root)
 
-            if _should_exclude(rel):
+            if _should_skip_backup_file(fpath, rel, out_path):
                 continue
-
-            # Skip the output zip itself if it happens to be inside hermes root
-            try:
-                if fpath.resolve() == out_path.resolve():
-                    continue
-            except (OSError, ValueError):
-                pass
 
             files_to_add.append((fpath, rel))
 
@@ -199,7 +255,13 @@ def run_backup(args) -> None:
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
                 if abs_path.suffix == ".db":
-                    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                    # Stage the snapshot alongside the output zip so that the
+                    # temp file lives on the same filesystem.  The system
+                    # default (/tmp) may be a small tmpfs that cannot hold
+                    # large databases, causing silent backup incompleteness.
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".db", delete=False, dir=str(out_path.parent)
+                    ) as tmp:
                         tmp_db = Path(tmp.name)
                     if _safe_copy_db(abs_path, tmp_db):
                         zf.write(tmp_db, arcname=str(rel_path))
@@ -295,7 +357,7 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     if len(first_parts) == 1:
         prefix = first_parts.pop()
         # Only strip if it looks like a hermes dir name
-        if prefix in (".hermes", "hermes"):
+        if prefix in {".hermes", "hermes"}:
             return prefix + "/"
 
     return ""
@@ -346,7 +408,7 @@ def run_import(args) -> None:
             except (EOFError, KeyboardInterrupt):
                 print("\nAborted.")
                 sys.exit(1)
-            if answer not in ("y", "yes"):
+            if answer not in {"y", "yes"}:
                 print("Aborted.")
                 return
 
@@ -356,6 +418,7 @@ def run_import(args) -> None:
 
         errors = []
         restored = 0
+        skipped_runtime: list[str] = []
         t0 = time.monotonic()
 
         for member in members:
@@ -366,6 +429,16 @@ def run_import(args) -> None:
                 rel = member
 
             if not rel:
+                continue
+
+            # Never overwrite volatile gateway/process runtime state. These are
+            # namespaced to the machine/container the backup was taken on;
+            # clobbering them (especially gateway_state.json) breaks the gateway
+            # reconciler on the target and disconnects hosted instances from the
+            # Nous portal. Matched by basename so both the root profile and
+            # named profiles (profiles/<name>/gateway_state.json) are covered.
+            if Path(rel).name in _IMPORT_SKIP_NAMES:
+                skipped_runtime.append(rel)
                 continue
 
             target = hermes_root / rel
@@ -381,6 +454,8 @@ def run_import(args) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
+                if target.name in _SECRET_FILE_NAMES:
+                    os.chmod(target, 0o600)
                 restored += 1
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel}: {exc}")
@@ -401,6 +476,16 @@ def run_import(args) -> None:
                 print(e)
             if len(errors) > 10:
                 print(f"  ... and {len(errors) - 10} more")
+
+        if skipped_runtime:
+            print(
+                f"\n  Preserved {len(skipped_runtime)} runtime state "
+                f"file(s) (kept this machine's, not the backup's):"
+            )
+            for rel in sorted(skipped_runtime)[:10]:
+                print(f"    {rel}")
+            if len(skipped_runtime) > 10:
+                print(f"    ... and {len(skipped_runtime) - 10} more")
 
         # Post-import: restore profile wrapper scripts
         profiles_dir = hermes_root / "profiles"
@@ -479,6 +564,7 @@ _QUICK_STATE_FILES = (
     "cron/jobs.json",
     "gateway_state.json",
     "channel_directory.json",
+    "channel_aliases.json",
     "processes.json",
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
@@ -498,6 +584,7 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
 def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
+    keep: Optional[int] = None,
 ) -> Optional[str]:
     """Create a quick state snapshot of critical files.
 
@@ -568,11 +655,13 @@ def create_quick_snapshot(
         "total_size": sum(manifest.values()),
         "files": manifest,
     }
-    with open(snap_dir / "manifest.json", "w") as f:
+    with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    # Auto-prune
-    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP)
+    # Auto-prune. Defaults preserve historical manual /snapshot behavior; callers
+    # with known high-churn safety snapshots (for example pre-update) can pass a
+    # smaller keep value so large state.db copies do not accumulate indefinitely.
+    _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
     return snap_id
@@ -594,7 +683,7 @@ def list_quick_snapshots(
         manifest_path = d / "manifest.json"
         if manifest_path.exists():
             try:
-                with open(manifest_path) as f:
+                with open(manifest_path, encoding="utf-8") as f:
                     results.append(json.load(f))
             except (json.JSONDecodeError, OSError):
                 results.append({"id": d.name, "file_count": 0, "total_size": 0})
@@ -624,7 +713,7 @@ def restore_quick_snapshot(
     if not manifest_path.exists():
         return False
 
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         meta = json.load(f)
 
     restored = 0
@@ -651,6 +740,105 @@ def restore_quick_snapshot(
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0
+
+
+# Relative path of the cron job database inside HERMES_HOME. Kept in sync with
+# the entry in ``_QUICK_STATE_FILES`` and with ``cron/jobs.py``'s ``JOBS_FILE``.
+_CRON_JOBS_REL = "cron/jobs.json"
+
+
+def _count_cron_jobs(path: Path) -> Optional[int]:
+    """Return the number of cron jobs stored in ``path``.
+
+    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
+    A legacy bare-list shape (``[...]``) is also honoured.
+
+    Returns:
+        The job count for any *valid, readable* JSON document, or ``None`` if
+        the file is missing or cannot be parsed. ``None`` means "unknown" —
+        callers must not treat it as "zero jobs", because acting on an
+        unreadable file could mask a real corruption the user needs to see.
+    """
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+        return len(jobs) if isinstance(jobs, list) else None
+    if isinstance(data, list):
+        return len(data)
+    return None
+
+
+def restore_cron_jobs_if_emptied(
+    snapshot_id: str,
+    hermes_home: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Safety net for silent cron-job loss across ``hermes update``.
+
+    Config-version migrations have been observed to leave ``cron/jobs.json``
+    valid-but-empty after an update, silently dropping every scheduled job
+    (issue #34600). The existing malformed-shape guards in ``cron/jobs.py``
+    don't catch this case because ``{"jobs": []}`` is perfectly valid JSON.
+
+    This compares the *current* job count against the pre-update snapshot. If
+    the live file now has **zero** jobs while the snapshot captured **one or
+    more**, the snapshot copy of ``cron/jobs.json`` is restored in place.
+
+    The check is deliberately conservative — it only ever restores when there
+    is unambiguous evidence of loss (snapshot had jobs, live file has none),
+    so a user who genuinely deleted all their jobs during/after the update is
+    never second-guessed, and an unreadable live file (count ``None``) is left
+    untouched so real corruption still surfaces.
+
+    Args:
+        snapshot_id: The pre-update quick-snapshot id (from
+            :func:`create_quick_snapshot`).
+        hermes_home: Override for the Hermes home directory (tests).
+
+    Returns:
+        ``None`` when no action was taken (the common, healthy path). On a
+        successful restore, a dict ``{"restored": True, "job_count": N,
+        "snapshot_id": ...}`` so the caller can warn the user.
+    """
+    if not snapshot_id:
+        return None
+
+    home = hermes_home or get_hermes_home()
+    live_path = home / _CRON_JOBS_REL
+
+    live_count = _count_cron_jobs(live_path)
+    # Only act when the live file is readable AND empty. ``None`` (missing or
+    # unparseable) is intentionally left alone — that's a different failure
+    # mode the user should see rather than have papered over.
+    if live_count is None or live_count > 0:
+        return None
+
+    snap_path = _quick_snapshot_root(home) / snapshot_id / _CRON_JOBS_REL
+    snap_count = _count_cron_jobs(snap_path)
+    if not snap_count:  # None or 0 — nothing worth restoring
+        return None
+
+    try:
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(snap_path, live_path)
+    except (OSError, PermissionError) as exc:
+        logger.error(
+            "Cron jobs were emptied during update but auto-restore failed: %s", exc
+        )
+        return None
+
+    logger.warning(
+        "Restored %d cron job(s) from pre-update snapshot %s "
+        "(cron/jobs.json was emptied during migration)",
+        snap_count,
+        snapshot_id,
+    )
+    return {"restored": True, "job_count": snap_count, "snapshot_id": snapshot_id}
 
 
 def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
@@ -721,15 +909,8 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 except ValueError:
                     continue
 
-                if _should_exclude(rel):
+                if _should_skip_backup_file(fpath, rel, out_path):
                     continue
-
-                # Skip the output zip itself if it already exists inside root.
-                try:
-                    if fpath.resolve() == out_path.resolve():
-                        continue
-                except (OSError, ValueError):
-                    pass
 
                 files_to_add.append((fpath, rel))
     except OSError as exc:
@@ -744,7 +925,13 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
             for abs_path, rel_path in files_to_add:
                 try:
                     if abs_path.suffix == ".db":
-                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                        # Stage the snapshot alongside the output zip so that the
+                        # temp file lives on the same filesystem.  The system
+                        # default (/tmp) may be a small tmpfs that cannot hold
+                        # large databases, causing silent backup incompleteness.
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".db", delete=False, dir=str(out_path.parent)
+                        ) as tmp:
                             tmp_db = Path(tmp.name)
                         try:
                             if _safe_copy_db(abs_path, tmp_db):
@@ -788,9 +975,16 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     Returns the number of files deleted.  Only touches files matching
     ``pre-update-*.zip`` so hand-made zips dropped in the same directory
     are never touched.
+
+    ``keep`` is floored to 1 because this helper is only called immediately
+    after a fresh backup is written: deleting that backup right after the
+    user paid the disk/CPU cost to create it would leave them worse off
+    than no backup at all (and the wrapper in ``main.py`` would still print
+    a misleading ``Saved: <path>`` line for a file that no longer exists).
+    Operators who genuinely don't want a backup should set
+    ``updates.pre_update_backup: false`` in config — that gates creation.
     """
-    if keep < 0:
-        keep = 0
+    keep = max(keep, 1)
     if not backup_dir.exists():
         return 0
 
@@ -862,8 +1056,7 @@ def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
     Only touches files matching ``pre-migration-*.zip`` so other backups in
     the same directory are never touched.
     """
-    if keep < 0:
-        keep = 0
+    keep = max(keep, 0)
     if not backup_dir.exists():
         return 0
 

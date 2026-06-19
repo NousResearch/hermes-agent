@@ -142,7 +142,8 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { restoreSessionTodosFromSnapshot } from '@/store/todos'
+import { clearSessionSubagents } from '@/store/subagents'
+import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type {
@@ -3289,6 +3290,8 @@ export function useSessionActions({
         // back, and a rolled-back row must keep its watermark/marker.
         forgetSessionUnread(removedIds, profile)
         clearQueuedPrompts(storedSessionId)
+        clearSessionSubagents(storedSessionId)
+        clearSessionTodos(storedSessionId)
         // The journaled in-flight tail holds this session's prompt and tool
         // calls in localStorage; a deleted session must not leave that copy
         // behind to age out on its own. Purge after the RPC lands (same
@@ -3300,6 +3303,8 @@ export function useSessionActions({
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
           clearSessionControl(closingRuntimeId)
+          clearSessionSubagents(closingRuntimeId)
+          clearSessionTodos(closingRuntimeId)
         }
 
         // A tiled copy of this session must not outlive it: collapse the pane

@@ -3620,6 +3620,26 @@ class FeishuAdapter(BasePlatformAdapter):
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
 
+        # For merge_forward messages, the SDK only pushes a placeholder string
+        # ("Merged and Forwarded Message") without child message content.  Fetch
+        # the actual sub-messages via REST API and build a readable transcript.
+        if normalized.raw_type == "merge_forward" and text in (
+            "", FALLBACK_FORWARD_TEXT, "[Merged forward message]",
+        ):
+            fetched, child_image_keys = await self._fetch_merge_forward_children(message_id)
+            if fetched:
+                text = fetched
+                logger.info("[Feishu] Enriched merge_forward %s with %d chars from REST API", message_id, len(text))
+            # Download child images so the agent can see them.
+            for img_key in child_image_keys:
+                cached_path, media_type = await self._download_feishu_image(
+                    message_id=message_id,
+                    image_key=img_key,
+                )
+                if cached_path:
+                    media_urls.append(cached_path)
+                    media_types.append(media_type)
+
         if (
             inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
             and len(media_urls) == 1
@@ -4054,6 +4074,80 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _fetch_merge_forward_children(self, message_id: str) -> tuple[Optional[str], List[str]]:
+        """Fetch child messages of a merge_forward via REST API and build a readable transcript.
+
+        The Feishu SDK's WS callback only includes a placeholder content
+        (``"Merged and Forwarded Message"``) for merge_forward messages.  The
+        REST API ``GET /im/v1/messages/{id}`` returns all sub-messages that
+        have ``upper_message_id`` equal to the parent's ``message_id``.
+
+        Returns:
+            (transcript, image_keys) — transcript is the readable text or None;
+            image_keys lists child image keys for downstream download.
+        """
+        image_keys: List[str] = []
+        if not self._client or not message_id:
+            return None, image_keys
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await asyncio.to_thread(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                logger.warning("[Feishu] Failed to fetch merge_forward children for %s", message_id)
+                return None, image_keys
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            # Filter to children only (upper_message_id matches the parent).
+            # The first item is the merge_forward parent itself; the rest are children.
+            children = []
+            for item in items:
+                upper = getattr(item, "upper_message_id", None) or ""
+                if upper == message_id:
+                    children.append(item)
+            if not children:
+                logger.debug("[Feishu] No children found for merge_forward %s (total items=%d)", message_id, len(items))
+                return None, image_keys
+            lines: List[str] = []
+            for child in children:
+                body = getattr(child, "body", None)
+                msg_type = str(getattr(child, "msg_type", "") or "").strip().lower()
+                raw_content = getattr(body, "content", "") or ""
+                sender = getattr(child, "sender", None)
+                sender_id_obj = getattr(sender, "id", "") if sender else ""
+                sender_name = str(sender_id_obj).split(":")[-1][:12] if sender_id_obj else "?"
+
+                if msg_type == "image":
+                    # Extract image_key and record for download; add placeholder text.
+                    try:
+                        import json as _json
+                        img_key = _json.loads(raw_content).get("image_key", "")
+                    except Exception:
+                        img_key = ""
+                    if img_key:
+                        image_keys.append(img_key)
+                    lines.append(f"[{sender_name}] [图片]")
+                    continue
+
+                child_mentions = getattr(child, "mentions", None)
+                child_text = self._extract_text_from_raw_content(
+                    msg_type=msg_type,
+                    raw_content=raw_content,
+                    mentions=child_mentions,
+                )
+                if child_text:
+                    lines.append(f"[{sender_name}] {child_text}")
+                else:
+                    # Unknown/non-text message types — include a placeholder.
+                    label = msg_type or "消息"
+                    lines.append(f"[{sender_name}] [{label}]")
+            if not lines:
+                return None, image_keys
+            transcript = "\n".join(lines)
+            logger.info("[Feishu] merge_forward %s: fetched %d child messages (%d images)", message_id, len(lines), len(image_keys))
+            return transcript, image_keys
+        except Exception:
+            logger.warning("[Feishu] Failed to fetch merge_forward children for %s", message_id, exc_info=True)
+            return None, image_keys
 
     def _extract_text_from_raw_content(
         self,

@@ -2599,7 +2599,10 @@ class FeishuAdapter(BasePlatformAdapter):
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
-        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+        approval_chat_id = state.get("chat_id", "")
+        cached_chat = self._chat_info_cache.get(approval_chat_id) if approval_chat_id else None
+        is_dm = cached_chat is not None and cached_chat.get("type") == "dm"
+        if not is_dm and not self._allow_group_message(sender_id, approval_chat_id, is_bot=False):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 

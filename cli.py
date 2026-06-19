@@ -562,6 +562,27 @@ def load_cli_config() -> Dict[str, Any]:
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
 
+    # Managed scope: overlay administrator-pinned values LAST so they win over
+    # the user's config here too. cli.py builds its config independently of
+    # hermes_cli.config._load_config_impl (which has its own managed merge), so
+    # without this the entire interactive CLI/TUI surface — skin, display prefs,
+    # etc. read from CLI_CONFIG — would silently ignore managed scope while
+    # `hermes config`/`doctor`/guards (which use load_config) honor it. Mirror
+    # _load_config_impl: expand managed against the process env only (so a user
+    # ${VAR} can't shadow a managed literal), normalize its root model key so a
+    # managed `model: x/y` string can't clobber the dict shape callers expect,
+    # then leaf-merge on top. Fail-open — managed scope must never block startup.
+    try:
+        from hermes_cli import managed_scope
+        from hermes_cli.config import _deep_merge, _normalize_root_model_keys
+
+        managed_config = managed_scope.load_managed_config()
+        if managed_config:
+            managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed_config))
+            defaults = _deep_merge(defaults, managed_expanded)
+    except Exception as e:  # noqa: BLE001 — never let managed scope break CLI startup
+        logger.warning("Failed to apply managed scope to CLI config: %s", e)
+
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
     

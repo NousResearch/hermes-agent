@@ -1721,6 +1721,21 @@ export const zhHant = defineLocale({
     addToChat: '新增至聊天'
   },
 
+  browser: {
+    tab: '瀏覽器',
+    back: '上一頁',
+    forward: '下一頁',
+    reload: '重新載入',
+    stop: '停止',
+    addressBar: '網址列',
+    addressPlaceholder: '搜尋或輸入網址',
+    newBrowserTab: '開啟瀏覽器',
+    openBrowser: '開啟瀏覽器',
+    openInSystemBrowser: '在預設瀏覽器中開啟',
+    failedToLoad: '此頁面載入失敗',
+    unreachable: '無法連線到該頁面。',
+    tryAgain: '重試'
+  },
   preview: {
     tab: '預覽',
     closeTab: label => `關閉 ${label}`,

@@ -209,6 +209,7 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.showFiles': 'Show file browser',
       'view.showTerminal': 'Show terminal',
+      'view.showBrowser': 'Toggle browser',
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',
@@ -1647,6 +1648,21 @@ export const en: Translations = {
     addToChat: 'Add to chat'
   },
 
+  browser: {
+    tab: 'Browser',
+    back: 'Back',
+    forward: 'Forward',
+    reload: 'Reload',
+    stop: 'Stop',
+    addressBar: 'Address bar',
+    addressPlaceholder: 'Search or enter address',
+    newBrowserTab: 'Open browser',
+    openBrowser: 'Open browser',
+    openInSystemBrowser: 'Open in default browser',
+    failedToLoad: 'This page failed to load',
+    unreachable: 'The page could not be reached.',
+    tryAgain: 'Try again'
+  },
   preview: {
     tab: 'Preview',
     closeTab: label => `Close ${label}`,

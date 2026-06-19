@@ -1777,6 +1777,21 @@ export const ja = defineLocale({
     addToChat: 'チャットに追加'
   },
 
+  browser: {
+    tab: 'ブラウザ',
+    back: '戻る',
+    forward: '進む',
+    reload: '再読み込み',
+    stop: '停止',
+    addressBar: 'アドレスバー',
+    addressPlaceholder: '検索またはアドレスを入力',
+    newBrowserTab: 'ブラウザを開く',
+    openBrowser: 'ブラウザを開く',
+    openInSystemBrowser: '既定のブラウザで開く',
+    failedToLoad: 'ページを読み込めませんでした',
+    unreachable: 'ページに到達できませんでした。',
+    tryAgain: '再試行'
+  },
   preview: {
     tab: 'プレビュー',
     closeTab: label => `${label} を閉じる`,

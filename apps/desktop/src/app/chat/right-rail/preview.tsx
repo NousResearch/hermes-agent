@@ -6,8 +6,10 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $browserState } from '@/store/browser'
 import {
   $rightRailActiveTabId,
+  RIGHT_RAIL_BROWSER_TAB_ID,
   RIGHT_RAIL_PREVIEW_TAB_ID,
   type RightRailTabId,
   selectRightRailTab
@@ -21,12 +23,25 @@ import {
   type PreviewTarget
 } from '@/store/preview'
 
+import { BrowserPane } from './browser-pane'
 import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
-export const PREVIEW_RAIL_MAX_WIDTH = '38rem'
+// Drag-out cap for the preview/browser rail. Expressed in vw (not a fixed rem)
+// so it scales with the window and can never let a drag crush the chat surface:
+// the pane-shell drag clamp (`hi`) uses maxWidth ALONE (it does not subtract the
+// chat min-width the way PREVIEW_RAIL_PANE_WIDTH does), so a fixed rem max would
+// over-extend on a narrow window. 82vw always leaves ~18vw for the chat +
+// sidebar. On a 1440px display this is ~1180px — well over double the previous
+// 38rem (~608px) ceiling, which was too tight for reading docs / web pages in
+// the in-app browser.
+export const PREVIEW_RAIL_MAX_WIDTH = '82vw'
 
-const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
+// Default (pre-drag) auto width. The middle clamp term is the intrinsic ceiling
+// the pane opens to before any user resize; 36vw keeps it proportional on small
+// screens, and the 64rem cap (doubled from 32rem) lets it open meaningfully
+// wider on large displays. The hard drag-out limit is PREVIEW_RAIL_MAX_WIDTH.
+const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 64rem)`
 
 // Track for <Pane id="preview">. Folds the intrinsic clamp with a min-floor
 // against --chat-min-width so the chat surface never gets squeezed below it.
@@ -41,8 +56,9 @@ interface ChatPreviewRailProps {
 
 interface RailTab {
   id: RightRailTabId
+  kind: 'browser' | 'file' | 'preview'
   label: string
-  target: PreviewTarget
+  target?: PreviewTarget
 }
 
 function tabLabelFor(target: PreviewTarget): string {
@@ -58,13 +74,25 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const activeTabId = useStore($rightRailActiveTabId)
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
+  const browserState = useStore($browserState)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
-      ...(previewTarget ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab] : []),
-      ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
+      ...(browserState.open
+        ? [
+            {
+              id: RIGHT_RAIL_BROWSER_TAB_ID,
+              kind: 'browser',
+              label: browserState.title?.trim() || t.browser.tab
+            } as RailTab
+          ]
+        : []),
+      ...(previewTarget
+        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, kind: 'preview', label: t.preview.tab, target: previewTarget } as RailTab]
+        : []),
+      ...filePreviewTabs.map(({ id, target }) => ({ id, kind: 'file', label: tabLabelFor(target), target }) as RailTab)
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab]
+    [browserState.open, browserState.title, filePreviewTabs, previewTarget, t.browser.tab, t.preview.tab]
   )
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
@@ -80,6 +108,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   }
 
   const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID
+  const isBrowser = activeTab.id === RIGHT_RAIL_BROWSER_TAB_ID
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) text-(--ui-text-tertiary)">
@@ -158,13 +187,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <PreviewPane
-          embedded
-          onRestartServer={isPreview ? onRestartServer : undefined}
-          reloadRequest={previewReloadRequest}
-          setTitlebarToolGroup={setTitlebarToolGroup}
-          target={activeTab.target}
-        />
+        {isBrowser ? (
+          <BrowserPane />
+        ) : activeTab.target ? (
+          <PreviewPane
+            embedded
+            onRestartServer={isPreview ? onRestartServer : undefined}
+            reloadRequest={previewReloadRequest}
+            setTitlebarToolGroup={setTitlebarToolGroup}
+            target={activeTab.target}
+          />
+        ) : null}
       </div>
     </aside>
   )

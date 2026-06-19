@@ -27,6 +27,7 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
+import { $browserState, openBrowser } from '@/store/browser'
 import { setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -1055,6 +1056,41 @@ export function useMessageStream({
             kind: 'input',
             sessionId,
             title: translateNow('notifications.native.inputTitle')
+          })
+        }
+      } else if (event.type === 'browser.navigate.request') {
+        // browser_navigate tool: open/drive the in-app browser pane, then answer
+        // with the resolved URL (Python blocks on the respond).
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const input = typeof payload?.url === 'string' ? payload.url : ''
+          const resolved = input ? openBrowser(input) : openBrowser()
+
+          void $gateway.get()?.request('browser.navigate.respond', {
+            request_id: requestId,
+            url: resolved
+          })
+        }
+      } else if (event.type === 'browser.read.request') {
+        // browser_read tool: report the in-app browser's current nav state so the
+        // agent can see where it is / whether a page failed to load.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const state = $browserState.get()
+
+          void $gateway.get()?.request('browser.read.respond', {
+            request_id: requestId,
+            text: JSON.stringify({
+              open: state.open,
+              url: state.url,
+              title: state.title,
+              loading: state.loading,
+              canGoBack: state.canGoBack,
+              canGoForward: state.canGoForward,
+              loadError: state.loadError
+            })
           })
         }
       } else if (event.type === 'terminal.read.request') {

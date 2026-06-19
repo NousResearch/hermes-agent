@@ -153,7 +153,10 @@ describe('PaneShell composition', () => {
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        {/* Width overrides only apply to resizable panes (trackForPane gates on
+            `resizable` by design), so the pane under test must be resizable for
+            the stored override to take effect — matches real usage. */}
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>
@@ -329,5 +332,46 @@ describe('PaneShell composition', () => {
     fireEvent.pointerUp(window, { clientX: 760 })
 
     expect($paneStates.get().preview?.widthOverride).toBe(340)
+  })
+
+  it('resolves a vw-based maxWidth against the viewport (the doubled preview-rail cap)', () => {
+    // The preview/browser rail max is '82vw' (PREVIEW_RAIL_MAX_WIDTH) so it
+    // scales with the window and never crushes the chat. With a 1000px viewport
+    // the cap resolves to 820px — far beyond the old fixed 38rem (~608px) — so a
+    // big drag is now allowed up to that vw-relative ceiling, not the old rem.
+    const restoreWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1000, writable: true })
+
+    try {
+      const rendered = render(
+        <PaneShell>
+          <PaneMain>main</PaneMain>
+          <Pane id="preview" maxWidth="82vw" minWidth="18rem" resizable side="right" width="320px">
+            <span data-testid="preview-content">preview</span>
+          </Pane>
+        </PaneShell>
+      )
+
+      const paneCell = rendered.getByTestId('preview-content').parentElement
+
+      if (!(paneCell instanceof HTMLElement)) {
+        throw new Error('Expected pane cell element')
+      }
+
+      mockWidth(paneCell, 320)
+      const separator = rendered.getByLabelText('Resize preview')
+
+      // Drag the right-pane separator far left (huge widen). Right-side dir is
+      // -1, so moving 600px left of the 320 start adds 600 → 920 requested.
+      fireEvent.pointerDown(separator, { clientX: 320, pointerId: 1 })
+      fireEvent.pointerMove(window, { clientX: -600 })
+      fireEvent.pointerUp(window, { clientX: -600 })
+
+      // Clamped to 82vw of 1000px = 820px (well past the old 608px rem cap),
+      // proving the allowance at least doubled and stays viewport-relative.
+      expect($paneStates.get().preview?.widthOverride).toBe(820)
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: restoreWidth, writable: true })
+    }
   })
 })

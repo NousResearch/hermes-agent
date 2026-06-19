@@ -67,6 +67,8 @@ export type GatewayEventPayload = {
   // terminal.read.request (GUI agent reading the in-app terminal pane)
   start?: number
   count?: number
+  // browser.navigate.request (GUI agent driving the in-app browser pane)
+  url?: string
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
 }

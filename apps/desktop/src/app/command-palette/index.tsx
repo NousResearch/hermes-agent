@@ -40,6 +40,7 @@ import {
   Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { openBrowser } from '@/store/browser'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -297,6 +298,13 @@ export function CommandPalette() {
             keywords: ['terminal', 'shell', 'console'],
             label: t.keybinds.actions['view.showTerminal'],
             run: () => setTerminalTakeover(true)
+          },
+          {
+            icon: Globe,
+            id: 'nav-browser',
+            keywords: ['browser', 'web', 'url', 'open', 'site'],
+            label: t.browser.openBrowser,
+            run: () => openBrowser()
           },
           {
             action: 'nav.settings',

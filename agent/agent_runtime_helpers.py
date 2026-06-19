@@ -49,7 +49,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "read_terminal", "desktop_browser_navigate", "desktop_browser_read", "delegate_task"}
 )
 
 
@@ -1898,6 +1898,25 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     start_line=next_args.get("start_line"),
                     count=next_args.get("count"),
                     callback=getattr(agent, "read_terminal_callback", None),
+                ),
+                next_args,
+            )
+    elif function_name == "desktop_browser_navigate":
+        def _execute(next_args: dict) -> Any:
+            from tools.desktop_browser_tool import browser_navigate_tool as _browser_navigate_tool
+            return _finish_agent_tool(
+                _browser_navigate_tool(
+                    url=next_args.get("url"),
+                    callback=getattr(agent, "browser_navigate_callback", None),
+                ),
+                next_args,
+            )
+    elif function_name == "desktop_browser_read":
+        def _execute(next_args: dict) -> Any:
+            from tools.desktop_browser_tool import browser_read_tool as _browser_read_tool
+            return _finish_agent_tool(
+                _browser_read_tool(
+                    callback=getattr(agent, "browser_read_callback", None),
                 ),
                 next_args,
             )

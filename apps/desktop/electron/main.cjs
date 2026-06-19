@@ -35,6 +35,12 @@ const {
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { classifyOpenTarget } = require('./open-target.cjs')
+const {
+  GUEST_POPUP_WINDOW,
+  IN_APP_BROWSER_PARTITION,
+  classifyGuestWindowOpen
+} = require('./webview-guest.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
@@ -3731,6 +3737,68 @@ function installMediaPermissions() {
   })
 }
 
+// Wire the in-app browser's guest <webview> (partition `persist:hermes-browser`,
+// rendered by browser-pane.tsx). Electron fires `web-contents-created` for every
+// guest; we only touch the in-app browser session so we don't perturb the chat
+// renderer, the OAuth login window, or the preview pane.
+//
+// THE BUG THIS FIXES: with no window-open handler on the guest, a `window.open()`
+// — which Google "Sign in", and most OAuth consent screens, rely on — was either
+// dropped or spawned as an uncontrolled window with the wrong session, so the
+// sign-in popup hung and never returned its result to the opener. We now open
+// such popups as a real child window bound to the SAME session, so cookies flow
+// and the popup can postMessage/`window.close()` back to its opener.
+function installInAppBrowserGuestHandlers() {
+  app.on('web-contents-created', (_event, contents) => {
+    const type = typeof contents.getType === 'function' ? contents.getType() : null
+
+    if (type !== 'webview') {
+      return
+    }
+
+    // Only the in-app browser guest — match on its session partition so other
+    // webviews (e.g. the sandboxed preview pane) keep their own posture.
+    const partition = contents.session?.storagePartition || ''
+
+    if (partition !== IN_APP_BROWSER_PARTITION) {
+      return
+    }
+
+    contents.setWindowOpenHandler(details => {
+      const verdict = classifyGuestWindowOpen(details.url)
+
+      if (verdict.action === 'external') {
+        // mailto:/tel:/etc. — openExternalUrl re-validates and rejects unsafe
+        // schemes (javascript:, data:), so nothing dangerous reaches the OS.
+        openExternalUrl(details.url)
+
+        return { action: 'deny' }
+      }
+
+      if (verdict.action === 'deny') {
+        return { action: 'deny' }
+      }
+
+      // OAuth / sign-in popup: allow a real child window in the SAME persistent
+      // session so it shares cookies with the opener and can talk back to it.
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: GUEST_POPUP_WINDOW.width,
+          height: GUEST_POPUP_WINDOW.height,
+          autoHideMenuBar: true,
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            session: contents.session
+          }
+        }
+      }
+    })
+  })
+}
+
 // ---------------------------------------------------------------------------
 // OAuth remote-gateway auth.
 //
@@ -6488,6 +6556,7 @@ app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
   }
   installMediaPermissions()
+  installInAppBrowserGuestHandlers()
   registerMediaProtocol()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()

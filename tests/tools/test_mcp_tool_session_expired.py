@@ -63,6 +63,22 @@ def test_is_session_expired_detects_stale_pipe_and_closed_transport_variants():
     assert _is_session_expired_error(RuntimeError("End of file from MCP server")) is True
 
 
+def test_is_session_expired_detects_bare_closed_resource_error():
+    """AnyIO raises ``ClosedResourceError()`` with an empty ``str(exc)``.
+
+    The user-visible error path formats that with ``repr(exc)``, but the
+    reconnect detector must also inspect repr/class name or the auto-reconnect
+    path never fires for stale stdio MCP sessions.
+    """
+    from anyio import ClosedResourceError
+
+    from tools.mcp_tool import _is_session_expired_error
+
+    exc = ClosedResourceError()
+    assert str(exc) == ""
+    assert _is_session_expired_error(exc) is True
+
+
 def test_is_session_expired_is_case_insensitive():
     """Match uses lower-cased comparison so servers that emit the
     message in different cases (SDK formatter quirks) still trigger."""

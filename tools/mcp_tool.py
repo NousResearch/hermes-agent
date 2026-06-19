@@ -2357,7 +2357,14 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     # implementations, so match on a small allow-list of stable
     # substrings rather than exception type.  Kept narrow to avoid
     # false positives on unrelated server errors.
-    msg = str(exc).lower()
+    msg = " ".join(
+        part for part in (
+            str(exc),
+            repr(exc),
+            exc.__class__.__name__,
+        )
+        if part
+    ).lower()
     if not msg:
         return False
     return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
@@ -2764,7 +2771,43 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+def _current_caller_payload() -> Optional[dict]:
+    """Return the human caller who triggered this tool call, if any.
+
+    Gateways populate ``gateway.caller_context`` with a provider-agnostic
+    identity (for example ``provider='slack'`` and
+    ``external_id='U07TCQBDPMJ'``).
+
+    NOTE: Do not send this through MCP request ``meta=`` by default. Some
+    Python/FastMCP server stacks close the connection when they receive custom
+    request metadata, which turns a harmless auth hint into a
+    ``ClosedResourceError``. Instead, MCP servers that need caller propagation
+    opt in via ``mcp_servers.<name>.forward_gateway_caller: true`` and Hermes
+    injects a reserved ``hermes_caller`` argument after the model has produced
+    tool arguments. The model does not choose this value; Hermes overwrites it
+    immediately before the MCP call.
+    """
+    try:
+        from gateway.caller_context import get_caller
+
+        caller = get_caller()
+    except Exception:
+        caller = None
+    if not caller:
+        return None
+    return {
+        "provider": caller.provider,
+        "external_id": caller.external_id,
+    }
+
+
+def _make_tool_handler(
+    server_name: str,
+    tool_name: str,
+    tool_timeout: float,
+    *,
+    forward_gateway_caller: bool = False,
+):
     """Return a sync handler that calls an MCP tool via the background loop.
 
     The handler conforms to the registry's dispatch interface:
@@ -2806,9 +2849,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
 
+        call_args = args
+        if forward_gateway_caller:
+            caller_payload = _current_caller_payload()
+            if caller_payload:
+                call_args = dict(args or {})
+                # Reserved Hermes-injected argument. This is set *after* the
+                # model produced tool args, so a prompt-injected value cannot
+                # choose the caller. MCP servers that opt into caller
+                # propagation should declare this optional argument and ignore
+                # any user-facing meaning for it. FastMCP rejects parameter
+                # names starting with "_", so this intentionally does not use
+                # a leading underscore.
+                call_args["hermes_caller"] = caller_payload
+
         async def _call():
             async with server._rpc_lock:
-                result = await server.session.call_tool(tool_name, arguments=args)
+                result = await server.session.call_tool(tool_name, arguments=call_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
@@ -3583,7 +3640,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             name=tool_name_prefixed,
             toolset=toolset_name,
             schema=schema,
-            handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout),
+            handler=_make_tool_handler(
+                name,
+                mcp_tool.name,
+                server.tool_timeout,
+                forward_gateway_caller=bool(config.get("forward_gateway_caller")),
+            ),
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],

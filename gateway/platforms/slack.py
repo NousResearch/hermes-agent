@@ -2853,7 +2853,17 @@ class SlackAdapter(BasePlatformAdapter):
         if _should_react:
             self._reacting_message_ids.add(ts)
 
-        await self.handle_message(msg_event)
+        # Workfully extension — propagate caller identity to MCP servers.
+        # Wraps the agent invocation so any MCP ``tools/call`` issued during
+        # this turn carries the Slack user id in the request meta. See
+        # ``gateway/caller_context.py`` for the rationale.
+        from gateway.caller_context import set_caller, reset_caller
+
+        _caller_token = set_caller("slack", user_id or "")
+        try:
+            await self.handle_message(msg_event)
+        finally:
+            reset_caller(_caller_token)
 
     # ----- Approval button support (Block Kit) -----
 
@@ -3575,9 +3585,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Set the ContextVar so send() can match the correct stashed
         # response_url even when multiple users slash concurrently.
         _slash_user_id_token = _slash_user_id.set(user_id or None)
+
+        # Workfully extension — propagate slash-command caller identity to
+        # MCP servers just like normal Slack messages.
+        from gateway.caller_context import set_caller, reset_caller
+
+        _caller_token = set_caller("slack", user_id or "")
         try:
             await self.handle_message(event)
         finally:
+            reset_caller(_caller_token)
             _slash_user_id.reset(_slash_user_id_token)
 
     def _has_active_session_for_thread(

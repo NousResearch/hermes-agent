@@ -1,0 +1,29 @@
+Source: github.com/stephenschoettler/hermes-lcm
+Source commit: 03b74f84440be99164ce3e2cd929917bc9550bfe
+Source branch/date: main, 2026-06-13
+Source version: v0.16.2 (plugin.yaml version 0.16.2)
+Source staging path: ~/.hermes/worktrees/prd2v2-native-slimmer/staging/lcm-profile/plugins/hermes-lcm/
+Adopted surface: Kyzcreig/hermes-agent private fork, plugins/context_engine/lcm/
+Adopted package/module name: lcm (loader-safe directory for load_context_engine("lcm"))
+Upstream package/plugin identity preserved: hermes-lcm
+
+License: cleared for private fork use per PRD-6 LCM Context Engine Activation lines 4-6 and invariant I-7; upstream staging noted no LICENSE file, so public redistribution remains blocked unless a license grant is added.
+Ingest-audit verdict: PASS — existing staging provenance recorded 22 HIGH findings, all test/benchmark placeholder secrets; scary-non-test == 0.
+Prior smoke verdict: GO — 7/7 isolated in-process adoption smoke passed in docs/reports/hermes-lcm-adoption-smoke.md in the prd2v2-native-slimmer worktree.
+
+PRD-6 I-10 upstream security-drift metadata:
+  owner: Apollo
+  cadence: quarterly, and before any LCM update
+  source_repository: github.com/stephenschoettler/hermes-lcm
+  source_commit: 03b74f84440be99164ce3e2cd929917bc9550bfe
+  vendored_commit: 03b74f84440be99164ce3e2cd929917bc9550bfe
+  vendored_version: v0.16.2
+  ingest_audit_verdict: PASS
+  last_upstream_security_check: 2026-06-16
+  source_commit_checked: 03b74f84440be99164ce3e2cd929917bc9550bfe
+  checked_upstream_head: a744da693febf689f78fcb24ade70f04e1eb3e3e
+  checked_upstream_tag_v0.16.2: 963be17faed849a3848713bd1527153519dfd8dd
+  upstream_drift_since_source: 2 commits (eaddaba focus-topic derivation, a744da6 version 0.17.0 bump)
+  checked_by: Apollo (recorded by Daedalus during t00 vendoring)
+  verdict: WARN - upstream drift exists after the adopted v0.16.2 staging artifact; t00 intentionally keeps the PRD-pinned source and leaves update/no-update action to Apollo/t70.
+  next_check_due: 2026-09-16

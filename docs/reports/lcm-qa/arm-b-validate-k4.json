@@ -1,0 +1,74 @@
+{
+  "arm": "B-node-served",
+  "model": "claude-haiku-4-5",
+  "profile": "aegis",
+  "N": 4,
+  "gate_eligible": false,
+  "condensation_fired": 4,
+  "fact_preserved_in_node": 4,
+  "node_served_recall": 4,
+  "node_served_recall_rate": 1.0,
+  "wilson_lower_bound": 0.5101,
+  "confident_wrong": 0,
+  "duration_s": 337.3,
+  "thresholds": {
+    "recall>=": 0.95,
+    "wilson_lb>=": 0.9,
+    "confident_wrong": 0
+  },
+  "verdict": "PASS-UNDERPOWERED",
+  "trials": [
+    {
+      "idx": 0,
+      "sentinel": "Ada Lovelace/recover-0000",
+      "session_id": "20260617_141641_045679",
+      "depth1_node_id": 415,
+      "sentinel_in_node": true,
+      "node_served_answer": "**Ada Lovelace** is the recovery owner associated with handoff phrase recover-0000.",
+      "correct": true,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=0 owner=Ada Lovelace"
+    },
+    {
+      "idx": 1,
+      "sentinel": "Grace Hopper/recover-0001",
+      "session_id": "20260617_141641_045679",
+      "depth1_node_id": 415,
+      "sentinel_in_node": true,
+      "node_served_answer": "**Grace Hopper** is the recovery owner associated with handoff phrase recover-0001.",
+      "correct": true,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=1 owner=Grace Hopper"
+    },
+    {
+      "idx": 2,
+      "sentinel": "Katherine Johnson/recover-0002",
+      "session_id": "20260617_141641_045679",
+      "depth1_node_id": 415,
+      "sentinel_in_node": true,
+      "node_served_answer": "The recovery owner associated with handoff phrase **recover-0002** is **Katherine Johnson**.",
+      "correct": true,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=2 owner=Katherine Johnson"
+    },
+    {
+      "idx": 3,
+      "sentinel": "Margaret Hamilton/recover-0003",
+      "session_id": "20260617_141641_045679",
+      "depth1_node_id": 415,
+      "sentinel_in_node": true,
+      "node_served_answer": "The recovery owner associated with handoff phrase **recover-0003** is **Margaret Hamilton**.",
+      "correct": true,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=3 owner=Margaret Hamilton"
+    }
+  ]
+}

@@ -360,7 +360,7 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
-        if not self._ws:
+        if not self._ws or self._ws.closed:
             raise RuntimeError("WebSocket not connected")
 
         while self._running and self._ws and not self._ws.closed:

@@ -121,6 +121,35 @@ def test_streaming_session_end_cancels_inflight_task():
     assert task.cancelled()
 
 
+def test_streaming_vision_auto_attach(monkeypatch):
+    import agent.auxiliary_client as ac
+
+    h = handlers.StreamingCallSessionHandler(bridge_config=resolve_config(extra={"shared_secret": "s"}))
+    sess = FakeSession()
+    h._session = sess
+    asyncio.run(h.on_video_frame(sess, protocol.VideoFrame(
+        type="video.frame", source="screenshare", ts=7, width=1, height=1,
+        mime="image/jpeg", data_base64="ZZ", participant_id="p", participant_name="Bob")))
+    assert h._vision.latest() is not None  # ingested
+
+    class _Msg:
+        content = "a budget spreadsheet"
+
+    class _Choice:
+        message = _Msg()
+
+    class _Resp:
+        choices = [_Choice()]
+
+    async def fake_llm(**kw):
+        return _Resp()
+
+    monkeypatch.setattr(ac, "async_call_llm", fake_llm)
+    ctx = asyncio.run(h._vision_context())
+    assert "budget spreadsheet" in ctx and "sharing" in ctx.lower()
+    assert asyncio.run(h._vision_context()) == ""  # no new frame → no re-attach
+
+
 def test_meeting_post_minutes_injected_deliver():
     class FakeConsult:
         async def ask(self, q, *, timeout_s=120.0):

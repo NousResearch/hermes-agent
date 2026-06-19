@@ -383,6 +383,11 @@ class StreamingCallSessionHandler(BaseTeamsCallHandler):
         self._out_seq = 0
         self._out_ts = 0
         self._processing = False  # half-duplex: one utterance at a time
+        # Vision: ingest video.frame and auto-attach a fresh frame's description
+        # to the agent turn (budget-capped, recording-gated).
+        self._vision = VisionStore()
+        self._vision_budget = VisionBudget(bridge_config.max_vision_per_minute if bridge_config else 30)
+        self._last_frame_ts: int | None = None
 
     async def on_session_start(self, session: CallSession, msg: protocol.SessionStart) -> None:
         if not await self._begin_session(session, msg):  # state + allowlist + scope
@@ -431,6 +436,49 @@ class StreamingCallSessionHandler(BaseTeamsCallHandler):
             self._processing = True
             self._utterance_task = asyncio.create_task(self._handle_utterance(utterance))
 
+    async def on_video_frame(self, session: CallSession, msg: protocol.VideoFrame) -> None:
+        if self._require_recording and not session.recording_active:
+            return
+        self._vision.store(
+            StoredFrame(
+                source=msg.source,
+                data_base64=msg.data_base64,
+                mime=msg.mime or "image/jpeg",
+                ts=msg.ts,
+                participant_name=msg.participant_name,
+            )
+        )
+
+    async def _vision_context(self) -> str:
+        """One-line description of the freshest shared frame to prepend to the turn.
+
+        Auto-attach: only when there's a NEW frame since the last turn and the
+        per-call vision budget allows; empty string otherwise (no agent change)."""
+        frame = self._vision.latest()
+        if frame is None or frame.ts == self._last_frame_ts:
+            return ""
+        if not self._vision_budget.try_consume():
+            return ""
+        self._last_frame_ts = frame.ts
+        try:
+            from agent.auxiliary_client import async_call_llm
+
+            resp = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": "In one short sentence, describe what the caller is sharing."},
+                    {"type": "image_url", "image_url": {"url": frame.data_url()}},
+                ]}],
+                max_tokens=120,
+            )
+            desc = (resp.choices[0].message.content if resp and resp.choices else "") or ""
+            desc = desc.strip()
+            return f"[The caller is sharing their {frame.describe()}: {desc}]\n" if desc else ""
+        except Exception:  # noqa: BLE001
+            self._vision_budget.refund()
+            logger.error("[teams_voice] streaming vision describe failed", exc_info=True)
+            return ""
+
     async def _handle_utterance(self, pcm: bytes) -> None:
         try:
             transcript = await self._transcribe(pcm)
@@ -452,7 +500,9 @@ class StreamingCallSessionHandler(BaseTeamsCallHandler):
             if decision.addressed:
                 self._last_addressed_ms = now
             await self._safe_expression(expression.THINKING)
-            reply = await self._consult.ask(transcript)
+            # Auto-attach vision: prepend a fresh frame's description as context.
+            vision_ctx = await self._vision_context()
+            reply = await self._consult.ask(f"{vision_ctx}{transcript}" if vision_ctx else transcript)
             self._meeting.add("Assistant", reply)
             await self._speak(reply)
         except Exception:  # noqa: BLE001 — never let a turn crash the call

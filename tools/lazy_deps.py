@@ -178,7 +178,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
         "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.20",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),
     # Vision image-resize recovery (Pillow). Soft dependency: vision_tools and
     # conversation_compression degrade gracefully without it, but the byte AND

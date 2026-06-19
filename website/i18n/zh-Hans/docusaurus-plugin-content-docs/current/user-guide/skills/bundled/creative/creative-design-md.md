@@ -21,7 +21,7 @@ description: "编写/验证/导出 Google 的 DESIGN"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `design`, `design-system`, `tokens`, `ui`, `accessibility`, `wcag`, `tailwind`, `dtcg`, `google` |
-| 相关 skill | [`popular-web-designs`](/user-guide/skills/bundled/creative/creative-popular-web-designs), [`claude-design`](/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/user-guide/skills/bundled/creative/creative-architecture-diagram) |
+| 相关 skill | [`popular-web-designs`](/user-guide/skills/bundled/creative/creative-popular-web-designs), [`claude-design`](/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw), [`html-artifact`](/user-guide/skills/bundled/creative/creative-html-artifact) |
 
 ## 参考：完整 SKILL.md
 

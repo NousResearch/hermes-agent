@@ -1,5 +1,6 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
+import asyncio
 import os
 import json
 import shutil
@@ -1551,6 +1552,27 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
         assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
 
+    def test_slack_messaging_platform_exposes_user_allowlist(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["platforms"]
+        slack = next(platform for platform in platforms if platform["id"] == "slack")
+        fields = {field["key"]: field for field in slack["env_vars"]}
+
+        assert "allowed Slack member IDs" in slack["description"]
+        assert set(fields) >= {
+            "SLACK_BOT_TOKEN",
+            "SLACK_APP_TOKEN",
+            "SLACK_ALLOWED_USERS",
+        }
+        assert fields["SLACK_ALLOWED_USERS"]["prompt"] == "Allowed Slack member IDs"
+        assert fields["SLACK_ALLOWED_USERS"]["is_password"] is False
+        assert "member IDs" in fields["SLACK_ALLOWED_USERS"]["description"]
+        assert "Bot User OAuth Token" in fields["SLACK_BOT_TOKEN"]["help"]
+        assert "App-Level Tokens" in fields["SLACK_APP_TOKEN"]["help"]
+        assert "Copy member ID" in fields["SLACK_ALLOWED_USERS"]["help"]
+
     def test_weixin_messaging_metadata_describes_personal_ilink_setup(self):
         resp = self.client.get("/api/messaging/platforms")
 
@@ -1626,6 +1648,70 @@ class TestWebServerEndpoints:
         status = self.client.get("/api/messaging/platforms").json()["platforms"]
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
+
+    def test_update_messaging_platform_saves_slack_allowed_users(self):
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,U04XYZ5LMN6"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,U04XYZ5LMN6"
+
+    def test_update_messaging_platform_rejects_swapped_slack_bot_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_BOT_TOKEN": "xapp-wrong-token-type"}},
+        )
+
+        assert resp.status_code == 400
+        assert "xoxb-" in resp.json()["detail"]
+
+    def test_update_messaging_platform_rejects_swapped_slack_app_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_APP_TOKEN": "xoxb-wrong-token-type"}},
+        )
+
+        assert resp.status_code == 400
+        assert "xapp-" in resp.json()["detail"]
+
+    def test_update_messaging_platform_rejects_invalid_slack_allowed_users(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,not-a-user"}},
+        )
+
+        assert resp.status_code == 400
+        assert "member IDs" in resp.json()["detail"]
+
+    def test_update_messaging_platform_accepts_slack_allowed_users_wildcard(self):
+        # "*" is the gateway's allow-all wildcard (gateway/platforms/slack.py),
+        # so the dashboard must accept it rather than rejecting it as malformed.
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "*"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "*"
+
+    def test_update_messaging_platform_accepts_slack_allowed_users_trailing_comma(self):
+        # The gateway drops empty entries (gateway/platforms/slack.py), so a
+        # trailing/interior comma must not be rejected by the dashboard.
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,,W04XYZ5LMN6,"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,,W04XYZ5LMN6,"
 
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
@@ -5061,6 +5147,7 @@ class TestPtyWebSocket:
 
         _argv, _cwd, env = self.ws_module._resolve_chat_argv()
 
+        assert env["HERMES_TUI_DASHBOARD"] == "1"
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
@@ -5131,6 +5218,107 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
+
+    def test_resolve_chat_argv_async_uses_worker_thread(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["node", "dist/entry.js"], "/tmp/ui-tui", {"NODE_ENV": "production"})
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            captured["thread_fn"] = fn
+            captured["thread_args"] = args
+            captured["thread_kwargs"] = kwargs
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+        monkeypatch.setattr(self.ws_module.asyncio, "to_thread", fake_to_thread)
+
+        argv, cwd, env = asyncio.run(
+            self.ws_module._resolve_chat_argv_async(
+                resume="sess-42",
+                sidecar_url="ws://127.0.0.1:9119/api/pub?channel=abc",
+                profile="worker",
+            )
+        )
+
+        assert callable(captured["thread_fn"])
+        assert captured["thread_args"] == ()
+        assert captured["thread_kwargs"] == {
+            "resume": "sess-42",
+            "sidecar_url": "ws://127.0.0.1:9119/api/pub?channel=abc",
+            "profile": "worker",
+        }
+        assert argv == ["node", "dist/entry.js"]
+        assert cwd == "/tmp/ui-tui"
+        assert env == {"NODE_ENV": "production"}
+        assert captured["resume"] == "sess-42"
+        assert captured["sidecar_url"] == "ws://127.0.0.1:9119/api/pub?channel=abc"
+        assert captured["profile"] == "worker"
+
+    def test_pty_ws_resolves_argv_through_async_wrapper(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_resolve_async(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["/bin/sh", "-c", "printf async-resolve-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv_async", fake_resolve_async)
+
+        with self.client.websocket_connect(self._url(resume="sess-99")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured["resume"] == "sess-99"
+
+    def _assert_pty_propagates(self, monkeypatch, raising_resolver, *, profile=None, expect_detail=None):
+        """Drive /api/pty with a resolver that raises, and assert the error
+        propagates through the real _resolve_chat_argv_async -> asyncio.to_thread
+        -> lock -> re-raise chain into pty_ws's handler: the "Chat unavailable"
+        notice is sent and the socket closes with code 1011 (the stable
+        contract — we assert the close code, not the exact notice wording)."""
+        from starlette.websockets import WebSocketDisconnect
+
+        # Patch the REAL resolver so the whole wrapper/to_thread/lock chain runs.
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", raising_resolver)
+
+        url = self._url(profile=profile) if profile else self._url()
+        with self.client.websocket_connect(url) as conn:
+            notice = conn.receive_text()
+            with pytest.raises(WebSocketDisconnect) as exc:
+                conn.receive_text()
+        assert "Chat unavailable" in notice
+        assert exc.value.code == 1011
+        if expect_detail is not None:
+            assert expect_detail in notice
+
+    def test_pty_ws_propagates_systemexit_through_async_wrapper(self, monkeypatch):
+        """SystemExit from _make_tui_argv (node/npm missing) propagates through
+        the async wrapper and is caught by pty_ws's ``except SystemExit``."""
+
+        def boom(resume=None, sidecar_url=None, profile=None):
+            raise SystemExit("node not found")
+
+        self._assert_pty_propagates(monkeypatch, boom)
+
+    def test_pty_ws_propagates_httpexception_through_async_wrapper(self, monkeypatch):
+        """An invalid-profile HTTPException raised inside the threaded resolver
+        propagates through the wrapper and hits pty_ws's ``except HTTPException``."""
+        from fastapi import HTTPException
+
+        def bad_profile(resume=None, sidecar_url=None, profile=None):
+            raise HTTPException(status_code=404, detail="unknown profile")
+
+        self._assert_pty_propagates(
+            monkeypatch, bad_profile, profile="ghost", expect_detail="unknown profile"
+        )
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(

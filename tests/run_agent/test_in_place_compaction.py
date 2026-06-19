@@ -87,24 +87,41 @@ class TestInPlaceCompaction:
             row = db.get_session(sid)
             assert row["end_reason"] is None
             assert row["title"] == "my-research"
-            # DURABLE REPLACE (the core invariant): the persisted transcript is
-            # now the COMPACTED set, not "full history + summary". A resume must
-            # reload the compacted transcript so compaction actually shrinks the
-            # session and doesn't immediately re-compact (#38763).
+            # DURABLE, NON-DESTRUCTIVE compaction (the core invariant, per
+            # Teknium's review): the LIVE context is the compacted set, but the
+            # pre-compaction turns are PRESERVED on disk (active=0), not deleted
+            # — searchable + recoverable under the SAME id. A resume reloads the
+            # compacted set so compaction actually shrinks the live session and
+            # doesn't immediately re-compact (#38763).
             reloaded = db.get_messages_as_conversation(sid)
             assert len(reloaded) == 2
             assert [m.get("content") for m in reloaded] == [
                 "[CONTEXT COMPACTION] summary of prior turns",
                 "recent reply",
             ]
-            assert row["message_count"] == 2
+            assert row["message_count"] == 2  # live (active) count
+            # NON-DESTRUCTIVE: the 8 seeded originals survive at active=0
+            # alongside the 2 compacted rows — nothing was DELETEd.
+            all_rows = db.get_messages(sid, include_inactive=True)
+            assert len(all_rows) == 10
+            archived = [m for m in all_rows if not m.get("active", 1)]
+            assert len(archived) == 8
+            # The originals remain FTS-searchable (active=0 is a content-
+            # preserving UPDATE; the fts triggers don't key on active).
+            hit = db._conn.execute(
+                "SELECT 1 FROM messages_fts f JOIN messages m ON m.id = f.rowid "
+                "WHERE m.session_id = ? AND messages_fts MATCH 'msg' AND m.active = 0 "
+                "LIMIT 1",
+                (sid,),
+            ).fetchone()
+            assert hit is not None
             # Flush identity/cursor reset so next-turn appends diff against the
             # compacted transcript (rebuilds the identity set on next flush).
             assert agent._last_flushed_db_idx == 0
             assert agent._flushed_db_message_ids == set()
             # Rotation-independent in-place signal set for the gateway.
             assert agent._last_compaction_in_place is True
-            # Transcript actually shrank.
+            # Live transcript actually shrank.
             assert len(compressed) == 2
 
     def test_in_place_alternation_preserved(self):

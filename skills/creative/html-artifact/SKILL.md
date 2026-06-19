@@ -37,6 +37,9 @@ canvas art use `p5js`. This skill is for everything else that ships as an HTML p
 
 - `references/house-style.md` — the canonical `:root` token block, type system,
   card/table/callout/code-block patterns. **Read this before authoring any artifact.**
+- `references/examples.md` — 20 complete reference HTML files (Anthropic's
+  html-effectiveness gallery, MIT) keyed to each mode, plus the script to fetch them.
+  Read/fetch one that matches your task to calibrate the house style from a full example.
 - `references/svg-diagrams.md` — hand-authored inline SVG: arrow markers, node
   groups, decision diamonds, edge semantics, coordinate-grid discipline. Read for
   any flowchart / architecture / concept diagram.
@@ -70,7 +73,9 @@ Load one with `skill_view(name="html-artifact", file_path="templates/base.html")
    don't ship a sloppy report.
 3. **Start from a template + the house style.** Load `templates/base.html` (or
    `diagram.html` / `editor.html`) and `references/house-style.md`. Reuse the
-   `:root` tokens — never invent a new palette per file.
+   `:root` tokens — never invent a new palette per file. For a richer reference,
+   fetch the gallery (`bash scripts/fetch-examples.sh`) and `read_file` the worked
+   example that matches your mode — see `references/examples.md` for the mode→file map.
 4. **Author the artifact** with `write_file`. Keep everything inline: one `<style>`
    in `<head>`, at most one `<script>` before `</body>`. No `<link>`, no external
    fonts (use OS-native stacks), no CDN, no `<img src>` to remote URLs. All graphics

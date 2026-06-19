@@ -282,6 +282,23 @@ async def test_send_typing_preserves_general_topic_thread_id():
 
 
 @pytest.mark.asyncio
+async def test_send_typing_respects_disabled_typing_indicator():
+    """Direct Telegram send_typing calls must honor the display toggle."""
+    adapter = _make_adapter()
+    adapter.config.extra["typing_indicator"] = False
+    call_log = []
+
+    async def mock_send_chat_action(**kwargs):
+        call_log.append(dict(kwargs))
+
+    adapter._bot = SimpleNamespace(send_chat_action=mock_send_chat_action)
+
+    await adapter.send_typing("12345")
+
+    assert call_log == []
+
+
+@pytest.mark.asyncio
 async def test_send_typing_does_not_fall_back_to_root_for_dm_topic():
     """Typing failures in DM topics should not show an indicator in All Messages."""
     adapter = _make_adapter()

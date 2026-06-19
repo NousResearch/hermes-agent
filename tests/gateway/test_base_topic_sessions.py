@@ -149,6 +149,36 @@ class TestBasePlatformTopicSessions:
         ]
 
     @pytest.mark.asyncio
+    async def test_process_message_background_skips_typing_when_indicator_disabled(self):
+        adapter = DummyTelegramAdapter()
+        adapter.config.extra["typing_indicator"] = False
+        typing_calls = []
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "ack"
+
+        async def hold_typing(chat_id, interval=2.0, metadata=None, stop_event=None):
+            typing_calls.append({"chat_id": chat_id, "metadata": metadata})
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert typing_calls == []
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "ack",
+                "reply_to": None,
+                "metadata": {"thread_id": "17585", "notify": True},
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_process_message_background_marks_total_send_failure_unsuccessful(self):
         adapter = DummyTelegramAdapter()
 

@@ -49,6 +49,8 @@ import {
   workspaceCwdForNewSession
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { clearSessionSubagents } from '@/store/subagents'
+import { clearSessionTodos } from '@/store/todos'
 import { reportBackendContract } from '@/store/updates'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
@@ -989,9 +991,13 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
+        clearSessionSubagents(storedSessionId)
+        clearSessionTodos(storedSessionId)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
+          clearSessionSubagents(closingRuntimeId)
+          clearSessionTodos(closingRuntimeId)
         }
       } catch (err) {
         if (removed) {

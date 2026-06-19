@@ -8,7 +8,8 @@ a link + a native Teams file card. The flow mirrors the Graph contract:
 
 Requires the bot's AAD app to hold the Graph **application** permission
 ``Sites.ReadWrite.All`` (admin-consented). When unconfigured, callers fall back to
-text-only delivery.
+text-only delivery. Uses Graph *simple* upload (≤4 MB) — fine for minutes/cards;
+larger files would need an upload session (follow-up).
 """
 
 from __future__ import annotations

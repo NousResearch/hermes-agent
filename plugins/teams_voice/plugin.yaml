@@ -56,3 +56,5 @@ optional_env:
     description: "Permit outbound place-call to a non-loopback worker URL (default false)."
   - name: TEAMS_VOICE_REQUIRE_RECORDING_STATUS
     description: "Gate media processing until Teams recording is active (default true)."
+  - name: TEAMS_SHAREPOINT_SITE_ID
+    description: "SharePoint (OneDrive) site id (host,siteGuid,webGuid) to attach the meeting-minutes .docx to the chat; needs the bot app's Graph Sites.ReadWrite.All."

@@ -521,10 +521,11 @@ async def _standalone_send(
     env var.  ``chat_id`` is validated to match the documented Bot
     Framework ID character set so it cannot escape the URL path.
 
-    ``media_files`` and ``force_document`` are accepted for signature
-    parity but not implemented for the standalone path; messages with
-    attachments will send as text-only.  The live adapter handles
-    attachments via the SDK.
+    ``media_files`` are uploaded to SharePoint (OneDrive) and attached as native
+    Teams file cards when ``sharePointSiteId`` + the bot's Graph
+    ``Sites.ReadWrite.All`` permission are configured; otherwise (or on upload
+    failure) the message sends as text-only.  ``force_document`` is accepted for
+    signature parity.  The live adapter handles attachments via the SDK.
     """
     extra = getattr(pconfig, "extra", {}) or {}
     client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
@@ -588,13 +589,31 @@ async def _standalone_send(
             if not access_token:
                 return {"error": "Teams standalone send: token response missing access_token"}
 
+            # Upload any media_files to SharePoint and attach them as file cards
+            # (best-effort; needs sharePointSiteId + Graph Sites.ReadWrite.All).
+            all_attachments = list(attachments or [])
+            if media_files:
+                from . import graph_files
+
+                creds = graph_files.resolve_sharepoint(extra)
+                if creds:
+                    for f in media_files:
+                        try:
+                            with open(f, "rb") as fh:
+                                data = fh.read()
+                        except OSError:
+                            continue
+                        up = await graph_files.upload_and_build_card(creds, os.path.basename(str(f)), data)
+                        if up:
+                            all_attachments.append(up["card"])
+
             activity = {
                 "type": "message",
                 "text": message,
                 "textFormat": "markdown",
             }
-            if attachments:
-                activity["attachments"] = attachments
+            if all_attachments:
+                activity["attachments"] = all_attachments
             async with session.post(
                 activities_url,
                 json=activity,

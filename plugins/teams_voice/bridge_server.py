@@ -88,10 +88,10 @@ class CallSessionHandler:
         )
 
     async def on_audio_frame(self, session: CallSession, msg: protocol.AudioFrame) -> None:
-        ...  # TODO: gate on recording, echo-guard, route to STT/realtime model
+        ...  # base no-op; the realtime/streaming handlers route this to the model
 
     async def on_video_frame(self, session: CallSession, msg: protocol.VideoFrame) -> None:
-        ...  # TODO: gate on recording, store in vision ring, ambient push
+        ...  # base no-op; the realtime/streaming handlers store + use vision frames
 
     async def on_recording_status(self, session: CallSession, msg: protocol.RecordingStatus) -> None:
         session.recording_active = msg.status == "active"
@@ -101,7 +101,7 @@ class CallSessionHandler:
         session.human_count = msg.count
 
     async def on_dtmf(self, session: CallSession, msg: protocol.Dtmf) -> None:
-        ...  # TODO: surface keypress to the realtime model (recording-gated)
+        ...  # base no-op; the realtime handler surfaces keypresses to the model
 
     async def on_session_end(self, session: CallSession, msg: protocol.SessionEnd) -> None:
         logger.info("[teams_voice] session.end call=%s reason=%s", session.call_id, msg.reason)

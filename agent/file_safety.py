@@ -684,14 +684,12 @@ def get_skill_write_bypass_warning(path: str) -> Optional[str]:
             f"{skills_dir}, which is managed by skill_manage. Writing to skill "
             f"files via write_file or patch bypasses skill_manage's protections "
             f"(approval gate, security scan, frontmatter validation, curator "
-            f"telemetry, and skill-cache invalidation).
-
-"
+            f"telemetry, and skill-cache invalidation).\n"
+            "\n"
             f"Use skill_manage(action='patch', name='<skill>', ...) or "
             f"skill_manage(action='write_file', name='<skill>', "
-            f"file_path='...', file_content='...') instead.
-
-"
+            f"file_path='...', file_content='...') instead.\n"
+            "\n"
             f"To bypass this guard after explicit user direction, retry with "
             f"force_skill_write=True. "
             f"(Defense-in-depth — not a security boundary; the terminal tool "

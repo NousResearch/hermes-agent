@@ -57,6 +57,8 @@ class OnnxEmbedder:
     
     def _load_tokenizer(self) -> None:
         """Load tokenizer from tokenizer.json using tokenizers library."""
+        if self._tokenizer is not None:
+            return
         # Model is at .../nomic-embed-text-v1.5/onnx/model.onnx;
         # tokenizer.json is at .../nomic-embed-text-v1.5/tokenizer.json
         tokenizer_path = self._model_path.parent.parent / "tokenizer.json"

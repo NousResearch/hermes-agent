@@ -301,6 +301,7 @@ class MemoryStore:
             # Recompute HRR vector if content changed
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
+                self._compute_embedding(fact_id, content)
             # Rebuild bank for relevant category
             cat = category or self._conn.execute(
                 "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)

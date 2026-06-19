@@ -3425,15 +3425,16 @@ def _try_main_fallback_chain(
 
     ``provider: auto`` auxiliary tasks should respect the user's declared
     main fallback policy before dropping into Hermes' built-in discovery
-    chain. The top-level chain is read through ``get_fallback_chain`` so
+    chain. The top-level chain is read through ``resolve_fallback_chain`` so
     both modern ``fallback_providers`` and legacy ``fallback_model`` entries
-    participate in the same order as the main agent.
+    participate in the same order as the main agent, with NVIDIA/Nous dynamic
+    entries expanded for runtime failover.
     """
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_cli.fallback_config import resolve_fallback_chain
 
-        chain = get_fallback_chain(load_config())
+        chain = resolve_fallback_chain(load_config())
     except Exception as exc:
         logger.debug("Auxiliary %s: could not load main fallback chain: %s", task or "call", exc)
         return None, None, ""

@@ -49,10 +49,18 @@ def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
 
 def _format_entry(entry: Dict[str, Any]) -> str:
     """One-line human-readable rendering of a fallback entry."""
-    from hermes_cli.fallback_chain import is_opencode_free_fallback_entry
+    from hermes_cli.fallback_chain import (
+        is_nous_free_fallback_entry,
+        is_nvidia_auto_fallback_entry,
+        is_opencode_free_fallback_entry,
+    )
 
     if is_opencode_free_fallback_entry(entry):
         return "OpenCode Zen free models (auto)"
+    if is_nous_free_fallback_entry(entry):
+        return "Nous Portal free models (auto)"
+    if is_nvidia_auto_fallback_entry(entry):
+        return "NVIDIA NIM models (auto rotate)"
     provider = entry.get("provider", "?")
     model = entry.get("model", "?")
     base = entry.get("base_url")

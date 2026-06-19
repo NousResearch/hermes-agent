@@ -49,6 +49,28 @@ OPENCODE_FREE_FALLBACK_PROVIDER_ALIASES = frozenset({
     "opencode-zen-free",
     "zen-free",
 })
+NOUS_FREE_FALLBACK_MODEL_ALIASES = frozenset({
+    "free",
+    "auto-free",
+    "current-free",
+    "nous-free",
+    "@free",
+    "$free",
+    "*free",
+})
+NOUS_FREE_FALLBACK_PROVIDER_ALIASES = frozenset({
+    "nous-free",
+})
+NVIDIA_AUTO_FALLBACK_MODEL_ALIASES = frozenset({
+    "auto",
+    "auto-rotate",
+    "rotate",
+    "any",
+})
+_NOUS_STATIC_FREE_MODELS = [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+]
 _OPENCODE_STATIC_FREE_MODELS = [
     "big-pickle",
     "deepseek-v4-flash-free",
@@ -2320,6 +2342,63 @@ def is_opencode_free_model_alias(model_id: Optional[str]) -> bool:
     return str(model_id or "").strip().lower() in OPENCODE_FREE_FALLBACK_MODEL_ALIASES
 
 
+def is_nous_free_model_id(model_id: Optional[str]) -> bool:
+    """Return True when a Nous Portal model id is on the free tier."""
+    mid = str(model_id or "").strip().lower()
+    if not mid:
+        return False
+    return mid.endswith(":free") or mid.endswith("-free")
+
+
+def is_nous_free_model_alias(model_id: Optional[str]) -> bool:
+    """Return True when *model_id* is a virtual Nous free sentinel."""
+    return str(model_id or "").strip().lower() in NOUS_FREE_FALLBACK_MODEL_ALIASES
+
+
+def is_nvidia_auto_model_alias(model_id: Optional[str]) -> bool:
+    """Return True when *model_id* requests rotating across NVIDIA NIM models."""
+    return str(model_id or "").strip().lower() in NVIDIA_AUTO_FALLBACK_MODEL_ALIASES
+
+
+def nous_free_model_ids(*, force_refresh: bool = False) -> list[str]:
+    """Return Nous Portal free-tier model ids for fallback rotation."""
+    curated = get_curated_nous_model_ids()
+    pricing: dict[str, dict[str, str]] = {}
+    try:
+        pricing = get_pricing_for_provider("nous", force_refresh=force_refresh)
+    except Exception:
+        pricing = {}
+
+    augmented_ids, augmented_pricing = union_with_portal_free_recommendations(
+        curated,
+        pricing,
+        force_refresh=force_refresh,
+    )
+    selectable, _unavailable = partition_nous_models_by_tier(
+        augmented_ids,
+        augmented_pricing,
+        free_tier=True,
+    )
+    suffix_free = [mid for mid in augmented_ids if is_nous_free_model_id(mid)]
+    combined = _dedupe_model_ids(list(selectable) + suffix_free)
+    if combined:
+        return combined
+    return list(_NOUS_STATIC_FREE_MODELS)
+
+
+def nvidia_fallback_model_ids(
+    *,
+    exclude: Optional[str] = None,
+    force_refresh: bool = False,
+) -> list[str]:
+    """Return NVIDIA NIM model ids for fallback rotation."""
+    models = provider_model_ids("nvidia", force_refresh=force_refresh)
+    exclude_norm = str(exclude or "").strip().lower()
+    if exclude_norm:
+        models = [mid for mid in models if mid.strip().lower() != exclude_norm]
+    return _dedupe_model_ids(models)
+
+
 def resolve_config_model_id(
     provider: Optional[str],
     model_id: Optional[str],
@@ -2329,12 +2408,23 @@ def resolve_config_model_id(
     """Resolve configured model ids, expanding OpenCode free sentinels."""
     normalized_provider = normalize_provider(provider)
     mid = str(model_id or "").strip()
-    if normalized_provider != "opencode-zen":
+    if normalized_provider == "opencode-zen":
+        if not mid or is_opencode_free_model_alias(mid):
+            free_models = opencode_free_model_ids(force_refresh=force_refresh)
+            if free_models:
+                return free_models[0]
         return mid
-    if not mid or is_opencode_free_model_alias(mid):
-        free_models = opencode_free_model_ids(force_refresh=force_refresh)
-        if free_models:
-            return free_models[0]
+    if normalized_provider == "nous":
+        if not mid or is_nous_free_model_alias(mid):
+            free_models = nous_free_model_ids(force_refresh=force_refresh)
+            if free_models:
+                return free_models[0]
+        return mid
+    if normalized_provider == "nvidia" and is_nvidia_auto_model_alias(mid):
+        rotated = nvidia_fallback_model_ids(force_refresh=force_refresh)
+        if rotated:
+            return rotated[0]
+        return ""
     return mid
 
 

@@ -26,15 +26,11 @@ delegation:
   orchestrator_enabled: true
 
 # Main and subagents rotate through this chain after provider failures such as
-# 429 rate limits. The first NVIDIA entry is skipped automatically if a child
-# is already running on the same provider/model.
+# 429 rate limits. NVIDIA ``auto`` expands to every other NIM model; Nous
+# ``auto-free`` expands to the current Portal free catalog.
 fallback_providers:
   - provider: nvidia
-    model: nvidia/nemotron-3-super-120b-a12b
-  - provider: nous
-    model: nvidia/nemotron-3-ultra-550b-a55b:free
-  - provider: nous
-    model: nvidia/nemotron-3-super-120b-a12b:free
+    model: auto
   - provider: nous
     model: auto-free
   - provider: custom

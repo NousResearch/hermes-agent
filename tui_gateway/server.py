@@ -3277,15 +3277,16 @@ def _parse_tui_skills_env() -> list[str]:
 def _load_fallback_model():
     """Return the configured fallback chain for TUI-created agents.
 
-    Delegates to the shared ``get_fallback_chain`` helper so the TUI path
+    Delegates to the shared ``resolve_fallback_chain`` helper so the TUI path
     stays in parity with ``HermesCLI.__init__`` and ``gateway/run.py``:
     ``fallback_providers`` is the primary source of truth and keeps its
     order, with legacy ``fallback_model`` entries merged in afterwards
-    (deduped on provider/model/base_url).
+    (deduped on provider/model/base_url), then NVIDIA/Nous dynamic entries
+    expanded for runtime failover.
     """
-    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_cli.fallback_config import resolve_fallback_chain
 
-    return get_fallback_chain(_load_cfg())
+    return resolve_fallback_chain(_load_cfg())
 
 
 def _agent_fallback_model(agent):

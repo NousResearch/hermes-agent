@@ -55,7 +55,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_chain, resolve_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -1589,7 +1589,7 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         with open(cfg_path, encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
-        fb_list = get_fallback_chain(cfg)
+        fb_list = resolve_fallback_chain(cfg)
         if not fb_list:
             return None
         for entry in fb_list:
@@ -3771,7 +3771,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                fb = get_fallback_chain(cfg)
+                fb = resolve_fallback_chain(cfg)
                 if fb:
                     return fb
         except Exception:

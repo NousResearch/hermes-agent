@@ -535,13 +535,34 @@ def compress_context(
             if in_place:
                 # ── In-place compaction: keep the same session_id ──────────
                 # No end_session, no new row, no parent_session_id, no title
-                # renumber, no contextvar/env/logging re-sync. Just refresh
-                # the stored system prompt on the existing row. The session's
-                # id, title, cwd, /goal, FTS-indexed history, and gateway
-                # routing all stay put. See #38763.
+                # renumber, no contextvar/env/logging re-sync. The session's
+                # id, title, cwd, /goal, and gateway routing all stay put.
+                #
+                # Durable replace: the persisted transcript MUST become the
+                # compacted set, not "original history + summary". The flush
+                # above wrote any un-persisted current-turn messages onto the
+                # row; now atomically replace ALL rows with `compressed` so a
+                # resume reloads the compacted transcript (lossy by design —
+                # the pre-compaction turns are summarized away). Without this
+                # the row keeps the full history and compaction never durably
+                # shrinks anything (the next turn just re-compacts). See #38763.
+                agent._session_db.replace_messages(agent.session_id, compressed)
                 agent._session_db.update_system_prompt(
                     agent.session_id, new_system_prompt
                 )
+                # Reset the flush identity/cursor so the next turn's appends are
+                # diffed against the COMPACTED transcript, not the pre-compaction
+                # one. _flush_messages_to_session_db rebuilds its identity set
+                # when _last_flushed_db_idx == 0; the compacted dicts are passed
+                # as conversation_history next turn and skipped by identity, so
+                # only genuinely new turn messages get appended (no dup of the
+                # summary, no resurrection of dropped turns).
+                agent._last_flushed_db_idx = 0
+                agent._flushed_db_message_ids = set()
+                # Rotation-independent signal: the conversation was compacted in
+                # place (id unchanged). The caller / gateway uses this instead of
+                # an id-change diff to re-baseline transcript handling.
+                compacted_in_place = True
             else:
                 # ── Rotation (legacy): end this session, fork a continuation ─
                 # Propagate title to the new session with auto-numbering
@@ -594,34 +615,37 @@ def compress_context(
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
-    # Notify the context engine that the session_id rotated because of
-    # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
-    # boundary_reason="compression" to preserve DAG lineage across the
-    # rollover instead of re-initializing fresh per-session state.
-    # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
+    # Notify the context engine that a compaction boundary occurred. Plugin
+    # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
+    # DAG lineage / checkpoint per-session state across the boundary instead of
+    # re-initializing fresh. See hermes-lcm#68. Built-in ContextCompressor
+    # ignores kwargs. Fires in BOTH modes: rotation passes old→new ids; in-place
+    # passes the SAME id (the boundary is real even though the id didn't move).
     try:
         _old_sid = locals().get("old_session_id")
-        if _old_sid and hasattr(agent.context_compressor, "on_session_start"):
+        _boundary = bool(_old_sid) or in_place
+        if _boundary and hasattr(agent.context_compressor, "on_session_start"):
             agent.context_compressor.on_session_start(
                 agent.session_id or "",
                 boundary_reason="compression",
-                old_session_id=_old_sid,
+                old_session_id=_old_sid or agent.session_id or "",
                 conversation_id=getattr(agent, "_gateway_session_key", None),
             )
     except Exception as _ce_err:
         logger.debug("context engine on_session_start (compression): %s", _ce_err)
 
-    # Notify memory providers of the compression-driven session_id rotation
-    # so provider-cached per-session state (Hindsight's _document_id,
-    # accumulated turn buffers, counters) refreshes. reset=False because
-    # the logical conversation continues; only the id and DB row rolled
-    # over. See #6672.
+    # Notify memory providers of the compaction boundary so provider-cached
+    # per-session state (Hindsight's _document_id, accumulated turn buffers,
+    # counters) refreshes. reset=False because the logical conversation
+    # continues. See #6672. Fires in BOTH modes: in-place uses the same id as
+    # parent (the conversation didn't fork, but the buffer must still be told
+    # the transcript was compacted so it doesn't double-count dropped turns).
     try:
         _old_sid = locals().get("old_session_id")
-        if _old_sid and agent._memory_manager:
+        if (_old_sid or in_place) and agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 agent.session_id or "",
-                parent_session_id=_old_sid,
+                parent_session_id=_old_sid or agent.session_id or "",
                 reset=False,
                 reason="compression",
             )
@@ -638,7 +662,9 @@ def compress_context(
         )
 
     # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
-    # the completed old session before its details are lost.
+    # the completed old session before its details are lost. In in-place mode
+    # there is no old id (same session); ``in_place=True`` tells hooks the
+    # transcript was compacted on the same id rather than rotated.
     _old_sid_for_event = locals().get("old_session_id")
     if getattr(agent, "event_callback", None):
         try:
@@ -646,10 +672,17 @@ def compress_context(
                 "platform": agent.platform or "",
                 "session_id": agent.session_id,
                 "old_session_id": _old_sid_for_event or "",
+                "in_place": in_place,
                 "compression_count": agent.context_compressor.compression_count,
             })
         except Exception as e:
             logger.debug("event_callback error on session:compress: %s", e)
+
+    # Surface the compaction mode to the caller (run_conversation / gateway)
+    # via a rotation-independent flag. The gateway uses this — NOT an
+    # id-change diff — to re-baseline transcript handling (history_offset=0 +
+    # rewrite on the same id) when compaction happened in place. See #38763.
+    agent._last_compaction_in_place = bool(locals().get("compacted_in_place", False))
 
     # Keep the post-compression rough estimate for diagnostics, but do not
     # treat it as provider-reported prompt usage. Schema-heavy rough estimates

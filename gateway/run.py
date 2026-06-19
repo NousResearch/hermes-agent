@@ -15349,6 +15349,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # below must still point the gateway at the compressed child.
             agent = agent_holder[0]
             _session_was_split = False
+            # In-place compaction (compression.in_place / #38763) compacts the
+            # transcript WITHOUT rotating the id, so the id-change diff below
+            # can't detect it. compress_context() sets this rotation-independent
+            # flag on the agent; the gateway uses it to re-baseline transcript
+            # handling (history_offset=0 + rewrite the JSONL transcript) the
+            # same way a split would, even though the session_id is unchanged.
+            _compacted_in_place = bool(getattr(agent, "_last_compaction_in_place", False)) if agent else False
             agent_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
             if agent and session_key and agent_session_id != session_id:
                 _session_was_split = True
@@ -15397,7 +15404,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             effective_session_id = agent_session_id
-            _effective_history_offset = 0 if _session_was_split else len(agent_history)
+            # history_offset=0 whenever the agent's message list no longer has
+            # the original history prefix — i.e. on rotation (split) OR in-place
+            # compaction. In both cases the returned `messages` is the compacted
+            # set, so the gateway must persist all of it (offset 0), not slice
+            # past the pre-compaction length (which would drop everything).
+            _effective_history_offset = (
+                0 if (_session_was_split or _compacted_in_place) else len(agent_history)
+            )
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
@@ -15414,6 +15428,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
+                    "compacted_in_place": _compacted_in_place,
                     "session_id": effective_session_id,
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
@@ -15514,6 +15529,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
+                "compacted_in_place": _compacted_in_place,
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,

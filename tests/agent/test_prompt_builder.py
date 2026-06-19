@@ -1068,6 +1068,10 @@ class TestPromptBuilderConstants:
         assert "MEDIA:" in hint
         assert "Markdown" in hint
         assert "absolute" in hint
+        # Nudge the agent to state created/changed paths in plain prose so the
+        # desktop's clickable-file-path feature can linkify them.
+        assert "clickable" in hint
+        assert "plain prose" in hint
 
 
 # =========================================================================

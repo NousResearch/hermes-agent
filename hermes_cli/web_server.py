@@ -10561,6 +10561,7 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
 # expected to run on a shorter cadence; past this we surface a warning rather
 # than present possibly-wrong "up" badges as current.
 _SYSTEM_COMPONENTS_STALE_AFTER_SECONDS = 2 * 60 * 60
+_SECURESCORE_STALE_AFTER_SECONDS = 26 * 60 * 60
 
 # Substrings that mark a JSON key as credential-shaped. The publisher is
 # written to never emit secrets, but the endpoint redacts defensively in
@@ -10656,6 +10657,72 @@ async def get_system_components_analytics():
     data.setdefault("source", "snapshot")
     data.setdefault("components", [])
     data.setdefault("auxiliary_routes", None)
+    return data
+
+
+@app.get("/api/analytics/securescore")
+async def get_securescore_analytics():
+    """Read the local SecureScore snapshot, annotated with staleness.
+
+    The snapshot is published out-of-band by the user's SecureScore cron job to
+    ``~/.hermes/securescore_status.json``. This endpoint never runs the scorer
+    itself, keeping dashboard refreshes cheap and side-effect free.
+    """
+    snapshot_path = get_hermes_home() / "securescore_status.json"
+
+    default_payload: Dict[str, Any] = {
+        "timestamp": None,
+        "source": "default",
+        "report_path": None,
+        "deployment_name": None,
+        "profile": None,
+        "generated_at": None,
+        "overall_score": None,
+        "risk_band": None,
+        "maturity_level": None,
+        "domain_scores": [],
+        "recommendations": [],
+        "finding_counts": {},
+        "stale": True,
+        "missing": True,
+        "age_seconds": None,
+        "message": (
+            "No SecureScore snapshot found. Run "
+            "~/.hermes/scripts/securescore-report.sh to populate "
+            "~/.hermes/securescore_status.json."
+        ),
+    }
+
+    if not snapshot_path.exists():
+        return default_payload
+
+    try:
+        raw = snapshot_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("snapshot root is not a JSON object")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        bad = dict(default_payload)
+        bad["source"] = "error"
+        bad["message"] = f"Could not read SecureScore snapshot: {exc}"
+        return bad
+
+    data = _redact_secret_values(data)
+
+    ts = data.get("timestamp")
+    age_seconds: Optional[float] = None
+    stale = True
+    if isinstance(ts, (int, float)) and ts > 0:
+        age_seconds = max(0.0, time.time() - float(ts))
+        stale = age_seconds > _SECURESCORE_STALE_AFTER_SECONDS
+
+    data["age_seconds"] = age_seconds
+    data["stale"] = stale
+    data["missing"] = False
+    data.setdefault("source", "snapshot")
+    data.setdefault("domain_scores", [])
+    data.setdefault("recommendations", [])
+    data.setdefault("finding_counts", {})
     return data
 
 

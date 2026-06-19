@@ -456,6 +456,8 @@ export const api = {
     ),
   getSystemComponentsAnalytics: () =>
     fetchJSON<SystemComponentsResponse>("/api/analytics/system-components"),
+  getSecureScoreAnalytics: () =>
+    fetchJSON<SecureScoreResponse>("/api/analytics/securescore"),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -1920,6 +1922,49 @@ export interface SystemComponentsResponse {
   summary?: SystemComponentsSummary;
   components: SystemComponent[];
   auxiliary_routes: AuxiliaryRoutes | null;
+  stale: boolean;
+  missing: boolean;
+  age_seconds: number | null;
+  message?: string;
+}
+
+// ── SecureScore (scheduled local security score snapshot) ────────────────
+// Read-only; populated out-of-band by ~/.hermes/scripts/securescore-report.sh
+// and served (with staleness annotation) by GET /api/analytics/securescore.
+export interface SecureScoreDomainScore {
+  domain: string;
+  score: number;
+  max_score: number;
+  percentage: number;
+}
+
+export interface SecureScoreRecommendation {
+  control_id?: string;
+  title: string;
+  domain?: string;
+  severity?: string;
+  effort?: string;
+  score_gain?: number;
+  remediation?: string;
+  priority?: number;
+}
+
+export interface SecureScoreResponse {
+  timestamp: number | null;
+  source: string;
+  report_path: string | null;
+  schema_version?: string | null;
+  engine_version?: string | null;
+  deployment_id?: string | null;
+  deployment_name: string | null;
+  profile: string | null;
+  generated_at: string | null;
+  overall_score: number | null;
+  risk_band: string | null;
+  maturity_level: string | null;
+  domain_scores: SecureScoreDomainScore[];
+  recommendations: SecureScoreRecommendation[];
+  finding_counts: Record<string, number>;
   stale: boolean;
   missing: boolean;
   age_seconds: number | null;

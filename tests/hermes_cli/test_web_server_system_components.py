@@ -147,3 +147,88 @@ def test_secret_like_keys_are_redacted(syscomp_client):
 
     body = _get(client)
     assert body["components"][0]["api_key"] == "***redacted***"
+
+
+def _get_securescore(client):
+    resp = client.get("/api/analytics/securescore")
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def test_securescore_missing_snapshot_returns_safe_default(syscomp_client):
+    client, _home = syscomp_client
+    body = _get_securescore(client)
+    assert body["missing"] is True
+    assert body["stale"] is True
+    assert body["age_seconds"] is None
+    assert body["domain_scores"] == []
+    assert body["recommendations"] == []
+    assert "securescore-report.sh" in body["message"]
+
+
+def test_securescore_fresh_snapshot_is_not_stale(syscomp_client):
+    client, home = syscomp_client
+    snapshot = {
+        "timestamp": time.time(),
+        "source": "securescore-report.sh",
+        "report_path": "/tmp/latest.json",
+        "deployment_name": "Hermes Test",
+        "profile": "homelab",
+        "generated_at": "2026-06-19T19:21:01Z",
+        "overall_score": 41.2,
+        "risk_band": "Poor",
+        "maturity_level": "Level 3 - Multi-Agent Platform",
+        "domain_scores": [
+            {"domain": "security", "score": 20.5, "max_score": 52.0, "percentage": 39.42}
+        ],
+        "recommendations": [{"title": "Improve approvals", "score_gain": 10.0}],
+        "finding_counts": {"pass": 2, "partial": 22, "fail": 7},
+    }
+    (home / "securescore_status.json").write_text(json.dumps(snapshot))
+
+    body = _get_securescore(client)
+    assert body["missing"] is False
+    assert body["stale"] is False
+    assert body["overall_score"] == 41.2
+    assert body["risk_band"] == "Poor"
+    assert body["domain_scores"][0]["domain"] == "security"
+    assert body["finding_counts"]["fail"] == 7
+
+
+def test_securescore_old_snapshot_is_stale(syscomp_client):
+    client, home = syscomp_client
+    old_ts = time.time() - (27 * 60 * 60)  # past the 26h threshold
+    (home / "securescore_status.json").write_text(
+        json.dumps({"timestamp": old_ts, "domain_scores": [], "recommendations": []})
+    )
+
+    body = _get_securescore(client)
+    assert body["stale"] is True
+    assert body["missing"] is False
+    assert body["age_seconds"] >= 26 * 60 * 60
+
+
+def test_securescore_corrupt_snapshot_does_not_500(syscomp_client):
+    client, home = syscomp_client
+    (home / "securescore_status.json").write_text("{ not valid json ")
+
+    body = _get_securescore(client)
+    assert body["source"] == "error"
+    assert body["stale"] is True
+    assert body["domain_scores"] == []
+
+
+def test_securescore_secret_like_keys_are_redacted(syscomp_client):
+    client, home = syscomp_client
+    (home / "securescore_status.json").write_text(
+        json.dumps(
+            {
+                "timestamp": time.time(),
+                "domain_scores": [],
+                "recommendations": [{"title": "Rotate", "api_key": "sk-should-not-leak"}],
+            }
+        )
+    )
+
+    body = _get_securescore(client)
+    assert body["recommendations"][0]["api_key"] == "***redacted***"

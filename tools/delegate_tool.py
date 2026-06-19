@@ -1771,7 +1771,7 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
-        elif summary:
+        elif completed or summary:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
             # tells the parent *how* the task ended.
@@ -2368,9 +2368,18 @@ def delegate_task(
             pending = set(futures.keys())
             while pending:
                 if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
+                    # Parent interrupted — interrupt running children first so
+                    # they stop making API calls, then collect whatever finished.
+                    for f in pending:
+                        if not f.done():
+                            idx = futures[f]
+                            child_agent = _child_by_index.get(idx)
+                            if child_agent is not None:
+                                try:
+                                    child_agent.interrupt("Batch parent interrupted")
+                                except Exception:
+                                    pass
+                    # Now collect results (finished or freshly interrupted).
                     for f in pending:
                         idx = futures[f]
                         if f.done():

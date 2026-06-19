@@ -3572,21 +3572,29 @@ class MatrixAdapter(BasePlatformAdapter):
         return None
 
     async def _get_room_member_count(self, room_id: str) -> Optional[int]:
+        # Tier 1: state_store (fast, cache-backed)
         state_store = (
             getattr(self._client, "state_store", None) if self._client else None
         )
-        if not state_store:
-            return None
-        try:
-            members = await state_store.get_members(room_id)
-        except Exception:
-            return None
-        if members is None:
-            return None
-        try:
-            return len(members)
-        except TypeError:
-            return None
+        if state_store:
+            try:
+                members = await state_store.get_members(room_id)
+                if members is not None:
+                    return len(members)
+            except Exception:
+                pass
+
+        # Tier 2: API fallback (direct server query)
+        client = getattr(self, "_client", None)
+        if client is not None and hasattr(client, "joined_members"):
+            try:
+                resp = await client.joined_members(room_id)
+                if hasattr(resp, "members") and resp.members is not None:
+                    return len(resp.members)
+            except Exception:
+                pass
+
+        return None
 
     async def _get_room_name(self, room_id: str) -> Optional[str]:
         if not self._client or not hasattr(self._client, "get_state_event"):
@@ -3675,11 +3683,13 @@ class MatrixAdapter(BasePlatformAdapter):
         member_count = await self._get_room_member_count(room_id)
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        # member_count resolves the conflict: named DM with <=2 people → DM;
-        # named room with 3+ people → room (stale m.direct).
-        is_likely_dm = is_direct and (
-            not has_explicit_name
-            or (member_count is not None and member_count <= 2)
+        # member_count is the primary DM signal: ≤2 members means this is
+        # necessarily a 1:1 conversation (or self-DM), regardless of m.direct
+        # or room name. Falls back to m.direct + name heuristic when count is
+        # unavailable (e.g. state_store and API query both fail).
+        is_likely_dm = (
+            (member_count is not None and member_count <= 2)
+            or (is_direct and not has_explicit_name)
         )
         conflict = bool(is_direct and has_explicit_name and (member_count is None or member_count > 2))
         chat_type = "dm" if is_likely_dm else "room"

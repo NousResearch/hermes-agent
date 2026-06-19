@@ -502,9 +502,9 @@ class TestMatrixDmDetection:
         assert await self.adapter._is_dm_room("!dm_room:ex.org") is True
 
     @pytest.mark.asyncio
-    async def test_named_two_member_room_is_not_dm(self):
-        """A named two-member room NOT in m.direct must remain a room."""
-        self.adapter._joined_rooms = {"!project:ex.org"}
+    async def test_named_two_member_room_is_dm_by_member_count(self):
+        """A named two-member room NOT in m.direct is treated as DM because
+        ≤2 members means it's necessarily a 1:1 conversation."""
         self.adapter._dm_rooms = {}
         self.adapter._client = MagicMock()
         self.adapter._client.get_state_event = AsyncMock(
@@ -519,10 +519,10 @@ class TestMatrixDmDetection:
 
         identity = await self.adapter._resolve_room_identity("!project:ex.org")
 
-        assert identity.chat_type == "room"
+        assert identity.chat_type == "dm"
         assert identity.display_name == "Project Room"
         assert identity.joined_member_count == 2
-        assert await self.adapter._is_dm_room("!project:ex.org") is False
+        assert await self.adapter._is_dm_room("!project:ex.org") is True
 
     @pytest.mark.asyncio
     async def test_named_two_member_dm_is_dm(self):
@@ -2083,7 +2083,7 @@ class TestMatrixSyncLoop:
         fake_client.join_room.assert_awaited_once()
         assert "!room:example.org" in adapter._joined_rooms
         assert len(captured) == 1
-        assert captured[0].source.chat_type == "group"
+        assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
     async def test_seconds_timestamp_is_not_treated_as_milliseconds(self):

@@ -1288,8 +1288,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
 
         agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
+            f"🚨 Paid fallback activated: primary model failed, so this turn is now using "
+            f"{fb_model} via {fb_provider}. OpenRouter/API credits may be charged until the primary works again."
         )
         logger.info(
             "Fallback activated: %s → %s (%s)",

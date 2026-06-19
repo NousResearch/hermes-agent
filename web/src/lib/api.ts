@@ -188,6 +188,40 @@ export async function fetchJSON<T>(
   return res.json();
 }
 
+export interface ChatUploadResponse {
+  ok: boolean;
+  name: string;
+  path: string;
+  size: number;
+  mime_type: string;
+  is_image: boolean;
+  prompt_text: string;
+}
+
+export async function uploadChatFile(file: File): Promise<ChatUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const headers = new Headers();
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token) {
+    setSessionHeader(headers, token);
+  }
+
+  const res = await fetch(`${BASE}/api/chat/uploads`, {
+    method: "POST",
+    body: form,
+    headers,
+    credentials: "include",
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
 /** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
 function pluginPath(name: string): string {
   return name.split("/").map(encodeURIComponent).join("/");

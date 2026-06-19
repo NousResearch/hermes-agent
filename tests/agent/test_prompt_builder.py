@@ -990,6 +990,7 @@ class TestPromptBuilderConstants:
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+        assert "tui" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
 
@@ -1068,6 +1069,13 @@ class TestPromptBuilderConstants:
         assert "MEDIA:" in hint
         assert "Markdown" in hint
         assert "absolute" in hint
+
+    def test_platform_hints_tui_allows_readable_markdown_without_media_tags(self):
+        hint = PLATFORM_HINTS["tui"]
+        assert "Markdown" in hint
+        assert "readable chat-style formatting" in hint
+        assert "do not force every response into bullets" in hint
+        assert "no native attachment channel" in hint
 
 
 # =========================================================================

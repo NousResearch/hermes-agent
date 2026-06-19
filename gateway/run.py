@@ -15029,6 +15029,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",
             )
+            # Fallback activation is billing/availability-critical: in topic-based
+            # Telegram workspaces, the normal status callback only lands in the
+            # active topic. Also send a copy to TELEGRAM_HOME_CHANNEL so the
+            # operator is warned even if they are working in a different topic.
+            if (
+                source.platform == Platform.TELEGRAM
+                and event_type == "lifecycle"
+                and "Paid fallback activated" in str(message or "")
+            ):
+                _fallback_home_chat = os.getenv("TELEGRAM_FALLBACK_ALERT_CHANNEL", "").strip() or os.getenv("TELEGRAM_HOME_CHANNEL", "").strip()
+                if _fallback_home_chat and str(_fallback_home_chat) != str(_status_chat_id):
+                    safe_schedule_threadsafe(
+                        _status_adapter.send(
+                            _fallback_home_chat,
+                            prepared_message,
+                            metadata=None,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="fallback home alert scheduling error",
+                    )
             if _fut is None:
                 return
             if _cleanup_progress:

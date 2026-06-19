@@ -7458,6 +7458,77 @@ async def prune_sessions_endpoint(body: SessionPrune):
         db.close()
 
 
+_CHAT_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+_CHAT_UPLOAD_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif"}
+
+
+def _safe_upload_filename(filename: str) -> str:
+    raw = Path(filename or "upload").name.strip() or "upload"
+    safe = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw).strip(". ")
+    return safe or "upload"
+
+
+@app.post("/api/chat/uploads")
+def upload_chat_file(file: UploadFile = File(...)):
+    """Store a dashboard native-chat upload under the active profile.
+
+    The native chat UI does not ask the user where a file should live. It puts
+    uploads in a profile-scoped staging area and includes the absolute path in
+    the prompt so Hermes can inspect, transform, move, or archive the file as
+    the task requires.
+    """
+    filename = _safe_upload_filename(file.filename or "upload")
+    date_dir = time.strftime("%Y-%m-%d")
+    dest_dir = get_hermes_home() / "uploads" / "dashboard-chat" / date_dir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = Path(filename).stem or "upload"
+    suffix = Path(filename).suffix
+    dest = dest_dir / filename
+    counter = 1
+    while dest.exists():
+        dest = dest_dir / f"{stem}-{counter}{suffix}"
+        counter += 1
+
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _CHAT_UPLOAD_MAX_BYTES:
+                    try:
+                        dest.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=413, detail="Uploaded file is larger than 100 MB")
+                out.write(chunk)
+    finally:
+        try:
+            file.file.close()
+        except Exception:
+            pass
+
+    mime_type = file.content_type or "application/octet-stream"
+    is_image = dest.suffix.lower() in _CHAT_UPLOAD_IMAGE_EXTENSIONS or mime_type.startswith("image/")
+    prompt_text = (
+        f"[User uploaded {'image' if is_image else 'file'}: {dest.name}]\n"
+        f"Stored path: {dest}\n"
+        "Use the appropriate file tools to inspect it and decide where it should be stored or moved for this task."
+    )
+    return {
+        "ok": True,
+        "name": dest.name,
+        "path": str(dest),
+        "size": size,
+        "mime_type": mime_type,
+        "is_image": is_image,
+        "prompt_text": prompt_text,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Log viewer endpoint
 # ---------------------------------------------------------------------------

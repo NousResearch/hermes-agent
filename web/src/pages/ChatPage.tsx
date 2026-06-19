@@ -33,6 +33,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { NativeChatPanel } from "@/components/NativeChatPanel";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -113,7 +114,9 @@ function terminalFontSizeForWidth(layoutWidthPx: number): number {
 }
 
 function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
+  if (layoutWidthPx < 420) return 1.18;
+  if (layoutWidthPx < 1024) return 1.22;
+  return 1.28;
 }
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
@@ -188,6 +191,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? window.matchMedia("(max-width: 1023px)").matches
       : false,
   );
+  const [nativeChatMode, setNativeChatMode] = useState(true);
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? "#000000";
@@ -317,6 +321,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   };
 
   useEffect(() => {
+    if (nativeChatMode) return;
     const host = hostRef.current;
     if (!host) return;
 
@@ -754,7 +759,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile, reconnectNonce]);
+  }, [channel, nativeChatMode, resumeParam, scopedProfile, reconnectNonce]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -922,7 +927,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          ghost={!nativeChatMode}
+          onClick={() => setNativeChatMode(true)}
+          className="px-3 py-1.5 text-xs normal-case tracking-normal"
+        >
+          Native chat beta
+        </Button>
+        <Button
+          ghost={nativeChatMode}
+          onClick={() => setNativeChatMode(false)}
+          className="px-3 py-1.5 text-xs normal-case tracking-normal"
+        >
+          Terminal chat
+        </Button>
+      </div>
+
+      {nativeChatMode ? (
+        <div className="min-h-0 flex-1">
+          <NativeChatPanel active={isActive && nativeChatMode} />
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
@@ -1009,7 +1036,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           </div>
         )}
-      </div>
+        </div>
+      )}
       <PluginSlot name="chat:bottom" />
     </div>
   );

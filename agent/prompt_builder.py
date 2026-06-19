@@ -621,6 +621,16 @@ PLATFORM_HINTS = {
         "When referring to a file you created or changed, just state its "
         "absolute path in plain text; the user can open it from there."
     ),
+    "tui": (
+        "You are in the Hermes TUI / embedded dashboard chat. Standard Markdown "
+        "is rendered in the chat transcript, including headings, bold, italic, "
+        "inline code, code blocks, links, bullets, numbered lists, block quotes, "
+        "tables, and math. Use readable chat-style formatting when it improves "
+        "clarity — clear spacing, short paragraphs, and emphasis where helpful — "
+        "but do not force every response into bullets or a rigid template. "
+        "File delivery: there is no native attachment channel here; when referring "
+        "to a file you created or changed, state its absolute path plainly."
+    ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "

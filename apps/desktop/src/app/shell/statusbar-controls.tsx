@@ -87,6 +87,8 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 }
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
+  const title = item.title || undefined
+
   const content = (
     <>
       {item.icon}
@@ -99,7 +101,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+          <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} title={title} type="button">
             {content}
           </button>
         </DropdownMenuTrigger>
@@ -125,6 +127,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
                       menuItem.onSelect?.()
                     }}
+                    title={menuItem.title || undefined}
                   >
                     {menuItem.href ? (
                       <a
@@ -132,6 +135,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
                         href={menuItem.href}
                         rel="noreferrer"
                         target="_blank"
+                        title={menuItem.title || undefined}
                       >
                         {menuItem.icon}
                         <span className="truncate">{menuItem.label}</span>
@@ -156,6 +160,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
           'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
           item.className
         )}
+        title={title}
       >
         {content}
       </div>
@@ -164,7 +169,13 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
   if (item.href || item.variant === 'link') {
     return (
-      <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+      <a
+        className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        href={item.href}
+        rel="noreferrer"
+        target="_blank"
+        title={title}
+      >
         {content}
       </a>
     )
@@ -181,6 +192,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
         item.onSelect?.({ shiftKey: event.shiftKey })
       }}
+      title={title}
       type="button"
     >
       {content}

@@ -24,7 +24,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # --ignore-scripts skips native postinstall (node-pty has no linux-x64
+      # prebuild, so a bare `npm ci` rebuilds it from source via node-gyp on
+      # every run; that download flakes intermittently — e.g. an undici
+      # `assert(!this.paused)` crash — turning the same commit green in a PR
+      # but red on main). These jobs only need TypeScript types + the renderer
+      # bundle, never the compiled node-pty binary, so skipping the rebuild is
+      # both faster and deterministic.
+      - run: npm ci --ignore-scripts
       - run: npm run --prefix ${{ matrix.package }} typecheck
 
   # Production build of the desktop renderer. `typecheck` runs `tsc` only,
@@ -41,5 +48,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # See the typecheck job above: --ignore-scripts avoids the flaky
+      # from-source node-pty rebuild. The renderer `vite build` this job
+      # exercises does not link node-pty (it lives in the Electron main
+      # process), so the build is unaffected.
+      - run: npm ci --ignore-scripts
       - run: npm run --prefix apps/desktop build

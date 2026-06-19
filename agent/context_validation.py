@@ -153,6 +153,55 @@ class NoteIndexEntry:
 
 
 @dataclass(frozen=True)
+class MemoryRecoveryWrite:
+    """Side-effect-free snapshot of one durable-memory write.
+
+    The snapshot intentionally carries only enough state to validate backup,
+    sync, and recovery invariants.  Callers can feed real provider/Obsidian
+    records into this type without mutating any live memory surface.
+    """
+
+    id: str
+    content: str
+    important: bool = False
+    pinned: bool = False
+    journaled: bool = False
+    synced: bool = False
+    local_indexed: bool = False
+    durable_note_terms: tuple[str, ...] = ()
+    conflict_key: str = ""
+
+    @property
+    def needs_durable_protection(self) -> bool:
+        """Whether this write must survive GC, sync loss, and restarts."""
+        return self.important or self.pinned
+
+
+@dataclass
+class MemoryBackupRecoveryReport:
+    """Backup/sync/recovery status without exposing private memory content."""
+
+    missing_journal_ids: tuple[str, ...] = ()
+    missing_durable_note_ids: tuple[str, ...] = ()
+    missing_local_index_ids: tuple[str, ...] = ()
+    retryable_write_ids: tuple[str, ...] = ()
+    recoverable_index_ids: tuple[str, ...] = ()
+    protected_from_gc_ids: tuple[str, ...] = ()
+    unresolved_conflicts: tuple[ContextConflict, ...] = ()
+    diagnostics: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        """Whether durable backup/sync/recovery checks are fully green."""
+        return (
+            not self.missing_journal_ids
+            and not self.missing_durable_note_ids
+            and not self.missing_local_index_ids
+            and not self.unresolved_conflicts
+        )
+
+
+@dataclass(frozen=True)
 class LocalNoteIndex:
     """Minimal local markdown-note index for validation tests.
 
@@ -258,6 +307,82 @@ def build_context_validation_report(
             report.discarded_context[key] = tuple(terms)
 
     return report
+
+
+def build_memory_backup_recovery_report(
+    writes: Iterable[MemoryRecoveryWrite],
+    *,
+    note_index: LocalNoteIndex | None = None,
+    last_successful_sync_at: str = "",
+    last_gc_run_at: str = "",
+) -> MemoryBackupRecoveryReport:
+    """Validate durable-memory backup/sync/recovery invariants.
+
+    This is a pure checker for scheduler/app tests: it never writes memory,
+    Obsidian notes, journals, or local indexes.  The returned diagnostics carry
+    counts and stable write ids only, not private memory text.
+    """
+    snapshots = tuple(writes)
+    note_index = note_index or LocalNoteIndex(())
+
+    missing_journal: list[str] = []
+    missing_notes: list[str] = []
+    missing_index: list[str] = []
+    retryable: list[str] = []
+    recoverable: list[str] = []
+    protected: list[str] = []
+    conflict_groups: dict[str, list[str]] = {}
+
+    for write in snapshots:
+        if write.needs_durable_protection:
+            protected.append(write.id)
+            if not write.journaled:
+                missing_journal.append(write.id)
+
+            note_terms = write.durable_note_terms or (write.content,)
+            note_hits = note_index.search(write.id, note_terms)
+            if not note_hits:
+                missing_notes.append(write.id)
+
+            if not write.local_indexed:
+                missing_index.append(write.id)
+                if write.journaled or note_hits:
+                    recoverable.append(write.id)
+
+        if write.journaled and not write.synced:
+            retryable.append(write.id)
+
+        if write.conflict_key:
+            conflict_groups.setdefault(write.conflict_key, []).append(write.content)
+
+    conflicts = detect_context_conflicts(conflict_groups)
+    diagnostics = {
+        "last_successful_sync_at": last_successful_sync_at or "unknown",
+        "last_garbage_collection_run_at": last_gc_run_at or "unknown",
+        "queued_write_count": len(retryable),
+        "conflict_count": len(conflicts),
+        "protected_memory_count": len(protected),
+        "recovery_status": "ok"
+        if not (missing_journal or missing_notes or missing_index or conflicts)
+        else "needs_attention",
+        "checks": {
+            "missing_journal": len(missing_journal),
+            "missing_durable_note": len(missing_notes),
+            "missing_local_index": len(missing_index),
+            "recoverable_index": len(recoverable),
+        },
+    }
+
+    return MemoryBackupRecoveryReport(
+        missing_journal_ids=tuple(missing_journal),
+        missing_durable_note_ids=tuple(missing_notes),
+        missing_local_index_ids=tuple(missing_index),
+        retryable_write_ids=tuple(retryable),
+        recoverable_index_ids=tuple(recoverable),
+        protected_from_gc_ids=tuple(protected),
+        unresolved_conflicts=conflicts,
+        diagnostics=diagnostics,
+    )
 
 
 def _hits_for_entries(

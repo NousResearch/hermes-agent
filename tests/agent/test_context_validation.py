@@ -6,7 +6,9 @@ import pytest
 
 from agent.context_validation import (
     LocalNoteIndex,
+    MemoryRecoveryWrite,
     build_context_validation_report,
+    build_memory_backup_recovery_report,
 )
 from tools.memory_tool import MemoryStore
 
@@ -109,3 +111,106 @@ def test_durable_note_index_recall_is_separate_from_curated_memory(tmp_path):
     assert hits[0].surface == "durable_notes"
     assert hits[0].source == "wiki/concepts/vanta-application.md"
     assert report.durable_memory == {}
+
+
+def test_memory_backup_recovery_report_requires_journal_note_and_index(tmp_path):
+    vault = tmp_path / "vault"
+    note = vault / "memories" / "client-preference.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "# Client preference\n\nPinned memory: Acme prefers callback windows after 3 PM.\n",
+        encoding="utf-8",
+    )
+
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id="mem-acme-callback",
+                content="Acme prefers callback windows after 3 PM.",
+                important=True,
+                pinned=True,
+                journaled=True,
+                synced=True,
+                local_indexed=True,
+                durable_note_terms=("Acme", "callback windows", "3 PM"),
+            )
+        ],
+        note_index=LocalNoteIndex.from_path(vault),
+        last_successful_sync_at="2026-06-19T08:00:00Z",
+        last_gc_run_at="2026-06-19T07:30:00Z",
+    )
+
+    assert report.ok
+    assert report.protected_from_gc_ids == ("mem-acme-callback",)
+    assert report.diagnostics["recovery_status"] == "ok"
+    assert report.diagnostics["protected_memory_count"] == 1
+    assert "Acme prefers" not in str(report.diagnostics)
+
+
+def test_memory_backup_recovery_report_surfaces_retryable_missing_index(tmp_path):
+    vault = tmp_path / "vault"
+    note = vault / "memories" / "lead.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "# Lead\n\nImportant memory: Vanta packet waits on final consent.\n",
+        encoding="utf-8",
+    )
+
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id="mem-vanta-consent",
+                content="Vanta packet waits on final consent.",
+                important=True,
+                journaled=True,
+                synced=False,
+                local_indexed=False,
+                durable_note_terms=("Vanta", "final consent"),
+            )
+        ],
+        note_index=LocalNoteIndex.from_path(vault),
+    )
+
+    assert not report.ok
+    assert report.retryable_write_ids == ("mem-vanta-consent",)
+    assert report.missing_local_index_ids == ("mem-vanta-consent",)
+    assert report.recoverable_index_ids == ("mem-vanta-consent",)
+    assert report.missing_journal_ids == ()
+    assert report.missing_durable_note_ids == ()
+    assert report.diagnostics["queued_write_count"] == 1
+    checks = report.diagnostics["checks"]
+    assert isinstance(checks, dict)
+    assert checks["recoverable_index"] == 1
+
+
+def test_memory_backup_recovery_report_preserves_conflicting_facts():
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id="tz-east",
+                content="User timezone is America/New_York.",
+                important=True,
+                pinned=True,
+                journaled=True,
+                synced=True,
+                local_indexed=True,
+                conflict_key="timezone",
+            ),
+            MemoryRecoveryWrite(
+                id="tz-west",
+                content="User timezone is America/Los_Angeles.",
+                important=True,
+                pinned=True,
+                journaled=True,
+                synced=True,
+                local_indexed=True,
+                conflict_key="timezone",
+            ),
+        ],
+        note_index=LocalNoteIndex(()),
+    )
+
+    assert not report.ok
+    assert report.unresolved_conflicts[0].key == "timezone"
+    assert report.protected_from_gc_ids == ("tz-east", "tz-west")
+    assert report.diagnostics["conflict_count"] == 1

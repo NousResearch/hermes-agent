@@ -1317,6 +1317,23 @@ class LineAdapter(BasePlatformAdapter):
             headers={"Content-Type": content_type or "application/octet-stream"},
         )
 
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not image_url.lower().startswith("https://"):
+            return SendResult(success=False, error=f"LINE image URL must be HTTPS: {image_url}")
+        if not self._client:
+            return SendResult(success=False, error="LINE adapter not connected")
+
+        msgs: List[Dict[str, Any]] = [_image_message(image_url)]
+        if caption:
+            msgs.append(_text_message(caption))
+        return await self._send_messages(chat_id, msgs)
+
     async def send_image_file(
         self,
         chat_id: str,

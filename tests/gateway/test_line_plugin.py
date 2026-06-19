@@ -399,6 +399,41 @@ class TestSendRouting:
         assert "https://x.com" in out
 
 
+class TestSendImage:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.reply = AsyncMock()
+        ad._client.push = AsyncMock()
+        return ad
+
+    def test_send_image_with_https_url_succeeds(self, adapter):
+        result = asyncio.run(adapter.send_image("Uchat", "https://example.com/cat.png"))
+        assert result.success
+        adapter._client.push.assert_called_once()
+
+    def test_send_image_with_http_url_fails(self, adapter):
+        result = asyncio.run(adapter.send_image("Uchat", "http://example.com/cat.png"))
+        assert not result.success
+        assert "HTTPS" in result.error
+        adapter._client.push.assert_not_called()
+
+    def test_send_image_without_client_fails(self, adapter):
+        adapter._client = None
+        result = asyncio.run(adapter.send_image("Uchat", "https://example.com/cat.png"))
+        assert not result.success
+        assert "not connected" in result.error
+
+
 # ---------------------------------------------------------------------------
 # 8. Register() metadata + plugin entry points
 # ---------------------------------------------------------------------------

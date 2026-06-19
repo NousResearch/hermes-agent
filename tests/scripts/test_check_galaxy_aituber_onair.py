@@ -5,11 +5,19 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "windows" / "check-galaxy-aituber-onair.ps1"
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Galaxy AITuber OnAir helper tests exercise Windows PowerShell and .cmd shims.",
+)
 
 
 def _extract_json(output: str) -> dict:

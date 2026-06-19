@@ -2325,6 +2325,23 @@ def _gateway_display_command(profile: Optional[str], verb: str) -> str:
     return " ".join(["hermes", *_gateway_subcommand(profile, verb)])
 
 
+def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
+    """Reject platform credentials that are clearly in the wrong field."""
+    if platform_id != "slack" or not value:
+        return
+
+    if key == "SLACK_BOT_TOKEN" and not value.startswith("xoxb-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Slack Bot Token must start with xoxb-. Paste the bot token from OAuth & Permissions.",
+        )
+    if key == "SLACK_APP_TOKEN" and not value.startswith("xapp-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Slack App Token must start with xapp-. Paste the app-level token from Basic Information > App-Level Tokens.",
+        )
+
+
 def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
     """Spawn ``hermes gateway restart``, reusing an in-flight restart.
 
@@ -4155,9 +4172,9 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "slack": {
         "name": "Slack",
-        "description": "Use Hermes from Slack via Socket Mode.",
+        "description": "Use Hermes from Slack via Socket Mode. Add allowed Slack member IDs so connected bots can respond.",
         "docs_url": "https://api.slack.com/apps",
-        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"),
         "required_env": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
     },
     "mattermost": {
@@ -5221,6 +5238,7 @@ async def update_messaging_platform(
                     )
                 trimmed = value.strip()
                 if trimmed:
+                    _validate_messaging_env_value(platform_id, key, trimmed)
                     save_env_value(key, trimmed)
 
             if body.enabled is not None:

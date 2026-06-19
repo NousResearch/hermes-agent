@@ -1552,6 +1552,24 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
         assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
 
+    def test_slack_messaging_platform_exposes_user_allowlist(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["platforms"]
+        slack = next(platform for platform in platforms if platform["id"] == "slack")
+        fields = {field["key"]: field for field in slack["env_vars"]}
+
+        assert "allowed Slack member IDs" in slack["description"]
+        assert set(fields) >= {
+            "SLACK_BOT_TOKEN",
+            "SLACK_APP_TOKEN",
+            "SLACK_ALLOWED_USERS",
+        }
+        assert fields["SLACK_ALLOWED_USERS"]["prompt"] == "Allowed Slack member IDs"
+        assert fields["SLACK_ALLOWED_USERS"]["is_password"] is False
+        assert "member IDs" in fields["SLACK_ALLOWED_USERS"]["description"]
+
     def test_weixin_messaging_metadata_describes_personal_ilink_setup(self):
         resp = self.client.get("/api/messaging/platforms")
 
@@ -1627,6 +1645,35 @@ class TestWebServerEndpoints:
         status = self.client.get("/api/messaging/platforms").json()["platforms"]
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
+
+    def test_update_messaging_platform_saves_slack_allowed_users(self):
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,U04XYZ5LMN6"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,U04XYZ5LMN6"
+
+    def test_update_messaging_platform_rejects_swapped_slack_bot_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_BOT_TOKEN": "xapp-wrong-token-type"}},
+        )
+
+        assert resp.status_code == 400
+        assert "xoxb-" in resp.json()["detail"]
+
+    def test_update_messaging_platform_rejects_swapped_slack_app_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_APP_TOKEN": "xoxb-wrong-token-type"}},
+        )
+
+        assert resp.status_code == 400
+        assert "xapp-" in resp.json()["detail"]
 
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})

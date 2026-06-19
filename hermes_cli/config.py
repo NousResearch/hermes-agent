@@ -3439,6 +3439,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "messaging",
     },
+    "SLACK_ALLOWED_USERS": {
+        "description": "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.",
+        "prompt": "Allowed Slack member IDs",
+        "url": "https://api.slack.com/apps",
+        "password": False,
+        "category": "messaging",
+    },
     "MATTERMOST_URL": {
         "description": "Mattermost server URL (e.g. https://mm.example.com)",
         "prompt": "Mattermost server URL",

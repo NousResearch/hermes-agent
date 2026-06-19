@@ -28,6 +28,7 @@ Usage:
     )
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -349,6 +350,50 @@ def _is_image_size_error(error: Exception) -> bool:
         "request_too_large", "image_url", "invalid_request",
         "exceeds", "size limit",
     ))
+
+
+# Transient (retryable) vision API failures. Gemini in particular returns
+# HTTP 503 "high demand" spikes that usually clear within seconds, so a few
+# spaced retries recover most image analyses that would otherwise surface as a
+# hard error to the user.
+_VISION_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_transient_vision_error(error: Exception) -> bool:
+    """Detect a transient (retryable) vision API failure: 5xx / 429 / overload."""
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and status in _VISION_TRANSIENT_STATUSES:
+        return True
+    err_str = str(error).lower()
+    return any(hint in err_str for hint in (
+        "503", "502", "500", "504", "unavailable", "overloaded",
+        "high demand", "try again later", "temporarily",
+    ))
+
+
+async def _vision_call_with_retry(
+    call_kwargs: Dict[str, Any],
+    *,
+    max_attempts: int = 4,
+    base_delay: float = 2.0,
+) -> Any:
+    """Call the vision LLM, retrying transient 5xx/429 failures with capped
+    exponential backoff.  Non-transient errors (e.g. image-too-large) are
+    re-raised immediately so existing handlers can react (resize, etc.)."""
+    delay = base_delay
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await async_call_llm(**call_kwargs)
+        except Exception as err:
+            if attempt >= max_attempts or not _is_transient_vision_error(err):
+                raise
+            logger.warning(
+                "Vision API transient failure (attempt %d/%d): %s — "
+                "retrying in %.1fs",
+                attempt, max_attempts, err, delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 15.0)
 
 
 def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
@@ -975,7 +1020,7 @@ async def vision_analyze_tool(
             call_kwargs["model"] = model
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
-            response = await async_call_llm(**call_kwargs)
+            response = await _vision_call_with_retry(call_kwargs)
         except Exception as _api_err:
             if (_is_image_size_error(_api_err)
                     and len(image_data_url) > _RESIZE_TARGET_BYTES):
@@ -988,7 +1033,7 @@ async def vision_analyze_tool(
                 image_data_url = _resize_image_for_vision(
                     temp_image_path, mime_type=detected_mime_type)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
-                response = await async_call_llm(**call_kwargs)
+                response = await _vision_call_with_retry(call_kwargs)
             else:
                 raise
         
@@ -998,7 +1043,7 @@ async def vision_analyze_tool(
         # Retry once on empty content (reasoning-only response)
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            response = await _vision_call_with_retry(call_kwargs)
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)
@@ -1459,12 +1504,12 @@ async def video_analyze_tool(
         if model:
             call_kwargs["model"] = model
 
-        response = await async_call_llm(**call_kwargs)
+        response = await _vision_call_with_retry(call_kwargs)
         analysis = extract_content_or_reasoning(response)
 
         if not analysis:
             logger.warning("Empty video response, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            response = await _vision_call_with_retry(call_kwargs)
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis) if analysis else 0

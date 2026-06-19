@@ -123,6 +123,61 @@ class TestClarifyToolChoicesValidation:
         assert choices_received == ["1", "2", "3"]
 
 
+class TestClarifyToolStructuredChoices:
+    """Models often pass choices as objects instead of plain strings; the tool
+    must render them as readable text, never as a Python dict repr."""
+
+    def _capture(self, choices):
+        received = []
+
+        def mock_callback(question: str, choices_in: Optional[List[str]]) -> str:
+            received.extend(choices_in or [])
+            return "answer"
+
+        clarify_tool("Pick", choices=choices, callback=mock_callback)  # type: ignore
+        return received
+
+    def test_dict_choice_never_renders_python_repr(self):
+        """A {'choice','description'} object must not become a dict repr."""
+        received = self._capture(
+            [{"choice": "a", "description": "Keep deferring the niche lock."}]
+        )
+        assert len(received) == 1
+        assert "{'" not in received[0]  # no Python dict repr leaked through
+        assert "Keep deferring the niche lock." in received[0]
+
+    def test_label_and_description_combined(self):
+        """Both halves present → 'label: description'."""
+        received = self._capture(
+            [{"choice": "a", "description": "Read 3 — keep deferring."}]
+        )
+        assert received == ["a: Read 3 — keep deferring."]
+
+    def test_description_only(self):
+        received = self._capture([{"description": "Just the description."}])
+        assert received == ["Just the description."]
+
+    def test_label_only(self):
+        received = self._capture([{"label": "Option A"}])
+        assert received == ["Option A"]
+
+    def test_duplicate_label_and_description_not_doubled(self):
+        received = self._capture([{"text": "Same", "description": "same"}])
+        assert received == ["Same"]
+
+    def test_unknown_shape_falls_back_to_json_not_repr(self):
+        """An object with no known keys still avoids single-quote dict noise."""
+        received = self._capture([{"foo": "bar"}])
+        assert received == ['{"foo": "bar"}']
+        assert "{'" not in received[0]
+
+    def test_mixed_string_and_object_choices(self):
+        received = self._capture(
+            ["plain string", {"choice": "b", "description": "structured"}]
+        )
+        assert received == ["plain string", "b: structured"]
+
+
 class TestClarifyToolCallbackHandling:
     """Tests for callback error handling."""
 

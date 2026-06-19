@@ -19,6 +19,48 @@ from typing import List, Optional, Callable
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
 
+# Keys models commonly use when they pass a choice as a structured object
+# instead of a plain string. Ordered by preference for the short "label" half
+# and the longer "description" half.
+_CHOICE_LABEL_KEYS = ("label", "title", "name", "text", "option", "choice", "id", "value")
+_CHOICE_DESC_KEYS = ("description", "detail", "details", "summary", "explanation", "value")
+
+
+def _coerce_choice(choice) -> str:
+    """Render a single choice as a readable string.
+
+    Models frequently ignore the "array of strings" schema and pass choices as
+    structured objects (e.g. ``{"choice": "a", "description": "..."}``). Doing a
+    naive ``str(choice)`` on those yields a Python dict repr
+    (``{'choice': 'a', 'description': '...'}``) that is noise in the CLI and
+    gets hard-truncated to an unreadable stub on platforms with short button
+    labels (Discord caps button text at 80 chars). Normalize dict-shaped
+    choices into a clean ``label: description`` (or whichever half is present)
+    so every platform shows the actual option text.
+    """
+    if isinstance(choice, str):
+        return choice.strip()
+    if isinstance(choice, dict):
+        def _first(keys):
+            for key in keys:
+                val = choice.get(key)
+                if val not in (None, "") and not isinstance(val, (dict, list)):
+                    text = str(val).strip()
+                    if text:
+                        return text
+            return ""
+
+        label = _first(_CHOICE_LABEL_KEYS)
+        desc = _first(_CHOICE_DESC_KEYS)
+        if label and desc and label.lower() != desc.lower():
+            return f"{label}: {desc}"
+        if label or desc:
+            return label or desc
+        # Fall back to a JSON object (still better than a Python repr) so the
+        # text is at least valid and free of single-quote ``{'k': 'v'}`` noise.
+        return json.dumps(choice, ensure_ascii=False)
+    return str(choice).strip()
+
 
 def clarify_tool(
     question: str,
@@ -48,7 +90,7 @@ def clarify_tool(
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
-        choices = [str(c).strip() for c in choices if str(c).strip()]
+        choices = [text for c in choices if (text := _coerce_choice(c))]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:

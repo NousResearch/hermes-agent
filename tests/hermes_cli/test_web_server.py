@@ -1299,6 +1299,48 @@ class TestWebServerEndpoints:
         for key, info in data.items():
             assert info["channel_managed"] is (key in channel_keys)
 
+    def test_get_env_vars_surfaces_catalog_providers(self):
+        """Every keys-tab provider in the unified catalog must appear in /api/env
+        as a provider card, even when it has no hand entry in OPTIONAL_ENV_VARS.
+
+        Regression for the GUI⇄CLI drift: openai-api, kilocode, novita,
+        tencent-tokenhub, copilot were configurable via `hermes model` but
+        invisible in the desktop Providers → API keys tab.
+        """
+        from hermes_cli.provider_catalog import provider_catalog
+
+        data = self.client.get("/api/env").json()
+        for d in provider_catalog():
+            if d.tab != "keys" or not d.api_key_env_vars:
+                continue
+            # The PRIMARY credential var must surface as this provider's card.
+            # (Shared aliases like GITHUB_TOKEN are intentionally left on their
+            # existing tool category and not hijacked — see the copilot test.)
+            primary = d.api_key_env_vars[0]
+            assert primary in data, f"{primary} ({d.slug}) missing from /api/env"
+            info = data[primary]
+            assert info["category"] == "provider"
+            assert info["provider"] == d.slug
+            assert info["provider_label"] == d.label
+
+    def test_get_env_vars_provider_rows_carry_grouping_hints(self):
+        """Provider env rows expose the backend `provider`/`provider_label` the
+        desktop Keys tab groups by (so it no longer relies on prefix guesses)."""
+        data = self.client.get("/api/env").json()
+        # OPENAI_API_KEY is a hand-listed protected var AND a catalog provider;
+        # it must come back tagged to the openai-api provider.
+        assert data["OPENAI_API_KEY"]["provider"] == "openai-api"
+        assert data["OPENAI_API_KEY"]["category"] == "provider"
+
+    def test_get_env_vars_copilot_uses_provider_token_not_shared_github_token(self):
+        """Copilot surfaces as its own provider card via COPILOT_GITHUB_TOKEN;
+        the shared GITHUB_TOKEN keeps its existing (tool) category."""
+        data = self.client.get("/api/env").json()
+        assert data["COPILOT_GITHUB_TOKEN"]["provider"] == "copilot"
+        assert data["COPILOT_GITHUB_TOKEN"]["category"] == "provider"
+        # Shared GITHUB_TOKEN must NOT be hijacked into the copilot provider card.
+        assert data.get("GITHUB_TOKEN", {}).get("provider", "") != "copilot"
+
     def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
         from hermes_cli.web_server import (
             _MESSAGING_KEYS_PAGE_KEYS,

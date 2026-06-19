@@ -3971,28 +3971,117 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _catalog_provider_env_metadata() -> dict:
+    """Map provider env vars → desktop card metadata, derived from the catalog.
+
+    Returns ``{env_var: {provider, provider_label, description, url, is_password,
+    advanced}}`` for every API-key provider in the unified ``provider_catalog()``
+    (i.e. the ``hermes model`` universe). This is what lets the desktop Keys tab
+    render a card for a provider even when its env var was never hand-added to
+    ``OPTIONAL_ENV_VARS`` — closing the drift where CLI-configurable providers
+    (openai-api, kilocode, novita, tencent-tokenhub, copilot, …) were missing
+    from the GUI.
+
+    Hand ``OPTIONAL_ENV_VARS`` prose is layered ON TOP of this in the endpoint;
+    this only supplies membership + grouping + sensible fallbacks.
+    """
+    try:
+        from hermes_cli.provider_catalog import provider_catalog
+    except Exception:
+        return {}
+
+    # Env vars already declared with a NON-provider category (e.g. the shared
+    # GITHUB_TOKEN, which is a Skills-Hub "tool" credential) must not be
+    # promoted into a provider card. Copilot lists GITHUB_TOKEN among its auth
+    # aliases, but its provider card uses the provider-owned COPILOT_GITHUB_TOKEN.
+    try:
+        from hermes_cli.config import OPTIONAL_ENV_VARS as _OPT
+    except Exception:
+        _OPT = {}
+    _non_provider_keys = {
+        k for k, v in _OPT.items()
+        if (v or {}).get("category") and (v or {}).get("category") != "provider"
+    }
+
+    meta: dict = {}
+    for d in provider_catalog():
+        if d.tab != "keys":
+            continue
+        # API-key vars: the first is the primary (password) field; any aliases
+        # are kept as additional password fields so users can clear them too.
+        for env_var in d.api_key_env_vars:
+            if env_var in _non_provider_keys:
+                continue  # don't hijack a shared tool/messaging credential
+            meta.setdefault(
+                env_var,
+                {
+                    "provider": d.slug,
+                    "provider_label": d.label,
+                    "description": d.description,
+                    "url": d.signup_url or None,
+                    "is_password": True,
+                    "advanced": False,
+                    "category": "provider",
+                },
+            )
+        # Base-URL override is an advanced, non-secret field for the same card.
+        if d.base_url_env_var:
+            meta.setdefault(
+                d.base_url_env_var,
+                {
+                    "provider": d.slug,
+                    "provider_label": d.label,
+                    "description": f"{d.label} base URL override",
+                    "url": None,
+                    "is_password": False,
+                    "advanced": True,
+                    "category": "provider",
+                },
+            )
+    return meta
+
+
 @app.get("/api/env")
 async def get_env_vars(profile: Optional[str] = None):
     with _profile_scope(profile):
         env_on_disk = load_env()
     channel_keys = _channel_managed_env_keys()
-    result = {}
-    for var_name, info in OPTIONAL_ENV_VARS.items():
+    catalog_meta = _catalog_provider_env_metadata()
+
+    def _row(var_name: str, info: dict) -> dict:
         value = env_on_disk.get(var_name)
-        result[var_name] = {
+        cat_meta = catalog_meta.get(var_name) or {}
+        # Hand OPTIONAL_ENV_VARS prose wins where present; the catalog fills any
+        # gaps (description/url) and always supplies provider grouping hints.
+        return {
             "is_set": bool(value),
             "redacted_value": redact_key(value) if value else None,
-            "description": info.get("description", ""),
-            "url": info.get("url"),
-            "category": info.get("category", ""),
-            "is_password": info.get("password", False),
+            "description": info.get("description") or cat_meta.get("description", ""),
+            "url": info.get("url") if info.get("url") is not None else cat_meta.get("url"),
+            "category": info.get("category") or cat_meta.get("category", ""),
+            "is_password": info.get("password", cat_meta.get("is_password", False)),
             "tools": info.get("tools", []),
-            "advanced": info.get("advanced", False),
+            "advanced": info.get("advanced", cat_meta.get("advanced", False)),
             # True when this var is a messaging-platform credential owned by a
             # Channels page card. The Keys/Env page uses this to hide it and
             # avoid duplicating the (richer) Channels configuration UI.
             "channel_managed": var_name in channel_keys,
+            # Provider grouping hints derived from the unified provider catalog
+            # so the desktop Keys tab groups by the SAME provider identity the
+            # CLI `hermes model` picker uses (not desktop-only prefix guesses).
+            "provider": cat_meta.get("provider", ""),
+            "provider_label": cat_meta.get("provider_label", ""),
         }
+
+    result = {}
+    for var_name, info in OPTIONAL_ENV_VARS.items():
+        result[var_name] = _row(var_name, info)
+    # Synthesize rows for catalog provider env vars that have no hand entry in
+    # OPTIONAL_ENV_VARS — these are the providers that were CLI-configurable but
+    # invisible in the desktop app until now.
+    for var_name in catalog_meta:
+        if var_name not in result:
+            result[var_name] = _row(var_name, {})
     return result
 
 

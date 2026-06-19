@@ -74,9 +74,15 @@ interface ChatSidebarProps {
   /** Management profile from the dashboard switcher — scopes session.create. */
   profile?: string;
   className?: string;
+  onDashboardNewSessionRequest?: () => void;
 }
 
-export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
+export function ChatSidebar({
+  channel,
+  profile,
+  className,
+  onDashboardNewSessionRequest,
+}: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -112,9 +118,12 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
 
   useEffect(() => {
     let cancelled = false;
-    setSessionId(null);
-    setInfo({});
-    setError(null);
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSessionId(null);
+      setInfo({});
+      setError(null);
+    });
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
@@ -233,7 +242,9 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
 
       const { type, payload } = frame.params;
 
-      if (type === "tool.start") {
+      if (type === "dashboard.new_session_requested") {
+        onDashboardNewSessionRequest?.();
+      } else if (type === "tool.start") {
         const p = payload as
           | { tool_id?: string; name?: string; context?: string }
           | undefined;
@@ -309,7 +320,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
       unmounting = true;
       ws?.close();
     };
-  }, [channel, version]);
+  }, [channel, onDashboardNewSessionRequest, version]);
 
   const reconnect = useCallback(() => {
     setError(null);

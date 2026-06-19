@@ -153,6 +153,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setBanner(null);
     setReconnectNonce((n) => n + 1);
   }, []);
+  const startFreshDashboardChat = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+
+    next.delete("resume");
+    setSearchParams(next, { replace: true });
+    setSessionEnded(false);
+    setBanner(null);
+    setReconnectNonce((n) => n + 1);
+  }, [searchParams, setSearchParams]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -881,7 +890,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} profile={scopedProfile} />
+            <ChatSidebar
+              channel={channel}
+              profile={scopedProfile}
+              onDashboardNewSessionRequest={startFreshDashboardChat}
+            />
           </div>
         </div>
       </>,
@@ -967,7 +980,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} profile={scopedProfile} />
+              <ChatSidebar
+                channel={channel}
+                profile={scopedProfile}
+                onDashboardNewSessionRequest={startFreshDashboardChat}
+              />
             </div>
           </div>
         )}

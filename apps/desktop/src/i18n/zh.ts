@@ -1833,6 +1833,7 @@ export const zh: Translations = {
     addressPlaceholder: '搜索或输入网址',
     newBrowserTab: '打开浏览器',
     openBrowser: '打开浏览器',
+    openInSystemBrowser: '在默认浏览器中打开',
     failedToLoad: '此页面加载失败',
     unreachable: '无法访问该页面。',
     tryAgain: '重试'

@@ -1653,6 +1653,7 @@ export const en: Translations = {
     addressPlaceholder: 'Search or enter address',
     newBrowserTab: 'Open browser',
     openBrowser: 'Open browser',
+    openInSystemBrowser: 'Open in default browser',
     failedToLoad: 'This page failed to load',
     unreachable: 'The page could not be reached.',
     tryAgain: 'Try again'

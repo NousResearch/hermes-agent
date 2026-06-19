@@ -1726,6 +1726,7 @@ export const zhHant = defineLocale({
     addressPlaceholder: '搜尋或輸入網址',
     newBrowserTab: '開啟瀏覽器',
     openBrowser: '開啟瀏覽器',
+    openInSystemBrowser: '在預設瀏覽器中開啟',
     failedToLoad: '此頁面載入失敗',
     unreachable: '無法連線到該頁面。',
     tryAgain: '重試'

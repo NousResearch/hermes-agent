@@ -1294,6 +1294,7 @@ export interface Translations {
     addressPlaceholder: string
     newBrowserTab: string
     openBrowser: string
+    openInSystemBrowser: string
     failedToLoad: string
     unreachable: string
     tryAgain: string

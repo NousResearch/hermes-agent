@@ -9,6 +9,7 @@ import {
   $browserNavRequest,
   $browserState,
   navigateBrowser,
+  openCurrentInSystemBrowser,
   reloadBrowser,
   setBrowserNavState
 } from '@/store/browser'
@@ -241,6 +242,12 @@ export function BrowserPane() {
             value={draftUrl}
           />
         </form>
+        <NavButton
+          disabled={!/^https?:\/\//i.test(state.url)}
+          icon="link-external"
+          label={b.openInSystemBrowser}
+          onClick={() => openCurrentInSystemBrowser()}
+        />
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">

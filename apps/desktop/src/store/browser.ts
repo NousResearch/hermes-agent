@@ -108,6 +108,27 @@ export function reloadBrowser() {
   $browserNavRequest.set({ nonce: $browserNavRequest.get().nonce + 1, url })
 }
 
+/**
+ * Open the page currently shown in the in-app browser in the OS default
+ * browser. This is the escape hatch for logins the embedded webview can't
+ * complete — most importantly WebAuthn *passkeys* (Touch ID): Electron's
+ * bundled Chromium has no macOS platform-authenticator bridge, and an unsigned
+ * build is blocked from the secure enclave regardless, so a passkey challenge
+ * hangs forever in the panel. The real, OS-integrated browser handles it.
+ * Returns the URL handed off, or '' when there's nothing to open.
+ */
+export function openCurrentInSystemBrowser(): string {
+  const { url } = $browserState.get()
+
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return ''
+  }
+
+  void window.hermesDesktop?.openExternal?.(url)
+
+  return url
+}
+
 /** Push live navigation state from the webview back into the store. */
 export function setBrowserNavState(patch: Partial<Omit<BrowserState, 'open'>>) {
   $browserState.set({ ...$browserState.get(), ...patch })

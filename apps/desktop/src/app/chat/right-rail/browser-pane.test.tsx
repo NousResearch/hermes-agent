@@ -105,4 +105,28 @@ describe('BrowserPane chrome', () => {
 
     expect((getByLabelText('Address bar') as HTMLInputElement).value).toBe('https://changed.example')
   })
+
+  it('opens the current page in the OS browser via the toolbar button (passkey escape hatch)', () => {
+    resetStores()
+    const openExternal = vi.fn()
+    ;(window as unknown as { hermesDesktop: { openExternal: typeof openExternal } }).hermesDesktop = {
+      openExternal
+    }
+
+    const { getByLabelText } = renderPane()
+    act(() => $browserState.set({ ...$browserState.get(), url: 'https://accounts.google.com/signin' }))
+
+    fireEvent.click(getByLabelText('Open in default browser'))
+
+    expect(openExternal).toHaveBeenCalledWith('https://accounts.google.com/signin')
+  })
+
+  it('disables the open-in-browser button when there is no http(s) page', () => {
+    resetStores()
+    const { getByLabelText } = renderPane()
+
+    act(() => $browserState.set({ ...$browserState.get(), url: 'about:blank' }))
+
+    expect((getByLabelText('Open in default browser') as HTMLButtonElement).disabled).toBe(true)
+  })
 })

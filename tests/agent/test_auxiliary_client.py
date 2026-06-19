@@ -476,6 +476,89 @@ class TestAnthropicOAuthFlag:
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
+class TestMinimaxOAuthAuxiliaryClient:
+    """Auxiliary tasks should route through MiniMax OAuth credentials.
+
+    Regression test for the case where ``auxiliary.<task>.provider`` is set
+    to ``minimax-oauth`` in config.yaml. Previously, ``resolve_provider_client``
+    did not handle the ``oauth_minimax`` auth type — it returned ``(None, None)``
+    and callers surfaced a misleading "no API key was found" error, because
+    MiniMax uses OAuth rather than env-var API keys.
+    """
+
+    def test_resolves_client_with_oauth_flag(self):
+        """Successful resolution returns an AnthropicAuxiliaryClient with is_oauth=True."""
+        from agent.auxiliary_client import (
+            AnthropicAuxiliaryClient,
+            resolve_provider_client,
+        )
+
+        with patch(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            return_value={"api_key": "minimax-access-token",
+                          "base_url": "https://api.minimax.io/anthropic",
+                          "source": "oauth"},
+        ), patch("agent.anthropic_adapter.build_anthropic_client",
+                 return_value=MagicMock()):
+            client, model = resolve_provider_client("minimax-oauth", "MiniMax-M3")
+
+        assert client is not None
+        assert isinstance(client, AnthropicAuxiliaryClient)
+        assert model == "MiniMax-M3"
+        # OAuth tokens must be sent with the bearer header that
+        # Anthropic's OAuth flow expects — not as a plain API key.
+        assert client.chat.completions._is_oauth is True
+
+    def test_async_mode_returns_async_client(self):
+        from agent.auxiliary_client import (
+            AsyncAnthropicAuxiliaryClient,
+            resolve_provider_client,
+        )
+
+        with patch(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            return_value={"api_key": "minimax-access-token",
+                          "base_url": "https://api.minimax.io/anthropic",
+                          "source": "oauth"},
+        ), patch("agent.anthropic_adapter.build_anthropic_client",
+                 return_value=MagicMock()):
+            client, model = resolve_provider_client(
+                "minimax-oauth", "MiniMax-M3", async_mode=True,
+            )
+
+        assert client is not None
+        assert isinstance(client, AsyncAnthropicAuxiliaryClient)
+        assert model == "MiniMax-M3"
+
+    def test_missing_credentials_returns_none(self):
+        """Resolver raises (no login / refresh failure) -> (None, None) so callers fall through."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with patch(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            side_effect=Exception("Not logged into MiniMax OAuth"),
+        ):
+            client, model = resolve_provider_client("minimax-oauth", "MiniMax-M3")
+
+        assert client is None
+        assert model is None
+
+    def test_incomplete_credentials_returns_none(self):
+        """If the resolver returns empty token or base_url, return (None, None)."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with patch(
+            "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            return_value={"api_key": "",
+                          "base_url": "https://api.minimax.io/anthropic",
+                          "source": "oauth"},
+        ):
+            client, model = resolve_provider_client("minimax-oauth", "MiniMax-M3")
+
+        assert client is None
+        assert model is None
+
+
 class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (

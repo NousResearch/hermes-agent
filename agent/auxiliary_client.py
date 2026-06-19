@@ -4094,6 +4094,56 @@ def resolve_provider_client(
                        "directly supported, try 'auto'", provider)
         return None, None
 
+    elif pconfig.auth_type == "oauth_minimax":
+        # MiniMax (minimax.io / minimaxi.com) OAuth provider — resolves
+        # runtime credentials via hermes_cli.auth and builds an
+        # AnthropicAuxiliaryClient that wraps the /anthropic endpoint.
+        # Mirrors the runtime_provider.py path that powers the main agent,
+        # so auxiliary tasks (title generation, compression, vision, …)
+        # work the same way the conversation loop does.
+        if not model:
+            logger.debug("resolve_provider_client: minimax-oauth requires "
+                         "an explicit model name (got None)")
+            return None, None
+        try:
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+        except ImportError:
+            logger.debug("resolve_provider_client: hermes_cli.auth unavailable "
+                         "for minimax-oauth resolution")
+            return None, None
+        try:
+            creds = resolve_minimax_oauth_runtime_credentials()
+        except Exception as exc:
+            # No login, expired refresh token, or other AuthError — fall
+            # through so auto/custom callers can try the chain. Explicit
+            # minimax-oauth callers will surface a clearer error upstream.
+            logger.debug("resolve_provider_client: minimax-oauth credential "
+                         "resolution failed: %s", exc)
+            return None, None
+        token = str(creds.get("api_key", "") or "").strip()
+        base_url = str(creds.get("base_url", "") or "").strip()
+        if not token or not base_url:
+            logger.debug("resolve_provider_client: minimax-oauth returned "
+                         "incomplete credentials (token=%r base_url=%r)",
+                         bool(token), bool(base_url))
+            return None, None
+        try:
+            from agent.anthropic_adapter import build_anthropic_client
+        except ImportError:
+            logger.warning("resolve_provider_client: anthropic SDK unavailable "
+                           "for minimax-oauth client construction")
+            return None, None
+        try:
+            real_client = build_anthropic_client(token, base_url)
+        except ImportError:
+            return None, None
+        client = AnthropicAuxiliaryClient(
+            real_client, model, token, base_url, is_oauth=True,
+        )
+        logger.debug("resolve_provider_client: minimax-oauth (%s)", model)
+        return (_to_async_client(client, model, is_vision=is_vision) if async_mode
+                else (client, model))
+
     logger.warning("resolve_provider_client: unhandled auth_type %s for %s",
                    pconfig.auth_type, provider)
     return None, None

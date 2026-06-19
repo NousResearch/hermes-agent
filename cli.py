@@ -9668,13 +9668,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # memory-provider and context-engine tools survive the rebuild).
             if self.agent is not None:
                 from tools.mcp_tool import refresh_agent_mcp_tools
-                # Explicit reload: re-resolve enabled toolsets so a server the
-                # user just enabled in config this session is picked up.
+                # Explicit reload: pick up MCP servers the user ENABLED in config
+                # this session. self.enabled_toolsets was resolved once at
+                # startup; merge in any now-connected server names (unless the
+                # user pinned `all`/`*`, which already includes everything) so a
+                # freshly-added server isn't filtered out. Mirrors startup, where
+                # MCP server names are part of enabled_toolsets (see __init__).
+                enabled_override = None
+                et = self.enabled_toolsets
+                if et and "all" not in et and "*" not in et:
+                    merged = list(et)
+                    for _name in sorted(connected_servers):
+                        if _name not in merged:
+                            merged.append(_name)
+                    enabled_override = merged
                 refresh_agent_mcp_tools(
                     self.agent,
-                    enabled_override=self.enabled_toolsets,
+                    enabled_override=enabled_override,
                     quiet_mode=True,
                 )
+                # Keep the CLI's own list in sync with what the agent now uses.
+                if enabled_override is not None:
+                    self.enabled_toolsets = enabled_override
 
             # Inject a message at the END of conversation history so the
             # model knows tools changed.  Appended after all existing

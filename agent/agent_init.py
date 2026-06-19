@@ -535,6 +535,14 @@ def init_agent(
     # Set on internal forks (e.g. background_review) that must keep ``tools[]``
     # byte-identical to a parent for provider cache parity.
     agent._skip_mcp_refresh = False
+    # Registry generation the current tool snapshot was derived from. Lets a
+    # late/concurrent refresh reject a stale (older-generation) rebuild instead
+    # of clobbering a newer one. See tools.mcp_tool.refresh_agent_mcp_tools.
+    try:
+        from tools.registry import registry as _registry
+        agent._tool_snapshot_generation = _registry._generation
+    except Exception:
+        agent._tool_snapshot_generation = 0
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None

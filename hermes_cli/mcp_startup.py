@@ -54,20 +54,22 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 def _resolve_discovery_timeout(explicit: "float | None") -> float:
     """Resolve the MCP discovery wait bound: explicit arg > config > default.
 
-    Reads ``mcp_discovery_timeout`` from config.yaml.  Kept lazy and
-    fail-safe — a missing/invalid value falls back to the historical 0.75s so
-    a broken config can never make startup hang or crash.
+    Reads ``mcp_discovery_timeout`` from config.yaml, defaulting to the value in
+    ``DEFAULT_CONFIG`` (single source of truth) when the key is absent. Kept lazy
+    and fail-safe — a missing/invalid value or a broken config falls back to a
+    short safe bound so startup can never hang or crash.
     """
     if explicit is not None:
         return explicit
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config, DEFAULT_CONFIG
 
-        raw = (load_config() or {}).get("mcp_discovery_timeout", 5.0)
+        default = float(DEFAULT_CONFIG.get("mcp_discovery_timeout", 1.5))
+        raw = (load_config() or {}).get("mcp_discovery_timeout", default)
         val = float(raw)
-        return val if val > 0 else 0.75
+        return val if val > 0 else default
     except Exception:
-        return 0.75
+        return 1.5
 
 
 def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:

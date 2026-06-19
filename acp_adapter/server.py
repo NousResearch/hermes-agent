@@ -823,24 +823,21 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from tools.mcp_tool import refresh_agent_mcp_tools
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
                 mcp_server_names=[server.name for server in mcp_servers],
             )
-            state.agent.enabled_toolsets = enabled_toolsets
-            disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
-            state.agent.tools = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
+            # Route through the shared helper (name-diff, atomic publish, and —
+            # critically — additive-preserving so memory-provider AND context-
+            # engine tools survive). enabled_override applies the ACP-expanded
+            # toolset and stores it on the agent, matching prior behavior.
+            refresh_agent_mcp_tools(
+                state.agent,
+                enabled_override=enabled_toolsets,
                 quiet_mode=True,
             )
-            state.agent.valid_tool_names = {
-                tool["function"]["name"] for tool in state.agent.tools or []
-            }
-            inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()

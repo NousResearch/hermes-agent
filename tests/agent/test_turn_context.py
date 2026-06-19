@@ -49,6 +49,7 @@ class _FakeAgent:
         self.valid_tool_names = set()
         self.enabled_toolsets = None
         self.disabled_toolsets = None
+        self._skip_mcp_refresh = False
         self.compression_enabled = False
         self.context_compressor = types.SimpleNamespace(
             protect_first_n=2, protect_last_n=2
@@ -219,6 +220,21 @@ def test_between_turns_refresh_skipped_when_no_servers():
     import model_tools
 
     with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=False), \
+         patch.object(model_tools, "get_tool_definitions") as gtd:
+        _build(agent)
+
+    gtd.assert_not_called()
+
+
+def test_between_turns_refresh_skipped_when_skip_flag_set():
+    """Internal forks (background_review) set _skip_mcp_refresh to keep tools[]
+    byte-identical to the parent for cache parity — the hook must honor it even
+    when MCP servers are registered."""
+    agent = _FakeAgent()
+    agent._skip_mcp_refresh = True
+    import model_tools
+
+    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions") as gtd:
         _build(agent)
 

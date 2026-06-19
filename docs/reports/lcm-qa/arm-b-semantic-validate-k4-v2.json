@@ -1,0 +1,74 @@
+{
+  "arm": "B-node-served",
+  "model": "claude-haiku-4-5",
+  "profile": "aegis",
+  "N": 4,
+  "gate_eligible": false,
+  "condensation_fired": 4,
+  "fact_preserved_in_node": 4,
+  "node_served_recall": 0,
+  "node_served_recall_rate": 0.0,
+  "wilson_lower_bound": 0.0,
+  "confident_wrong": 0,
+  "duration_s": 405.0,
+  "thresholds": {
+    "recall>=": 0.95,
+    "wilson_lb>=": 0.9,
+    "confident_wrong": 0
+  },
+  "verdict": "FAIL",
+  "trials": [
+    {
+      "idx": 0,
+      "sentinel": "Ada Lovelace/recover-0000",
+      "session_id": "20260617_012256_0c9ddd",
+      "depth1_node_id": 31,
+      "sentinel_in_node": true,
+      "node_served_answer": "[recovery error: 'type' object is not subscriptable]",
+      "correct": false,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=0 owner=Ada Lovelace"
+    },
+    {
+      "idx": 1,
+      "sentinel": "Grace Hopper/recover-0001",
+      "session_id": "20260617_012256_0c9ddd",
+      "depth1_node_id": 31,
+      "sentinel_in_node": true,
+      "node_served_answer": "[recovery error: 'type' object is not subscriptable]",
+      "correct": false,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=1 owner=Grace Hopper"
+    },
+    {
+      "idx": 2,
+      "sentinel": "Katherine Johnson/recover-0002",
+      "session_id": "20260617_012256_0c9ddd",
+      "depth1_node_id": 31,
+      "sentinel_in_node": true,
+      "node_served_answer": "[recovery error: 'type' object is not subscriptable]",
+      "correct": false,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=2 owner=Katherine Johnson"
+    },
+    {
+      "idx": 3,
+      "sentinel": "Margaret Hamilton/recover-0003",
+      "session_id": "20260617_012256_0c9ddd",
+      "depth1_node_id": 31,
+      "sentinel_in_node": true,
+      "node_served_answer": "[recovery error: 'type' object is not subscriptable]",
+      "correct": false,
+      "confident_wrong": false,
+      "leaves": 0,
+      "condensed": 1,
+      "notes": "batch=0 pos=3 owner=Margaret Hamilton"
+    }
+  ]
+}

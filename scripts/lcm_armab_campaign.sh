@@ -16,7 +16,7 @@ ARMA_SHAKEDOWN_N=120        # staged Arm A
 ARMA_FULL_N=180
 ARMB_N=180
 VOID_RATE_MAX=0.20          # AC-2 hard stop
-MAX_USD=120                 # AC-6 hard cost ceiling — BELOW ~$150 worst case, a real checkpoint
+MAX_USD=450                 # AC-6 hard cost ceiling — sized for all 4 arms @ Haiku burn (~$385 proj), real backstop
 set -u
 cd ~/.hermes/hermes-agent
 

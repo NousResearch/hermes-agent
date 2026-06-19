@@ -1,0 +1,33 @@
+{
+  "mode": "live",
+  "n_requested": 120,
+  "verdict": "BLOCKED",
+  "passed": false,
+  "total_trials": 0,
+  "correct_trials": 0,
+  "point_recall": 0.0,
+  "wilson_lower": 0.0,
+  "confident_wrong": 0,
+  "missing_tool_call_evidence": 0,
+  "total_draws": 10,
+  "void_count": 10,
+  "void_rate": 1.0,
+  "estimated_spend_usd": 0.42534999999999995,
+  "observed_spend_usd": 0.35274999999999995,
+  "failures": [
+    "no trials scored",
+    "live Phase-2 gate requires N=120 minimum; scored 0",
+    "VOID rate 1.0000 exceeds max 0.2000 (10/10 draws produced no store lookup)",
+    "VOID rate 1.000 exceeded max 0.200 after 10 draws (10 void) \u2014 bury is not reliably exercising the store path; this is a finding, not a redraw-around."
+  ],
+  "thresholds": {
+    "recall_point_min": 0.95,
+    "wilson_lower_min": 0.9,
+    "void_rate_max": 0.2
+  },
+  "run_params": {
+    "probe_kind": "exact",
+    "filler_turns": 36,
+    "void_redraw": true
+  }
+}

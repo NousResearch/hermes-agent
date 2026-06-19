@@ -2344,6 +2344,7 @@ class MCPServerTask:
                         "giving up: %s",
                         self.name, _MAX_RECONNECT_RETRIES, exc,
                     )
+                    self._deregister_tools()
                     return
 
                 logger.warning(
@@ -2368,10 +2369,23 @@ class MCPServerTask:
         if self._error:
             raise self._error
 
-    async def shutdown(self):
-        """Signal the Task to exit and wait for clean resource teardown."""
+    def _deregister_tools(self) -> None:
+        """Remove this server's tools from the global registry.
+
+        Safe to call more than once (idempotent).  Used by both the
+        reconnect-give-up path inside ``run()`` and the explicit
+        ``shutdown()`` teardown so dead servers never leave phantom
+        tool definitions in the agent's tool snapshot.
+        """
         from tools.registry import registry
 
+        for tool_name in list(getattr(self, "_registered_tool_names", [])):
+            registry.deregister(tool_name)
+            _forget_mcp_tool_server(tool_name)
+        self._registered_tool_names = []
+
+    async def shutdown(self):
+        """Signal the Task to exit and wait for clean resource teardown."""
         self._shutdown_event.set()
         # Defensive: if _wait_for_lifecycle_event is blocking, we need ANY
         # event to unblock it. _shutdown_event alone is sufficient (the
@@ -2397,10 +2411,7 @@ class MCPServerTask:
                 task.cancel()
             await asyncio.gather(*self._pending_refresh_tasks, return_exceptions=True)
             self._pending_refresh_tasks.clear()
-        for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            registry.deregister(tool_name)
-            _forget_mcp_tool_server(tool_name)
-        self._registered_tool_names = []
+        self._deregister_tools()
         self.session = None
 
 

@@ -538,6 +538,72 @@ class TestMCPInitialConnectionRetry:
 
         asyncio.get_event_loop().run_until_complete(_run())
 
+    def test_reconnect_give_up_deregisters_tools(self):
+        """When reconnection retries are exhausted, previously registered
+        tools must be removed from the registry so the agent stops
+        advertising unreachable tools to the LLM."""
+        from tools.mcp_tool import (
+            MCPServerTask, _MAX_RECONNECT_RETRIES,
+            _mcp_tool_server_names,
+        )
+        from tools.registry import registry
+
+        call_count = 0
+        tool_name = "mcp_test_deregister_fake_tool"
+
+        async def _run():
+            nonlocal call_count
+            server = MCPServerTask("test-deregister")
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # First call succeeds — simulate a working session.
+                    self_inner._ready.set()
+                    await asyncio.sleep(0.05)
+                    # Simulate the connection dropping.
+                    raise ConnectionError("connection lost")
+                # All subsequent calls fail (reconnect attempts).
+                raise ConnectionError("still down")
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 patch.object(MCPServerTask, '_run_http', fake_run_stdio), \
+                 patch('tools.mcp_tool._MAX_BACKOFF_SECONDS', 0), \
+                 patch('asyncio.sleep', return_value=None):
+                # Pre-register a fake tool to simulate an already-connected
+                # server that had its tools registered at startup.
+                registry.register(
+                    tool_name, "mcp_test_deregister",
+                    {"type": "object", "properties": {}},
+                    lambda **kw: "",
+                )
+                server._registered_tool_names = [tool_name]
+                _mcp_tool_server_names[tool_name] = "test_deregister"
+
+                assert registry.get_entry(tool_name) is not None
+                assert tool_name in _mcp_tool_server_names
+
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                await server._ready.wait()
+                # run() continues in the background; wait for it to exhaust
+                # reconnect retries and exit.
+                await task
+
+                # After give-up, tools must be deregistered.
+                assert registry.get_entry(tool_name) is None, (
+                    "Tool should have been deregistered after reconnect give-up"
+                )
+                assert tool_name not in _mcp_tool_server_names, (
+                    "Tool-server mapping should have been forgotten"
+                )
+                assert server._registered_tool_names == []
+                # 1 initial success-then-drop + _MAX_RECONNECT_RETRIES reconnect
+                # failures + 1 final failure that exceeds the limit
+                assert call_count == _MAX_RECONNECT_RETRIES + 1
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
     def test_initial_connect_retry_respects_shutdown(self):
         """Shutdown during initial retry backoff aborts cleanly."""
         from tools.mcp_tool import MCPServerTask

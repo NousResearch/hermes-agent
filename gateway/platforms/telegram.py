@@ -2353,6 +2353,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            # Bot API 10.0 guest reply: buffer content and return immediately.
+            # Must run before the rich/legacy send paths — both use sendMessage
+            # which Telegram rejects with Forbidden when the bot is not a member.
+            if self._pending_guest_queries.get(chat_id) is not None or chat_id in self._guest_only_chats:
+                self._guest_reply_buffer[chat_id] = content
+                return SendResult(success=True, message_id=None)
+
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
             # through to the legacy MarkdownV2 path on permanent/capability
@@ -2383,13 +2390,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     for chunk in chunks
                 ]
             
-            # Bot API 10.0 guest reply: keep only the last send() content (the final answer).
-            # Earlier send() calls carry thinking/tool-progress text; the stream consumer
-            # always issues one final send() with the complete response, which overwrites them.
-            if self._pending_guest_queries.get(chat_id) is not None or chat_id in self._guest_only_chats:
-                self._guest_reply_buffer[chat_id] = content
-                return SendResult(success=True, message_id=None)
-
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
@@ -6788,6 +6788,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
 
         # Build source
+        # When a user posts "as a channel" in a group, from_user is None but
+        # sender_chat carries the channel identity. Use sender_chat.id so the
+        # auth check can match it and the session key is stable across messages.
+        sender_chat = getattr(message, "sender_chat", None)
         source = self.build_source(
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
@@ -6795,15 +6799,23 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=(
                 str(user.id)
                 if user
-                else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+                else (
+                    str(sender_chat.id)
+                    if sender_chat
+                    else (str(chat.id) if chat_type in {"dm", "channel"} else None)
+                )
             ),
             user_name=(
                 user.full_name
                 if user
                 else (
-                    chat.full_name
-                    if hasattr(chat, "full_name") and chat_type == "dm"
-                    else (chat.title if chat_type == "channel" else None)
+                    getattr(sender_chat, "title", None) or getattr(sender_chat, "username", None)
+                    if sender_chat
+                    else (
+                        chat.full_name
+                        if hasattr(chat, "full_name") and chat_type == "dm"
+                        else (chat.title if chat_type == "channel" else None)
+                    )
                 )
             ),
             thread_id=thread_id_str,

@@ -1323,6 +1323,21 @@ class TestIsPaymentError:
         exc.status_code = 404
         assert _is_payment_error(exc) is True
 
+    def test_403_subscription_required_is_payment(self):
+        exc = Exception(
+            "this model requires a subscription, upgrade for access: "
+            "https://ollama.com/upgrade"
+        )
+        setattr(exc, "status_code", 403)
+        assert _is_payment_error(exc) is True
+
+    def test_429_session_usage_limit_is_payment(self):
+        exc = Exception(
+            "you have reached your session usage limit, upgrade for higher limits"
+        )
+        setattr(exc, "status_code", 429)
+        assert _is_payment_error(exc) is True
+
     def test_404_generic_not_found_is_not_payment(self):
         exc = Exception("Not Found")
         exc.status_code = 404

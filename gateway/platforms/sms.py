@@ -157,6 +157,7 @@ class SmsAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        self._check_send_gate()
         import aiohttp
 
         formatted = self.format_message(content)

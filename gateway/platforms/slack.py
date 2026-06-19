@@ -1135,6 +1135,7 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a message to a Slack channel or DM."""
+        self._check_send_gate()
         if not self._app:
             return SendResult(success=False, error="Not connected")
 

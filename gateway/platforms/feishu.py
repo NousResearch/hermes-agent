@@ -1779,6 +1779,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Feishu message."""
+        self._check_send_gate()
         if not self._client:
             return SendResult(success=False, error="Not connected")
 

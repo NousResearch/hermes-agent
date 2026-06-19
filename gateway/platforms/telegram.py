@@ -2326,6 +2326,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Send a message to a Telegram chat."""
+        self._check_send_gate()
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 

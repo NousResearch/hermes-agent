@@ -616,6 +616,7 @@ class EmailAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an email reply to the given address."""
+        self._check_send_gate()
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(

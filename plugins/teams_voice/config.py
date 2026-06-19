@@ -1,0 +1,133 @@
+"""Configuration resolution for the teams_voice bridge.
+
+Values come from (in priority order): the plugin's ``config.extra`` block in
+``config.yaml`` (when wired through the gateway), then environment variables,
+then safe defaults. Secrets are never logged.
+
+The wire contract is fixed by the companion .NET media worker (AzureBot /
+OpenClawBridge), so the header names, HMAC payload shape, and default path mirror
+that worker exactly — see ``protocol.py`` and ``hmac_auth.py``.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+# Audio wire format — single source of truth, mirrors the worker (PCM 16 kHz,
+# 16-bit signed, mono, little-endian; 20 ms / 640-byte frames).
+PCM_SAMPLE_RATE_HZ = 16_000
+FRAME_DURATION_MS = 20
+BYTES_PER_FRAME = PCM_SAMPLE_RATE_HZ * FRAME_DURATION_MS // 1000 * 2  # 640
+
+# Default WebSocket path the worker connects to: ``/voice/msteams/stream/{callId}``.
+DEFAULT_PATH = "/voice/msteams/stream"
+
+# HMAC upgrade header names — fixed by the existing worker. The "OpenClaw" prefix
+# is historical; Hermes reuses the headers verbatim so the worker needs no change.
+HEADER_TIMESTAMP = "X-OpenClawTeamsBridge-Timestamp"
+HEADER_SIGNATURE = "X-OpenClawTeamsBridge-Signature"
+
+
+@dataclass(frozen=True)
+class TeamsVoiceConfig:
+    """Resolved bridge configuration."""
+
+    shared_secret: str
+    host: str = "127.0.0.1"
+    port: int = 8443
+    path: str = DEFAULT_PATH
+    # Replay/clock-skew window for the HMAC handshake, in milliseconds.
+    hmac_window_ms: int = 60_000
+    # Connection caps (DoS guards) — mirror the TS driver's defaults.
+    max_connections: int = 64
+    max_connections_per_ip: int = 8
+    # A connection must send ``session.start`` within this window or it is reaped.
+    pre_start_timeout_s: float = 10.0
+    require_recording_status: bool = True
+    # Outbound "call me back": the worker's loopback HTTP endpoint + default tenant.
+    worker_base_url: str = "http://127.0.0.1:9440"
+    tenant_id: str = ""
+
+    @property
+    def configured(self) -> bool:
+        """True when a shared secret is present (the bridge can authenticate)."""
+        return bool(self.shared_secret)
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def plugin_config_block() -> dict[str, Any]:
+    """Return the ``plugins.entries.teams_voice.config`` block from config.yaml.
+
+    Empty dict when unset or config can't be loaded. ``${VAR}`` references are
+    already expanded by Hermes's config loader, so secrets can live in ``.env``
+    and be referenced here (e.g. ``shared_secret: ${TEAMS_VOICE_SHARED_SECRET}``).
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        node = (
+            config.get("plugins", {})
+            .get("entries", {})
+            .get("teams_voice", {})
+            .get("config", {})
+        )
+        return node if isinstance(node, dict) else {}
+    except Exception:  # noqa: BLE001 — config is optional; fall back to env
+        return {}
+
+
+def resolve_config(extra: Mapping[str, Any] | None = None) -> TeamsVoiceConfig:
+    """Build a :class:`TeamsVoiceConfig` from config.yaml + environment.
+
+    ``extra`` is the per-plugin config block; when omitted it is read from
+    ``plugins.entries.teams_voice.config`` in config.yaml. Environment variables
+    are the fallback so the bridge still works with no config file.
+    """
+    extra = extra if extra is not None else plugin_config_block()
+
+    shared_secret = (
+        str(extra.get("shared_secret") or "").strip()
+        or os.getenv("TEAMS_VOICE_SHARED_SECRET", "").strip()
+    )
+    host = (
+        str(extra.get("host") or "").strip()
+        or os.getenv("TEAMS_VOICE_HOST", "").strip()
+        or "127.0.0.1"
+    )
+    port = _coerce_int(
+        extra.get("port") or os.getenv("TEAMS_VOICE_PORT", ""), 8443
+    )
+    path = str(extra.get("path") or "").strip() or DEFAULT_PATH
+    window = _coerce_int(
+        extra.get("hmac_window_ms") or os.getenv("TEAMS_VOICE_HMAC_WINDOW_MS", ""),
+        60_000,
+    )
+    worker_base_url = (
+        str(extra.get("worker_base_url") or "").strip()
+        or os.getenv("TEAMS_VOICE_WORKER_BASE_URL", "").strip()
+        or "http://127.0.0.1:9440"
+    )
+    tenant_id = (
+        str(extra.get("tenant_id") or "").strip()
+        or os.getenv("TEAMS_VOICE_TENANT_ID", "").strip()
+        or os.getenv("TEAMS_TENANT_ID", "").strip()
+    )
+
+    return TeamsVoiceConfig(
+        shared_secret=shared_secret,
+        host=host,
+        port=port,
+        path=path,
+        hmac_window_ms=window,
+        worker_base_url=worker_base_url,
+        tenant_id=tenant_id,
+    )

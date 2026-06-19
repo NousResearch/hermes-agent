@@ -1,0 +1,27 @@
+name: teams_voice
+version: 0.1.0
+description: >-
+  Microsoft Teams real-time voice/video (CVI) bridge driver. Hosts an
+  HMAC-authenticated WebSocket the companion .NET media worker (OpenClawBridge /
+  AzureBot) dials into, then drives dialogue (realtime speech-to-speech or
+  streaming STT->agent->TTS), perception (camera/screen vision), and the avatar
+  rendering cues (expression / visemes / show-to-caller). The Windows-only media
+  worker renders; this plugin sends the drivers. Chat-plane integration
+  (messages, message actions, recap posting) is handled by the existing
+  ``platforms/teams`` adapter, not here.
+author: NousResearch
+kind: standalone
+# Pure-Python driver: runs anywhere Hermes runs (the *media worker* it pairs with
+# is Windows-only, but it is a separate process reached over the WebSocket).
+provides_tools:
+  - teams_voice_status
+hooks:
+  - on_session_end
+optional_env:
+  - name: TEAMS_VOICE_SHARED_SECRET
+    description: "HMAC secret shared with the .NET media worker (must equal the worker's OpenClawSharedSecret)."
+    password: true
+  - name: TEAMS_VOICE_HOST
+    description: "Bind address for the bridge WebSocket server (default 127.0.0.1)."
+  - name: TEAMS_VOICE_PORT
+    description: "Port for the bridge WebSocket server (default 8443)."

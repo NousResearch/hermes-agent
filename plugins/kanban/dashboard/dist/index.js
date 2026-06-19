@@ -486,6 +486,7 @@
     const [includeArchived, setIncludeArchived] = useState(false);
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
+    const [hiddenColumns, setHiddenColumns] = useState([]);  // #48886
     const [configApplied, setConfigApplied] = useState(false);
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
@@ -516,6 +517,7 @@
             if (c.default_tenant) setTenantFilter(c.default_tenant);
             if (typeof c.lane_by_profile === "boolean") setLaneByProfile(c.lane_by_profile);
             if (typeof c.include_archived_by_default === "boolean") setIncludeArchived(c.include_archived_by_default);
+            if (Array.isArray(c.hidden_columns)) setHiddenColumns(c.hidden_columns);
             setConfigApplied(true);
           }
         })
@@ -1012,6 +1014,8 @@
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
           search, setSearch,
+          hiddenColumns, setHiddenColumns,
+          boardSlug: board,
           onNudgeDispatch: function () {
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
               .then(loadBoard)
@@ -1044,6 +1048,7 @@
           onDelete: deleteTask,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
+          hiddenColumns,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
@@ -1969,6 +1974,27 @@
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
+    // All known column names — the toggle UI lets the user pick which of
+    // these to *hide* in this board.  Sourced from the live board payload
+    // so any future column the backend adds shows up automatically.
+    const allColumnNames = (props.board && props.board.columns)
+      ? props.board.columns.map(function (c) { return c.name; })
+      : [];
+    const hiddenSet = new Set(props.hiddenColumns || []);
+    const toggleColumn = useCallback(function (name) {
+      const next = new Set(hiddenSet);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      const nextArr = Array.from(next);
+      props.setHiddenColumns(nextArr);
+      // Persist to config.yaml via the POST /config endpoint so the
+      // preference survives reloads and applies to other clients on the
+      // same Hermes install.
+      SDK.fetchJSON(withBoard(`${API}/config`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden_columns: nextArr }),
+      }).catch(function () { /* non-fatal — UI state still updated */ });
+    }, [hiddenSet, props.setHiddenColumns, props.boardSlug]);
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
@@ -2022,6 +2048,14 @@
         }),
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
+      // Per-board column visibility (#48886).  Renders a compact dropdown
+      // with one checkbox per known column — toggling unhides/hides that
+      // column on this board only, persisted to config.yaml.
+      allColumnNames.length > 0 ? h(ColumnVisibilityMenu, {
+        allColumnNames: allColumnNames,
+        hiddenSet: hiddenSet,
+        onToggle: toggleColumn,
+      }) : null,
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onNudgeDispatch,
@@ -2043,6 +2077,62 @@
         size: "sm",
         title: "Clear all active filters (search, tenant, assignee, archived).",
       }, tx(t, "clearFilters", "Clear filters")),
+    );
+  }
+
+  // Compact dropdown that lets the user hide/show each board column.
+  // Renders a button showing the current hidden-count; the popover is a
+  // simple list of checkboxes — one per known column.  Implemented as a
+  // plain inline popover (no Popover SDK import) to keep the change
+  // self-contained and avoid widening the dashboard's SDK surface.
+  function ColumnVisibilityMenu(props) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    useEffect(function () {
+      if (!open) return undefined;
+      function onDocClick(e) {
+        if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+      }
+      document.addEventListener("mousedown", onDocClick);
+      return function () { document.removeEventListener("mousedown", onDocClick); };
+    }, [open]);
+    const hiddenCount = props.hiddenSet.size;
+    const label = hiddenCount === 0
+      ? "Columns"
+      : "Columns (" + hiddenCount + " hidden)";
+    return h("div", { className: "relative", ref: ref },
+      h(Button, {
+        size: "sm",
+        variant: hiddenCount > 0 ? "secondary" : "outline",
+        onClick: function () { setOpen(function (v) { return !v; }); },
+        title: "Hide columns this board does not use. Hidden columns are omitted from the board view only; their tasks remain searchable and can be moved like any other task.",
+      }, label),
+      open ? h("div", {
+        className: "absolute z-50 mt-1 w-56 rounded-md border bg-popover p-2 shadow-md",
+        style: { top: "100%", left: 0 },
+      },
+        h("div", { className: "px-2 py-1 text-xs text-muted-foreground" },
+          "Show / hide columns"),
+        props.allColumnNames.map(function (name) {
+          const isHidden = props.hiddenSet.has(name);
+          return h("label", {
+            key: name,
+            className: "flex items-center gap-2 px-2 py-1 text-xs cursor-pointer hover:bg-accent rounded-sm",
+          },
+            h(Checkbox, {
+              checked: !isHidden,
+              onCheckedChange: function (checked) {
+                // Checkbox checked means "show column", so toggling on
+                // when isHidden removes it from the hidden set, and vice
+                // versa.  We pass the *column name* to onToggle which
+                // then flips it in the hidden set on the parent side.
+                if ((checked === true) !== !isHidden) props.onToggle(name);
+              },
+            }),
+            h("span", { className: "capitalize" }, name),
+          );
+        }),
+      ) : null,
     );
   }
 
@@ -2240,8 +2330,20 @@
     const handleDragEnd = useCallback(function () {
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
+    // Per-board column visibility — see #48886.  Hidden columns are dropped
+    // here (not on the backend) so the underlying Kanban status model and
+    // filters/search/counts still see every task; only the *rendering* is
+    // narrowed.  Tasks in a hidden column are still accessible via filter /
+    // search / drawer, and hidden columns can be re-enabled without data
+    // migration.
+    const hidden = (props.hiddenColumns && props.hiddenColumns.length)
+      ? new Set(props.hiddenColumns)
+      : null;
+    const visibleColumns = hidden
+      ? props.board.columns.filter(function (col) { return !hidden.has(col.name); })
+      : props.board.columns;
     return h("div", { className: "hermes-kanban-columns", onDragStart: handleDragStart, onDragEnd: handleDragEnd },
-      props.board.columns.map(function (col) {
+      visibleColumns.map(function (col) {
         return h(Column, {
           key: col.name,
           column: col,

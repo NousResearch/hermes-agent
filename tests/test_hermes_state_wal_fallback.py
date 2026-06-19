@@ -438,3 +438,36 @@ class TestSessionDbUsesWalFallback:
             assert get_last_init_error() is None
         finally:
             db.close()
+
+    def test_sessiondb_works_when_wal_is_silently_refused(self, tmp_path, caplog):
+        """E2E: SessionDB stays usable when WAL silently no-ops to DELETE."""
+        target = tmp_path / "macnfs_style.db"
+
+        real_connect = sqlite3.connect
+        factory = _make_silent_noop_factory("delete")
+
+        def gated_connect(*args, **kwargs):
+            return real_connect(str(target), factory=factory, **kwargs)
+
+        with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
+            with caplog.at_level("ERROR", logger="hermes_state"):
+                db = SessionDB(db_path=target)
+
+        try:
+            assert db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+            db.create_session(session_id="s2", source="cli", model="test")
+            sess = db.get_session("s2")
+            assert sess is not None
+            assert sess["source"] == "cli"
+            assert get_last_init_error() is None
+        finally:
+            db.close()
+
+        errors = [
+            r
+            for r in caplog.records
+            if r.levelname == "ERROR" and "state.db" in r.getMessage()
+        ]
+        assert len(errors) == 1, (
+            "silent WAL refusal should emit exactly one state.db error"
+        )

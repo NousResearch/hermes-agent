@@ -327,6 +327,27 @@ def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
     _assert_utf8_replace_capture(calls[0][1])
 
 
+def test_make_tui_argv_exits_with_recovery_hint_when_workspace_missing(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+
+    def fail_which(_name: str) -> str:
+        raise AssertionError("node/npm lookup must not run when ui-tui is missing")
+
+    monkeypatch.setattr(main_mod.shutil, "which", fail_which)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tmp_path / "ui-tui", tui_dev=False)
+
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "TUI workspace is missing" in err
+    assert "git restore -- ui-tui" in err
+    assert "hermes update --force" in err
+
+
 # ── _workspace_root helper ──────────────────────────────────────────
 
 

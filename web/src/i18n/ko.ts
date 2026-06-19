@@ -47,7 +47,6 @@ export const ko: Translations = {
       "이 플러그인의 스크립트를 로드할 수 없습니다. Network 탭(dashboard-plugins/…)과 서버의 플러그인 경로를 확인하세요.",
     pluginNotRegistered:
       "플러그인 스크립트가 register()를 호출하지 않았거나 스크립트에 오류가 발생했습니다. 자세한 내용은 브라우저 콘솔을 열어 확인하세요.",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const ko: Translations = {
     nav: {
       analytics: "분석",
       chat: "채팅",
-      channels: "채널",
       config: "설정",
       cron: "Cron",
       documentation: "문서",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "키",
       logs: "로그",
-      mcp: "MCP",
       models: "모델",
-      pairing: "페어링",
       profiles: "프로필: 멀티 에이전트",
       plugins: "플러그인",
       sessions: "세션",
       skills: "스킬",
-      system: "시스템",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "및 도구",
     modelToolsSheetTitle: "모델",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "내비게이션",
     openDocumentation: "새 탭에서 문서 열기",
     openNavigation: "내비게이션 열기",
@@ -103,38 +90,6 @@ export const ko: Translations = {
     statusOverview: "상태 개요",
     system: "시스템",
     webUi: "Web UI",
-    loadingChat: "Loading chat…",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -249,14 +204,6 @@ export const ko: Translations = {
     toolCalls: "도구 호출",
     noModelsData: "이 기간에 대한 모델 사용 데이터가 없습니다",
     startSession: "세션을 시작하면 여기에 모델 데이터가 표시됩니다",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -267,40 +214,6 @@ export const ko: Translations = {
     component: "구성 요소",
     lines: "줄 수",
     noLogLines: "로그 줄을 찾을 수 없습니다",
-  },
-
-  channels: {
-    changesSaved: "변경 사항이 저장되었습니다. 적용하려면 게이트웨이를 다시 시작하세요.",
-    configure: "설정",
-    configureTitle: "{name} 설정",
-    configuredSummary: "{total}개 채널 중 {configured}개가 설정되었습니다. 자격 증명은 {path}에 기록되며, 다음 재시작 때 활성화된 각 채널에 연결됩니다.",
-    enablePlatform: "{name} 활성화",
-    errorToast: "오류: {error}",
-    failedToRestart: "재시작 실패: {error}",
-    failedToSave: "저장 실패: {error}",
-    gatewayNotRunning: "게이트웨이가 실행 중이 아닙니다. 여기에서 채널을 설정한 뒤 {command} 또는 위의 재시작 버튼으로 게이트웨이를 시작하세요.",
-    gatewayRestarting: "게이트웨이를 다시 시작하는 중...",
-    keepExistingPlaceholder: "****** (설정됨 - 비워 두면 유지)",
-    nothingToSave: "저장할 내용이 없습니다. 하나 이상의 필드를 입력하세요.",
-    platformMessage: "{name}: {message}",
-    requiredField: "{field}은(는) 필수입니다",
-    restartGateway: "게이트웨이 재시작",
-    restartingGateway: "재시작 중...",
-    restartNow: "지금 재시작",
-    saveAndEnable: "저장 후 활성화",
-    saved: "{name} 저장됨",
-    setupGuide: "설정 가이드",
-    test: "테스트",
-    state: {
-      connected: "연결됨",
-      pendingRestart: "재시작 후 적용",
-      gatewayStopped: "게이트웨이 중지됨",
-      startupFailed: "시작 실패",
-      disconnected: "연결 끊김",
-      notConfigured: "설정 안 됨",
-      disabled: "비활성화됨",
-      fatal: "오류",
-    },
   },
 
   cron: {
@@ -471,7 +384,7 @@ export const ko: Translations = {
     rawYaml: "원본 YAML 설정",
     searchResults: "검색 결과",
     fields: "개 필드",
-    noFieldsMatch: '"{query}"와(과) 일치하는 필드가 없습니다',
+    noFieldsMatch: '\"{query}\"와(과) 일치하는 필드가 없습니다',
     configSaved: "설정이 저장되었습니다",
     yamlConfigSaved: "YAML 설정이 저장되었습니다",
     failedToSave: "저장에 실패했습니다",
@@ -479,7 +392,6 @@ export const ko: Translations = {
     failedToLoadRaw: "원본 설정 로드에 실패했습니다",
     configImported: "설정을 가져왔습니다 — 검토 후 저장하세요",
     invalidJson: "잘못된 JSON 파일입니다",
-    yaml: "YAML",
     categories: {
       general: "일반",
       agent: "에이전트",
@@ -521,16 +433,6 @@ export const ko: Translations = {
     hideValue: "값 숨기기",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "제공자 로그인 (OAuth)",
     providerLogins: "제공자 로그인 (OAuth)",
@@ -568,9 +470,6 @@ export const ko: Translations = {
       external: "외부 CLI",
     },
     expiresIn: "{time} 후 만료",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -580,10 +479,6 @@ export const ko: Translations = {
   theme: {
     title: "테마",
     switchTheme: "테마 전환",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
 
   achievements: {

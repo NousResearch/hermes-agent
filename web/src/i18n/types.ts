@@ -66,7 +66,6 @@ export interface Translations {
     gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
-    listPlaceholder: string;
   };
 
   // ── App shell ──
@@ -88,26 +87,18 @@ export interface Translations {
       stopped: string;
     };
     nav: {
-      achievements: string;
       analytics: string;
       chat: string;
-      channels: string;
       config: string;
       cron: string;
       documentation: string;
-      example: string;
-      kanban: string;
       keys: string;
       logs: string;
-      mcp: string;
       models: string;
-      pairing: string;
       profiles: string;
       plugins: string;
       sessions: string;
       skills: string;
-      system: string;
-      webhooks: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
@@ -119,47 +110,10 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
-    loadingChat: string;
-    copyLastResponse: string;
-    copyLastResponseTitle: string;
-    copyLastResponseAria: string;
-    copied: string;
     /** Optional — fall back to English literals until translated. */
     managingProfile?: string;
     currentProfileOption?: string;
     managingProfileBanner?: string;
-  };
-
-  // ── Chat sidebar ──
-  chatSidebar: {
-    model: string;
-    switchModel: string;
-    reconnect: string;
-    tools: string;
-    noToolCalls: string;
-    eventsDisconnected: string;
-    eventsRejected: string;
-  };
-
-  // ── Model picker dialog ──
-  modelPicker: {
-    title: string;
-    close: string;
-    filterPlaceholder: string;
-    currentTag: string;
-    cancel: string;
-    switch_: string;
-    noMatches: string;
-    noAuthProviders: string;
-    loading: string;
-    pickProvider: string;
-    noModelsMatch: string;
-    noModelsListed: string;
-    persistGlobal: string;
-    savesToConfig: string;
-    modelsCount: string;
-    unknownModel: string;
-    currentModelLabel: string;
   };
 
   // ── Status page ──
@@ -275,14 +229,6 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
-    overrideAuto: string;
-    autoDetected: string;
-    loading: string;
-    contextWindow: string;
-    maxOutput: string;
-    capabilityTools: string;
-    capabilityVision: string;
-    capabilityReasoning: string;
   };
 
   // ── Logs page ──
@@ -294,41 +240,6 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
-  };
-
-  // ── Channels page ──
-  channels: {
-    changesSaved: string;
-    configure: string;
-    configureTitle: string;
-    configuredSummary: string;
-    enablePlatform: string;
-    errorToast: string;
-    failedToRestart: string;
-    failedToSave: string;
-    gatewayNotRunning: string;
-    gatewayRestarting: string;
-    keepExistingPlaceholder: string;
-    nothingToSave: string;
-    platformMessage: string;
-    requiredField: string;
-    restartGateway: string;
-    restartingGateway: string;
-    restartNow: string;
-    saveAndEnable: string;
-    saved: string;
-    setupGuide: string;
-    test: string;
-    state: {
-      connected: string;
-      pendingRestart: string;
-      gatewayStopped: string;
-      startupFailed: string;
-      disconnected: string;
-      notConfigured: string;
-      disabled: string;
-      fatal: string;
-    };
   };
 
   // ── Cron page ──
@@ -549,7 +460,6 @@ export interface Translations {
     failedToLoadRaw: string;
     configImported: string;
     invalidJson: string;
-    yaml: string;
     categories: {
       general: string;
       agent: string;
@@ -591,17 +501,6 @@ export interface Translations {
     showValue: string;
   };
 
-  // ── Tool call display ──
-  toolCall: {
-    running: string;
-    error: string;
-    done: string;
-    context: string;
-    streaming: string;
-    diff: string;
-    result: string;
-  };
-
   // ── OAuth ──
   oauth: {
     title: string;
@@ -640,9 +539,6 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
-    tokenExchangeFailed: string;
-    openDocs: string;
-    disconnectDescription: string;
   };
 
   // ── Language switcher ──
@@ -654,7 +550,6 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
-    presets: Record<string, { label: string; description?: string }>;
     /** Font-override section (optional — locales fall back to English). */
     fontTitle?: string;
     fontDefault?: string;

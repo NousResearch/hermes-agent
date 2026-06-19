@@ -47,7 +47,6 @@ export const fr: Translations = {
       "Impossible de charger le script de ce plugin. Vérifiez l'onglet Réseau (dashboard-plugins/…) et le chemin des plugins du serveur.",
     pluginNotRegistered:
       "Le script du plugin n'a pas appelé register(), ou le script a échoué. Ouvrez la console du navigateur pour plus de détails.",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const fr: Translations = {
     nav: {
       analytics: "Analyses",
       chat: "Chat",
-      channels: "Canaux",
       config: "Configuration",
       cron: "Cron",
       documentation: "Documentation",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "Clés",
       logs: "Journaux",
-      mcp: "MCP",
       models: "Modèles",
-      pairing: "Association",
       profiles: "profils : multi agents",
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Compétences",
-      system: "Système",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "& outils",
     modelToolsSheetTitle: "Modèle",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "Navigation",
     openDocumentation: "Ouvrir la documentation dans un nouvel onglet",
     openNavigation: "Ouvrir la navigation",
@@ -103,38 +90,6 @@ export const fr: Translations = {
     statusOverview: "Aperçu de l'état",
     system: "Système",
     webUi: "Web UI",
-    loadingChat: "Loading chat…",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -249,14 +204,6 @@ export const fr: Translations = {
     toolCalls: "appels d'outil",
     noModelsData: "Aucune donnée de modèle pour cette période",
     startSession: "Démarrez une session pour voir les données de modèle ici",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -267,40 +214,6 @@ export const fr: Translations = {
     component: "Composant",
     lines: "Lignes",
     noLogLines: "Aucune ligne de journal trouvée",
-  },
-
-  channels: {
-    changesSaved: "Les modifications sont enregistrées. Redémarrez la passerelle pour les appliquer.",
-    configure: "Configurer",
-    configureTitle: "Configurer {name}",
-    configuredSummary: "{configured} canal(aux) sur {total} configuré(s). Les identifiants sont écrits dans {path}; la passerelle connecte chaque canal activé au prochain redémarrage.",
-    enablePlatform: "Activer {name}",
-    errorToast: "Erreur : {error}",
-    failedToRestart: "Échec du redémarrage : {error}",
-    failedToSave: "Échec de l’enregistrement : {error}",
-    gatewayNotRunning: "La passerelle ne fonctionne pas. Configurez les canaux ici, puis démarrez la passerelle avec {command} ou le bouton Redémarrer ci-dessus.",
-    gatewayRestarting: "Redémarrage de la passerelle...",
-    keepExistingPlaceholder: "****** (défini - laisser vide pour conserver)",
-    nothingToSave: "Rien à enregistrer - renseignez au moins un champ.",
-    platformMessage: "{name} : {message}",
-    requiredField: "{field} est obligatoire",
-    restartGateway: "Redémarrer la passerelle",
-    restartingGateway: "Redémarrage...",
-    restartNow: "Redémarrer maintenant",
-    saveAndEnable: "Enregistrer et activer",
-    saved: "{name} enregistré",
-    setupGuide: "Guide de configuration",
-    test: "Tester",
-    state: {
-      connected: "Connecté",
-      pendingRestart: "Redémarrage requis",
-      gatewayStopped: "Passerelle arrêtée",
-      startupFailed: "Échec du démarrage",
-      disconnected: "Déconnecté",
-      notConfigured: "Non configuré",
-      disabled: "Désactivé",
-      fatal: "Erreur",
-    },
   },
 
   cron: {
@@ -481,7 +394,6 @@ export const fr: Translations = {
     failedToLoadRaw: "Échec du chargement de la configuration brute",
     configImported: "Configuration importée — vérifiez et enregistrez",
     invalidJson: "Fichier JSON invalide",
-    yaml: "YAML",
     categories: {
       general: "Général",
       agent: "Agent",
@@ -523,16 +435,6 @@ export const fr: Translations = {
     hideValue: "Masquer la valeur",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "Connexions fournisseurs (OAuth)",
     providerLogins: "Connexions fournisseurs (OAuth)",
@@ -570,9 +472,6 @@ export const fr: Translations = {
       external: "CLI externe",
     },
     expiresIn: "expire dans {time}",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -582,10 +481,6 @@ export const fr: Translations = {
   theme: {
     title: "Thème",
     switchTheme: "Changer de thème",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
   achievements: {
     hero: {

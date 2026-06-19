@@ -47,7 +47,6 @@ export const zhHant: Translations = {
       "無法載入此外掛的指令碼。請檢查網路請求（dashboard-plugins/…）以及伺服器上的外掛路徑。",
     pluginNotRegistered:
       "外掛指令碼未呼叫 register()，或執行時發生錯誤。請開啟瀏覽器主控台查看詳細資訊。",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const zhHant: Translations = {
     nav: {
       analytics: "分析",
       chat: "對話",
-      channels: "頻道",
       config: "設定",
       cron: "排程任務",
       documentation: "文件",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "金鑰",
       logs: "日誌",
-      mcp: "MCP",
       models: "模型",
-      pairing: "配對",
       profiles: "多代理設定檔",
       plugins: "外掛管理",
       sessions: "工作階段",
       skills: "技能",
-      system: "系統",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "與工具",
     modelToolsSheetTitle: "模型",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "導覽",
     openDocumentation: "在新分頁開啟文件",
     openNavigation: "開啟導覽",
@@ -103,38 +90,6 @@ export const zhHant: Translations = {
     statusOverview: "狀態總覽",
     system: "系統",
     webUi: "管理面板",
-    loadingChat: "Loading chat\u2026",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -249,14 +204,6 @@ export const zhHant: Translations = {
     toolCalls: "工具呼叫",
     noModelsData: "此時間範圍內無模型使用資料",
     startSession: "開始工作階段後將於此處顯示模型資料",
-    overrideAuto: "(override \u2014 auto: {value})",
-    autoDetected: "Auto-detected",
-    loading: "Loading model info\u2026",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -267,40 +214,6 @@ export const zhHant: Translations = {
     component: "元件",
     lines: "行數",
     noLogLines: "找不到日誌記錄",
-  },
-
-  channels: {
-    changesSaved: "變更已儲存。請重新啟動閘道以使其生效。",
-    configure: "設定",
-    configureTitle: "設定 {name}",
-    configuredSummary: "已設定 {configured}/{total} 個頻道。憑證會寫入 {path}；閘道會在下次重新啟動時連線每個已啟用頻道。",
-    enablePlatform: "啟用 {name}",
-    errorToast: "錯誤：{error}",
-    failedToRestart: "重新啟動失敗：{error}",
-    failedToSave: "儲存失敗：{error}",
-    gatewayNotRunning: "閘道未執行。你可以先在這裡設定頻道，然後透過 {command} 啟動閘道，或使用上方的重新啟動按鈕。",
-    gatewayRestarting: "閘道正在重新啟動...",
-    keepExistingPlaceholder: "******（已設定，留空保留）",
-    nothingToSave: "沒有可儲存的內容，請至少填寫一個欄位。",
-    platformMessage: "{name}：{message}",
-    requiredField: "必須填寫 {field}",
-    restartGateway: "重新啟動閘道",
-    restartingGateway: "重新啟動中...",
-    restartNow: "立即重新啟動",
-    saveAndEnable: "儲存並啟用",
-    saved: "{name} 已儲存",
-    setupGuide: "設定指南",
-    test: "測試",
-    state: {
-      connected: "已連線",
-      pendingRestart: "重新啟動後生效",
-      gatewayStopped: "閘道已停止",
-      startupFailed: "啟動失敗",
-      disconnected: "已中斷連線",
-      notConfigured: "未設定",
-      disabled: "已停用",
-      fatal: "錯誤",
-    },
   },
 
   cron: {
@@ -479,7 +392,6 @@ export const zhHant: Translations = {
     failedToLoadRaw: "載入原始設定失敗",
     configImported: "設定已匯入 — 請檢視後儲存",
     invalidJson: "無效的 JSON 檔案",
-    yaml: "YAML",
     categories: {
       general: "一般",
       agent: "代理",
@@ -521,16 +433,6 @@ export const zhHant: Translations = {
     hideValue: "隱藏值",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "提供者登入（OAuth）",
     providerLogins: "提供者登入（OAuth）",
@@ -567,11 +469,7 @@ export const zhHant: Translations = {
       device_code: "裝置代碼",
       external: "外部 CLI",
     },
-    expiresIn: "將在 {time} 後過期",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription:
-      "This will remove the stored OAuth token for {provider}. You will need to re-authorize to continue using it.",
+    expiresIn: "{time}後過期",
   },
 
   language: {
@@ -581,10 +479,6 @@ export const zhHant: Translations = {
   theme: {
     title: "主題",
     switchTheme: "切換主題",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
 
   achievements: {

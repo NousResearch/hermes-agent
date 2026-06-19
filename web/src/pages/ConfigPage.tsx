@@ -489,7 +489,7 @@ export default function ConfigPage() {
             onClick={() => setYamlMode(!yamlMode)}
             prefix={yamlMode ? <FormInput /> : <Code />}
           >
-            {yamlMode ? t.common.form : t.config.yaml}
+            {yamlMode ? t.common.form : "YAML"}
           </Button>
 
           {yamlMode ? (

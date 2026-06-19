@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
@@ -26,7 +27,7 @@ import { cn } from "@/lib/utils";
  * viewport / overflow ancestors. Below the `sm` breakpoint, `dropUp` uses a
  * bottom sheet portaled to `document.body` instead of an anchored dropdown.
  */
-export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleChange }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ collapsed = false, dropUp = false }: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -98,30 +99,38 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleCh
               locale={locale}
               setLocale={setLocale}
               setOpen={setOpen}
-              onLocaleChange={onLocaleChange}
             />
           </div>
         </BottomSheet>
       )}
 
-      {open && !useMobileSheet && (
-        <div
-          aria-label={sheetTitle}
-          className={cn(
-            "absolute right-0 z-50 min-w-[10rem] rounded-md border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
-            dropUp ? "bottom-full mb-1" : "top-full mt-1",
-          )}
-          role="listbox"
-        >
-          <LanguageSwitcherOptions
-            allLocales={allLocales}
-            locale={locale}
-            setLocale={setLocale}
-            setOpen={setOpen}
-            onLocaleChange={onLocaleChange}
-          />
-        </div>
-      )}
+      {open && !useMobileSheet && (() => {
+        const rect = containerRef.current?.getBoundingClientRect();
+        const dropdown = (
+          <div
+            ref={dropdownRef}
+            aria-label={sheetTitle}
+            className={cn(
+              "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
+              dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
+            )}
+            role="listbox"
+            style={
+              dropUp && rect
+                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
+                : undefined
+            }
+          >
+            <LanguageSwitcherOptions
+              allLocales={allLocales}
+              locale={locale}
+              setLocale={setLocale}
+              setOpen={setOpen}
+            />
+          </div>
+        );
+        return dropUp ? createPortal(dropdown, document.body) : dropdown;
+      })()}
     </div>
   );
 }
@@ -131,7 +140,6 @@ function LanguageSwitcherOptions({
   locale,
   setLocale,
   setOpen,
-  onLocaleChange,
 }: LanguageSwitcherOptionsProps) {
   return (
     <>
@@ -150,7 +158,6 @@ function LanguageSwitcherOptions({
             key={code}
             onClick={() => {
               setLocale(code);
-              onLocaleChange?.(code);
               setOpen(false);
             }}
             role="option"
@@ -171,15 +178,9 @@ interface LanguageSwitcherOptionsProps {
   locale: Locale;
   setLocale: (code: Locale) => void;
   setOpen: (open: boolean) => void;
-  onLocaleChange?: (locale: Locale) => void;
 }
 
 interface LanguageSwitcherProps {
   collapsed?: boolean;
   dropUp?: boolean;
-  /** Fire-and-forget callback when user picks a locale.
-   *  Called *after* the React state + localStorage are already updated.
-   *  Intended for syncing `display.language` to config so the embedded
-   *  TUI picks up the change via `useConfigSync` mtime polling. */
-  onLocaleChange?: (locale: Locale) => void;
 }

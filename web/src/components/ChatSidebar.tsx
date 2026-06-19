@@ -35,7 +35,6 @@ import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useI18n } from "@/i18n";
 
 interface SessionInfo {
   cwd?: string;
@@ -50,6 +49,14 @@ interface RpcEnvelope {
 }
 
 const TOOL_LIMIT = 20;
+
+const STATE_LABEL: Record<ConnectionState, string> = {
+  idle: "idle",
+  connecting: "connecting",
+  open: "live",
+  closed: "closed",
+  error: "error",
+};
 
 const STATE_TONE: Record<
   ConnectionState,
@@ -70,7 +77,6 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
-  const { t } = useI18n();
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -85,14 +91,6 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const STATE_LABEL: Record<ConnectionState, string> = {
-    idle: t.common.off,
-    connecting: t.status.starting,
-    open: t.common.live,
-    closed: t.status.stopped,
-    error: t.status.error,
-  };
 
   // Profile or PTY channel change tears down both WebSockets. Bump `version`
   // (same path as the manual Reconnect button) so the gateway client is
@@ -207,14 +205,14 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
       // would otherwise look like an unexpected drop.
-      const DISCONNECTED = t.chatSidebar.eventsDisconnected;
+      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
       const surface = (msg: string) => !unmounting && setError(msg);
 
       ws.addEventListener("error", () => surface(DISCONNECTED));
 
       ws.addEventListener("close", (ev) => {
         if (ev.code === 4401 || ev.code === 4403) {
-          surface(t.chatSidebar.eventsRejected.replace("{code}", String(ev.code)));
+          surface(`events feed rejected (${ev.code}) — reload the page`);
         } else if (ev.code !== 1000) {
           surface(DISCONNECTED);
         }
@@ -269,10 +267,10 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
         }
 
         setTools((prev) =>
-          prev.map((tool) =>
-            tool.status === "running" && tool.name === p.name
-              ? { ...tool, preview: p.preview }
-              : tool,
+          prev.map((t) =>
+            t.status === "running" && t.name === p.name
+              ? { ...t, preview: p.preview }
+              : t,
           ),
         );
       } else if (type === "tool.complete") {
@@ -290,17 +288,17 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
         }
 
         setTools((prev) =>
-          prev.map((tool) =>
-            tool.tool_id === p.tool_id
+          prev.map((t) =>
+            t.tool_id === p.tool_id
               ? {
-                  ...tool,
+                  ...t,
                   status: p.error ? "error" : "done",
                   summary: p.summary,
                   error: p.error,
                   inline_diff: p.inline_diff,
                   completedAt: Date.now(),
                 }
-              : tool,
+              : t,
           ),
         );
       }
@@ -311,7 +309,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
       unmounting = true;
       ws?.close();
     };
-  }, [channel, version, t.chatSidebar.eventsDisconnected, t.chatSidebar.eventsRejected]);
+  }, [channel, version]);
 
   const reconnect = useCallback(() => {
     setError(null);
@@ -333,7 +331,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
-            {t.chatSidebar.model}
+            model
           </div>
 
           <Button
@@ -346,7 +344,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
               "self-start normal-case tracking-normal text-sm font-medium",
               "hover:underline disabled:no-underline",
             )}
-            title={info.model ?? t.chatSidebar.switchModel}
+            title={info.model ?? "switch model"}
           >
             <span className="flex min-w-0 max-w-full items-center gap-1">
               <span className="truncate">{modelLabel}</span>
@@ -378,7 +376,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                {t.chatSidebar.reconnect}
+                reconnect
               </Button>
             )}
           </div>
@@ -387,16 +385,16 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
 
       <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
         <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
-          {t.chatSidebar.tools}
+          tools
         </div>
 
         <div className="flex min-h-0 flex-col gap-1.5">
           {tools.length === 0 ? (
             <div className="px-2 py-4 text-center text-xs text-text-secondary">
-              {t.chatSidebar.noToolCalls}
+              no tool calls yet
             </div>
           ) : (
-            tools.map((tool) => <ToolCall key={tool.id} tool={tool} />)
+            tools.map((t) => <ToolCall key={t.id} tool={t} />)
           )}
         </div>
       </Card>

@@ -5,8 +5,6 @@ import type { ComponentType } from "react";
 export interface PluginManifest {
   name: string;
   label: string;
-  /** i18n key under `t.app.nav` for sidebar label translation. Falls back to `label` when unset. */
-  labelKey?: string;
   description: string;
   icon: string;
   version: string;

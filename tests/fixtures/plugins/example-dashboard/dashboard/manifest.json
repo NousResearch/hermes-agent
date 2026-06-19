@@ -10,6 +10,5 @@
   },
   "slots": [],
   "entry": "dist/index.js",
-  "api": "plugin_api.py",
-  "labelKey": "example"
+  "api": "plugin_api.py"
 }

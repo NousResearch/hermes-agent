@@ -2,20 +2,8 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { useI18n } from "@/i18n";
-import { SCHEMA_ZH_LABEL } from "@/i18n/schemaZh";
 
-const SCHEMA_LABELS: Partial<Record<string, Record<string, string>>> = {
-  zh: SCHEMA_ZH_LABEL,
-};
-
-function FieldHint({
-  schema,
-  schemaKey,
-}: {
-  schema: Record<string, unknown>;
-  schemaKey: string;
-}) {
+function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
   const description = schema.description ? String(schema.description) : "";
 
@@ -100,12 +88,8 @@ export function AutoField({
   value,
   onChange,
 }: AutoFieldProps) {
-  const { locale, t } = useI18n();
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
-  const enLabel = rawLabel
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  const label = SCHEMA_LABELS[locale]?.[schemaKey] ?? enLabel;
+  const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
@@ -138,7 +122,7 @@ export function AutoField({
         <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
-              {opt || t.common.none}
+              {opt || "(none)"}
             </SelectOption>
           ))}
         </Select>
@@ -199,7 +183,7 @@ export function AutoField({
                 .filter(Boolean),
             )
           }
-          placeholder={t.common.listPlaceholder}
+          placeholder="comma-separated values"
         />
       </div>
     );

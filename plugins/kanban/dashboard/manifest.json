@@ -1,7 +1,7 @@
 {
   "name": "kanban",
   "label": "Kanban",
-  "description": "Multi-agent collaboration board \u2014 drag-drop cards across columns, read comment threads, see which profile is running what",
+  "description": "Multi-agent collaboration board — drag-drop cards across columns, read comment threads, see which profile is running what",
   "icon": "Package",
   "version": "1.0.0",
   "tab": {
@@ -10,6 +10,5 @@
   },
   "entry": "dist/index.js",
   "css": "dist/style.css",
-  "api": "plugin_api.py",
-  "labelKey": "kanban"
+  "api": "plugin_api.py"
 }

@@ -47,7 +47,6 @@ export const ja: Translations = {
       "このプラグインのスクリプトを読み込めませんでした。Network タブ（dashboard-plugins/…）とサーバーのプラグインパスをご確認ください。",
     pluginNotRegistered:
       "プラグインのスクリプトが register() を呼び出していないか、スクリプトでエラーが発生しました。詳細はブラウザのコンソールをご確認ください。",
-    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -70,31 +69,19 @@ export const ja: Translations = {
     nav: {
       analytics: "分析",
       chat: "チャット",
-      channels: "チャンネル",
       config: "設定",
       cron: "Cron",
       documentation: "ドキュメント",
-      achievements: "Achievements",
-      example: "Example",
-      kanban: "Kanban",
       keys: "キー",
       logs: "ログ",
-      mcp: "MCP",
       models: "モデル",
-      pairing: "ペアリング",
       profiles: "プロファイル : マルチエージェント",
       plugins: "プラグイン",
       sessions: "セッション",
       skills: "スキル",
-      system: "システム",
-      webhooks: "Webhooks",
     },
     modelToolsSheetSubtitle: "とツール",
     modelToolsSheetTitle: "モデル",
-    copyLastResponse: "Copy last response",
-    copyLastResponseTitle: "Copy last assistant response as raw markdown",
-    copyLastResponseAria: "Copy last assistant response",
-    copied: "Copied",
     navigation: "ナビゲーション",
     openDocumentation: "ドキュメントを新しいタブで開く",
     openNavigation: "ナビゲーションを開く",
@@ -103,38 +90,6 @@ export const ja: Translations = {
     statusOverview: "ステータス概要",
     system: "システム",
     webUi: "Web UI",
-    loadingChat: "Loading chat…",
-  },
-
-  chatSidebar: {
-    model: "model",
-    switchModel: "switch model",
-    reconnect: "reconnect",
-    tools: "tools",
-    noToolCalls: "no tool calls yet",
-    eventsDisconnected:
-      "events feed disconnected — tool calls may not appear",
-    eventsRejected: "events feed rejected ({code}) — reload the page",
-  },
-
-  modelPicker: {
-    title: "Switch Model",
-    close: "Close",
-    filterPlaceholder: "Filter providers and models…",
-    currentTag: "current",
-    cancel: "Cancel",
-    switch_: "Switch",
-    noMatches: "no matches",
-    noAuthProviders: "no authenticated providers",
-    loading: "loading…",
-    pickProvider: "pick a provider →",
-    noModelsMatch: "no models match your filter",
-    noModelsListed: "no models listed for this provider",
-    persistGlobal: "Persist globally (otherwise this session only)",
-    savesToConfig: "Saves to config.yaml — applies to new sessions.",
-    modelsCount: "{count} models",
-    unknownModel: "(unknown)",
-    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -249,14 +204,6 @@ export const ja: Translations = {
     toolCalls: "ツール呼び出し",
     noModelsData: "この期間のモデル使用データはありません",
     startSession: "セッションを開始するとモデルデータがここに表示されます",
-    overrideAuto: "(override — auto: {value})",
-    autoDetected: "auto-detected",
-    loading: "Loading model info…",
-    contextWindow: "Context Window",
-    maxOutput: "Max Output",
-    capabilityTools: "Tools",
-    capabilityVision: "Vision",
-    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -267,40 +214,6 @@ export const ja: Translations = {
     component: "コンポーネント",
     lines: "行数",
     noLogLines: "ログ行が見つかりません",
-  },
-
-  channels: {
-    changesSaved: "変更を保存しました。反映するにはゲートウェイを再起動してください。",
-    configure: "設定",
-    configureTitle: "{name} を設定",
-    configuredSummary: "{total} 件中 {configured} 件のチャンネルを設定済みです。認証情報は {path} に書き込まれ、次回の再起動時に有効な各チャンネルへ接続します。",
-    enablePlatform: "{name} を有効化",
-    errorToast: "エラー: {error}",
-    failedToRestart: "再起動に失敗しました: {error}",
-    failedToSave: "保存に失敗しました: {error}",
-    gatewayNotRunning: "ゲートウェイは実行されていません。ここでチャンネルを設定し、{command} または上部の再起動ボタンで起動してください。",
-    gatewayRestarting: "ゲートウェイを再起動しています...",
-    keepExistingPlaceholder: "****** (設定済み - 空欄で保持)",
-    nothingToSave: "保存する内容がありません。少なくとも 1 つの項目を入力してください。",
-    platformMessage: "{name}: {message}",
-    requiredField: "{field} は必須です",
-    restartGateway: "ゲートウェイを再起動",
-    restartingGateway: "再起動中...",
-    restartNow: "今すぐ再起動",
-    saveAndEnable: "保存して有効化",
-    saved: "{name} を保存しました",
-    setupGuide: "セットアップガイド",
-    test: "テスト",
-    state: {
-      connected: "接続済み",
-      pendingRestart: "再起動で反映",
-      gatewayStopped: "ゲートウェイ停止",
-      startupFailed: "起動失敗",
-      disconnected: "切断済み",
-      notConfigured: "未設定",
-      disabled: "無効",
-      fatal: "エラー",
-    },
   },
 
   cron: {
@@ -479,7 +392,6 @@ export const ja: Translations = {
     failedToLoadRaw: "生の設定の読み込みに失敗しました",
     configImported: "設定をインポートしました — 確認して保存してください",
     invalidJson: "無効な JSON ファイル",
-    yaml: "YAML",
     categories: {
       general: "一般",
       agent: "エージェント",
@@ -521,16 +433,6 @@ export const ja: Translations = {
     hideValue: "値を非表示",
   },
 
-  toolCall: {
-    running: "running",
-    error: "error",
-    done: "done",
-    context: "Context",
-    streaming: "Streaming",
-    diff: "Diff",
-    result: "Result",
-  },
-
   oauth: {
     title: "プロバイダーログイン (OAuth)",
     providerLogins: "プロバイダーログイン (OAuth)",
@@ -568,9 +470,6 @@ export const ja: Translations = {
       external: "外部 CLI",
     },
     expiresIn: "{time} 後に期限切れ",
-    tokenExchangeFailed: "Token exchange failed",
-    openDocs: "Open {provider} docs",
-    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -580,10 +479,6 @@ export const ja: Translations = {
   theme: {
     title: "テーマ",
     switchTheme: "テーマを切り替え",
-    presets: {
-      dock: { label: "Dock" },
-      minimal: { label: "Minimal" },
-    },
   },
 
   achievements: {

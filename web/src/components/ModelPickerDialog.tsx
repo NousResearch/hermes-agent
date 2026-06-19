@@ -9,7 +9,6 @@ import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
 
@@ -90,7 +89,6 @@ interface Props {
 }
 
 export function ModelPickerDialog(props: Props) {
-  const { t } = useI18n();
   const {
     gw,
     sessionId,
@@ -98,7 +96,7 @@ export function ModelPickerDialog(props: Props) {
     loader,
     onApply,
     onClose,
-    title,
+    title = "Switch Model",
     alwaysGlobal = false,
   } = props;
   const standalone = !!loader && !!onApply;
@@ -302,7 +300,7 @@ export function ModelPickerDialog(props: Props) {
           size="icon"
           onClick={onClose}
           className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label={t.modelPicker.close}
+          aria-label="Close"
         >
           <X />
         </Button>
@@ -312,10 +310,10 @@ export function ModelPickerDialog(props: Props) {
             id="model-picker-title"
             className="font-mondwest text-display text-base tracking-wider"
           >
-            {title ?? t.modelPicker.title}
+            {title}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            current: {currentModel || `(${t.common.unknown})`}
+            current: {currentModel || "(unknown)"}
             {currentProviderSlug && ` · ${currentProviderSlug}`}
           </p>
         </header>
@@ -325,7 +323,7 @@ export function ModelPickerDialog(props: Props) {
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
-              placeholder={t.modelPicker.filterPlaceholder}
+              placeholder="Filter providers and models…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="pl-7 h-8 text-sm"
@@ -370,7 +368,7 @@ export function ModelPickerDialog(props: Props) {
         <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
-              {t.modelPicker.savesToConfig}
+              Saves to config.yaml — applies to new sessions.
             </span>
           ) : (
             <div className="flex items-center gap-2">
@@ -386,17 +384,17 @@ export function ModelPickerDialog(props: Props) {
                 className="font-mondwest normal-case tracking-normal text-xs text-muted-foreground cursor-pointer"
                 htmlFor="model-picker-persist-global"
               >
-                {t.modelPicker.persistGlobal}
+                Persist globally (otherwise this session only)
               </Label>
             </div>
           )}
 
           <div className="flex items-center gap-2 ml-auto">
             <Button outlined onClick={onClose} disabled={applying}>
-              {t.common.cancel}
+              Cancel
             </Button>
             <Button onClick={confirm} disabled={!canConfirm}>
-              {applying ? <Spinner /> : t.modelPicker.switch_}
+              {applying ? <Spinner /> : "Switch"}
             </Button>
           </div>
         </footer>

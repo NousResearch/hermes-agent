@@ -11838,7 +11838,6 @@ def _discover_dashboard_plugins() -> list:
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
-                    "labelKey": data.get("labelKey"),
                     "description": data.get("description", ""),
                     "icon": data.get("icon", "Puzzle"),
                     "version": data.get("version", "0.0.0"),

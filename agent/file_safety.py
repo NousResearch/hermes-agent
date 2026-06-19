@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _hermes_home_path() -> Path:
@@ -395,9 +398,52 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
         return None
 
     active_profile = _resolve_active_profile_name()
+
+    # ── Path normalization: resolve symlinks on both sides ──────────────
+    # The profile-name comparison below can false-positive when path
+    # resolution disagrees with the profile-name inference (symlinks,
+    # relative paths, HERMES_HOME vs active_profile file mismatch).
+    # Before comparing names, check if the resolved target actually
+    # lives under the active profile's resolved home directory.
+    # NOTE: only applies when active_profile is a named profile —
+    # when it's "default", home_real IS the root which contains all
+    # profiles, so ancestry alone is insufficient to distinguish.
+    try:
+        home_real = _hermes_home_path().resolve()
+    except (OSError, RuntimeError):
+        home_real = None
+
+    if (
+        active_profile != "default"
+        and home_real is not None
+    ):
+        try:
+            target.relative_to(home_real)
+            # Target resolves inside the active named profile's home dir
+            # — definitively in-profile regardless of name inference.
+            logger.debug(
+                "In-profile write (path check): active_profile=%r "
+                "home_real=%s target=%s",
+                active_profile, home_real, target,
+            )
+            return None
+        except ValueError:
+            pass
+
     if target_profile == active_profile:
         # In-profile write — not a cross-profile event.
+        logger.debug(
+            "In-profile write (name match): active_profile=%r "
+            "target_profile=%r home_real=%s target=%s",
+            active_profile, target_profile, home_real, target,
+        )
         return None
+
+    logger.debug(
+        "Cross-profile write guard: active_profile=%r "
+        "target_profile=%r area=%r home_real=%s target=%s",
+        active_profile, target_profile, area, home_real, target,
+    )
 
     return {
         "active_profile": active_profile,

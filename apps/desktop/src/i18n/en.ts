@@ -209,6 +209,7 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.showFiles': 'Show file browser',
       'view.showTerminal': 'Show terminal',
+      'view.showBrowser': 'Open browser',
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',

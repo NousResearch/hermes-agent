@@ -319,6 +319,16 @@ class TestFormatMessageLinks:
         # The ) in URL should be escaped
         assert "\\)" in result
 
+    def test_link_url_opening_paren_not_escaped(self, adapter):
+        result = adapter.format_message(
+            "[Python](https://en.wikipedia.org/wiki/Python_(programming_language))"
+        )
+        # Inside a MarkdownV2 link URL only ')' and '\' are reserved; an opening
+        # '(' must stay bare. Escaping it to '\(' injects a literal backslash and
+        # corrupts the link target.
+        assert "Python_(programming_language" in result
+        assert "Python_\\(programming_language" not in result
+
     def test_link_with_surrounding_text(self, adapter):
         result = adapter.format_message("Visit [Google](https://google.com) today.")
         assert "[Google](https://google.com)" in result

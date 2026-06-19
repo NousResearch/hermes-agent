@@ -5326,6 +5326,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     # ( that opens a MarkdownV2 link [text](url)
                     if ch == '(' and s > 0 and _seg[s - 1] == ']':
                         return ch
+                    # ( that sits *inside* a link URL [text](...(...)...) —
+                    # mirror the ')'-branch: only ')' and '\' are reserved
+                    # inside a MarkdownV2 link URL, so a URL-internal '(' must
+                    # stay bare (escaping it injects a literal backslash and
+                    # corrupts the link target, e.g. Wikipedia article URLs
+                    # like Python_(programming_language)).
+                    if ch == '(':
+                        before = _seg[:s]
+                        if '](http' in before or '](' in before:
+                            # Walk left, balancing parens; if the nearest
+                            # unmatched open paren is the link-open '](', this
+                            # '(' is inside the URL.
+                            depth = 0
+                            for j in range(s - 1, max(s - 2000, -1), -1):
+                                if _seg[j] == ')':
+                                    depth += 1
+                                elif _seg[j] == '(':
+                                    if depth == 0:
+                                        if j > 0 and _seg[j - 1] == ']':
+                                            return ch
+                                        break
+                                    depth -= 1
                     # ) that closes a link URL
                     if ch == ')':
                         before = _seg[:s]

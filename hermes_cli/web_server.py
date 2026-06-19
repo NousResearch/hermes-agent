@@ -216,6 +216,112 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
+_DASHBOARD_BRANDING_DEFAULTS: Dict[str, Any] = {
+    "app_name": "Hermes Agent",
+    "assistant_name": "Hermes",
+    "wordmark_lines": ["Hermes", "Agent"],
+    "title": "Hermes Agent - Dashboard",
+}
+
+
+def _dashboard_clean_brand_text(value: Any, *, max_len: int = 80) -> Optional[str]:
+    """Return a safe one-line branding string or ``None``.
+
+    Branding is injected into HTML as JSON and rendered as React text, but still
+    reject HTML/control characters at the config boundary so bad values fall
+    back to defaults instead of producing surprising chrome.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > max_len:
+        return None
+    if any(ch in text for ch in ("<", ">", "\"", "'", "`")):
+        return None
+    if any(ord(ch) < 32 for ch in text):
+        return None
+    return text
+
+
+def _dashboard_branding_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve dashboard branding from ``dashboard.branding`` config.
+
+    Empty or malformed values fall back independently so operators can set only
+    the fields they care about.  ``wordmark`` accepts a list of one or two
+    strings; missing/invalid lines fall back per-position to the default
+    ``["Hermes", "Agent"]``.
+    """
+    dashboard_cfg = config.get("dashboard") if isinstance(config, dict) else {}
+    if not isinstance(dashboard_cfg, dict):
+        dashboard_cfg = {}
+    branding_cfg = dashboard_cfg.get("branding")
+    if not isinstance(branding_cfg, dict):
+        branding_cfg = {}
+
+    app_name = (
+        _dashboard_clean_brand_text(branding_cfg.get("app_name"))
+        or _DASHBOARD_BRANDING_DEFAULTS["app_name"]
+    )
+    assistant_name = (
+        _dashboard_clean_brand_text(branding_cfg.get("assistant_name"))
+        or _DASHBOARD_BRANDING_DEFAULTS["assistant_name"]
+    )
+    title = (
+        _dashboard_clean_brand_text(branding_cfg.get("title"), max_len=120)
+        or _DASHBOARD_BRANDING_DEFAULTS["title"]
+    )
+
+    default_lines = list(_DASHBOARD_BRANDING_DEFAULTS["wordmark_lines"])
+    app_words = app_name.split()
+    derived_lines = app_words if len(app_words) == 2 else [app_name]
+    wordmark_value = branding_cfg.get("wordmark")
+    lines: List[str] = []
+    if isinstance(wordmark_value, list):
+        fallback_lines = derived_lines if app_name != _DASHBOARD_BRANDING_DEFAULTS["app_name"] else default_lines
+        for idx in range(min(2, max(1, len(fallback_lines)))):
+            raw = wordmark_value[idx] if idx < len(wordmark_value) else None
+            fallback = fallback_lines[idx] if idx < len(fallback_lines) else fallback_lines[0]
+            lines.append(_dashboard_clean_brand_text(raw, max_len=40) or fallback)
+    elif app_name != _DASHBOARD_BRANDING_DEFAULTS["app_name"]:
+        lines = derived_lines
+    else:
+        lines = default_lines
+
+    return {
+        "app_name": app_name,
+        "assistant_name": assistant_name,
+        "wordmark_lines": lines,
+        "title": title,
+    }
+
+
+def _dashboard_bootstrap_script(
+    *,
+    token: str,
+    prefix: str,
+    embedded_chat: bool,
+    auth_required: bool,
+    branding: Dict[str, Any],
+) -> str:
+    """Build the SPA bootstrap script injected into ``index.html``."""
+    parts = ["<script>"]
+    if not auth_required:
+        parts.append(f"window.__HERMES_SESSION_TOKEN__={json.dumps(token)};")
+    parts.append(
+        "window.__HERMES_DASHBOARD_EMBEDDED_CHAT__="
+        f"{'true' if embedded_chat else 'false'};"
+    )
+    parts.append(f"window.__HERMES_BASE_PATH__={json.dumps(prefix)};")
+    parts.append(
+        f"window.__HERMES_AUTH_REQUIRED__={'true' if auth_required else 'false'};"
+    )
+    parts.append(
+        "window.__HERMES_DASHBOARD_BRANDING__="
+        f"{json.dumps(branding, ensure_ascii=False, separators=(',', ':'))};"
+    )
+    parts.append("</script>")
+    return "".join(parts)
+
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
 # `/api/ws` + `/api/pty` WebSockets, so the embedded-chat surface is an
@@ -11657,25 +11763,22 @@ def mount_spa(application: FastAPI):
         auth scheme for /api/pty and /api/ws (ticket vs token).
         """
         html = _index_path.read_text(encoding="utf-8")
-        chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
-        gated_js = "true" if gated else "false"
-        if gated:
-            bootstrap_script = (
-                f"<script>"
-                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
-                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
-            )
-        else:
-            bootstrap_script = (
-                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
-                f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
-                f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
-            )
+        branding = _dashboard_branding_from_config(load_config())
+        bootstrap_script = _dashboard_bootstrap_script(
+            token=_SESSION_TOKEN,
+            prefix=prefix,
+            embedded_chat=_DASHBOARD_EMBEDDED_CHAT_ENABLED,
+            auth_required=gated,
+            branding=branding,
+        )
+        html = re.sub(
+            r"<title>.*?</title>",
+            f"<title>{branding['title']}</title>",
+            html,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.

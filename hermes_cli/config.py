@@ -1664,6 +1664,16 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Optional user-facing dashboard branding.  Leave blank for the
+        # built-in Hermes Agent labels.  This only affects visible dashboard
+        # copy/wordmarks; protocol names, CLI commands, environment variables,
+        # and filesystem paths remain Hermes for compatibility.
+        "branding": {
+            "app_name": "",  # e.g. "Transformation Lab"; blank -> "Hermes Agent"
+            "assistant_name": "",  # e.g. "Debra"; blank -> "Hermes"
+            "wordmark": [],  # optional 1-2 line sidebar wordmark override
+            "title": "",  # optional browser title override
+        },
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

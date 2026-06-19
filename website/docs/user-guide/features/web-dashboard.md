@@ -41,6 +41,33 @@ hermes dashboard --host 0.0.0.0
 hermes dashboard --no-open
 ```
 
+## Branding
+
+The dashboard shell can be rebranded from `config.yaml` without patching the
+source tree. This is useful for local labs, team workbenches, and hosted control
+centers that want their own visible name while keeping the underlying Hermes CLI,
+API headers, environment variables, and filesystem paths unchanged.
+
+```yaml
+dashboard:
+  branding:
+    app_name: "Transformation Lab"
+    assistant_name: "Debra"
+    wordmark:
+      - "Transformation"
+      - "Lab"
+    title: "Transformation Lab"
+```
+
+Fields are optional:
+
+- `app_name` controls the mobile/top-bar product label.
+- `assistant_name` is exposed to the web app for user-facing copy that wants the assistant name.
+- `wordmark` is an optional one- or two-line sidebar wordmark.
+- `title` controls the browser tab title.
+
+Restart the dashboard after changing these values.
+
 ## Managing multiple profiles
 
 The dashboard is a **machine-level** management surface: one server manages

@@ -237,6 +237,12 @@ def _build_l1_prompt(text: str, token_budget: int, depth: int,
     return f"""Summarize this conversation segment for future turns.
 {guidance}
 Remove repetition and conversational filler.
+IDENTIFIER FIDELITY (do not violate): Never merge, group, range-collapse, or
+abbreviate distinct identifier->value mappings (recovery codes, IDs, keys, file
+paths, owner/person names). Each distinct identifier and its FULL value must
+survive verbatim and separately, even when many look similar — similar is NOT
+repetition. Never write a grouped/range line like "1300/1600/1900 = Name"; emit
+one line per distinct identifier. Never truncate a value mid-word.
 End with: "Expand for details about: <what was compressed>"
 {focus_guidance}{custom_block}
 
@@ -258,6 +264,10 @@ def _build_l2_prompt(text: str, token_budget: int,
     return f"""Compress this into bullet points. Maximum {token_budget} tokens.
 Keep only: decisions made, files changed, errors hit, current state.
 Drop all reasoning, alternatives considered, and process detail.
+IDENTIFIER FIDELITY (do not violate): Never merge, group, range-collapse, or
+truncate distinct identifier->value mappings (codes, IDs, keys, paths, names) —
+one line per distinct identifier with its FULL value; "similar" is NOT a reason
+to combine. No grouped/range lines like "1300/1600/1900 = Name".
 {focus_guidance}{custom_block}
 
 CONTENT:

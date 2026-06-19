@@ -235,6 +235,27 @@ def compute_split_verdict(trials: list[dict], *, gate_eligible: bool = True) -> 
     }
 
 
+_GROUPED_MAPPING_RE = re.compile(r"\b\d+\s*/\s*\d+")  # e.g. "1300/1600" grouped line
+_ABSTAIN_RE = re.compile(
+    r"no matching owner found|not found|not present|no matching",
+    re.IGNORECASE,
+)
+
+
+def needs_escalation(node_answer: str) -> bool:
+    """PRD-8.3 B1 trigger: escalate to the verbatim store when the node answer
+    abstained, is empty, or cites a grouped/range mapping (the lossy-merge
+    signature). Pure + module-level so it is unit-controlled."""
+    a = node_answer or ""
+    if not a.strip():
+        return True
+    if _ABSTAIN_RE.search(a):
+        return True
+    if _GROUPED_MAPPING_RE.search(a):
+        return True
+    return False
+
+
 @dataclass
 class TrialResult:
     idx: int
@@ -358,11 +379,26 @@ class ArmBHarness:
     def _node_served_recovery_semantic(self, session_id: str, node_id: int,
                                        probe: dict) -> str:
         """Node-only recovery for a SEMANTIC probe: ask the node who the recovery
-        owner is, raw store excluded. Reuses the hardened settle+retry path."""
+        owner is, raw store excluded. Reuses the hardened settle+retry path.
+
+        PRD-8.3 B1/B2/B3: the recovery instruction forbids inferring an owner
+        from a grouped/range mapping, mandates grounding the answer in the exact
+        identifier asked, and requires abstention ("no matching owner found")
+        over a guess when the exact identifier is not unambiguously present.
+        Abstention scores as a recall miss, NEVER confident-wrong.
+        """
         return self._node_served_recovery(
             session_id, node_id, probe["owner"],
-            question=(f"Who is the recovery owner associated with handoff phrase "
-                      f"{probe['phrase']}? Answer with the owner's full name."),
+            question=(
+                f"Who is the recovery owner associated with the EXACT handoff "
+                f"phrase {probe['phrase']}? Answer with the owner's full name. "
+                f"Use ONLY an entry that names {probe['phrase']} exactly and by "
+                f"itself. Do NOT infer the owner from a grouped or range mapping "
+                f"(e.g. a line like '1300/1600/1900 = Name'); a grouped line is "
+                f"not a valid source. If {probe['phrase']} is not present exactly "
+                f"and unambiguously with its own full owner name, reply with "
+                f"exactly: no matching owner found"
+            ),
         )
 
     # ---- node-served recovery (the honest oracle) ---------------------------
@@ -430,6 +466,45 @@ class ArmBHarness:
                 except Exception:
                     pass
         raise RuntimeError(f"node recovery failed after retries: {last_exc}")
+
+    def _store_grounded_recovery(self, session_id: str, sentinel: str,
+                                 question: str) -> str:
+        """PRD-8.3 B1: mandatory escalation path — answer the identifier lookup
+        from the VERBATIM MessageStore (no node_ids restriction), not the summary
+        node. This is the lossless authority: the store preserves every fact, so
+        a merged/lossy summary cannot produce a confident-wrong here. Used when
+        the node-served answer abstained or cited a grouped/range mapping.
+        """
+        sys.path.insert(0, os.path.expanduser("~/.hermes/hermes-agent"))
+        from plugins.context_engine.lcm.config import LCMConfig
+        from plugins.context_engine.lcm.engine import LCMEngine
+
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            self._wait_db_settled()
+            eng = LCMEngine(config=LCMConfig(database_path=self.cfg.lcm_db),
+                            hermes_home=self.home)
+            try:
+                eng.on_session_start(session_id)
+                # No node_ids => expand searches the verbatim store, the lossless
+                # layer. Same abstain-over-guess instruction (already in question).
+                out = eng.handle_tool_call(
+                    "lcm_expand_query",
+                    {"prompt": question},
+                )
+                data = json.loads(out)
+                if not isinstance(data, dict):
+                    raise TypeError(f"expand returned non-dict: {type(data).__name__}")
+                return str(data.get("answer", ""))
+            except (TypeError, ValueError, json.JSONDecodeError, sqlite3.Error) as exc:
+                last_exc = exc
+                time.sleep(1.5 * (attempt + 1))
+            finally:
+                try:
+                    eng.shutdown()
+                except Exception:
+                    pass
+        raise RuntimeError(f"store-grounded recovery failed after retries: {last_exc}")
 
     # ---- batched multi-sentinel session (10x cheaper) -----------------------
     def run_session_batch(self, batch_idx: int, k: int) -> list[TrialResult]:
@@ -509,6 +584,7 @@ class ArmBHarness:
             in_node = hit is not None
             sess = hit["session_id"] if hit else session_id
             node_answer = ""
+            escalated = False
             if depth1_id is not None:
                 try:
                     node_answer = self._node_served_recovery_semantic(sess, depth1_id, p)
@@ -522,20 +598,46 @@ class ArmBHarness:
                     ) from exc
                 except Exception as exc:  # noqa: BLE001 — genuine per-trial failure
                     node_answer = f"[recovery error: {exc}]"
-            # SEMANTIC scoring: the owner name recovered from the node is the win
-            # condition, not exact-string survival of the whole sentence.
+
+            # PRD-8.3 B1: mandatory escalation. If the node answer abstained, is
+            # empty, or cites a grouped/range mapping (the lossy-merge signature),
+            # the lossless verbatim store is the authority — re-answer from it.
+            # This makes correctness independent of summary fidelity. An infra
+            # error string is NOT escalated (it is a transient, scored separately).
+            answer = node_answer
+            if depth1_id is not None and not node_answer.startswith("[recovery error") \
+                    and needs_escalation(node_answer):
+                try:
+                    store_answer = self._store_grounded_recovery(
+                        sess, p["owner"],
+                        question=(
+                            f"Who is the recovery owner associated with the EXACT "
+                            f"handoff phrase {p['phrase']}? Answer with the owner's "
+                            f"full name. Use ONLY an entry that names {p['phrase']} "
+                            f"exactly and by itself; never infer from a grouped or "
+                            f"range mapping. If not present exactly, reply with "
+                            f"exactly: no matching owner found"
+                        ),
+                    )
+                    answer = store_answer
+                    escalated = True
+                except Exception as exc:  # noqa: BLE001
+                    answer = f"[recovery error: {exc}]"
+
+            # SEMANTIC scoring: the owner name recovered (post-escalation) is the
+            # win condition, not exact-string survival of the whole sentence.
             # Detector is the module-level, test-controlled score_semantic_recovery
             # (PRD-8.1 AC-3 positive+negative control).
             correct, confident_wrong = score_semantic_recovery(
-                node_answer, p["owner"], owners
+                answer, p["owner"], owners
             )
             results.append(TrialResult(
                 idx=batch_idx * k + i, sentinel=f"{p['owner']}/{p['phrase']}",
                 session_id=sess, depth1_node_id=depth1_id, sentinel_in_node=in_node,
-                node_served_answer=node_answer[:200], correct=correct,
+                node_served_answer=answer[:200], correct=correct,
                 confident_wrong=confident_wrong,
                 leaves=0, condensed=1 if depth1_id is not None else 0,
-                notes=f"batch={batch_idx} pos={i} owner={p['owner']}",
+                notes=f"batch={batch_idx} pos={i} owner={p['owner']} escalated={escalated}",
             ))
         return results
 

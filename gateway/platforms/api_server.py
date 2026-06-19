@@ -773,7 +773,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
-        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity (shared / single-tenant path)
+        # Per-tenant SessionDB cache for the multiplexed Avocado path. Keyed by
+        # sanitized user scope; each entry points at a physically separate
+        # sessions/<scope>/state.db so one tenant can't browse/search/continue
+        # another's transcripts. The shared self._session_db above stays the
+        # no-scope (single-tenant) path, byte-for-byte unchanged.
+        self._scoped_session_dbs: Dict[str, Any] = {}
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1041,15 +1047,39 @@ class APIServerAdapter(BasePlatformAdapter):
     # Session DB helper
     # ------------------------------------------------------------------
 
-    def _ensure_session_db(self):
-        """Lazily initialise and return the shared SessionDB instance.
+    def _ensure_session_db(self, user_scope: Optional[str] = None):
+        """Lazily initialise and return a SessionDB instance.
 
         Sessions are persisted to ``state.db`` so that ``hermes sessions list``
         shows API-server conversations alongside CLI and gateway ones.
+
+        ``user_scope`` (an Avocado end-user id, derived from a
+        ``gateway_session_key`` of the form ``avocado:<user_id>``) selects a
+        physically isolated ``sessions/<scope>/state.db`` so the multiplexed
+        Super Agent can't leak one tenant's transcripts to another via browse /
+        search / X-Hermes-Session-Id continuation. When ``user_scope`` is None
+        (single-tenant / no avocado prefix) this returns the original shared DB,
+        byte-for-byte unchanged.
         """
+        from hermes_state import SessionDB, sanitize_session_scope
+
+        safe_scope = sanitize_session_scope(user_scope)
+        if safe_scope:
+            db = self._scoped_session_dbs.get(safe_scope)
+            if db is None:
+                try:
+                    db = SessionDB(user_scope=safe_scope)
+                    self._scoped_session_dbs[safe_scope] = db
+                except Exception as e:
+                    logger.debug(
+                        "Scoped SessionDB unavailable for API server (scope=%s): %s",
+                        safe_scope, e,
+                    )
+                    return None
+            return db
+
         if self._session_db is None:
             try:
-                from hermes_state import SessionDB
                 self._session_db = SessionDB()
             except Exception as e:
                 logger.debug("SessionDB unavailable for API server: %s", e)

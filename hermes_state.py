@@ -33,6 +33,40 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
+
+def sanitize_session_scope(scope: Optional[str]) -> Optional[str]:
+    """Make a per-user session scope safe to use as a directory name.
+
+    Mirrors ``tools.memory_tool.sanitize_memory_scope``. The scope (e.g. an
+    Avocado/Clerk end-user id from ``x-avocado-user-id``) becomes a
+    sub-directory under ``sessions/``, so it MUST NOT be able to contain path
+    separators or traversal sequences. Keep only filesystem-safe characters;
+    everything else collapses to ``_``. Returns None when there is no usable
+    scope (callers then fall back to the single shared ``state.db``, which is
+    correct for single-tenant profile deployments).
+    """
+    if not scope:
+        return None
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", scope.strip()).strip("._")
+    return cleaned or None
+
+
+def scoped_session_db_path(user_scope: Optional[str]) -> Path:
+    """Return the ``state.db`` path for a per-user session scope.
+
+    When ``user_scope`` is set, sessions live at
+    ``get_hermes_home()/sessions/<sanitized scope>/state.db`` — one physically
+    isolated SQLite file per tenant, so browse/discover/read/continuation can
+    never reach another tenant's transcripts. When it is None (no
+    ``avocado:`` prefix), returns the shared ``DEFAULT_DB_PATH`` so
+    single-tenant deployments are byte-for-byte unchanged.
+    """
+    safe = sanitize_session_scope(user_scope)
+    if not safe:
+        return DEFAULT_DB_PATH
+    return get_hermes_home() / "sessions" / safe / "state.db"
+
+
 SCHEMA_VERSION = 15
 
 # ---------------------------------------------------------------------------
@@ -397,8 +431,28 @@ class SessionDB:
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+    def __init__(
+        self,
+        db_path: Path = None,
+        read_only: bool = False,
+        user_scope: Optional[str] = None,
+    ):
+        # Per-user session isolation for multi-tenant deployments. The in-app
+        # Super Agent multiplexes every Avocado end user through ONE process and
+        # pins identity via the x-avocado-user-id header (surfaced as
+        # gateway_session_key "avocado:<user_id>"). When ``user_scope`` is set we
+        # point at a physically separate ``sessions/<scope>/state.db`` so one
+        # tenant's transcripts can never be browsed/searched/continued by
+        # another. An explicit ``db_path`` always wins (cross-profile reads,
+        # tests). None scope + no db_path => the shared ``DEFAULT_DB_PATH``,
+        # which keeps single-tenant deployments byte-for-byte unchanged.
+        self._user_scope: Optional[str] = sanitize_session_scope(user_scope)
+        if db_path is not None:
+            self.db_path = db_path
+        elif self._user_scope:
+            self.db_path = scoped_session_db_path(self._user_scope)
+        else:
+            self.db_path = DEFAULT_DB_PATH
         self.read_only = read_only
 
         self._lock = threading.Lock()
@@ -970,7 +1024,18 @@ class SessionDB:
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
-        """Create a new session record. Returns the session_id."""
+        """Create a new session record. Returns the session_id.
+
+        When this DB is per-user scoped (multi-tenant Avocado path) and the
+        caller didn't pass an explicit ``user_id``, stamp the scope onto the
+        row so the data is self-describing (and so the X-Hermes-Session-Id
+        continuation ownership check has a value to compare). Physical DB
+        separation is the primary isolation mechanism; this is defense in
+        depth. Single-tenant (scope None) leaves ``user_id`` exactly as the
+        caller passed it — byte-for-byte unchanged.
+        """
+        if self._user_scope and not kwargs.get("user_id"):
+            kwargs["user_id"] = self._user_scope
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
     def end_session(self, session_id: str, end_reason: str) -> None:

@@ -570,6 +570,20 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip zero-width and invisible Unicode format characters that cannot
+    # be normalised away by NFKC (U+200B ZERO WIDTH SPACE, U+200C ZWNJ,
+    # U+200D ZWJ, bidi marks, word joiners, soft hyphens, variation
+    # selectors, etc.).  Without this step an AI agent can insert a
+    # U+200B between "rm" and " -rf" to evade pattern matching while the
+    # resulting string is still executed as "rm -rf" by the shell (the
+    # shell strips zero-width characters during word-splitting).
+    command = ''.join(
+        ch for ch in command
+        if unicodedata.category(ch) != 'Cf'
+    )
+    # Variation Selectors (VS1–VS256, U+FE00–U+FE0F and U+E0100–U+E01EF)
+    # also survive NFKC and can break regex word-boundary matching.
+    command = re.sub(r'[\ufe00-\ufe0f\U000e0100-\U000e01ef]', '', command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.

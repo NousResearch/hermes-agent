@@ -170,6 +170,8 @@ class TestTimelineStorage:
         assert "class=\"overview\"" in html
         assert "class=\"lane\"" in html
         assert "Delivery only" in html
+        assert "laneOpenState" in html
+        assert "data-lane-action" in html
 
     def test_timeline_server_serves_html_and_json(self, tmp_path, monkeypatch):
         import threading

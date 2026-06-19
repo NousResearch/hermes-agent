@@ -148,6 +148,7 @@ let data = initialData;
 const liveApiUrl = {live_api_url};
 const livePollMs = {live_poll_ms};
 let selected = null;
+const laneOpenState = new Map();
 const $ = id => document.getElementById(id);
 const fmt = ts => ts ? new Date(ts * 1000).toLocaleString() : '';
 const ms = v => v == null ? '' : (v < 1000 ? `${{v}}ms` : `${{(v/1000).toFixed(2)}}s`);
@@ -198,6 +199,12 @@ function renderRuns() {{
   $('runs').innerHTML = rows.map(r => {{ const m = runMetrics(r); return `<article class="run ${{r.run_id===selected?'active':''}}" data-run="${{esc(r.run_id)}}"><div class="run-top"><div class="rid">${{esc(r.run_id)}}</div><span class="badge ${{esc(r.status)}}">${{esc(r.status)}}</span></div><div class="meta"><span>${{esc(r.platform || '-')}}</span><span>${{esc(r.model || '-')}}</span><span>${{ms(r.duration_ms) || 'live'}}</span><span>${{esc(fmt(r.started_at))}}</span></div><div class="quick"><span class="chip">${{m.total}} events</span><span class="chip">${{m.deliveries}} deliveries</span><span class="chip">${{m.tools}} tool</span><span class="chip">${{m.errors}} errors</span></div><div class="meta">${{esc(r.source || '')}}</div></article>`; }}).join('') || '<div class="empty">No matching runs.</div>';
   document.querySelectorAll('.run[data-run]').forEach(el => el.onclick = () => {{ selected = el.dataset.run; render(); }});
 }}
+function laneStateKey(runId, lane) {{ return `${{runId}}::${{lane}}`; }}
+function laneDefaultOpen(lane, count) {{ return ['Gateway', 'Agent'].includes(lane) || count <= 6; }}
+function updateLaneAction(details) {{
+  const action = details.querySelector('[data-lane-action]');
+  if (action) action.textContent = `${{details.dataset.count || '0'}} events · click to ${{details.open ? 'collapse' : 'expand'}}`;
+}}
 function renderDetail() {{
   const run = data.runs.find(r => r.run_id === selected) || visibleRuns()[0];
   if (!run) {{ $('detail').innerHTML = '<div class="empty">No run selected.</div>'; return; }}
@@ -206,11 +213,20 @@ function renderDetail() {{
   const laneHtml = lanes.map(lane => {{
     const laneEvents = events.filter(e => laneOf(e) === lane);
     if (!laneEvents.length) return '';
-    const isOpen = ['Gateway', 'Agent'].includes(lane) || laneEvents.length <= 6;
-    return `<details class="lane" ${{isOpen ? 'open' : ''}}><summary class="lane-title"><span>${{lane}}</span><span>${{laneEvents.length}} events · click to ${{isOpen ? 'collapse' : 'expand'}}</span></summary><div class="lane-body">${{laneEvents.map(e => eventCard(e, start)).join('')}}</div></details>`;
+    const stateKey = laneStateKey(run.run_id, lane);
+    const storedOpen = laneOpenState.get(stateKey);
+    const isOpen = storedOpen === undefined ? laneDefaultOpen(lane, laneEvents.length) : storedOpen;
+    return `<details class="lane" data-lane="${{esc(lane)}}" data-count="${{laneEvents.length}}" ${{isOpen ? 'open' : ''}}><summary class="lane-title"><span>${{lane}}</span><span data-lane-action>${{laneEvents.length}} events · click to ${{isOpen ? 'collapse' : 'expand'}}</span></summary><div class="lane-body">${{laneEvents.map(e => eventCard(e, start)).join('')}}</div></details>`;
   }}).join('');
   const errorChips = events.filter(isError).slice(0, 4).map(e => `<span class="chip">${{esc(e.event_type)}} · ${{esc(e.name || e.status || 'error')}}</span>`).join('') || '<span class="chip">No errors detected</span>';
   $('detail').innerHTML = `<h2>${{esc(run.run_id)}}</h2><div class="meta"><span>status=${{esc(run.status)}}</span><span>platform=${{esc(run.platform || '-')}}</span><span>model=${{esc(run.model || '-')}}</span><span>duration=${{ms(run.duration_ms) || 'live'}}</span></div><div class="meta">${{esc(run.source || '')}}</div><div class="overview"><div class="mini blue"><b>${{m.total}}</b><span>events</span></div><div class="mini"><b>${{m.deliveries}}</b><span>deliveries</span></div><div class="mini warn"><b>${{m.tools}}</b><span>tool events</span></div><div class="mini danger"><b>${{m.errors}}</b><span>errors</span></div></div><div class="quick">${{errorChips}}</div>${{laneHtml || '<div class="empty">No events recorded for this run.</div>'}}`;
+  document.querySelectorAll('#detail details.lane').forEach(details => {{
+    updateLaneAction(details);
+    details.addEventListener('toggle', () => {{
+      laneOpenState.set(laneStateKey(run.run_id, details.dataset.lane || ''), details.open);
+      updateLaneAction(details);
+    }});
+  }});
 }}
 function render() {{ renderRuns(); renderDetail(); }}
 ['q','eventType','status','source'].forEach(id => $(id).addEventListener('input', () => {{ selected=null; render(); }}));

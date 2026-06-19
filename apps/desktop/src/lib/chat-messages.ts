@@ -233,6 +233,22 @@ export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMes
 }
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
+  const next = [...parts]
+
+  // Find the last reasoning part in the array regardless of what part
+  // types sit between — mid-thought tool execution inserts tool-call
+  // parts that should not split one continuous reasoning sentence into
+  // separate "Thinking" blocks.
+  for (let i = next.length - 1; i >= 0; i--) {
+    const entry = next[i]
+
+    if (entry?.type === 'reasoning') {
+      next[i] = { ...entry, text: `${entry.text}${delta}` }
+
+      return next
+    }
+  }
+
   return appendStreamPart(parts, 'reasoning', delta).parts
 }
 

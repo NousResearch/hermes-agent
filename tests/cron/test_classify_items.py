@@ -94,6 +94,17 @@ def test_below_threshold_silent(monkeypatch, capsys, tmp_path):
         (False, None),
         ("not-a-number", None),
         (None, None),
+        # Non-finite results must be rejected: a NaN score never clears the
+        # threshold (silent drop) and an inf score always clears it (spam).
+        # float() parses all of these, so an explicit isfinite guard is needed.
+        ("nan", None),
+        ("inf", None),
+        ("-inf", None),
+        ("Infinity", None),
+        ("1e309", None),  # overflows to inf
+        (float("nan"), None),
+        (float("inf"), None),
+        (float("-inf"), None),
     ],
 )
 def test_coerce_score(value, expected):

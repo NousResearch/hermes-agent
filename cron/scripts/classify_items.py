@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -115,17 +116,27 @@ def _coerce_score(value: Any) -> Optional[float]:
     float and models frequently emit ``"8"`` as a string. Accept any numeric
     form; return None for anything non-numeric. ``bool`` is rejected explicitly
     (it is an int subclass that must not be read as a score).
+
+    Non-finite results (``NaN``/``inf``/``-inf``) are rejected too: ``float()``
+    happily parses JSON ``1e309`` -> ``inf`` and strings like ``"nan"`` /
+    ``"inf"``, and a non-finite score silently corrupts the threshold gate
+    (``NaN`` is never ``>=`` the threshold so the item is dropped; ``inf`` is
+    always ``>=`` so it is always surfaced as spam). Treat them as non-numeric.
     """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
+        score = float(value)
+    elif isinstance(value, str):
         try:
-            return float(value.strip())
+            score = float(value.strip())
         except ValueError:
             return None
-    return None
+    else:
+        return None
+    if not math.isfinite(score):
+        return None
+    return score
 
 
 def _parse_scores(content: str, n_items: int) -> Dict[int, Dict[str, Any]]:

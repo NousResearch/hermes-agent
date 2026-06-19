@@ -3624,15 +3624,22 @@ def run_conversation(
                     # Terminal — flush buffered context so the user sees
                     # what was tried before the abort.
                     agent._flush_status_buffer()
+                    # Summarize once: Cloudflare/proxy HTML challenge pages and
+                    # other raw provider bodies must be collapsed to a short
+                    # one-liner here, otherwise the full page leaks into the
+                    # returned ``error`` field and downstream consumers deliver
+                    # it verbatim (e.g. a cron failure notification dumped a
+                    # ~60KB Cloudflare challenge page as 31 Discord messages).
+                    _nonretryable_summary = agent._summarize_api_error(api_error)
                     if classified.reason == FailoverReason.content_policy_blocked:
                         agent._emit_status(
                             f"❌ Provider safety filter blocked this request: "
-                            f"{agent._summarize_api_error(api_error)}"
+                            f"{_nonretryable_summary}"
                         )
                     else:
                         agent._emit_status(
                             f"❌ Non-retryable error (HTTP {status_code}): "
-                            f"{agent._summarize_api_error(api_error)}"
+                            f"{_nonretryable_summary}"
                         )
                     agent._vprint(
                         f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.",
@@ -3792,18 +3799,17 @@ def run_conversation(
                     else:
                         agent._persist_session(messages, conversation_history)
                     if classified.reason == FailoverReason.content_policy_blocked:
-                        _summary = agent._summarize_api_error(api_error)
                         _policy_response = (
                             "⚠️  The model provider's safety filter blocked this request "
                             "(not a Hermes/gateway failure).\n\n"
-                            f"Provider message: {_summary}\n\n"
+                            f"Provider message: {_nonretryable_summary}\n\n"
                             f"{_CONTENT_POLICY_RECOVERY_HINT}"
                         )
                         return _content_policy_blocked_result(
                             messages,
                             api_call_count,
                             final_response=_policy_response,
-                            error_detail=_summary,
+                            error_detail=_nonretryable_summary,
                         )
                     return {
                         "final_response": None,
@@ -3811,7 +3817,7 @@ def run_conversation(
                         "api_calls": api_call_count,
                         "completed": False,
                         "failed": True,
-                        "error": str(api_error),
+                        "error": _nonretryable_summary,
                     }
 
                 if retry_count >= max_retries:

@@ -8572,16 +8572,20 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 
 # Commands that queue messages onto _pending_input in the CLI.
 # In the TUI the slash worker subprocess has no reader for that queue,
-# so slash.exec rejects them → TUI falls through to command.dispatch.
-_PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
-    "retry",
-    "queue",
-    "q",
-    "steer",
-    "plan",
-    "goal",
-    "undo",
-})
+# so slash.exec routes them to command.dispatch internally (which handles
+# them and returns a structured payload) instead of erroring out and
+# relying on a client-side fallback. See #48848.
+_PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
+    {
+        "retry",
+        "queue",
+        "q",
+        "steer",
+        "plan",
+        "goal",
+        "undo",
+    }
+)
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
@@ -9624,6 +9628,7 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
+            refresh=bool(params.get("refresh")),
         )
         return _ok(rid, payload)
     except Exception as e:
@@ -9837,8 +9842,16 @@ def _(rid, params: dict) -> dict:
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
     if _cmd_base in _PENDING_INPUT_COMMANDS:
-        return _err(
-            rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}"
+        # Route directly to command.dispatch instead of returning an error
+        # that requires the frontend to retry.  Some TUI clients fail the
+        # fallback, leaving the command empty and showing "empty command".
+        return _methods["command.dispatch"](
+            rid,
+            {
+                "name": _cmd_base,
+                "arg": _cmd_arg,
+                "session_id": params.get("session_id", ""),
+            },
         )
 
     if _cmd_base in _WORKER_BLOCKED_COMMANDS:

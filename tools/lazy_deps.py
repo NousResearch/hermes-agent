@@ -182,8 +182,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.3.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart>=0.0.32,<1",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback

@@ -34,7 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -1053,12 +1053,13 @@ _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
+_HOSTED_MANAGED_FILES_ROOT_TEXT = "/opt/data"
 
 
 @dataclass(frozen=True)
 class ManagedFilesPolicy:
-    default_path: Path
-    locked_root: Path | None
+    default_path: Path | PurePosixPath
+    locked_root: Path | PurePosixPath | None
     can_change_path: bool
 
 
@@ -1336,13 +1337,25 @@ def _default_hermes_root_is_opt_data() -> bool:
     raw = os.environ.get("HERMES_HOME", "").strip()
     if not raw:
         return False
+    normalized = raw.replace("\\", "/").rstrip("/")
+    if normalized == _HOSTED_MANAGED_FILES_ROOT_TEXT:
+        return True
     try:
-        from hermes_constants import get_default_hermes_root
-
-        root = get_default_hermes_root().expanduser().resolve(strict=False)
-    except (OSError, RuntimeError):
         root = Path(raw).expanduser().resolve(strict=False)
-    return root == _HOSTED_MANAGED_FILES_ROOT
+    except (OSError, RuntimeError):
+        return False
+    try:
+        hosted_root = _HOSTED_MANAGED_FILES_ROOT.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        hosted_root = _HOSTED_MANAGED_FILES_ROOT
+    return root == hosted_root
+
+
+def _dashboard_home_path() -> Path:
+    raw_home = os.environ.get("HOME", "").strip()
+    if raw_home:
+        return _canonical_path(Path(raw_home))
+    return _canonical_path(Path.home())
 
 
 def _dashboard_local_update_managed_externally() -> bool:
@@ -1373,10 +1386,17 @@ def _managed_files_policy(request: Request, *, create_root: bool = True) -> Mana
     # to /opt/data only when the installation's Hermes root is actually /opt/data
     # (the container/hosted layout) or when HERMES_DASHBOARD_FILES_ROOT is set.
     if _default_hermes_root_is_opt_data():
-        root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
+        if create_root:
+            root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT)
+        else:
+            raw_home = os.environ.get("HERMES_HOME", "").strip()
+            if raw_home.replace("\\", "/").rstrip("/") == _HOSTED_MANAGED_FILES_ROOT_TEXT:
+                root = PurePosixPath(_HOSTED_MANAGED_FILES_ROOT_TEXT)
+            else:
+                root = _HOSTED_MANAGED_FILES_ROOT
         return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
 
-    home = _canonical_path(Path.home())
+    home = _dashboard_home_path()
     return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
 
 
@@ -1626,6 +1646,7 @@ async def upload_managed_file_stream(
     )
     tmp_path = Path(tmp_name)
     total = 0
+    renamed = False
     try:
         with os.fdopen(tmp_fd, "wb") as out:
             while True:
@@ -1637,16 +1658,21 @@ async def upload_managed_file_stream(
                     raise HTTPException(status_code=413, detail="File is too large")
                 out.write(chunk)
         os.replace(tmp_path, target)
+        renamed = True
     except HTTPException:
-        tmp_path.unlink(missing_ok=True)
         raise
     except PermissionError:
-        tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=403, detail="File is not writable")
     except OSError as exc:
-        tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
     finally:
+        # Clean up the temp file on every non-success exit, including
+        # BaseException paths the `except` clauses above don't catch — most
+        # importantly asyncio.CancelledError when a browser aborts a large
+        # upload mid-stream (the exact NS-501 scenario). os.replace clears
+        # tmp_path on success, so only unlink when the rename didn't happen.
+        if not renamed:
+            tmp_path.unlink(missing_ok=True)
         await file.close()
 
     return {
@@ -2388,6 +2414,43 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
 
 def _gateway_display_command(profile: Optional[str], verb: str) -> str:
     return " ".join(["hermes", *_gateway_subcommand(profile, verb)])
+
+
+# Slack member IDs (users U..., Enterprise Grid W...). Kept in sync with the
+# frontend SLACK_MEMBER_ID_RE in web/src/pages/ChannelsPage.tsx.
+_SLACK_MEMBER_ID_RE = re.compile(r"[UW][A-Z0-9]{2,}")
+
+
+def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
+    """Reject platform credentials that are clearly in the wrong field."""
+    if platform_id != "slack" or not value:
+        return
+
+    if key == "SLACK_BOT_TOKEN" and not value.startswith("xoxb-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Slack Bot Token must start with xoxb-. Paste the bot token from OAuth & Permissions.",
+        )
+    if key == "SLACK_APP_TOKEN" and not value.startswith("xapp-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Slack App Token must start with xapp-. Paste the app-level token from Basic Information > App-Level Tokens.",
+        )
+    if key == "SLACK_ALLOWED_USERS":
+        # Mirror the gateway's parse (gateway/platforms/slack.py): split on comma,
+        # strip, and drop empty entries so a trailing/interior comma isn't rejected
+        # here when the runtime would accept it. "*" is the allow-all wildcard.
+        user_ids = [part.strip() for part in value.split(",") if part.strip()]
+        invalid = [
+            user_id
+            for user_id in user_ids
+            if user_id != "*" and not _SLACK_MEMBER_ID_RE.fullmatch(user_id)
+        ]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail="Slack allowed user IDs must be comma-separated member IDs like U01ABC2DEF3.",
+            )
 
 
 def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
@@ -3577,7 +3640,7 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options(profile: Optional[str] = None):
+def get_model_options(profile: Optional[str] = None, refresh: bool = False):
     """Return authenticated providers + their curated model lists.
 
     REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
@@ -3588,6 +3651,10 @@ def get_model_options(profile: Optional[str] = None):
     ``profile`` scopes the picker context (current model/provider, custom
     providers from config, per-profile .env auth state) so the Models page
     reads the SAME profile /api/model/set writes.
+
+    ``refresh`` busts the per-provider model-id disk cache so every row
+    re-fetches its live catalog — used by the picker's explicit "Refresh
+    Models" control. Normal opens leave it false to stay on the 1h cache.
     """
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
@@ -3608,6 +3675,7 @@ def get_model_options(profile: Optional[str] = None):
                 canonical_order=True,
                 pricing=True,
                 capabilities=True,
+                refresh=bool(refresh),
             )
     except HTTPException:
         raise
@@ -4254,9 +4322,9 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "slack": {
         "name": "Slack",
-        "description": "Use Hermes from Slack via Socket Mode.",
+        "description": "Use Hermes from Slack via Socket Mode. Add allowed Slack member IDs so connected bots can respond.",
         "docs_url": "https://api.slack.com/apps",
-        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"),
         "required_env": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
     },
     "mattermost": {
@@ -4741,6 +4809,7 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
+        "help": info.get("help", ""),
         "url": info.get("url"),
         "is_password": info.get("password", False),
         "advanced": info.get("advanced", False),
@@ -5315,6 +5384,7 @@ async def update_messaging_platform(
                     )
                 trimmed = value.strip()
                 if trimmed:
+                    _validate_messaging_env_value(platform_id, key, trimmed)
                     save_env_value(key, trimmed)
 
             if body.enabled is not None:
@@ -11064,6 +11134,7 @@ def _resolve_chat_argv(
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
     env.setdefault("HERMES_TUI_INLINE", "1")
+    env["HERMES_TUI_DASHBOARD"] = "1"
 
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)

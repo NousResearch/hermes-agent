@@ -961,6 +961,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     Shell support lets ``no_agent=True`` jobs ship classic bash watchdogs
     (the `memory-watchdog.sh` pattern) without wrapping them in Python.
 
+    Subprocess environment is passed through ``_sanitize_subprocess_env`` so
+    provider credentials and other Hermes-managed secrets are not inherited
+    (SECURITY.md §2.3), matching terminal and MCP child processes.
+
     Args:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
@@ -1022,6 +1026,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [sys.executable, str(path)]
 
     try:
+        from tools.environments.local import _sanitize_subprocess_env
+
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
@@ -1029,6 +1035,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
+            env=_sanitize_subprocess_env(os.environ),
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()

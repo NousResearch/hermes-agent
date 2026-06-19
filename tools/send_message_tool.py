@@ -1438,12 +1438,14 @@ async def _send_email(extra, chat_id, message):
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
         server.starttls(context=ssl.create_default_context())
         server.login(address, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
+    except TimeoutError:
+        return _error(f"Email send timed out after 30s: {smtp_host}:{smtp_port}")
     except Exception as e:
         return _error(f"Email send failed: {e}")
 

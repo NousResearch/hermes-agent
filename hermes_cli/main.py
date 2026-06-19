@@ -8503,9 +8503,13 @@ def _cmd_update_pip(args):
             # VIRTUAL_ENV; without it uv errors "No virtual environment found".
             export_virtualenv = True
         else:
-            # Outside any venv, ``--system`` lets uv target the active
-            # interpreter, matching pip's default behaviour.
-            cmd.insert(3, "--system")
+            # Outside any venv, explicitly target the running interpreter
+            # (``--system`` alone picks the first Python on PATH, which may
+            # differ from the one Hermes is actually running under).  Also
+            # pass ``--break-system-packages`` to bypass PEP 668 on
+            # externally-managed interpreters (Homebrew, system Python).
+            cmd.extend(["--system", "--python", sys.executable,
+                        "--break-system-packages"])
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 

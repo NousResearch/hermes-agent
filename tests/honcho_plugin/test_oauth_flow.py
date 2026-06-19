@@ -164,6 +164,48 @@ def test_source_tags_the_authorize_link(fake_as):
     assert "source=" not in untagged
 
 
+def test_client_id_splits_by_surface(monkeypatch):
+    # No env override: the CLI is a distinct registered client from the desktop.
+    for var in ("HONCHO_OAUTH_CLIENT_ID", "HONCHO_OAUTH_CLIENT_ID_CLI", "HONCHO_OAUTH_CLIENT_ID_DESKTOP"):
+        monkeypatch.delenv(var, raising=False)
+    common = {"environment": "production", "base_url": "https://api.honcho.dev"}
+    assert oauth_flow.resolve_endpoints(**common, source="hermes-cli").client_id == "hermes-agent"
+    assert oauth_flow.resolve_endpoints(**common, source="hermes-desktop").client_id == "hermes-desktop"
+    assert oauth_flow.resolve_endpoints(**common).client_id == "hermes-desktop"
+
+
+def test_client_id_env_overrides(monkeypatch):
+    # Surface-specific env wins; generic falls back across every surface.
+    common = {"environment": "production", "base_url": "https://api.honcho.dev"}
+    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID", "generic-id")
+    monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID_CLI", raising=False)
+    monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID_DESKTOP", raising=False)
+    assert oauth_flow.resolve_endpoints(**common, source="hermes-cli").client_id == "generic-id"
+    assert oauth_flow.resolve_endpoints(**common, source="hermes-desktop").client_id == "generic-id"
+    monkeypatch.setenv("HONCHO_OAUTH_CLIENT_ID_CLI", "cli-only")
+    assert oauth_flow.resolve_endpoints(**common, source="hermes-cli").client_id == "cli-only"
+    assert oauth_flow.resolve_endpoints(**common, source="hermes-desktop").client_id == "generic-id"
+
+
+def test_cli_grant_persists_hermes_agent_client_id(tmp_path, fake_as, monkeypatch):
+    # Drop the fixture's generic override so the surface default takes effect;
+    # the CLI grant must store client_id=hermes-agent so refresh reuses it.
+    monkeypatch.delenv("HONCHO_OAUTH_CLIENT_ID", raising=False)
+    config_path = tmp_path / "honcho.json"
+    config_path.write_text(json.dumps({"hosts": {}}))
+
+    oauth_flow.authorize_via_loopback(
+        config_path=config_path,
+        host="hermes",
+        source="hermes-cli",
+        apply_config=False,
+        open_url=lambda url: _browser_driver(url),
+        timeout=10,
+    )
+    saved = json.loads(config_path.read_text())
+    assert saved["hosts"]["hermes"]["oauth"]["clientId"] == "hermes-agent"
+
+
 def test_config_path_rides_the_authorize_link(fake_as):
     endpoints = oauth_flow.resolve_endpoints()
     url, _ = oauth_flow.begin_authorization(endpoints, config_path="~/.hermes/honcho.json")

@@ -2204,9 +2204,27 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     those as-is so auxiliary clients inherit the same authentication
     surface as the main agent. The OpenAI SDK accepts ``Callable[[], str]``
     for ``api_key`` and calls it before every request.
+
+    When ``main_runtime`` is None (the common case when callers don't
+    have an explicit runtime dict), fall back to the process-global
+    ``_RUNTIME_MAIN_*`` values set by ``set_runtime_main()``.  Without
+    this fallback the cache key is empty, so auxiliary clients keep using
+    the old model after a ``/model`` switch — problematic with single-
+    GPU servers like llama-swap.  (#49151)
     """
     if not isinstance(main_runtime, dict):
-        return {}
+        # Fall back to process-global runtime overrides set by /model
+        # so the cache key reflects the current model after a switch.
+        fallback = {
+            "provider": _RUNTIME_MAIN_PROVIDER,
+            "model": _RUNTIME_MAIN_MODEL,
+            "base_url": _RUNTIME_MAIN_BASE_URL,
+            "api_key": _RUNTIME_MAIN_API_KEY,
+            "api_mode": _RUNTIME_MAIN_API_MODE,
+        }
+        # Only return non-empty values
+        normalized = {k: v for k, v in fallback.items() if v}
+        return normalized
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_FIELDS:
         value = main_runtime.get(field)

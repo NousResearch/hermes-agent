@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -388,6 +389,42 @@ class TestStdinHelpers:
             pytest.fail("process did not exit after stdin was closed")
         finally:
             registry.kill_process(session.id)
+
+
+# =========================================================================
+# Stderr is output, not a liveness signal
+# =========================================================================
+
+def test_background_stderr_warning_does_not_terminate_process(registry, tmp_path):
+    ready = tmp_path / "stderr-ready"
+    script = (
+        "import pathlib, sys, time; "
+        "print('stdin is not a TTY', file=sys.stderr, flush=True); "
+        f"pathlib.Path({str(ready)!r}).write_text('ready'); "
+        "time.sleep(0.75); "
+        "print('done')"
+    )
+
+    session = registry.spawn_local(
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}",
+        cwd=str(tmp_path),
+    )
+
+    try:
+        assert _wait_until(ready.exists, timeout=3.0), (
+            "child never reached the post-stderr ready marker"
+        )
+
+        poll = registry.poll(session.id)
+        assert poll["status"] == "running", poll
+        assert session.exit_code is None
+
+        result = registry.wait(session.id, timeout=5)
+        assert result["status"] == "exited", result
+        assert result["exit_code"] == 0
+        assert "stdin is not a TTY" in result["output"]
+    finally:
+        registry.kill_process(session.id)
 
 
 # =========================================================================

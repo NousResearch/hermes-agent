@@ -394,6 +394,7 @@ def connect_postgres(database_url: str) -> _PostgresConnection:
 # ---------------------------------------------------------------------------
 
 _ENV_DSN_KEYS = ("HERMES_STATE_DATABASE_URL", "HERMES_STATE_POSTGRES_DSN")
+_ENV_BACKEND_KEYS = ("HERMES_STATE_BACKEND",)
 
 
 def resolve_postgres_dsn(config: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -402,6 +403,10 @@ def resolve_postgres_dsn(config: Optional[Dict[str, Any]] = None) -> Optional[st
     Resolution order, first non-empty wins:
       1. ``HERMES_STATE_DATABASE_URL`` / ``HERMES_STATE_POSTGRES_DSN`` env vars
       2. ``sessions.postgres_dsn`` in config.yaml
+
+    Backend selection (must equal "postgres" to engage this module):
+      1. ``HERMES_STATE_BACKEND`` env var
+      2. ``sessions.state_backend`` in config.yaml
 
     Returns None when ``sessions.state_backend`` is not "postgres" (the default
     "sqlite" path), so callers can cheaply decide whether to engage this module.
@@ -415,7 +420,17 @@ def resolve_postgres_dsn(config: Optional[Dict[str, Any]] = None) -> Optional[st
             return None
 
     sessions_cfg = (config or {}).get("sessions") or {}
-    backend = str(sessions_cfg.get("state_backend") or "sqlite").strip().lower()
+
+    # Check env var first, then config.yaml
+    backend = ""
+    for key in _ENV_BACKEND_KEYS:
+        env_val = (os.environ.get(key) or "").strip()
+        if env_val:
+            backend = env_val
+            break
+    if not backend:
+        backend = str(sessions_cfg.get("state_backend") or "sqlite").strip().lower()
+
     if backend in ("postgresql", "pg"):
         backend = "postgres"
     if backend != "postgres":

@@ -199,12 +199,49 @@ def _maybe_migrate_legacy_gateway_run_state(
 
 
 def _read_container_argv() -> tuple[str, ...]:
-    """Best-effort read of the container PID 1 argv."""
+    """Best-effort read of the container's main program argv.
+
+    Under s6-overlay v2, PID 1 is ``/init`` and its argv contains the
+    ``main-wrapper.sh`` path.  Under s6-overlay v3, PID 1 is
+    ``s6-svscan`` and the actual command (``rc.init top main-wrapper.sh
+    ...``) lives on a different PID.  We try PID 1 first (fast path,
+    covers v2 and pre-s6 images), then fall back to scanning
+    ``/proc/*/cmdline`` for a process whose argv contains
+    ``main-wrapper.sh`` (the rc.init-launched PID in v3).
+    """
+    # Fast path: PID 1 is the command itself (s6-overlay v2 / tini).
     try:
         raw = Path("/proc/1/cmdline").read_bytes()
+        argv = tuple(
+            part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
+        )
+        if any("main-wrapper.sh" in part for part in argv):
+            return argv
     except OSError:
-        return ()
-    return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
+        pass
+
+    # Slow path: s6-overlay v3 — PID 1 is s6-svscan; find the
+    # rc.init-launched process whose argv contains main-wrapper.sh.
+    try:
+        proc_dir = Path("/proc")
+        for entry in proc_dir.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                raw = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            argv = tuple(
+                part.decode("utf-8", "replace")
+                for part in raw.split(b"\0")
+                if part
+            )
+            if any("main-wrapper.sh" in part for part in argv):
+                return argv
+    except OSError:
+        pass
+
+    return ()
 
 
 def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:

@@ -14661,9 +14661,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # without edit support, the consumer sends a partial
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
+                        # Exception: adapters that provide native streaming
+                        # (e.g. WeCom aibot_respond_msg with msgtype "stream")
+                        # can stream without edit support.
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                         if not _adapter_supports_edit:
-                            raise RuntimeError("skip streaming for non-editable platform")
+                            _adapter_supports_native = getattr(_adapter, "supports_native_streaming", None)
+                            if _adapter_supports_native is None or not _adapter_supports_native(
+                                chat_type=getattr(source, "chat_type", "") or None,
+                                metadata=_status_thread_metadata,
+                            ):
+                                raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep

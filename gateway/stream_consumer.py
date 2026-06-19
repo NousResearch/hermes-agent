@@ -192,6 +192,12 @@ class GatewayStreamConsumer:
         # in their chat history (drafts have no message_id).
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
+        # Native streaming transport (e.g. WeCom aibot_respond_msg with
+        # msgtype "stream").  Unlike drafts, native streaming delivers the
+        # full message in-place — the adapter manages the stream lifecycle
+        # (init → cumulative updates → finish).  When True, the consumer
+        # bypasses send()/edit_message() and calls adapter.send_stream_frame().
+        self._use_native_streaming = False
         # Cumulative draft-frame failure count for this consumer.  After the
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
@@ -469,6 +475,16 @@ class GatewayStreamConsumer:
             logger.debug(
                 "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                 self.chat_id, self._draft_id,
+            )
+
+        # Resolve native streaming (e.g. WeCom stream protocol) once per run.
+        # When enabled, all mid-stream and final frames go through
+        # adapter.send_stream_frame() instead of send()/edit_message().
+        self._use_native_streaming = self._resolve_native_streaming()
+        if self._use_native_streaming:
+            logger.debug(
+                "Stream consumer using native-stream transport (chat=%s)",
+                self.chat_id,
             )
 
         try:
@@ -1037,6 +1053,31 @@ class GatewayStreamConsumer:
             return False
         return True
 
+    def _resolve_native_streaming(self) -> bool:
+        """Decide whether this run should use native streaming transport.
+
+        Probes ``adapter.supports_native_streaming()``.  When the adapter
+        declares support, native streaming takes precedence over both edit
+        and draft transports because it provides the best user experience
+        (real-time cumulative updates without message-editing overhead).
+
+        Unlike draft streaming, native streaming works for ALL first-sends
+        and all subsequent updates — the adapter's ``send_stream_frame()``
+        manages the stream lifecycle internally.
+        """
+        # Test adapters are MagicMocks that don't subclass BasePlatformAdapter
+        if not isinstance(self.adapter, _BasePlatformAdapter):
+            return False
+        try:
+            supported = self.adapter.supports_native_streaming(
+                chat_type=self.cfg.chat_type or None,
+                metadata=self.metadata,
+            )
+        except Exception:
+            logger.debug("supports_native_streaming probe raised", exc_info=True)
+            supported = False
+        return bool(supported)
+
     async def _send_draft_frame(self, text: str) -> bool:
         """Emit a single animated draft frame for the current accumulated text.
 
@@ -1358,6 +1399,37 @@ class GatewayStreamConsumer:
                 and self.cfg.cursor in text
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
+
+        # Native streaming transport (e.g. WeCom): route ALL frames —
+        # first-send, mid-stream updates, and final — through
+        # adapter.send_stream_frame().  Unlike draft streaming, native
+        # streaming handles finalize in-band (finish=true), so the
+        # consumer never calls adapter.send() or adapter.edit_message()
+        # for this response.  The adapter manages the stream lifecycle
+        # internally (init → cumulative updates → finish).
+        if self._use_native_streaming:
+            # No-op skip: identical to the last frame we sent.
+            if text == self._last_sent_text and not finalize:
+                return True
+            ok = await self.adapter.send_stream_frame(
+                text,
+                finalize=finalize,
+                chat_id=self.chat_id,
+                reply_to=self._initial_reply_to_id,
+            )
+            if ok:
+                self._last_sent_text = text
+                if finalize:
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                else:
+                    self._already_sent = True
+                return True
+            # Failure: disable native streaming and fall through to
+            # existing edit/send paths for graceful degradation.
+            logger.debug("Native streaming frame failed, falling back")
+            self._use_native_streaming = False
+            # Fall through to edit/send path below
 
         # Native draft streaming: route mid-stream frames through send_draft.
         # The final answer is delivered via the regular sendMessage path

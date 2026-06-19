@@ -953,3 +953,165 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+# ── Native streaming tests ───────────────────────────────────────────────
+
+
+class TestWeComNativeStreaming:
+    """Tests for the WeCom native streaming transport (msgtype: stream)."""
+
+    def test_declares_native_streaming_capability(self):
+        """WeCom adapter must declare SUPPORTS_NATIVE_STREAMING."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.SUPPORTS_NATIVE_STREAMING is True
+
+    def test_supports_native_streaming_returns_true(self):
+        """Static probe must unconditionally return True."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.supports_native_streaming() is True
+        assert WeComAdapter.supports_native_streaming(chat_type="group") is True
+        assert WeComAdapter.supports_native_streaming(chat_type="single") is True
+
+    def test_resolve_stream_req_id_from_reply_to(self):
+        """_resolve_stream_req_id prefers explicit reply_to."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "cached-req-id"
+        adapter._reply_req_ids["msg-123"] = "explicit-req-id"
+
+        result = adapter._resolve_stream_req_id("chat-1", "msg-123")
+        assert result == "explicit-req-id"
+
+    def test_resolve_stream_req_id_falls_back_to_chat_cache(self):
+        """_resolve_stream_req_id falls back to _last_chat_req_ids."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "cached-req-id"
+
+        result = adapter._resolve_stream_req_id("chat-1", None)
+        assert result == "cached-req-id"
+
+    def test_resolve_stream_req_id_returns_none_when_no_anchor(self):
+        """_resolve_stream_req_id returns None when neither reply_to nor chat cache has a req_id."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        result = adapter._resolve_stream_req_id("unknown-chat", None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_send_stream_frame_returns_false_when_no_req_id(self):
+        """send_stream_frame returns False when no req_id is available."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # No cached req_id — streaming should fail gracefully
+        ok = await adapter.send_stream_frame("hello", chat_id="unknown-chat")
+        assert ok is False
+        # State must remain clean after failure
+        assert adapter._active_stream_id is None
+        assert adapter._active_stream_req_id is None
+
+    @pytest.mark.asyncio
+    async def test_send_stream_frame_returns_false_without_chat_id_on_first_call(self):
+        """send_stream_frame returns False when chat_id is None on first call."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        ok = await adapter.send_stream_frame("hello")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_send_stream_frame_initiates_stream_and_finalizes(self):
+        """Full stream lifecycle: init with empty frame → update → finalize."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-abc"
+
+        # Patch the underlying WebSocket send so we don't need a real connection
+        send_calls = []
+
+        async def fake_send_stream_reply(req_id, stream_id, content, finish=False):
+            send_calls.append({
+                "req_id": req_id,
+                "stream_id": stream_id,
+                "content": content,
+                "finish": finish,
+            })
+            return {"headers": {"req_id": "resp-1"}, "body": {}}
+
+        adapter._send_stream_reply = fake_send_stream_reply
+
+        # First frame: initiates stream (should send empty init + first content)
+        ok = await adapter.send_stream_frame("Hello", chat_id="chat-1")
+        assert ok is True
+        assert len(send_calls) == 2  # init empty frame + first content frame
+        assert send_calls[0]["content"] == ""
+        assert send_calls[0]["finish"] is False
+        assert send_calls[1]["content"] == "Hello"
+        assert send_calls[1]["finish"] is False
+        assert adapter._active_stream_id is not None
+        stream_id = adapter._active_stream_id
+        assert send_calls[0]["stream_id"] == stream_id
+        assert send_calls[1]["stream_id"] == stream_id
+
+        # Subsequent frame: update
+        ok = await adapter.send_stream_frame("Hello World")
+        assert ok is True
+        assert len(send_calls) == 3
+        assert send_calls[2]["content"] == "Hello World"
+        assert send_calls[2]["finish"] is False
+
+        # Final frame: should send finish=true and reset state
+        ok = await adapter.send_stream_frame("Hello World!", finalize=True)
+        assert ok is True
+        assert len(send_calls) == 4
+        assert send_calls[3]["content"] == "Hello World!"
+        assert send_calls[3]["finish"] is True
+        # State must be cleaned up after finalize
+        assert adapter._active_stream_id is None
+        assert adapter._active_stream_req_id is None
+
+    @pytest.mark.asyncio
+    async def test_send_stream_frame_resets_state_on_error(self):
+        """When _send_stream_reply raises, state must be reset."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-abc"
+
+        # First call succeeds (init)
+        ok_calls = 0
+
+        async def fake_send_stream_reply(req_id, stream_id, content, finish=False):
+            nonlocal ok_calls
+            ok_calls += 1
+            if ok_calls >= 3:
+                raise RuntimeError("WebSocket disconnected")
+            return {"headers": {"req_id": "resp-1"}, "body": {}}
+
+        adapter._send_stream_reply = fake_send_stream_reply
+
+        # First frame succeeds
+        ok = await adapter.send_stream_frame("Hello", chat_id="chat-1")
+        assert ok is True
+        assert adapter._active_stream_id is not None
+
+        # Second frame fails
+        ok = await adapter.send_stream_frame("Hello World")
+        assert ok is False
+        # State must be clean after failure
+        assert adapter._active_stream_id is None
+        assert adapter._active_stream_req_id is None
+
+    def test_max_stream_content_length_is_set(self):
+        """MAX_STREAM_CONTENT_LENGTH must match WeCom's 20480 byte limit."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.MAX_STREAM_CONTENT_LENGTH == 20480

@@ -144,6 +144,8 @@ class WeComAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
+    SUPPORTS_NATIVE_STREAMING = True
+    MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom stream content byte limit
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -192,6 +194,9 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+        # Streaming state — set per-response by send_stream_frame()
+        self._active_stream_id: Optional[str] = None
+        self._active_stream_req_id: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -923,6 +928,19 @@ class WeComAdapter(BasePlatformAdapter):
             return None
         return self._reply_req_ids.get(normalized)
 
+    def _resolve_stream_req_id(
+        self, chat_id: str, reply_to: Optional[str]
+    ) -> Optional[str]:
+        """Resolve a req_id suitable for stream replies.
+
+        Precedence: explicit reply_to → cached chat req_id → None.
+        Returns None when no reply anchor is available (streaming not possible).
+        """
+        req_id = self._reply_req_id_for_message(reply_to)
+        if req_id:
+            return req_id
+        return self._last_chat_req_ids.get(str(chat_id or "").strip())
+
     # ------------------------------------------------------------------
     # Outbound messaging
     # ------------------------------------------------------------------
@@ -1245,6 +1263,110 @@ class WeComAdapter(BasePlatformAdapter):
         )
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
+
+    async def _send_stream_reply(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        content: str,
+        finish: bool = False,
+    ) -> Dict[str, Any]:
+        """Send a single streaming message frame via aibot_respond_msg.
+
+        The WeCom stream protocol requires:
+        - First frame sets ``stream.id`` (the unique stream session id)
+        - Subsequent frames reuse the same ``stream.id`` with updated ``content``
+        - ``content`` is **cumulative** (not incremental delta)
+        - Set ``finish=True`` on the final frame to end the stream
+        - Content limit: 20480 bytes (WeCom enforced)
+        """
+        truncated_content = content[: self.MAX_STREAM_CONTENT_LENGTH]
+        if len(content) > self.MAX_STREAM_CONTENT_LENGTH:
+            logger.warning(
+                "[%s] Stream content truncated: %d → %d bytes (stream_id=%s)",
+                self.name, len(content), self.MAX_STREAM_CONTENT_LENGTH, stream_id,
+            )
+        body: Dict[str, Any] = {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "finish": finish,
+                "content": truncated_content,
+            },
+        }
+        response = await self._send_reply_request(reply_req_id, body)
+        self._raise_for_wecom_error(response, "send stream reply")
+        return response
+
+    async def send_stream_frame(
+        self,
+        text: str,
+        *,
+        finalize: bool = False,
+        chat_id: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> bool:
+        """Send or update a WeCom streaming message.
+
+        Called by ``GatewayStreamConsumer`` as the native-streaming transport.
+        On first call: initiates the stream (empty frame then content frame).
+        On subsequent calls: pushes cumulative content updates.
+        On ``finalize=True``: sends the final frame with ``finish: true``.
+
+        Returns True when the frame was successfully delivered.
+        """
+        try:
+            # Resolve req_id on first call
+            if self._active_stream_id is None:
+                if chat_id is None:
+                    logger.warning("[%s] send_stream_frame: chat_id required on first call", self.name)
+                    return False
+                req_id = self._resolve_stream_req_id(chat_id, reply_to)
+                if not req_id:
+                    logger.debug("[%s] send_stream_frame: no req_id available", self.name)
+                    return False
+                self._active_stream_req_id = req_id
+                self._active_stream_id = f"stream_{uuid.uuid4().hex[:12]}"
+                # Send initial empty frame to establish the stream channel
+                await self._send_stream_reply(
+                    self._active_stream_req_id, self._active_stream_id, "", finish=False
+                )
+
+            if finalize:
+                # Final frame: send complete content with finish=true
+                await self._send_stream_reply(
+                    self._active_stream_req_id,
+                    self._active_stream_id,
+                    text,
+                    finish=True,
+                )
+                self._active_stream_id = None
+                self._active_stream_req_id = None
+            else:
+                await self._send_stream_reply(
+                    self._active_stream_req_id,
+                    self._active_stream_id,
+                    text,
+                    finish=False,
+                )
+            return True
+        except Exception as exc:
+            logger.warning("[%s] Stream frame failed, resetting: %s", self.name, exc)
+            self._active_stream_id = None
+            self._active_stream_req_id = None
+            return False
+
+    @staticmethod
+    def supports_native_streaming(
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Probe for native WeCom streaming support.
+
+        WeCom AI Bot streaming works in both DM and group chats
+        (groups require a cached req_id from a prior inbound message).
+        """
+        return True
 
     async def _send_reply_media_message(
         self,

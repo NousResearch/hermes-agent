@@ -1322,8 +1322,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("[feishu] WebSocket client startup failed: %s", exc, exc_info=True)
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:

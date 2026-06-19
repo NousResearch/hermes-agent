@@ -162,6 +162,21 @@ def _looks_like_e164_number(value: str) -> bool:
     return digits.isdigit() and 7 <= len(digits) <= 15
 
 
+def _send_rpc_accepted(result: Any) -> tuple[bool, Optional[str]]:
+    """Return whether a Signal send RPC result proves acceptance.
+
+    signal-cli's successful ``send`` RPC response includes a ``timestamp`` in
+    ``result``. Treating any non-``None`` payload as success lets malformed or
+    partial payloads masquerade as delivered, which is especially dangerous for
+    cron live-adapter sends because the scheduler then clears delivery errors.
+    """
+    if not isinstance(result, dict):
+        return False, "Signal RPC send returned malformed result"
+    if result.get("timestamp") is None:
+        return False, "Signal RPC send response missing timestamp"
+    return True, None
+
+
 def check_signal_requirements() -> bool:
     """Check if Signal is configured (has URL and account)."""
     return bool(os.getenv("SIGNAL_HTTP_URL") and os.getenv("SIGNAL_ACCOUNT"))
@@ -993,14 +1008,14 @@ class SignalAdapter(BasePlatformAdapter):
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
-
-        if result is not None:
+        accepted, error = _send_rpc_accepted(result)
+        if accepted:
             self._track_sent_timestamp(result)
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
             # future edits can remove an in-progress cursor from the chat thread.
             return SendResult(success=True, message_id=None)
-        return SendResult(success=False, error="RPC send failed")
+        return SendResult(success=False, error=error or "RPC send failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""
@@ -1276,10 +1291,11 @@ class SignalAdapter(BasePlatformAdapter):
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
-        if result is not None:
+        accepted, error = _send_rpc_accepted(result)
+        if accepted:
             self._track_sent_timestamp(result)
             return SendResult(success=True)
-        return SendResult(success=False, error="RPC send with attachment failed")
+        return SendResult(success=False, error=error or "RPC send with attachment failed")
 
     async def _send_attachment(
         self,
@@ -1315,10 +1331,11 @@ class SignalAdapter(BasePlatformAdapter):
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
         result = await self._rpc("send", params)
-        if result is not None:
+        accepted, error = _send_rpc_accepted(result)
+        if accepted:
             self._track_sent_timestamp(result)
             return SendResult(success=True)
-        return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
+        return SendResult(success=False, error=error or f"RPC send {media_label.lower()} failed")
 
     async def send_document(
         self,

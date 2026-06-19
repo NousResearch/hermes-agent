@@ -788,6 +788,49 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
+    def test_live_adapter_logs_outbound_send_before_waiting_for_result(self, caplog):
+        """Cron live-adapter sends should emit the same transport trace users
+        look for in gateway logs before waiting on the adapter future."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.name = "Signal"
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SIGNAL: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "signal-job",
+            "deliver": "origin",
+            "origin": {"platform": "signal", "chat_id": "group:abc123=="},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             caplog.at_level(logging.INFO):
+            _deliver_result(
+                job,
+                "Daily brief",
+                adapters={Platform.SIGNAL: adapter},
+                loop=loop,
+            )
+
+        assert "[Signal] Sending response (11 chars) to group:abc123==" in caplog.text
+
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform

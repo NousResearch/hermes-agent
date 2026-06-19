@@ -818,6 +818,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 adapter_ok = True
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
+                    adapter_label = getattr(runtime_adapter, "name", platform_name.title())
+                    logger.info(
+                        "[%s] Sending response (%d chars) to %s",
+                        adapter_label,
+                        len(text_to_send),
+                        chat_id,
+                    )
                     future = safe_schedule_threadsafe(
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,

@@ -474,7 +474,7 @@ class TestSignalSendImageFile:
         result = await adapter.send_image_file(chat_id="+155****4567", image_path=str(img_path))
 
         assert result.success is False
-        assert "failed" in result.error.lower()
+        assert result.error == "Signal RPC send returned malformed result"
 
 
 class TestSignalRecipientResolution:
@@ -654,7 +654,7 @@ class TestSignalSendVoice:
         result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path))
 
         assert result.success is False
-        assert "failed" in result.error.lower()
+        assert result.error == "Signal RPC send returned malformed result"
 
 
 # ---------------------------------------------------------------------------
@@ -727,7 +727,7 @@ class TestSignalSendVideo:
         result = await adapter.send_video(chat_id="+155****4567", video_path=str(vid_path))
 
         assert result.success is False
-        assert "failed" in result.error.lower()
+        assert result.error == "Signal RPC send returned malformed result"
 
 
 # ---------------------------------------------------------------------------
@@ -993,8 +993,9 @@ class TestSignalSendReturnsMessageId:
 
         result = await adapter.send(chat_id="+155****4567", content="hello")
 
-        assert result.success is True
+        assert result.success is False
         assert result.message_id is None
+        assert result.error == "Signal RPC send response missing timestamp"
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_for_non_dict(self, monkeypatch):
@@ -1005,8 +1006,24 @@ class TestSignalSendReturnsMessageId:
 
         result = await adapter.send(chat_id="+155****4567", content="hello")
 
-        assert result.success is True
+        assert result.success is False
         assert result.message_id is None
+        assert result.error == "Signal RPC send returned malformed result"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_requires_timestamp_in_rpc_result(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        img_path = tmp_path / "chart.png"
+        img_path.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        result = await adapter.send_image_file(chat_id="+155****4567", image_path=str(img_path))
+
+        assert result.success is False
+        assert result.error == "Signal RPC send response missing timestamp"
 
 
 # ---------------------------------------------------------------------------

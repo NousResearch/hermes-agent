@@ -77,6 +77,12 @@ interface ChatSidebarProps {
   profile?: string;
   className?: string;
   onDashboardNewSessionRequest?: () => void;
+  /**
+   * Render the tool-call activity card. Defaults to true. The dashboard Chat
+   * tab sets this false so the right rail stays a thin model + session-list
+   * column; the model picker and its event plumbing are unaffected.
+   */
+  showTools?: boolean;
 }
 
 export function ChatSidebar({
@@ -84,6 +90,7 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
+  showTools = true,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -363,7 +370,7 @@ export function ChatSidebar({
   return (
     <aside
       className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 lg:w-80",
+        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1",
         className,
       )}
     >
@@ -429,21 +436,23 @@ export function ChatSidebar({
         </Card>
       )}
 
-      <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
-        <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
-          tools
-        </div>
+      {showTools && (
+        <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
+          <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
+            tools
+          </div>
 
-        <div className="flex min-h-0 flex-col gap-1.5">
-          {tools.length === 0 ? (
-            <div className="px-2 py-4 text-center text-xs text-text-secondary">
-              no tool calls yet
-            </div>
-          ) : (
-            tools.map((t) => <ToolCall key={t.id} tool={t} />)
-          )}
-        </div>
-      </Card>
+          <div className="flex min-h-0 flex-col gap-1.5">
+            {tools.length === 0 ? (
+              <div className="px-2 py-4 text-center text-xs text-text-secondary">
+                no tool calls yet
+              </div>
+            ) : (
+              tools.map((t) => <ToolCall key={t.id} tool={t} />)
+            )}
+          </div>
+        </Card>
+      )}
 
       {modelOpen && (
         <ModelPickerDialog

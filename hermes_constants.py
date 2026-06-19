@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import shutil
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -240,6 +241,71 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     if old_path.exists():
         return old_path
     return home / new_subpath
+
+
+def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
+    """Return Hermes-managed Node.js directories in preferred lookup order.
+
+    Windows installs from ``scripts/install.ps1`` unpack portable Node directly
+    into ``%LOCALAPPDATA%\\hermes\\node``. POSIX installs use
+    ``$HERMES_HOME/node/bin``. Include both shapes on every platform so mixed
+    or migrated installs still work.
+    """
+    root = home or get_hermes_home()
+    dirs = [root / "node"]
+    bin_dir = root / "node" / "bin"
+    if sys.platform == "win32":
+        return dirs + [bin_dir]
+    return [bin_dir] + dirs
+
+
+def _candidate_node_command_names(command: str) -> list[str]:
+    base = Path(command).name
+    if sys.platform != "win32" or "." in base:
+        return [base]
+    if base.lower() == "npm":
+        # Prefer npm.cmd. PowerShell may block npm.ps1 by execution policy, and
+        # CreateProcess cannot launch a bare .ps1 the way it can launch .cmd.
+        return ["npm.cmd", "npm.exe", "npm"]
+    if base.lower() == "npx":
+        return ["npx.cmd", "npx.exe", "npx"]
+    if base.lower() == "node":
+        return ["node.exe", "node"]
+    return [f"{base}.cmd", f"{base}.exe", base]
+
+
+def find_hermes_node_executable(command: str) -> str | None:
+    """Return a Hermes-managed Node/npm executable path, if installed."""
+    for directory in iter_hermes_node_dirs():
+        for name in _candidate_node_command_names(command):
+            candidate = directory / name
+            if candidate.is_file() and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            ):
+                return str(candidate)
+    return None
+
+
+def find_node_executable(command: str) -> str | None:
+    """Resolve a Node.js command, preferring Hermes-managed installs.
+
+    This is for Hermes-owned subprocesses that should not be broken by a bad,
+    missing, or elevation-triggering system Node/npm on PATH.
+    """
+    return find_hermes_node_executable(command) or shutil.which(command)
+
+
+def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return *env* with Hermes-managed Node directories prepended to PATH."""
+    merged = dict(os.environ if env is None else env)
+    existing = merged.get("PATH", "")
+    parts = [p for p in existing.split(os.pathsep) if p]
+    managed = [str(path) for path in iter_hermes_node_dirs() if path.is_dir()]
+    for entry in reversed(managed):
+        if entry not in parts:
+            parts.insert(0, entry)
+    merged["PATH"] = os.pathsep.join(parts)
+    return merged
 
 
 def display_hermes_home() -> str:

@@ -71,6 +71,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Matrix room admin (create/leave/delete; gated on MATRIX_TOOLS_ALLOW_ROOM_CREATE via check_fn)
+    "matrix_create_room", "matrix_leave_room", "matrix_delete_room",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,

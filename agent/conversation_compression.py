@@ -513,6 +513,16 @@ def compress_context(
             old_title = agent._session_db.get_session_title(agent.session_id)
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
+            # Flush any un-persisted messages from the current turn to the
+            # old session *before* rotating.  compress_context() can be
+            # called mid-turn (auto-compress when context exceeds threshold)
+            # at a point when _flush_messages_to_session_db() has not yet
+            # run.  Without this, messages generated during the current turn
+            # are silently lost on session rotation (#47202).
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                pass  # best-effort — don't block compression on a flush error
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"

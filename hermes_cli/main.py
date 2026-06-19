@@ -531,6 +531,16 @@ try:
     if _cfg_path.exists():
         with open(_cfg_path, encoding="utf-8") as _f:
             _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        # Managed scope: overlay administrator-pinned values so a managed
+        # security.redact_secrets / network.force_ipv4 wins here too. This early
+        # bridge reads config.yaml directly (before load_config is usable), so
+        # without the overlay a managed redact_secrets toggle would be ignored.
+        # Fail-open via the shared helper.
+        try:
+            from hermes_cli import managed_scope
+            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
+        except Exception:
+            pass
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -8118,7 +8128,13 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    enabled = updates_cfg.get("pre_update_backup", False)
+    # The default config ships with ``pre_update_backup: true`` (see
+    # ``hermes_cli/config.py``). Fall back to true if the key is missing
+    # (e.g. a user has an older custom config without the field). The
+    # ``False`` default from before #48200 caused silent data loss when
+    # an update step computed a wrong path — the cost of a few minutes
+    # of zip time per update is negligible compared to the alternative.
+    enabled = updates_cfg.get("pre_update_backup", True)
     keep = updates_cfg.get("backup_keep", 5)
 
     if not enabled and not force_backup:

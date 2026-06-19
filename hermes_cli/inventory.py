@@ -150,7 +150,8 @@ def build_models_payload(
     pricing: bool = False,
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
-    max_models: int = 50,
+    refresh: bool = False,
+    max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -177,6 +178,10 @@ def build_models_payload(
       selecting Portal-recommended Nous models and applying tier gating. Keep
       this false for UI picker opens; explicit auth/model flows can opt in
       when they need freshly-purchased credits to show up immediately.
+    - ``refresh``: bust the per-provider model-id disk cache so every row
+      re-fetches its live catalog. Set only for an explicit user-triggered
+      "refresh models" action; normal picker opens leave it false to stay
+      snappy on the 1h cache.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -188,6 +193,7 @@ def build_models_payload(
         custom_providers=ctx.custom_providers,
         force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
+        refresh=refresh,
     )
 
     # --- Deduplicate: remove models from aggregators that overlap with

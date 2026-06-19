@@ -36,8 +36,8 @@ let
       };
     };
 
-  # Legacy alibabacloud packages ship only sdists with setup.py/setup.cfg
-  # and no pyproject.toml, so setuptools isn't declared as a build dep.
+  # Legacy packages that ship only sdists with setup.py/setup.cfg and no
+  # pyproject.toml need setuptools supplied explicitly as a build dep.
   buildSystemOverrides = final: prev: builtins.mapAttrs
     (name: _: prev.${name}.overrideAttrs (old: {
       nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ final.setuptools ];
@@ -48,6 +48,7 @@ let
       "alibabacloud-gateway-dingtalk"
       "alibabacloud-gateway-spi"
       "alibabacloud-tea"
+      "ripgrepy"
     ] (_: null));
 
   pythonPackageOverrides = final: _prev:

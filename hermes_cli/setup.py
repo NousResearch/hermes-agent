@@ -93,7 +93,7 @@ _DEFAULT_PROVIDER_MODELS = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview",
         "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview",
     ],
-    "zai": ["glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
+    "zai": ["glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "kimi-coding-cn": ["kimi-k2.6", "kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "stepfun": ["step-3.5-flash", "step-3.5-flash-2603"],
@@ -415,7 +415,9 @@ def _print_setup_summary(config: dict, hermes_home):
         elif browser_provider == "Camofox":
             missing_browser_hint = "CAMOFOX_URL"
         elif browser_provider == "Local browser":
-            missing_browser_hint = "npm install -g agent-browser"
+            missing_browser_hint = (
+                "npm install -g agent-browser && agent-browser install --with-deps"
+            )
         tool_status.append(
             ("Browser Automation", False, missing_browser_hint)
         )
@@ -1637,6 +1639,57 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+
+
+def _is_valid_telegram_bot_token(token: str) -> bool:
+    return bool(_TELEGRAM_BOT_TOKEN_RE.match(token))
+
+
+def _setup_telegram_auto_result():
+    """Attempt automatic Telegram bot creation via managed QR onboarding."""
+    try:
+        from hermes_cli.telegram_managed_bot import auto_setup_telegram_bot_result
+    except ImportError:
+        return None
+
+    profile_name: str | None = None
+    try:
+        profile_name = _profile_name_from_hermes_home(Path(get_hermes_home()))
+    except Exception:
+        pass
+
+    return auto_setup_telegram_bot_result(profile_name=profile_name)
+
+
+def _profile_name_from_hermes_home(hermes_home) -> str | None:
+    """Return the active profile name when HERMES_HOME is a profile dir."""
+    if hermes_home.parent.name == "profiles":
+        return hermes_home.name
+    return None
+
+
+def _setup_telegram_auto() -> str | None:
+    """Attempt automatic Telegram bot creation and return only the token."""
+    result = _setup_telegram_auto_result()
+    return result.token if result else None
+
+
+def _prompt_telegram_bot_token() -> str | None:
+    print_info("Create a bot via @BotFather on Telegram")
+    while True:
+        token = prompt("Telegram bot token", password=True)
+        if not token:
+            return None
+        if not _is_valid_telegram_bot_token(token):
+            print_error(
+                "Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
+                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
+            )
+            continue
+        return token
+
+
 def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
     print_header("Telegram")
@@ -1655,20 +1708,40 @@ def _setup_telegram():
                         print_success("Telegram allowlist configured")
             return
 
-    print_info("Create a bot via @BotFather on Telegram")
-    import re
+    print_info("How would you like to create your Telegram bot?")
+    print()
+    print_info("  [1] Automatic (recommended)")
+    print_info("      Scan a QR code → confirm in Telegram → done.")
+    print_info("      No token copy-paste needed.")
+    print()
+    print_info("  [2] Manual")
+    print_info("      Create a bot via @BotFather yourself and paste the token.")
+    print()
 
-    while True:
-        token = prompt("Telegram bot token", password=True)
+    choice = prompt("Choice [1/2]", default="1")
+    token = None
+    setup_result = None
+
+    if choice.strip() == "1":
+        setup_result = _setup_telegram_auto_result()
+        if setup_result:
+            token = setup_result.token
+            if not _is_valid_telegram_bot_token(token):
+                print_error("Automatic setup returned an invalid Telegram bot token.")
+                token = None
+                setup_result = None
+        else:
+            token = None
         if not token:
-            return
-        if not re.match(r"^\d+:[A-Za-z0-9_-]{30,}$", token):
-            print_error(
-                "Invalid token format. Expected: <numeric_id>:<alphanumeric_hash> "
-                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
-            )
-            continue
-        break
+            print()
+            print_info("Falling back to manual setup...")
+            print()
+
+    if not token:
+        token = _prompt_telegram_bot_token()
+    if not token:
+        return
+
     save_env_value("TELEGRAM_BOT_TOKEN", token)
     print_success("Telegram token saved")
 
@@ -1678,11 +1751,30 @@ def _setup_telegram():
     print_info("   1. Message @userinfobot on Telegram")
     print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
     print()
-    allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty for open access)"
-    )
+
+    detected_user_id = getattr(setup_result, "owner_user_id", None)
+    if detected_user_id:
+        detected_id = str(detected_user_id)
+        print_success(f"Detected your Telegram user ID: {detected_id}")
+        if prompt_yes_no("Allow this Telegram account to use the bot?", True):
+            extra = prompt("Additional allowed user IDs (comma-separated, optional)")
+            ids = [detected_id]
+            for uid in extra.replace(" ", "").split(","):
+                if uid and uid not in ids:
+                    ids.append(uid)
+            allowed_users = ",".join(ids)
+        else:
+            allowed_users = prompt(
+                "Allowed user IDs (comma-separated, leave empty for open access)"
+            )
+    else:
+        allowed_users = prompt(
+            "Allowed user IDs (comma-separated, leave empty for open access)"
+        )
+
     if allowed_users:
-        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        allowed_users = allowed_users.replace(" ", "")
+        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users)
         print_success("Telegram allowlist configured - only listed users can use the bot")
     else:
         print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
@@ -2721,20 +2813,23 @@ SETUP_SECTIONS = [
 
 
 def _run_portal_one_shot(config: dict) -> None:
-    """One-shot Nous Portal setup — OAuth + provider switch + Tool Gateway.
+    """One-shot Nous Portal setup — OAuth + model pick + provider + Tool Gateway.
 
-    Wired into ``hermes setup --portal``. Does NOT prompt for anything
-    besides what the underlying OAuth + Tool Gateway prompts already need.
-    Designed to be shareable as a single command (``hermes setup --portal``)
-    that gets a brand-new user from zero to a fully working Hermes session
-    with web/image/tts/browser tools all routed via their Portal sub.
+    Wired into ``hermes setup --portal`` and ``hermes portal``. This is the
+    Nous-Portal slice of the first-time quick setup, collapsed into a single
+    shareable command so a brand-new user goes from zero to a fully working
+    Hermes session — model selected, provider set, and web/image/tts/browser
+    tools routed via their Portal sub — without being told to run
+    ``hermes setup`` and hunt for the quick-setup option.
+
+    The login + model selection + provider switch + Tool Gateway opt-in are all
+    delegated to ``_model_flow_nous`` — the exact same flow quick setup uses
+    (``_run_first_time_quick_setup``) and the same one ``hermes model`` runs
+    when you pick Nous. Routing through it (instead of hand-rolling the auth +
+    provider write here) means ``hermes portal`` always offers a model picker,
+    and there is a single source of truth for the Nous onboarding steps.
     """
-    from types import SimpleNamespace
-
-    from hermes_cli.auth_commands import auth_add_command
-    from hermes_cli.config import save_config
-    from hermes_cli.auth import get_nous_auth_status
-    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
+    from hermes_cli.config import load_config
 
     print()
     print(
@@ -2758,77 +2853,46 @@ def _run_portal_one_shot(config: dict) -> None:
     print_info("  Sign up: https://portal.nousresearch.com/manage-subscription")
     print()
 
-    # Skip OAuth if already logged in (don't re-prompt every time the user
-    # runs `hermes setup --portal` after a successful first run).
-    already_logged_in = False
+    # _model_flow_nous handles BOTH the logged-out path (device-code OAuth,
+    # which selects a model internally) and the already-logged-in path (curated
+    # Nous model picker), then offers the Tool Gateway opt-in and sets
+    # provider=nous via the login/model save. This is the same routine quick
+    # setup calls, so `hermes portal` == quick setup's Nous step.
     try:
-        already_logged_in = bool((get_nous_auth_status() or {}).get("logged_in"))
-    except Exception:
-        already_logged_in = False
+        from hermes_cli.main import _model_flow_nous
 
-    if already_logged_in:
-        print_success("  Already logged into Nous Portal.")
-    else:
-        # Hand off to the shared auth wiring so the device-code flow is
-        # identical to `hermes auth add nous --type oauth`. SimpleNamespace
-        # mirrors the argparse Namespace contract that auth_add_command expects.
-        ns = SimpleNamespace(
-            provider="nous",
-            auth_type="oauth",
-            label=None,
-            api_key=None,
-            portal_url=None,
-            inference_url=None,
-            client_id=None,
-            scope=None,
-            no_browser=False,
-            timeout=None,
-            insecure=False,
-            ca_bundle=None,
-        )
-        try:
-            auth_add_command(ns)
-        except SystemExit as e:
-            print()
-            print_error(f"  Nous Portal login failed (exit {e.code}).")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
-            return
-        except (KeyboardInterrupt, EOFError):
-            print()
-            print_info("  Setup cancelled.")
-            return
-        except Exception as exc:
-            print()
-            print_error(f"  Nous Portal login failed: {exc}")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
-            return
-
-    # Set provider → nous so the model picker, status surfaces, and
-    # managed-tool gating all light up. Leave model.model empty so the
-    # runtime picks Nous's default model; the user can change it later
-    # with `hermes model`.
-    model_cfg = config.get("model")
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-        config["model"] = model_cfg
-    model_cfg["provider"] = "nous"
-    save_config(config)
-    print()
-    print_success("  Nous set as your inference provider.")
-
-    # Offer the Tool Gateway opt-in (single Y/n) — same flow that fires
-    # from `hermes model` after picking Nous.
-    print()
-    try:
-        prompt_enable_tool_gateway(config)
-    except (KeyboardInterrupt, EOFError):
-        pass
+        _model_flow_nous(config)
+    except (KeyboardInterrupt, EOFError, SystemExit):
+        # _login_nous raises SystemExit(130)/(1) on cancel/failure; the
+        # logged-out path inside _model_flow_nous catches it, but the
+        # expired-session re-login path only catches Exception, so a
+        # SystemExit there would otherwise escape and kill the whole CLI.
+        # Treat all of these as a graceful cancel/abort for the portal flow.
+        print()
+        print_info("  Setup cancelled.")
+        print_info("  You can retry later with `hermes portal`.")
+        return
     except Exception as exc:
-        print_warning(f"  Tool Gateway prompt skipped: {exc}")
+        logger.debug("_model_flow_nous error during `hermes portal`: %s", exc)
+        print()
+        print_error(f"  Nous Portal setup encountered an error: {exc}")
+        print_info("  You can retry later with `hermes portal`.")
+        return
+
+    # Re-sync the in-memory config from disk — _model_flow_nous (and the
+    # underlying login/model save) write via their own load/save cycle, so any
+    # later save_config(config) by a caller must not clobber those values.
+    try:
+        _refreshed = load_config()
+        if isinstance(_refreshed, dict):
+            config.clear()
+            config.update(_refreshed)
+    except Exception:
+        pass
 
     print()
     print_success("Portal setup complete.")
-    print_info("  Run `hermes portal status` to inspect routing.")
+    print_info("  Run `hermes portal info` to inspect routing.")
     print_info("  Run `hermes` to start chatting.")
 
 

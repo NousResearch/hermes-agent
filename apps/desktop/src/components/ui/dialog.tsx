@@ -1,7 +1,9 @@
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
-import { Codicon } from '@/components/ui/codicon'
+import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
+import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -41,12 +43,17 @@ function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
+  const { t } = useI18n()
+
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          'fixed left-1/2 top-1/2 z-[130] pointer-events-auto grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-3 rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-md duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          // Cap height at 85vh and let long content scroll inside the dialog
+          // instead of overflowing off-screen (long cron titles, tool detail
+          // dumps, etc.). Individual dialogs can still override via className.
+          'fixed left-1/2 top-1/2 z-[130] pointer-events-auto grid max-h-[85vh] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-3 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           className
         )}
         data-slot="dialog-content"
@@ -54,12 +61,16 @@ function DialogContent({
       >
         {children}
         {showCloseButton && (
-          <DialogPrimitive.Close
-            className="absolute right-2.5 top-2.5 rounded-md p-1 text-(--ui-text-tertiary) opacity-70 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none"
-            data-slot="dialog-close-button"
-          >
-            <Codicon name="close" size="1rem" />
-            <span className="sr-only">Close</span>
+          <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+            <Button
+              aria-label={t.common.close}
+              className="absolute right-2.5 top-2.5 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+              size="icon-xs"
+              variant="ghost"
+            >
+              <X className="size-4" />
+              <span className="sr-only">{t.common.close}</span>
+            </Button>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>
@@ -87,13 +98,30 @@ function DialogFooter({ className, ...props }: React.ComponentProps<'div'>) {
   )
 }
 
-function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
+function DialogTitle({
+  className,
+  icon: Icon,
+  children,
+  ...props
+}: React.ComponentProps<typeof DialogPrimitive.Title> & {
+  // Pass a lucide icon to get the canonical dialog-header glyph: a plain
+  // primary-tinted icon inline with the title (no bg chip / ring). This is the
+  // single source of truth for dialog header icons — don't hand-roll wrappers.
+  icon?: React.ComponentType<{ className?: string }>
+}) {
   return (
     <DialogPrimitive.Title
-      className={cn('text-[0.9375rem] font-semibold tracking-tight text-foreground', className)}
+      className={cn(
+        'text-[0.9375rem] font-semibold tracking-tight text-foreground',
+        Icon && 'flex items-center gap-2',
+        className
+      )}
       data-slot="dialog-title"
       {...props}
-    />
+    >
+      {Icon ? <Icon className="size-4 shrink-0 text-primary" /> : null}
+      {children}
+    </DialogPrimitive.Title>
   )
 }
 

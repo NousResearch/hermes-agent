@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -70,6 +70,7 @@ DETECTED_BROWSER_EXECUTABLE=""
 USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
+NO_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
@@ -102,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-browser|--no-playwright)
             SKIP_BROWSER=true
+            shift
+            ;;
+        --no-skills)
+            NO_SKILLS=true
             shift
             ;;
         --branch|-Branch)
@@ -158,6 +163,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
+            echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
+            echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
+            echo "                   'hermes update' runs never inject bundled skills either"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
@@ -405,6 +413,25 @@ get_command_link_display_dir() {
     fi
 }
 
+# Point a Hermes-managed Node's `npm install -g` at a directory that is on
+# PATH. npm's default global prefix for a bundled Node is the Node dir itself,
+# so global package binaries land in $HERMES_HOME/node/bin — which is NOT on
+# PATH (only the command link dir is) and is wiped on every Node upgrade.
+# Redirecting the prefix to the link dir's parent makes global bins resolve to
+# the command link dir (node/npm/npx live there too, already on PATH) and
+# survive upgrades. Scoped to the managed Node via its prefix-local global
+# npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
+# Hermes's own global installs pass an explicit --prefix and are unaffected.
+# Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
+# every install run repairs pre-existing installs, not just fresh ones.
+configure_managed_node_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
@@ -443,7 +470,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
             exit 1
             ;;
         *)
@@ -467,39 +494,22 @@ install_uv() {
         return 0
     fi
 
-    log_info "Checking for uv package manager..."
+    # Hermes owns its own uv at $HERMES_HOME/bin/uv.  Always install there —
+    # no PATH probing, no conda guards, no multi-location resolution chains.
+    # The runtime update path (hermes_cli/managed_uv.py) looks in the same
+    # place, so install.sh and `hermes update` stay in sync.
+    local _managed_uv="$HERMES_HOME/bin/uv"
 
-    # Check common locations for uv
-    if command -v uv &> /dev/null; then
-        UV_CMD="uv"
+    if [ -x "$_managed_uv" ]; then
+        UV_CMD="$_managed_uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found ($UV_VERSION)"
+        log_success "Managed uv found ($UV_VERSION)"
         return 0
     fi
 
-    # Check ~/.local/bin (default uv install location) even if not on PATH yet
-    if [ -x "$HOME/.local/bin/uv" ]; then
-        UV_CMD="$HOME/.local/bin/uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found at ~/.local/bin ($UV_VERSION)"
-        return 0
-    fi
+    log_info "Installing managed uv into $HERMES_HOME/bin ..."
+    mkdir -p "$HERMES_HOME/bin"
 
-    # Check ~/.cargo/bin (alternative uv install location)
-    if [ -x "$HOME/.cargo/bin/uv" ]; then
-        UV_CMD="$HOME/.cargo/bin/uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
-        return 0
-    fi
-
-    # Install uv
-    log_info "Installing uv (fast Python package manager)..."
-    # Capture installer output so a failure shows the user WHY (network,
-    # glibc mismatch on old distros, missing curl, ~/.local/bin not
-    # writable, disk full, corp proxy / TLS interception, etc.) instead
-    # of the previous "✗ Failed to install uv" with zero diagnostic.
-    #
     # Two-stage: download the installer, then run it.  Piping
     # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
     # and conflates network errors with installer errors.
@@ -514,26 +524,22 @@ install_uv() {
         rm -f "$_uv_install_log" "$_uv_installer"
         exit 1
     fi
-    if sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
+    # UV_UNMANAGED_INSTALL tells the astral installer to place the binary
+    # directly into $HERMES_HOME/bin instead of ~/.local/bin.
+    if UV_UNMANAGED_INSTALL="$HERMES_HOME/bin" sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
         rm -f "$_uv_installer"
-        # uv installs to ~/.local/bin by default
-        if [ -x "$HOME/.local/bin/uv" ]; then
-            UV_CMD="$HOME/.local/bin/uv"
-        elif [ -x "$HOME/.cargo/bin/uv" ]; then
-            UV_CMD="$HOME/.cargo/bin/uv"
-        elif command -v uv &> /dev/null; then
-            UV_CMD="uv"
+        if [ -x "$_managed_uv" ]; then
+            UV_CMD="$_managed_uv"
         else
-            log_error "uv installer reported success but binary not found on PATH"
+            log_error "uv installer reported success but binary not found at $_managed_uv"
             log_info "Installer output:"
             sed 's/^/    /' "$_uv_install_log" >&2
-            log_info "Try adding ~/.local/bin to your PATH and re-running"
             rm -f "$_uv_install_log"
             exit 1
         fi
         rm -f "$_uv_install_log"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv installed ($UV_VERSION)"
+        log_success "Managed uv installed ($UV_VERSION)"
     else
         log_error "Failed to install uv"
         log_info "Installer output:"
@@ -571,7 +577,6 @@ check_python() {
     if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
-        ensure_fts5
         return 0
     fi
 
@@ -581,110 +586,11 @@ check_python() {
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
-        ensure_fts5
     else
         log_error "Failed to install Python $PYTHON_VERSION"
         log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
         exit 1
     fi
-}
-
-# Probe whether $1 (a python executable) links a SQLite with the FTS5
-# module compiled in. Hermes' session store (hermes_state.py) creates FTS5
-# virtual tables for full-text session search; a SQLite without FTS5 makes
-# the bundled-python path unusable for that feature. Returns 0 if FTS5 works.
-_python_has_fts5() {
-    "$1" - <<'PY' 2>/dev/null
-import sqlite3, sys
-try:
-    sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")
-except Exception:
-    sys.exit(1)
-PY
-}
-
-# Reinstall $PYTHON_VERSION with the current uv and re-resolve PYTHON_PATH.
-# Returns 0 if the resulting interpreter ships FTS5.
-_reinstall_python_with_fts5() {
-    local uv_bin="$1"
-    "$uv_bin" python install "$PYTHON_VERSION" --reinstall >/dev/null 2>&1 || return 1
-    PYTHON_PATH="$("$uv_bin" python find "$PYTHON_VERSION" 2>/dev/null)"
-    PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-    [ -n "${PYTHON_PATH:-}" ] && _python_has_fts5 "$PYTHON_PATH"
-}
-
-_warn_no_fts5() {
-    # Could not obtain an FTS5-capable interpreter (offline, pinned env, etc.).
-    # Install proceeds — Hermes degrades gracefully and disables only full-text
-    # session search — but warn so it isn't a silent gap.
-    log_warn "Could not obtain an FTS5-capable Python. Hermes will run, but"
-    log_warn "full-text session search will be disabled until FTS5 is present."
-}
-
-# Guarantee the resolved uv-managed interpreter ships FTS5. uv's Python
-# distributions only gained FTS5 in mid-2025 (python-build-standalone #694),
-# but WHICH builds a given uv can install is baked into the uv binary's
-# download manifest — so a stale uv (e.g. `pip install uv==0.7.20`) only knows
-# about pre-FTS5 builds, and even `uv python install --reinstall` just pulls the
-# same FTS5-less interpreter. A plain reinstall with an old uv is therefore a
-# no-op for FTS5. To actually fix everyone's install, we escalate uv itself:
-#
-#   1. reinstall with the current $UV_CMD (handles a stale *interpreter* under
-#      an already-current uv)
-#   2. if still no FTS5, bring uv up to date (`uv self update`) and reinstall —
-#      this is what fixes a stale standalone uv
-#   3. if uv can't self-update (pip/apt/brew-managed uv refuses), install a
-#      fresh standalone uv via the official installer into a temp dir and use
-#      THAT to reinstall — this fixes package-manager-managed stale uv
-#
-# Pythons live in uv's shared store, so a fresh uv's --reinstall overwrites the
-# stale interpreter in place and the installer's later `uv python find` resolves
-# to it. Keeps session search working without bundling a second SQLite or asking
-# the user to do anything.
-ensure_fts5() {
-    [ -n "${PYTHON_PATH:-}" ] || return 0
-    if _python_has_fts5 "$PYTHON_PATH"; then
-        return 0
-    fi
-    # Termux / non-uv installs have nothing to escalate.
-    [ -n "${UV_CMD:-}" ] || { _warn_no_fts5; return 0; }
-
-    log_warn "Resolved Python's SQLite lacks the FTS5 module (session search needs it)."
-    log_info "Reinstalling a current Python $PYTHON_VERSION with FTS5 via uv..."
-    if _reinstall_python_with_fts5 "$UV_CMD"; then
-        log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
-        return 0
-    fi
-
-    # Still no FTS5 — the uv binary itself is too old to know about FTS5-capable
-    # Python builds. Try to update uv in place.
-    log_info "uv is too old to provide an FTS5-capable Python — updating uv..."
-    if "$UV_CMD" self update >/dev/null 2>&1; then
-        if _reinstall_python_with_fts5 "$UV_CMD"; then
-            log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
-            return 0
-        fi
-    fi
-
-    # `uv self update` is unavailable on externally-managed uv (pip/apt/brew),
-    # which is exactly the case the user hit (`pip install uv==0.7.20`). Install
-    # a fresh standalone uv into a temp dir and use it just for the reinstall.
-    log_info "Installing an up-to-date standalone uv to obtain an FTS5 Python..."
-    local _tmp_uv_dir _fresh_uv
-    _tmp_uv_dir="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-fresh-uv.$$")"
-    mkdir -p "$_tmp_uv_dir"
-    if curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null \
-            | env UV_INSTALL_DIR="$_tmp_uv_dir" UV_UNMANAGED_INSTALL="$_tmp_uv_dir" sh >/dev/null 2>&1; then
-        _fresh_uv="$_tmp_uv_dir/uv"
-        if [ -x "$_fresh_uv" ] && _reinstall_python_with_fts5 "$_fresh_uv"; then
-            log_success "FTS5 available ($PYTHON_FOUND_VERSION)"
-            rm -rf "$_tmp_uv_dir"
-            return 0
-        fi
-    fi
-    rm -rf "$_tmp_uv_dir"
-
-    _warn_no_fts5
 }
 
 # Best-effort automatic git provisioning, mirroring install.ps1's Install-Git
@@ -815,26 +721,48 @@ check_git() {
     exit 1
 }
 
+# The desktop build runs Vite ^8, which refuses to start on Node outside
+# `^20.19 || >=22.12` — older Node lacks `node:util.styleText`, so `vite build`
+# crashes with a SyntaxError that surfaces only as the opaque "Build desktop
+# app … exit code 1" install failure. Returns 0 when the given `node --version`
+# string clears that floor; anything below it is replaced with the Hermes-
+# managed Node $NODE_VERSION LTS.
+node_satisfies_build() {
+    local ver="${1#v}"
+    local major="${ver%%.*}"
+    local minor="${ver#*.}"; minor="${minor%%.*}"
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
+    if [ "$major" -eq 20 ] && [ "$minor" -ge 19 ]; then return 0; fi
+    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 12 ]; }; then return 0; fi
+    return 1
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
-    if command -v node &> /dev/null; then
-        local found_ver=$(node --version)
-        log_success "Node.js $found_ver found"
+    # Repair pre-existing Hermes-managed installs where `npm install -g` lands
+    # off PATH. No-op when there's no managed Node, so this is safe to run on
+    # every install — including re-runs that skip the Node (re)install below.
+    configure_managed_node_npm_prefix
+
+    if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
+        log_success "Node.js $(node --version) found"
         HAS_NODE=true
         return 0
     fi
 
-    # Check our own managed install from a previous run
-    if [ -x "$HERMES_HOME/node/bin/node" ]; then
+    # Prefer a Hermes-managed Node from a previous run over a too-old system one.
+    if [ -x "$HERMES_HOME/node/bin/node" ] && node_satisfies_build "$("$HERMES_HOME/node/bin/node" --version)"; then
         export PATH="$HERMES_HOME/node/bin:$PATH"
-        local found_ver=$("$HERMES_HOME/node/bin/node" --version)
-        log_success "Node.js $found_ver found (Hermes-managed)"
+        log_success "Node.js $("$HERMES_HOME/node/bin/node" --version) found (Hermes-managed)"
         HAS_NODE=true
         return 0
     fi
 
-    if [ "$DISTRO" = "termux" ]; then
+    if command -v node &> /dev/null; then
+        log_warn "Node.js $(node --version) is too old for the desktop build (need ^20.19 or >=22.12) — installing Hermes-managed Node $NODE_VERSION LTS..."
+    elif [ "$DISTRO" = "termux" ]; then
         log_info "Node.js not found — installing Node.js via pkg..."
     else
         log_info "Node.js not found — installing Node.js $NODE_VERSION LTS..."
@@ -932,16 +860,22 @@ install_node() {
         return 0
     fi
 
-    # Place into ~/.hermes/node/ and symlink binaries to ~/.local/bin/
+    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
+    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
+    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
     rm -rf "$HERMES_HOME/node"
     mkdir -p "$HERMES_HOME"
     mv "$extracted_dir" "$HERMES_HOME/node"
     rm -rf "$tmp_dir"
 
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
+    local node_link_dir
+    node_link_dir="$(get_command_link_dir)"
+    mkdir -p "$node_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    configure_managed_node_npm_prefix
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -1184,6 +1118,18 @@ show_manual_install_hint() {
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
+    # An interrupted previous clone leaves a .git with no initial commit, where
+    # the update path's `git stash` / `git checkout` abort with "You do not
+    # have the initial commit yet" and fail the install (#40998). Move such a
+    # partial checkout aside -- never delete it, in case it holds something the
+    # user wants -- so the fresh-clone path below can proceed.
+    if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+        backup_dir="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
+        log_warn "Existing checkout at $INSTALL_DIR has no commits (interrupted clone)."
+        log_warn "Moving it aside to $backup_dir before re-cloning."
+        mv "$INSTALL_DIR" "$backup_dir"
+    fi
+
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
@@ -1191,6 +1137,19 @@ clone_repo() {
 
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
+                # A previously interrupted update can leave the index with
+                # unmerged entries. In that state `git stash` aborts with
+                # "could not write index" and the later `git checkout` aborts
+                # with "you need to resolve your current index first", failing
+                # the whole install at the repository stage. Clear the conflict
+                # markers with `git reset` first -- this keeps working-tree
+                # changes (they're still stashed just below) and only drops the
+                # index-level conflict state. Mirrors the `hermes update` path
+                # (#4735).
+                if [ -n "$(git ls-files --unmerged)" ]; then
+                    log_info "Clearing unmerged index entries from a previous conflict..."
+                    git reset -q
+                fi
                 local stash_name
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."
@@ -1198,7 +1157,12 @@ clone_repo() {
                 autostash_ref="stash@{0}"
             fi
 
-            git fetch origin
+            # Fetch only the target branch. A bare `git fetch origin` pulls
+            # every ref, and this repo carries thousands of auto-generated
+            # branches — on a non-single-branch checkout that turns each update
+            # into a multi-minute download that can stall the installer.
+            git remote set-branches origin "$BRANCH" 2>/dev/null || true
+            git fetch origin "$BRANCH"
             git checkout "$BRANCH"
             git pull --ff-only origin "$BRANCH"
 
@@ -1244,12 +1208,12 @@ clone_repo() {
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -1300,11 +1264,32 @@ setup_venv() {
     # uv creates the venv and pins the Python version in one step
     $UV_CMD venv venv --python "$PYTHON_VERSION"
 
+    # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
+    # user's shell env). uv honours UV_PYTHON over an existing venv for the
+    # later `uv sync` / `uv pip install` tiers, so without this it would
+    # silently delete this 3.11 venv and recreate it at the inherited
+    # version — building Rust transitives that have no wheel for that
+    # version from source via maturin, which fails. Pinning UV_PYTHON to the
+    # interpreter we just created forces every subsequent uv command onto it.
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
+
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
 install_deps() {
     log_info "Installing dependencies..."
+
+    # Re-pin UV_PYTHON to the venv interpreter. setup_venv already does this,
+    # but the bootstrap runs install stages (`venv`, `python-deps`) as separate
+    # processes, so an export from setup_venv does NOT survive into a separate
+    # python-deps invocation. Re-deriving it here covers that path. Without it,
+    # an inherited UV_PYTHON=3.14 makes the uv sync/pip tiers below recreate the
+    # venv at 3.14 and fail the maturin source build (no cp314 wheels yet).
+    if [ "$DISTRO" != "termux" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
 
     if [ "$DISTRO" = "termux" ]; then
         if [ "$USE_VENV" = true ]; then
@@ -1767,14 +1752,26 @@ SOUL_EOF
     log_success "Configuration directory ready: ~/.hermes/"
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-        log_success "Skills synced to ~/.hermes/skills/"
+    if [ "$NO_SKILLS" = true ]; then
+        # Blank-slate install: write the opt-out marker and skip seeding.
+        # skills_sync.py and `hermes update` both honor this marker, so the
+        # default profile stays empty across future updates too.
+        printf '%s\n' \
+            "This profile opted out of bundled-skill seeding (installed with --no-skills)." \
+            "Delete this file to re-enable sync on the next 'hermes update'." \
+            > "$HERMES_HOME/.no-bundled-skills" 2>/dev/null || true
+        log_info "Skipping bundled skills (--no-skills). Wrote $HERMES_HOME/.no-bundled-skills"
+        log_info "  Future 'hermes update' runs will not inject bundled skills. Delete the marker to opt back in."
     else
-        # Fallback: simple directory copy if Python sync fails
-        if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
-            cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-            log_success "Skills copied to ~/.hermes/skills/"
+        log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
+        if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+            log_success "Skills synced to ~/.hermes/skills/"
+        else
+            # Fallback: simple directory copy if Python sync fails
+            if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
+                cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
+                log_success "Skills copied to ~/.hermes/skills/"
+            fi
         fi
     fi
 }
@@ -2323,10 +2320,148 @@ postinstall_mode() {
     fi
 }
 
-# Build apps/desktop into a launchable Hermes.app. Mirrors install.ps1's
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache - most often a partial/resumed download
+# that leaves concatenated junk - makes electron-builder's `unpack-electron`
+# extract a tree MISSING the electron binary, so the `electron`->`Hermes` rename
+# dies with ENOENT and every re-run repeats the broken extraction forever. This
+# is the bash sibling of install.ps1's Clear-ElectronBuildCache and the Python
+# _purge_electron_build_cache() used by `hermes desktop`; install.sh was the only
+# build path lacking it. Echoes the removed paths (one per line); best-effort.
+clear_electron_build_cache() {
+    local desktop_dir="$1"
+    local removed=""
+
+    # Per-user Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the platform defaults (macOS: ~/Library/Caches/electron,
+    # Linux: $XDG_CACHE_HOME/electron or ~/.cache/electron).
+    local cache_dirs=()
+    [ -n "${electron_config_cache:-}" ] && cache_dirs+=("$electron_config_cache")
+    [ -n "${ELECTRON_CACHE:-}" ] && cache_dirs+=("$ELECTRON_CACHE")
+    if [ "$OS" = "macos" ]; then
+        cache_dirs+=("$HOME/Library/Caches/electron")
+    else
+        [ -n "${XDG_CACHE_HOME:-}" ] && cache_dirs+=("$XDG_CACHE_HOME/electron")
+        cache_dirs+=("$HOME/.cache/electron")
+    fi
+
+    local dir zip
+    for dir in "${cache_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        # Recurse: the bad copy may be the top-level zip OR a copy inside an
+        # @electron/get hash subdir.
+        while IFS= read -r zip; do
+            [ -n "$zip" ] || continue
+            if rm -f "$zip" 2>/dev/null; then
+                removed="$removed$zip
+"
+            fi
+        done <<EOF
+$(find "$dir" -type f -name 'electron-*.zip' 2>/dev/null)
+EOF
+    done
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed (mac-arm64-unpacked / linux-unpacked).
+    local release_dir="$desktop_dir/release"
+    if [ -d "$release_dir" ]; then
+        local unpacked
+        while IFS= read -r unpacked; do
+            [ -n "$unpacked" ] || continue
+            if rm -rf "$unpacked" 2>/dev/null; then
+                removed="$removed$unpacked
+"
+            fi
+        done <<EOF
+$(find "$release_dir" -maxdepth 1 -type d -name '*-unpacked' 2>/dev/null)
+EOF
+    fi
+
+    printf '%s' "$removed"
+}
+
+# Run the desktop pack in $1 (the apps/desktop dir). `npm run pack` = tsc +
+# vite build + electron-builder --dir, producing an unpacked app for the
+# current OS. Signing auto-discovery is disabled so electron-builder falls back
+# to an ad-hoc signature instead of grabbing an unrelated Developer ID from the
+# keychain (a real signed/notarized .dmg needs Apple credentials — a separate
+# release concern). Optional $2 = an ELECTRON_MIRROR base URL for this attempt,
+# used as a fallback when the default GitHub release download is blocked.
+_desktop_pack() {
+    local desktop_dir="$1"
+    local mirror="${2:-}"
+    if [ -n "$mirror" ]; then
+        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    else
+        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    fi
+}
+
+# Last-resort Electron mirror after GitHub download fails (#47266).
+DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
+
+# Electron package dir — workspace-local nest first, then root hoist.
+_electron_dir() {
+    local install_dir="$1"
+    if [ -d "$install_dir/apps/desktop/node_modules/electron" ]; then
+        printf '%s\n' "$install_dir/apps/desktop/node_modules/electron"
+    else
+        printf '%s\n' "$install_dir/node_modules/electron"
+    fi
+}
+
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
+_electron_dist_ok() {
+    local install_dir="$1"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    if [ "$OS" = "macos" ]; then
+        [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
+    else
+        [ -e "$electron_dir/dist/electron" ]
+    fi
+}
+
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
+_restore_electron_dist() {
+    local install_dir="$1"
+    local mirror="${2:-}"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    _electron_dist_ok "$install_dir" && return 0
+
+    [ -f "$electron_dir/install.js" ] || return 1
+    command -v node >/dev/null 2>&1 || return 1
+
+    rm -rf "$electron_dir/dist" 2>/dev/null || true
+    rm -f "$electron_dir/path.txt" 2>/dev/null || true
+
+    if [ -n "$mirror" ]; then
+        ( cd "$electron_dir" && ELECTRON_MIRROR="$mirror" node install.js ) || true
+    else
+        ( cd "$electron_dir" && node install.js ) || true
+    fi
+    _electron_dist_ok "$install_dir"
+}
+
+_electron_pkg_staged_missing_dist() {
+    local install_dir="$1"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    [ -f "$electron_dir/package.json" ] && [ -f "$electron_dir/install.js" ] && ! _electron_dist_ok "$install_dir"
+}
+
+_restore_electron_dist_with_fallback() {
+    local install_dir="$1"
+    _restore_electron_dist "$install_dir" \
+        || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
+}
+
+# Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
-# (electron-builder --dir) which emits release/mac*/Hermes.app. Only invoked
+# (electron-builder --dir) which emits an unpacked app for the current OS. Only invoked
 # via the 'desktop' stage / --include-desktop, which the Electron app's own
 # first-launch bootstrap never requests (it must not rebuild itself).
 install_desktop() {
@@ -2336,11 +2471,12 @@ install_desktop() {
     # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
     # failure, not a silent skip — a silent skip yields a "complete" install
     # with no app and a confusing "couldn't find a built desktop" at launch.
-    # Try the Hermes-managed Node first (check_node adds $HERMES_HOME/node/bin
-    # to PATH or installs it) before giving up.
-    if ! command -v npm >/dev/null 2>&1; then
-        check_node
-    fi
+    # Always re-resolve Node here. Stages run in separate processes, so we can't
+    # trust an earlier check; more importantly check_node now enforces the build
+    # floor (^20.19 || >=22.12) and prepends the Hermes-managed Node to PATH, so
+    # the build never runs on a too-old system Node — the cause of the opaque
+    # "Build desktop app … exit code 1" failure (Vite crashes on old Node).
+    check_node
     if ! command -v npm >/dev/null 2>&1; then
         log_error "Cannot build desktop app: Node.js / npm unavailable"
         log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
@@ -2354,41 +2490,132 @@ install_desktop() {
     # 1. Root workspace install so apps/desktop's deps (Electron, Vite,
     #    node-pty prebuilds) resolve. The browser-tools install runs in the
     #    repo-root package workspace, which does not pull apps/* deps.
+    #
+    #    Prefer `npm ci`: it deletes node_modules and reinstalls from the
+    #    lockfile, so it always produces a complete tree. Bare `npm install`
+    #    can report "up to date" against a stale node_modules/.package-lock.json
+    #    marker while node_modules is actually empty (Windows workspace-hoisting
+    #    flake) — leaving tsc/typescript unresolved and `npm run pack`'s
+    #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
+    #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    ( cd "$INSTALL_DIR" && npm install ) || {
+    if ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ); then
+        log_success "Desktop workspace dependencies installed"
+    elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
+        log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+        _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+    else
         log_error "Desktop workspace npm install failed"
+        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
+        # ~/.npm, so this non-root install can't write the shared cache. npm hides
+        # it behind a confusing EEXIST / "File exists" message while the real errno
+        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
+        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
+        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
+        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
+        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+        log_info "Then re-run this installer, or build manually:"
+        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
-    }
-    log_success "Desktop workspace dependencies installed"
+    fi
 
-    # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
-    #    producing an unpacked release/mac*/Hermes.app. We disable signing
-    #    auto-discovery so electron-builder falls back to an ad-hoc signature
-    #    instead of grabbing an unrelated Developer ID from the keychain; a
-    #    real signed/notarized .dmg needs Apple credentials and is a separate
-    #    release concern.
+    # 2. Build, with up to three escalating attempts so a transient/blocked
+    #    Electron download self-heals instead of failing the whole install:
+    #      a) plain `npm run pack` (downloads Electron from GitHub),
+    #      b) on failure, purge a corrupt cached zip + stale unpacked dir and
+    #         retry (matches install.ps1 / `hermes desktop`),
+    #      c) on still-failing, fall back to a public Electron mirror — this is
+    #         the GitHub-blocked/throttled case (the repeating "retrying" log).
     log_info "Building desktop app (this takes 1-3 minutes)..."
-    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
+    local pack_ok=false
+    if _desktop_pack "$desktop_dir"; then
+        pack_ok=true
+    else
+        local purged=""
+        local restored=false
+        if ! _electron_dist_ok "$INSTALL_DIR"; then
+            purged="$(clear_electron_build_cache "$desktop_dir")"
+            if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
+        fi
+        if [ "$restored" = true ]; then
+            log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
+            if _desktop_pack "$desktop_dir"; then
+                pack_ok=true
+            fi
+        fi
+    fi
+
+    # (c) GitHub blocked → mirror fallback (#47266).
+    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
+        log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
+        log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
+        log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+        _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
+        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+            pack_ok=true
+        fi
+    fi
+
+    if [ "$pack_ok" = false ]; then
         log_error "Desktop app build failed"
-        log_info "Run manually: cd $desktop_dir && npm run pack"
+        # If the log shows repeated "retrying" lines fetching the Electron zip,
+        # the binary download is blocked/throttled (firewall, proxy, region) and
+        # the mirror fallback above also couldn't reach a host. Try a mirror you
+        # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
+        log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
+        log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
+        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
         return 1
-    }
+    fi
 
     local app=""
-    local cand
-    for cand in \
-        "$desktop_dir/release/mac-arm64/Hermes.app" \
-        "$desktop_dir/release/mac/Hermes.app"; do
-        if [ -d "$cand" ]; then
-            app="$cand"
-            break
+    if [ "$OS" = "linux" ]; then
+        if [ -x "$desktop_dir/release/linux-unpacked/Hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/Hermes"
+        elif [ -x "$desktop_dir/release/linux-unpacked/hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/hermes"
         fi
-    done
+    else
+        local cand
+        for cand in \
+            "$desktop_dir/release/mac-arm64/Hermes.app" \
+            "$desktop_dir/release/mac/Hermes.app"; do
+            if [ -d "$cand" ]; then
+                app="$cand"
+                break
+            fi
+        done
+    fi
     if [ -z "$app" ]; then
-        log_error "Desktop build completed but no Hermes.app was found under $desktop_dir/release/"
+        log_error "Desktop build completed but no app was found under $desktop_dir/release/"
         return 1
     fi
     log_success "Desktop app built: $app"
+
+    # Linux: Electron's chrome-sandbox helper needs root:root 4755 or the
+    # sandboxed renderer will abort on startup.  Check the file is a regular
+    # file (not a symlink) before chown/chmod so we don't follow an
+    # attacker-controlled link to an arbitrary path.
+    if [ "$OS" = "linux" ]; then
+        local sandbox="$desktop_dir/release/linux-unpacked/chrome-sandbox"
+        if [ -f "$sandbox" ] && [ ! -L "$sandbox" ]; then
+            if [ "$(id -u)" -eq 0 ]; then
+                chown root:root "$sandbox" && chmod 4755 "$sandbox" || {
+                    log_error "Cannot configure Electron sandbox helper: $sandbox"
+                    return 1
+                }
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo chown root:root "$sandbox" && sudo chmod 4755 "$sandbox" || {
+                    log_error "Cannot configure Electron sandbox helper (sudo failed): $sandbox"
+                    return 1
+                }
+            else
+                log_error "Cannot configure Electron sandbox helper without sudo: $sandbox"
+                return 1
+            fi
+        fi
+    fi
 
     # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
     # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
@@ -2505,7 +2732,12 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
-            echo "git" > "$HERMES_HOME/.install_method"
+            # Code-scoped stamp: write next to the install tree, not into
+            # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
+            # bind-mounted into a Docker gateway too), so a stamp there gets
+            # clobbered by the container's 'docker' stamp and wrongly blocks
+            # 'hermes update' on this host install. See detect_install_method().
+            echo "git" > "$INSTALL_DIR/.install_method"
             ;;
         *)
             log_error "Unknown stage: $stage"
@@ -2584,7 +2816,12 @@ main() {
 
     print_success
 
-    echo "git" > "$HERMES_HOME/.install_method"
+    # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
+    # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
+    # gateway too), so a stamp there gets clobbered by the container's 'docker'
+    # stamp and wrongly blocks 'hermes update' on this host install.
+    # See detect_install_method().
+    echo "git" > "$INSTALL_DIR/.install_method"
 }
 
 if [ "$MANIFEST_MODE" = true ]; then

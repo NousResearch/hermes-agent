@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Directory names to skip entirely (matched against each path component)
+# ``hermes-agent`` is special-cased to root level only in ``_should_exclude``
+# so that skill directories like ``skills/autonomous-ai-agents/hermes-agent/``
+# are not accidentally excluded.
 _EXCLUDED_DIRS = {
     "hermes-agent",     # the codebase repo — re-clone instead
     "__pycache__",      # bytecode caches — regenerated on import
@@ -61,6 +64,39 @@ _EXCLUDED_NAMES = {
     "cron.pid",
 }
 
+# File names that ``hermes import`` must never overwrite, matched by basename so
+# they're caught for the root profile (``gateway_state.json``) and for named
+# profiles alike (``profiles/<name>/gateway_state.json``).
+#
+# These hold *volatile gateway/process runtime state that is namespaced to the
+# machine or container the backup was taken on* — PIDs in a dead process
+# namespace, a runtime lock, the process registry, and the gateway's last
+# recorded run/desired state. Restoring them onto a different host (or a hosted
+# container) is at best meaningless and at worst actively harmful:
+#
+#   - ``gateway_state.json`` drives the container-boot reconciler
+#     (``container_boot._read_desired_state``), which only auto-starts a
+#     gateway whose recorded state is ``running``. A backup taken from a
+#     machine where the gateway was stopped (or carrying a stale/foreign
+#     value) overwrites the container's own state and leaves the gateway
+#     stuck "starting"/"cooking", disconnecting it from the Nous portal
+#     (NS-508 / the second half of NS-501).
+#   - ``gateway.pid`` / ``cron.pid`` / ``gateway.lock`` / ``processes.json``
+#     reference PIDs and locks in the *source* machine's process namespace; a
+#     numerically-equal PID in the new environment is a different process.
+#     These mirror exactly what ``container_boot._STALE_RUNTIME_FILES`` already
+#     sweeps on every container boot.
+#
+# Older backups predate the backup-side exclusions, so we filter on import too
+# rather than trusting the archive's contents.
+_IMPORT_SKIP_NAMES = {
+    "gateway_state.json",
+    "gateway.pid",
+    "cron.pid",
+    "gateway.lock",
+    "processes.json",
+}
+
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
 
@@ -69,10 +105,15 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
-    # Any path component matches an excluded dir name
     for part in parts:
-        if part in _EXCLUDED_DIRS:
-            return True
+        if part not in _EXCLUDED_DIRS:
+            continue
+        # ``hermes-agent`` only matches at the root level (first component).
+        # Nested directories with the same name — e.g.
+        # ``skills/autonomous-ai-agents/hermes-agent/`` — must be preserved.
+        if part == "hermes-agent" and part != parts[0]:
+            continue
+        return True
 
     name = rel_path.name
 
@@ -177,10 +218,13 @@ def run_backup(args) -> None:
         rel_dir = dp.relative_to(hermes_root)
 
         # Prune excluded directories in-place so os.walk doesn't descend
+        # ``hermes-agent`` is only pruned at the root level; nested dirs
+        # with the same name (e.g. in skills/) must be preserved.
+        is_root = rel_dir == Path(".")
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS
+            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -211,7 +255,13 @@ def run_backup(args) -> None:
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
                 if abs_path.suffix == ".db":
-                    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                    # Stage the snapshot alongside the output zip so that the
+                    # temp file lives on the same filesystem.  The system
+                    # default (/tmp) may be a small tmpfs that cannot hold
+                    # large databases, causing silent backup incompleteness.
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".db", delete=False, dir=str(out_path.parent)
+                    ) as tmp:
                         tmp_db = Path(tmp.name)
                     if _safe_copy_db(abs_path, tmp_db):
                         zf.write(tmp_db, arcname=str(rel_path))
@@ -368,6 +418,7 @@ def run_import(args) -> None:
 
         errors = []
         restored = 0
+        skipped_runtime: list[str] = []
         t0 = time.monotonic()
 
         for member in members:
@@ -378,6 +429,16 @@ def run_import(args) -> None:
                 rel = member
 
             if not rel:
+                continue
+
+            # Never overwrite volatile gateway/process runtime state. These are
+            # namespaced to the machine/container the backup was taken on;
+            # clobbering them (especially gateway_state.json) breaks the gateway
+            # reconciler on the target and disconnects hosted instances from the
+            # Nous portal. Matched by basename so both the root profile and
+            # named profiles (profiles/<name>/gateway_state.json) are covered.
+            if Path(rel).name in _IMPORT_SKIP_NAMES:
+                skipped_runtime.append(rel)
                 continue
 
             target = hermes_root / rel
@@ -415,6 +476,16 @@ def run_import(args) -> None:
                 print(e)
             if len(errors) > 10:
                 print(f"  ... and {len(errors) - 10} more")
+
+        if skipped_runtime:
+            print(
+                f"\n  Preserved {len(skipped_runtime)} runtime state "
+                f"file(s) (kept this machine's, not the backup's):"
+            )
+            for rel in sorted(skipped_runtime)[:10]:
+                print(f"    {rel}")
+            if len(skipped_runtime) > 10:
+                print(f"    ... and {len(skipped_runtime) - 10} more")
 
         # Post-import: restore profile wrapper scripts
         profiles_dir = hermes_root / "profiles"
@@ -493,6 +564,7 @@ _QUICK_STATE_FILES = (
     "cron/jobs.json",
     "gateway_state.json",
     "channel_directory.json",
+    "channel_aliases.json",
     "processes.json",
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
@@ -853,7 +925,13 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
             for abs_path, rel_path in files_to_add:
                 try:
                     if abs_path.suffix == ".db":
-                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                        # Stage the snapshot alongside the output zip so that the
+                        # temp file lives on the same filesystem.  The system
+                        # default (/tmp) may be a small tmpfs that cannot hold
+                        # large databases, causing silent backup incompleteness.
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".db", delete=False, dir=str(out_path.parent)
+                        ) as tmp:
                             tmp_db = Path(tmp.name)
                         try:
                             if _safe_copy_db(abs_path, tmp_db):

@@ -33,6 +33,7 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 
 
 def _platform_name(platform) -> str:
@@ -74,6 +75,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
     return metadata
+
+
+def _mark_notify_metadata(metadata: dict | None) -> dict:
+    """Clone metadata and mark a user-visible reply as notify-worthy."""
+    notify_metadata = dict(metadata) if metadata else {}
+    notify_metadata["notify"] = True
+    return notify_metadata
 
 
 def _reply_anchor_for_event(event) -> str | None:
@@ -967,14 +975,35 @@ def _media_delivery_denied_paths() -> List[Path]:
 
 
 def _path_under_denied_prefix(resolved: Path) -> bool:
-    """Return True if ``resolved`` lives under a deny-listed system path."""
+    """Return True if ``resolved`` lives under a deny-listed system path.
+
+    One narrow exception: when a denied prefix IS the running user's own home,
+    the home itself is not treated as denied. ``/root`` is on the system-path
+    denylist so that a non-root gateway can't deliver another user's home, but
+    on a root-run gateway ``$HOME=/root`` and the operator's own deliverables
+    (``/root/work/proposal.docx``) live directly under it. The credential
+    sub-directories inside home (``~/.ssh``, ``~/.aws``, ...) and Hermes
+    secrets (``~/.hermes/.env``, ``auth.json``) are *separate, more-specific*
+    denied paths, so they stay blocked regardless of this exception — it can
+    only un-block a plain file sitting in the running user's home tree, never a
+    credential location or another user's home.
+    """
+    try:
+        home = Path(os.path.expanduser("~")).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        home = None
     for denied in _media_delivery_denied_paths():
         try:
             resolved_denied = denied.expanduser().resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
-        if _path_is_within(resolved, resolved_denied) or resolved == resolved_denied:
-            return True
+        if not (_path_is_within(resolved, resolved_denied) or resolved == resolved_denied):
+            continue
+        # Allow the running user's own home tree; its credential sub-dirs are
+        # caught by their own (more-specific) denylist entries above.
+        if home is not None and resolved_denied == home:
+            continue
+        return True
     return False
 
 
@@ -1106,8 +1135,11 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ini": "text/plain",
     ".cfg": "text/plain",
     ".zip": "application/zip",
+    ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".ts": "text/plain",
     ".py": "text/plain",
@@ -1263,6 +1295,107 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
             except OSError:
                 pass
     return removed
+
+
+# ---------------------------------------------------------------------------
+# Unified media caching
+#
+# One entry point for "I have raw attachment bytes from a platform — cache them
+# and tell me what I got." Classifies by extension/MIME against the shared
+# registries above, routes to the right cache_*_from_bytes helper, and returns
+# a small result the caller can store and/or describe in a transcript. Used by
+# both the addressed-message path and the observed-group-context path, on any
+# platform — not Telegram-specific.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CachedMedia:
+    """Result of caching one attachment's bytes."""
+
+    path: str                 # absolute cache path, agent-visible (sandbox-translated)
+    media_type: str           # MIME type recorded on the MessageEvent
+    kind: str                 # "image" | "video" | "audio" | "document"
+    display_name: str         # human-readable name for transcript notes
+
+    def context_note(self) -> str:
+        """One-line transcript annotation pointing the agent at the file."""
+        return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
+
+
+def _resolve_media_ext(filename: str, mime_type: str) -> str:
+    """Best-effort file extension from filename, then MIME fallback."""
+    if filename:
+        ext = os.path.splitext(filename)[1].lower()
+        if ext:
+            return ext
+    mime = (mime_type or "").lower()
+    if not mime:
+        return ""
+    for table in (
+        SUPPORTED_IMAGE_DOCUMENT_TYPES,
+        SUPPORTED_VIDEO_TYPES,
+        SUPPORTED_DOCUMENT_TYPES,
+    ):
+        for ext, m in table.items():
+            if m == mime:
+                return ext
+    return ""
+
+
+def cache_media_bytes(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Classify and cache raw attachment bytes; return a CachedMedia or None.
+
+    ``default_kind`` ("image"/"video"/"audio"/"document") biases classification
+    when the extension/MIME are ambiguous — e.g. a Telegram native photo whose
+    file has no usable name. Unsupported document types return None so the
+    caller can record an "unsupported" note. Images that fail validation
+    (``cache_image_from_bytes`` raises ValueError) also return None.
+    """
+    from tools.credential_files import to_agent_visible_cache_path
+
+    ext = _resolve_media_ext(filename, mime_type)
+    mime = (mime_type or "").lower()
+    display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
+
+    is_image = (
+        mime.startswith("image/")
+        or ext in SUPPORTED_IMAGE_DOCUMENT_TYPES
+        or default_kind == "image"
+    )
+    is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
+    is_audio = mime.startswith("audio/") or default_kind == "audio"
+
+    if is_image:
+        img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
+        try:
+            path = cache_image_from_bytes(data, ext=img_ext)
+        except ValueError:
+            return None
+        out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "image", display)
+
+    if is_video:
+        vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
+        path = cache_video_from_bytes(data, ext=vid_ext)
+        return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
+
+    if is_audio:
+        aud_ext = ext if ext in {".ogg", ".mp3", ".wav", ".m4a", ".opus", ".flac"} else ".ogg"
+        path = cache_audio_from_bytes(data, ext=aud_ext)
+        out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
+
+    if ext not in SUPPORTED_DOCUMENT_TYPES:
+        return None
+
+    path = cache_document_from_bytes(data, filename or f"document{ext}")
+    return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_DOCUMENT_TYPES[ext], "document", display or f"document{ext}")
 
 
 class MessageType(Enum):
@@ -1422,6 +1555,13 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+    # Adapter-specific metadata.  Cross-layer contracts that affect delivery
+    # semantics must be documented at the producer and consumer sites.  Current
+    # known contract: Telegram edit overflow partials set
+    # raw_response["partial_overflow"] with delivered_chunks, total_chunks,
+    # last_message_id, delivered_prefix, and continuation_message_ids so the
+    # stream consumer can send the missing tail instead of marking a clipped
+    # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
@@ -1644,6 +1784,22 @@ def resolve_channel_skills(
     return None
 
 
+def _strip_media_directives(text: str) -> str:
+    """Strip internal delivery directives ([[audio_as_voice]], [[as_document]],
+    MEDIA:<path>) so they never render as visible text.
+
+    Backstop only: run ``extract_media`` first. MEDIA cleanup uses the shared
+    ``MEDIA_TAG_CLEANUP_RE`` (only tags whose path has a known deliverable
+    extension are removed; an unknown-extension tag is intentionally left so the
+    bare-path detector downstream can still pick it up, per #34517). [[...]] is
+    exact.
+    """
+    if not text:
+        return text
+    text = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+    return MEDIA_TAG_CLEANUP_RE.sub("", text)
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
@@ -1654,7 +1810,29 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
-    
+
+    # Whether this platform renders triple-backtick fenced code blocks (i.e.
+    # ``format_message`` translates/preserves markdown fences into a real code
+    # block).  Capability flag for markdown-aware presentation choices.
+    # Default False (plain-text platforms); markdown-rendering adapters set True.
+    # Tool-progress uses this to render a terminal command as a bare fenced code
+    # block (no language tag — Slack mrkdwn would print the tag as a literal
+    # first code line).  Plain-text platforms fall back to the short truncated
+    # preview (see gateway/run.py progress_callback).
+    supports_code_blocks: bool = False
+
+    # The command prefix users can always TYPE on this platform to reach
+    # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
+    # as plain message text).  Platforms where typing a leading "/" is
+    # intercepted or restricted by the client (Slack blocks native slash
+    # commands inside threads; Matrix clients reserve "/" for client-local
+    # commands) ship a "!" alias rewrite in their adapter and set this to
+    # "!" so user-facing instruction text ("Reply `!approve` ...") tells
+    # users the form that actually works everywhere.  Capability flag —
+    # shared prompt builders read it via getattr(adapter,
+    # "typed_command_prefix", "/"); no per-platform branching at call sites.
+    typed_command_prefix: str = "/"
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -1679,9 +1857,14 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Legacy busy_text_mode env var; when unset the runner syncs the
+        # resolved value (driven by busy_input_mode) onto the adapter after
+        # construction (gateway/run.py). Default to "interrupt" so a stray
+        # pre-sync read matches the single-knob default rather than silently
+        # queueing.
         self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue").strip().lower()
-            or "queue"
+            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower()
+            or "interrupt"
         )
         self._busy_text_debounce_seconds: float = _float_env(
             "HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35
@@ -1734,22 +1917,27 @@ class BasePlatformAdapter(ABC):
     def enforces_own_access_policy(self) -> bool:
         """Whether this adapter gates inbound access before dispatch.
 
-        Some adapters (WeCom, Weixin, Yuanbao, QQBot) implement a documented
-        config-driven access surface — ``dm_policy`` / ``group_policy`` /
+        Some adapters (WeCom, Weixin, Yuanbao, QQBot, WhatsApp) implement a
+        documented config-driven access surface — ``dm_policy`` / ``group_policy`` /
         ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.
 
-        The gateway's env-based allowlist check runs *after* the adapter, so for
-        these platforms a message arriving at ``_is_user_authorized`` has, by
-        definition, already been authorized by the adapter. Without this flag the
-        gateway would then deny it again (no env allowlist → default deny),
-        silently breaking ``dm_policy: open`` and config-only allowlists.
+        The gateway's env-based allowlist check runs *after* the adapter. When
+        no env allowlist is configured, the gateway consults this flag so it can
+        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` (which the
+        adapter already enforced) instead of double-denying it. Crucially, the
+        flag alone is NOT "already authorized": these adapters default
+        ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
+        sender, so the gateway trusts the adapter only when its effective policy
+        for the chat type is an actual ``"allowlist"`` restriction — never for
+        ``"open"`` (that would be the network-exposed fail-open SECURITY.md §2.6
+        forbids). Open access still requires an explicit
+        ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
 
         Adapters that own their access policy override this to return ``True``.
-        The gateway treats that as "already authorized at intake" and skips the
-        env-allowlist default-deny. Adapters that delegate access control to the
-        gateway leave it ``False`` (the default).
+        Adapters that delegate access control to the gateway leave it ``False``
+        (the default).
         """
         return False
 
@@ -1771,6 +1959,46 @@ class BasePlatformAdapter(ABC):
         False or when ``send_draft`` raises.
         """
         return False
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Whether the stream consumer should finalize a streamed reply by
+        sending a *fresh* final message (and deleting the preview) instead of
+        final-editing the preview.
+
+        Some adapters can send richer final messages than their current edit
+        implementation supports. Telegram is the motivating case: Hermes sends
+        final replies through ``sendRichMessage`` but still finalizes streamed
+        previews through its existing MarkdownV2 edit path until Bot API 10.1's
+        ``rich_message`` edit parameter is wired directly. Such adapters
+        override this to ask the consumer to re-deliver the completed answer as
+        a new rich message and best-effort delete the stale preview, so the
+        final rendering matches the rich send path.
+
+        Default implementation returns False — legacy platforms keep the
+        edit-in-place finalization path.
+        """
+        return False
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """Max single-message length (in this adapter's ``message_len_fn``
+        units) the stream consumer may accumulate before it splits, when the
+        adapter can deliver a larger message than its legacy per-message limit.
+
+        Telegram Bot API 10.1 Rich Messages accept up to 32,768 chars in a
+        single ``sendRichMessage`` / ``sendRichMessageDraft``, far above the
+        4,096 MarkdownV2 limit.  Adapters with such a richer send/draft path
+        override this so the consumer doesn't fragment a reply that fits one
+        rich message; the live edit preview is still bound by the platform's
+        edit limit, but the finalized reply (and DM draft preview) is delivered
+        whole.
+
+        Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
+        """
+        return None
 
     async def send_draft(
         self,
@@ -1798,6 +2026,84 @@ class BasePlatformAdapter(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement send_draft"
         )
+
+    # ── Structured stream-event rendering ────────────────────────────────
+    #
+    # These methods let an adapter decide *how* to present each structured
+    # streaming event (see gateway/stream_events.py).  The default
+    # implementations reproduce the historical behavior exactly: assistant
+    # text/commentary/segment events delegate to the stream consumer, and
+    # tool events render the same "emoji tool_name: preview" chrome the
+    # gateway has always produced.  Adapters override these to be more native
+    # to their platform (e.g. Telegram streaming a MarkdownV2 ```bash``` block
+    # as a draft; iMessage eating tool chrome it cannot format).
+    #
+    # The contract is presentation-only: nothing rendered here is persisted to
+    # conversation history.  History is owned by the agent; what an adapter
+    # chooses to "eat" must never change the bytes the agent stored.
+
+    def render_message_event(self, event: Any, sink: Any) -> None:
+        """Render a MessageChunk / MessageStop / Commentary onto the sink.
+
+        Default: map onto the stream consumer's existing primitives, preserving
+        today's behavior 1:1.  ``sink`` is a GatewayStreamConsumer.
+        """
+        from gateway.stream_events import MessageChunk, MessageStop, Commentary
+
+        if isinstance(event, MessageChunk):
+            if event.text:
+                sink.on_delta(event.text)
+        elif isinstance(event, MessageStop):
+            # An intermediate stop (text → tool → text) is a segment break;
+            # the terminal stop is signalled by the gateway via finish(),
+            # not here, so we only break segments on non-final stops.
+            if not event.final:
+                sink.on_segment_break()
+        elif isinstance(event, Commentary):
+            if event.text:
+                sink.on_commentary(event.text)
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> Optional[str]:
+        """Return the rendered chrome for a ToolCallChunk, or None to eat it.
+
+        Reproduces the gateway's historical tool-progress formatting: an emoji
+        for the tool, the tool name, and a short argument preview (or the full
+        args dict in ``verbose`` mode).  Adapters that cannot render tool chrome
+        (no message editing, plain-text only) should override to return None so
+        the event is dropped rather than spamming separate bubbles.
+
+        ``mode`` is the resolved tool-progress mode ("all" / "new" / "verbose");
+        ``preview_max_len`` mirrors the ``tool_preview_length`` config (0 means
+        "no cap" in verbose mode).
+        """
+        from gateway.stream_events import ToolCallChunk
+        if not isinstance(event, ToolCallChunk):
+            return None
+
+        from agent.display import get_tool_emoji
+        emoji = get_tool_emoji(event.tool_name, default="⚙️")
+
+        if mode == "verbose":
+            if event.args:
+                import json
+                args_str = json.dumps(event.args, ensure_ascii=False, default=str)
+                if preview_max_len > 0 and len(args_str) > preview_max_len:
+                    args_str = args_str[:preview_max_len - 3] + "..."
+                return f"{emoji} {event.tool_name}({list(event.args.keys())})\n{args_str}"
+            if event.preview:
+                return f"{emoji} {event.tool_name}: \"{event.preview}\""
+            return f"{emoji} {event.tool_name}..."
+
+        # "all" / "new": short preview, capped (default 40 to keep gateway
+        # progress bubbles compact — they persist as permanent messages).
+        preview = event.preview
+        if preview:
+            cap = preview_max_len if preview_max_len > 0 else 40
+            if len(preview) > cap:
+                preview = preview[:cap - 3] + "..."
+            return f"{emoji} {event.tool_name}: \"{preview}\""
+        return f"{emoji} {event.tool_name}..."
 
     @property
     def has_fatal_error(self) -> bool:
@@ -2800,6 +3106,17 @@ class BasePlatformAdapter(ABC):
             expanded = os.path.expanduser(raw)
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
+            else:
+                # The reply mentions a deliverable-looking path that does not
+                # exist on disk, so it is silently dropped from native delivery.
+                # This is the most common reason a promised file never arrives
+                # (the model said "here's your file" but never wrote it, or
+                # referenced the wrong path). Log it so the gap is visible in
+                # gateway.log rather than vanishing without a trace.
+                logger.info(
+                    "Skipping bare file path in reply (no file on disk): %s",
+                    _log_safe_path(raw),
+                )
 
         # Deduplicate by expanded path, preserving discovery order
         seen: set = set()
@@ -2899,6 +3216,38 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(chat_id)
                 except Exception:
                     pass
+            self._typing_paused.discard(chat_id)
+
+    async def _stop_typing_refresh(
+        self,
+        chat_id: str,
+        typing_task: asyncio.Task | None = None,
+        *,
+        timeout: float = 0.5,
+        stop_attempts: int = 2,
+    ) -> None:
+        """Stop the refresh task and platform typing state as one operation."""
+        self._typing_paused.add(chat_id)
+        try:
+            if typing_task is not None and not typing_task.done():
+                typing_task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(typing_task), timeout=timeout)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    # The task is cancelled; don't let a slow adapter-specific
+                    # cleanup block response delivery or shutdown.
+                    pass
+            if not hasattr(self, "stop_typing"):
+                return
+            attempts = max(1, stop_attempts)
+            for attempt in range(attempts):
+                try:
+                    await self.stop_typing(chat_id)
+                except Exception:
+                    pass
+                if attempt < attempts - 1:
+                    await asyncio.sleep(0)
+        finally:
             self._typing_paused.discard(chat_id)
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
@@ -3179,7 +3528,7 @@ class BasePlatformAdapter(ABC):
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
         """Return True for normal text eligible for queue-mode debounce."""
         result = (
-            getattr(self, "_busy_text_mode", "queue") == "queue"
+            getattr(self, "_busy_text_mode", "interrupt") == "queue"
             and event.message_type == MessageType.TEXT
             and not getattr(event, "internal", False)
             and not event.is_command()
@@ -3547,7 +3896,7 @@ class BasePlatformAdapter(ABC):
                     chat_id=event.source.chat_id,
                     content=_text,
                     reply_to=_reply_anchor_for_event(event),
-                    metadata=thread_meta,
+                    metadata=_mark_notify_metadata(thread_meta),
                 )
                 if _eph_ttl > 0 and _r.success and _r.message_id:
                     self._schedule_ephemeral_delete(
@@ -3653,7 +4002,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             content=_text,
                             reply_to=_reply_anchor_for_event(event),
-                            metadata=_thread_meta,
+                            metadata=_mark_notify_metadata(_thread_meta),
                         )
                         if _eph_ttl > 0 and _r.success and _r.message_id:
                             self._schedule_ephemeral_delete(
@@ -3703,7 +4052,7 @@ class BasePlatformAdapter(ABC):
                                 chat_id=event.source.chat_id,
                                 content=_text,
                                 reply_to=_reply_anchor_for_event(event),
-                                metadata=_thread_meta,
+                                metadata=_mark_notify_metadata(_thread_meta),
                             )
                             if _eph_ttl > 0 and _r.success and _r.message_id:
                                 self._schedule_ephemeral_delete(
@@ -3830,14 +4179,10 @@ class BasePlatformAdapter(ABC):
         )
 
         async def _stop_typing_task() -> None:
-            typing_task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                # Cancellation cleanup must not block adapter shutdown.  The
-                # typing task is already cancelled; if the parent task is also
-                # cancelling, let this message-processing task unwind now.
-                pass
+            await self._stop_typing_refresh(
+                event.source.chat_id,
+                typing_task,
+            )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -3884,21 +4229,20 @@ class BasePlatformAdapter(ABC):
                 # where Telegram's sendPhoto recompression destroys legibility.
                 force_document_attachments = "[[as_document]]" in response
 
+                # Pre-extract snapshot for the #29346 recovery/invariant below.
+                _response_pre_extract = response
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
-                # Strip any remaining internal directives from message body (fixes #1561)
-                text_content = text_content.replace("[[audio_as_voice]]", "").strip()
-                text_content = text_content.replace("[[as_document]]", "").strip()
-                # Strip only MEDIA: tags whose path has a deliverable extension
-                # (shared MEDIA_TAG_CLEANUP_RE). A MEDIA: tag with an unknown
-                # extension is intentionally left in the body so extract_local_files
-                # below can still pick up the bare path — otherwise the file would
-                # be silently dropped (issue #34517).
-                text_content = MEDIA_TAG_CLEANUP_RE.sub("", text_content).strip()
+                # Strip any remaining internal directives from message body (fixes #1561).
+                # _strip_media_directives shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag
+                # with an unknown extension is intentionally left in the body for
+                # extract_local_files below to pick up rather than silently dropped (#34517).
+                text_content = _strip_media_directives(text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
@@ -3912,7 +4256,31 @@ class BasePlatformAdapter(ABC):
                     local_files = self.filter_local_delivery_paths(local_files)
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
-                
+
+                # A2 (#29346): extraction can reduce a non-empty response to
+                # empty text with no attachment, and the `if text_content` guard
+                # below then drops it silently. Recover on every platform (#33842
+                # was Discord-only); the guard avoids duplicating an attachment.
+                if not (text_content or images or local_files or media_files):
+                    # Recover from the post-extract_media `response`, not the raw
+                    # snapshot: extract_media already stripped MEDIA (incl. spaced
+                    # paths) with its full grammar, so no fragment can leak.
+                    _recovered = _strip_media_directives(response).strip()
+                    if _recovered:
+                        logger.warning(
+                            "[%s] response_delivery_recovered: extract pipeline "
+                            "reduced a non-empty response (%d chars) to empty with "
+                            "no attachment; delivering recovered original to %s",
+                            self.name, len(_response_pre_extract), event.source.chat_id,
+                        )
+                        text_content = _recovered
+
+                # Final user-visible content (text, TTS, media, files) gets
+                # the existing notify=True marker. Clone once so typing/status
+                # metadata stays unmarked and progress bubbles remain
+                # thread-strict.
+                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
@@ -3952,7 +4320,7 @@ class BasePlatformAdapter(ABC):
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                         )
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
@@ -3967,23 +4335,11 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
-                    # Mark final response messages for notification delivery.
-                    # Platform adapters that support per-message notification
-                    # control (e.g. Telegram's disable_notification) use this
-                    # flag to override silent-mode and ensure the final
-                    # response triggers a push notification.
-                    # Clone to avoid mutating the metadata shared with the
-                    # typing-indicator task (which must remain unmarked).
-                    if _thread_metadata is not None:
-                        _thread_metadata = dict(_thread_metadata)
-                        _thread_metadata["notify"] = True
-                    else:
-                        _thread_metadata = {"notify": True}
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=_reply_anchor,
-                        metadata=_thread_metadata,
+                        metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
 
@@ -4012,7 +4368,7 @@ class BasePlatformAdapter(ABC):
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
@@ -4054,7 +4410,7 @@ class BasePlatformAdapter(ABC):
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
-                            metadata=_thread_metadata,
+                            metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
@@ -4069,19 +4425,19 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
 
                         if not media_result.success:
@@ -4099,16 +4455,30 @@ class BasePlatformAdapter(ABC):
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                         else:
                             await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
-                                metadata=_thread_metadata,
+                                metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+                # A3 (#29346): if a non-empty response produced nothing
+                # deliverable, fail loudly rather than dropping it in silence.
+                _anything_delivered = (
+                    delivery_attempted or _tts_caption_delivered
+                    or images or local_files or media_files
+                )
+                if not _anything_delivered and _response_pre_extract.strip():
+                    logger.error(
+                        "[%s] response_delivery_dropped: non-empty response "
+                        "(%d chars) produced no delivered message or attachment "
+                        "for %s (empty after extract, recovery yielded nothing).",
+                        self.name, len(_response_pre_extract), event.source.chat_id,
+                    )
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
@@ -4189,6 +4559,10 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Stop typing before any deferred callback work.  Post-delivery
+            # callbacks may perform platform I/O; a stuck callback must not
+            # leave the typing refresh task running indefinitely.
+            await _stop_typing_task()
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -4216,18 +4590,20 @@ class BasePlatformAdapter(ABC):
                 try:
                     _post_result = _post_cb()
                     if inspect.isawaitable(_post_result):
-                        await _post_result
-                except Exception:
+                        await asyncio.wait_for(
+                            _post_result,
+                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                        )
+                except (asyncio.TimeoutError, Exception):
                     pass
-            # Stop typing indicator
-            await _stop_typing_task()
-            # Also cancel any platform-level persistent typing tasks (e.g. Discord)
-            # that may have been recreated by _keep_typing after the last stop_typing()
-            try:
-                if hasattr(self, "stop_typing"):
-                    await self.stop_typing(event.source.chat_id)
-            except Exception:
-                pass
+            # Some adapters keep platform-level typing tasks.  If callback
+            # work or a late refresh recreated one, make one final bounded stop
+            # before releasing the session guard.
+            await self._stop_typing_refresh(
+                event.source.chat_id,
+                None,
+                stop_attempts=1,
+            )
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
             await self._flush_text_debounce_now(session_key)
@@ -4378,6 +4754,7 @@ class BasePlatformAdapter(ABC):
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        role_authorized: bool = False,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -4398,6 +4775,7 @@ class BasePlatformAdapter(ABC):
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
+            role_authorized=role_authorized,
         )
     
     @abstractmethod

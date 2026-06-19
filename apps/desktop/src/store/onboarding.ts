@@ -18,6 +18,7 @@ import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/t
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
+type LoopbackStart = Extract<OAuthStartResponse, { flow: 'loopback' }>
 
 export type OnboardingMode = 'apikey' | 'oauth'
 
@@ -26,6 +27,10 @@ export type OnboardingFlow =
   | { provider: OAuthProvider; status: 'starting' }
   | { code: string; provider: OAuthProvider; start: PkceStart; status: 'awaiting_user' }
   | { copied: boolean; provider: OAuthProvider; start: DeviceStart; status: 'polling' }
+  // Loopback PKCE (xAI Grok): browser opens, the local backend's 127.0.0.1
+  // listener catches the redirect, and we poll until the worker finishes.
+  // No code to paste and no user_code to show — just a waiting state.
+  | { provider: OAuthProvider; start: LoopbackStart; status: 'awaiting_browser' }
   | { provider: OAuthProvider; start: OAuthStartResponse; status: 'submitting' }
   | { copied: boolean; provider: OAuthProvider; status: 'external_pending' }
   | { provider: OAuthProvider; status: 'success' }
@@ -55,11 +60,23 @@ export interface DesktopOnboardingState {
   providers: null | OAuthProvider[]
   reason: null | string
   requested: boolean
+  /** True when the user explicitly chose "I'll choose a provider later" on the
+   *  first-run picker. Persisted to localStorage so the blocking overlay never
+   *  re-nags on subsequent launches — the user can connect a provider any time
+   *  from Settings → Providers (or the model picker's "Add provider"). Distinct
+   *  from `configured`: the app still has no usable provider, so chat won't work
+   *  until one is connected; we just stop forcing the choice up front. */
+  firstRunSkipped: boolean
   /** True when the user explicitly opened the provider selector to add /
    *  switch providers from an already-configured app (e.g. via the model
    *  picker's "Add provider" button). Forces the overlay to show the picker
    *  even when configured === true, and adds a close affordance. */
   manual: boolean
+  /** True when the overlay was opened specifically to configure a local /
+   *  custom OpenAI-compatible endpoint (e.g. from Settings → Model's "Set up
+   *  custom endpoint"). Forces the API-key form with the local option
+   *  preselected instead of the OAuth picker. */
+  localEndpoint: boolean
 }
 
 export interface OnboardingContext {
@@ -68,9 +85,11 @@ export interface OnboardingContext {
 }
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
+const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
-const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
+export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
+export const DEFAULT_MANUAL_ONBOARDING_REASON = 'Add or switch inference provider.'
 
 function readCachedConfigured(): boolean | null {
   if (typeof window === 'undefined') {
@@ -100,6 +119,34 @@ function writeCachedConfigured(value: boolean) {
   }
 }
 
+function readCachedSkipped(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    return window.localStorage.getItem(SKIP_CACHE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeCachedSkipped(value: boolean) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    if (value) {
+      window.localStorage.setItem(SKIP_CACHE_KEY, '1')
+    } else {
+      window.localStorage.removeItem(SKIP_CACHE_KEY)
+    }
+  } catch {
+    // localStorage unavailable — degrade silently.
+  }
+}
+
 const INITIAL: DesktopOnboardingState = {
   configured: readCachedConfigured(),
   flow: { status: 'idle' },
@@ -107,7 +154,9 @@ const INITIAL: DesktopOnboardingState = {
   providers: null,
   reason: null,
   requested: false,
-  manual: false
+  firstRunSkipped: readCachedSkipped(),
+  manual: false,
+  localEndpoint: false
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -120,7 +169,8 @@ const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const patch = (update: Partial<DesktopOnboardingState>) =>
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), ...update })
 
-const setFlow = (flow: OnboardingFlow) => patch({ flow })
+const setFlow = (flow: OnboardingFlow) =>
+  patch(flow.status === 'idle' ? { flow } : { flow, reason: null })
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
 
@@ -217,8 +267,10 @@ async function fetchProviderDefaultModel(
   // free user gets a free model rather than a paid default like opus). Fall
   // back to the first curated model if the endpoint can't resolve one.
   let defaultModel = String(models[0])
+
   try {
     const recommended = await getRecommendedDefaultModel(String(matched.slug))
+
     if (recommended.model && models.map(String).includes(recommended.model)) {
       defaultModel = recommended.model
     } else if (recommended.model) {
@@ -248,12 +300,16 @@ async function completeWithModelConfirm(
   ctx: OnboardingContext,
   providerLabel: string,
   preferredSlugs: string[],
-  onFail: (reason: null | string) => void
+  onFail: (reason: null | string) => void,
+  // When true, a failing runtime check no longer blocks progression — the
+  // user is allowed through onboarding regardless. Used by the API-key path,
+  // where we intentionally don't validate the key (it blocked too many users).
+  ignoreRuntimeGate = false
 ) {
   await ctx.requestGateway('reload.env').catch(() => undefined)
   const runtime = await checkRuntime(ctx)
 
-  if (!runtime.ready) {
+  if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
     return
@@ -283,6 +339,7 @@ async function completeWithModelConfirm(
       provider: defaults.providerSlug,
       model: defaults.defaultModel
     })
+
     notifyGatewayTools(res.gateway_tools)
   } catch {
     // Persistence failed — still show the confirm card so the user can
@@ -337,26 +394,77 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason = 'Add or switch inference provider.') {
+export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON) {
   patch({
     manual: true,
     requested: true,
-    reason: reason.trim() || DEFAULT_ONBOARDING_REASON,
+    localEndpoint: false,
+    // `null` opts out of the prompt banner entirely (e.g. when the user already
+    // picked a specific provider and we auto-start its sign-in).
+    reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
     flow: { status: 'idle' }
   })
   void refreshProviders()
+}
+
+// Open the onboarding overlay directly on the local / custom endpoint form
+// (URL + optional API key), bypassing the OAuth picker. Used by Settings →
+// Model's "Set up custom endpoint" so it lands on a form that can actually
+// configure the endpoint instead of dead-ending on the OAuth provider list
+// (`custom` is not an OAuth provider, so the generic manual flow would just
+// re-show the picker — the original "booted back to the first screen" loop).
+export function startManualLocalEndpoint(reason: null | string = null) {
+  pendingProviderOAuthId = null
+  patch({
+    manual: true,
+    requested: true,
+    localEndpoint: true,
+    mode: 'apikey',
+    reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
+    flow: { status: 'idle' }
+  })
+}
+
+// One-shot hand-off used when the dedicated Providers settings page launches a
+// specific provider's sign-in: we open the manual onboarding overlay AND
+// remember which provider to start, so the overlay drives that exact OAuth
+// flow instead of re-showing the picker the user just clicked through.
+// Module-level (not store state) because it's consumed immediately on the next
+// overlay render and never needs to persist or re-render anything itself.
+let pendingProviderOAuthId: null | string = null
+
+export function startManualProviderOAuth(providerId: string, reason: null | string = null) {
+  pendingProviderOAuthId = providerId
+  startManualOnboarding(reason)
+}
+
+// Read the pending provider id without clearing it. The overlay only clears it
+// (via clearPendingProviderOAuth) once it has actually launched that provider,
+// so a transient empty/failed provider fetch doesn't drop the hand-off and the
+// deep-link can still auto-start after the list loads.
+export function peekPendingProviderOAuth(): null | string {
+  return pendingProviderOAuthId
+}
+
+export function clearPendingProviderOAuth() {
+  pendingProviderOAuthId = null
 }
 
 // Dismiss a manually-opened provider selector without touching the existing
 // (working) configuration. Only valid in the manual path — the unconfigured
 // first-run flow has no close affordance because the app can't run yet.
 export function closeManualOnboarding() {
-  patch({ manual: false, requested: false, flow: { status: 'idle' } })
+  pendingProviderOAuthId = null
+
+  patch({ manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
 }
 
 export function completeDesktopOnboarding() {
   clearPoll()
   writeCachedConfigured(true)
+  // A real provider is now connected, so any earlier "choose later" skip is
+  // moot — clear it so the flag never lingers in a configured install.
+  writeCachedSkipped(false)
   $desktopOnboarding.set({
     configured: true,
     flow: { status: 'idle' },
@@ -364,8 +472,22 @@ export function completeDesktopOnboarding() {
     providers: null,
     reason: null,
     requested: false,
-    manual: false
+    firstRunSkipped: false,
+    manual: false,
+    localEndpoint: false
   })
+}
+
+// "I'll choose a provider later" on the first-run picker. Persists the skip so
+// the blocking overlay never re-nags on future launches, and dismisses it now
+// so the user lands in the app. Chat won't work until a provider is connected
+// (from Settings → Providers or the model picker's "Add provider") — this only
+// stops forcing the choice up front. Distinct from completeDesktopOnboarding,
+// which marks the app actually configured.
+export function dismissFirstRunOnboarding() {
+  clearPoll()
+  writeCachedSkipped(true)
+  patch({ firstRunSkipped: true, requested: false, manual: false, localEndpoint: false, flow: { status: 'idle' } })
 }
 
 export function setOnboardingMode(mode: OnboardingMode) {
@@ -379,6 +501,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   // list is loaded and show the picker.
   if ($desktopOnboarding.get().manual) {
     await refreshProviders()
+
     return false
   }
 
@@ -406,6 +529,26 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   return false
 }
 
+// Open a sign-in URL via the desktop bridge, falling back to window.open
+// when the bridge isn't present (e.g. the web dashboard / dev preview) so
+// the flow never silently stalls in a waiting state. Mirrors the pattern in
+// apps/desktop/src/app/artifacts/index.tsx.
+async function openSignInUrl(url: string) {
+  if (window.hermesDesktop?.openExternal) {
+    try {
+      await window.hermesDesktop.openExternal(url)
+
+      return
+    } catch {
+      // Bridge present but failed (no OS handler, user denied, etc.). Fall
+      // through to window.open so the sign-in URL still opens and the flow
+      // doesn't strand a pending OAuth session in a waiting state.
+    }
+  }
+
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
   clearPoll()
 
@@ -419,7 +562,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
 
   try {
     const start = await startOAuthLogin(provider.id)
-    await window.hermesDesktop?.openExternal(start.flow === 'pkce' ? start.auth_url : start.verification_url)
+    const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
+    await openSignInUrl(browserUrl)
 
     if (start.flow === 'pkce') {
       setFlow({ status: 'awaiting_user', provider, start, code: '' })
@@ -427,14 +571,26 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       return
     }
 
+    if (start.flow === 'loopback') {
+      // No code to paste: the redirect lands on the backend's loopback
+      // listener. Just wait and poll the session until the worker finishes.
+      setFlow({ status: 'awaiting_browser', provider, start })
+      pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
+
+      return
+    }
+
     setFlow({ status: 'polling', provider, start, copied: false })
-    pollTimer = window.setInterval(() => void pollDevice(provider, start, ctx), POLL_MS)
+    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
     setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
   }
 }
 
-async function pollDevice(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext) {
+// Poll a session-backed flow (device_code or loopback) until it resolves.
+// Both shapes only need the session_id to poll; the start is threaded
+// through to the error flow so the user can retry from the same context.
+async function pollSession(provider: OAuthProvider, start: DeviceStart | LoopbackStart, ctx: OnboardingContext) {
   try {
     const { error_message, status } = await pollOAuthSession(provider.id, start.session_id)
 
@@ -571,30 +727,37 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
   )
 }
 
-export async function saveOnboardingApiKey(envKey: string, value: string, label: string, ctx: OnboardingContext) {
+export async function saveOnboardingApiKey(
+  envKey: string,
+  value: string,
+  label: string,
+  ctx: OnboardingContext,
+  // Optional endpoint key — only meaningful for the "Local / custom endpoint"
+  // option, whose primary `value` is the base URL. Ignored for plain API-key
+  // providers (their key IS `value`).
+  endpointApiKey?: string
+) {
   const trimmed = value.trim()
 
   if (!trimmed) {
     return { ok: false, message: 'Enter a value first.' }
   }
 
-  // Live-probe the credential BEFORE persisting so a mistyped key never lands
-  // in .env. A rejected key (reachable && !ok) hard-blocks; an unreachable
-  // probe (offline / provider down) falls through and saves with the usual
-  // runtime check, so we don't strand offline users.
-  try {
-    const probe = await validateProviderCredential(envKey, trimmed)
-    if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || `That ${label} key was rejected.` }
-    }
-  } catch {
-    // Validation endpoint unavailable — don't block; fall through to save.
+  // The "Local / custom endpoint" option carries a base URL (in `value`) plus
+  // an optional API key. It must be wired into config (provider=custom +
+  // base_url + model + api_key), not dropped into .env — runtime resolution
+  // ignores OPENAI_BASE_URL.
+  if (envKey === 'OPENAI_BASE_URL') {
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
   }
 
+  // No key validation here on purpose: we previously live-probed the key and
+  // hard-blocked on a runtime check after saving, which rejected too many
+  // legitimate users (corporate proxies, regional blocks, flaky/rate-limited
+  // provider probes, self-hosted endpoints). We now save the value as-is and
+  // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
     await setEnvVar(envKey, trimmed)
-    let stillFailing = false
-    let runtimeFailure: null | string = null
     // For API-key flows we don't have a definitive provider id (the
     // user picked which API key they're entering, but the corresponding
     // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
@@ -602,23 +765,88 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
     // fetchProviderDefaultModel falls back to the first authenticated
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
-    await completeWithModelConfirm(ctx, label, slugCandidates, reason => {
-      stillFailing = true
-      runtimeFailure = reason
-    })
-
-    if (stillFailing) {
-      const failureDetail = (runtimeFailure ?? '').trim()
-
-      return {
-        ok: false,
-        message: failureDetail || `Saved, but Hermes still cannot reach ${label}. Double-check the value.`
-      }
-    }
+    // ignoreRuntimeGate=true: never block onboarding on the runtime check.
+    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
 
     return { ok: true }
   } catch (error) {
     notifyError(error, `Could not save ${label}`)
+
+    return { ok: false, message: errMessage(error) }
+  }
+}
+
+// Configure a local / self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp,
+// Ollama, …). Unlike API-key providers, a local endpoint is defined by its URL
+// and usually needs NO key. The runtime resolver reads model.base_url from
+// config (it ignores the OPENAI_BASE_URL env var), so we persist
+// provider=custom + base_url + model via /api/model/set rather than dropping an
+// env var that resolution never consults.
+//
+// The model is auto-discovered from the endpoint's /v1/models (surfaced by the
+// validate probe). The optional API key is forwarded to the probe (so hosted
+// endpoints that gate /v1/models behind auth still enumerate models) and
+// persisted to model.api_key so the runtime can authenticate.
+//
+// We deliberately don't route through completeWithModelConfirm: that path
+// re-assigns the model from /api/model/options WITHOUT a base_url, which would
+// wipe the base_url we just wrote. We have a concrete model already, so we
+// verify the runtime directly and finish.
+export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
+  const url = baseUrl.trim()
+  const key = apiKey.trim()
+
+  if (!url) {
+    return { ok: false, message: 'Enter the endpoint URL first.' }
+  }
+
+  // Probe connectivity + discover the served models. Any HTTP response proves
+  // the endpoint is up; an unreachable probe hard-blocks because we can't
+  // resolve a model to route to.
+  let model = ''
+
+  try {
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
+
+    if (!probe.ok && probe.reachable) {
+      return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
+    }
+
+    if (!probe.reachable) {
+      return { ok: false, message: probe.message || `Could not reach ${url}.` }
+    }
+
+    model = (probe.models?.[0] ?? '').trim()
+  } catch {
+    return { ok: false, message: `Could not reach ${url}.` }
+  }
+
+  if (!model) {
+    return {
+      ok: false,
+      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+    }
+  }
+
+  try {
+    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url, api_key: key })
+    await ctx.requestGateway('reload.env').catch(() => undefined)
+
+    const runtime = await checkRuntime(ctx)
+
+    if (!runtime.ready) {
+      const detail = (runtime.reason ?? '').trim()
+
+      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
+    }
+
+    notifyReady('Local / custom endpoint')
+    completeDesktopOnboarding()
+    ctx.onCompleted?.()
+
+    return { ok: true }
+  } catch (error) {
+    notifyError(error, 'Could not save local endpoint')
 
     return { ok: false, message: errMessage(error) }
   }
@@ -669,7 +897,9 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
     return
   }
 
-  notifyReady(flow.label)
+  // No success toast here: the confirm-model screen already showed "<provider>
+  // connected." notifyReady is reserved for completion paths that SKIP this
+  // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
   completeDesktopOnboarding()
   ctx.onCompleted?.()
 }

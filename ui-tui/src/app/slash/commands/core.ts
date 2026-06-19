@@ -205,18 +205,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'resume a prior session',
-    name: 'resume',
-    run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
-        return
-      }
-
-      arg ? ctx.session.resumeById(arg) : patchOverlayState({ picker: true })
-    }
-  },
-
-  {
     help: 'set or show current session title',
     name: 'title',
     run: (arg, ctx) => {

@@ -66,7 +66,7 @@ In the `model:` config section, you can use either `default:` or `model:` as the
 ```bash
 hermes setup --portal     # fresh install — OAuth + provider + gateway in one command
 hermes model              # existing install — pick "Nous Portal" from the list
-hermes portal status      # inspect login + routing at any time
+hermes portal info        # inspect login + routing at any time
 ```
 
 Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription).
@@ -89,7 +89,7 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 :::
 
 :::tip Nous Tool Gateway
-Paid Nous Portal subscribers also get access to the **[Tool Gateway](/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. On a fresh install, `hermes setup --portal` logs you in, sets Nous as your provider, and turns the gateway on in one command. Existing users can enable it from `hermes model` or per-tool from `hermes tools`. Inspect routing at any time with `hermes portal status`.
+Paid Nous Portal subscribers also get access to the **[Tool Gateway](/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. On a fresh install, `hermes setup --portal` logs you in, sets Nous as your provider, and turns the gateway on in one command. Existing users can enable it from `hermes model` or per-tool from `hermes tools`. Inspect routing at any time with `hermes portal info`.
 :::
 
 ### Two Commands for Model Management
@@ -494,7 +494,7 @@ Step-series models via [StepFun](https://platform.stepfun.com) — OpenAI-compat
 
 ```bash
 # StepFun
-hermes chat --provider stepfun --model step-3-mini
+hermes chat --provider stepfun --model step-3.5-flash
 # Requires: STEPFUN_API_KEY in ~/.hermes/.env
 ```
 
@@ -502,7 +502,7 @@ Or set it permanently in `config.yaml`:
 ```yaml
 model:
   provider: "stepfun"
-  default: "step-3-mini"
+  default: "step-3.5-flash"
 ```
 
 The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).

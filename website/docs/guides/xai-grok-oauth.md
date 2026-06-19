@@ -22,7 +22,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 | Display name | xAI Grok OAuth (SuperGrok / X Premium+) |
 | Auth type | Browser OAuth 2.0 PKCE (loopback callback) |
 | Transport | xAI Responses API (`codex_responses`) |
-| Default model | `grok-4.3` |
+| Default model | `grok-build-0.1` |
 | Endpoint | `https://api.x.ai/v1` |
 | Auth server | `https://accounts.x.ai` |
 | Requires env var | No (`XAI_API_KEY` is **not** used for this provider) |
@@ -47,7 +47,7 @@ hermes model
 # → Select "xAI Grok OAuth (SuperGrok / X Premium+)" from the provider list
 # → Hermes opens your browser to accounts.x.ai
 # → Approve access in the browser
-# → Pick a model (grok-4.3 is at the top)
+# → Pick a model (grok-build-0.1 is at the top)
 # → Start chatting
 
 hermes
@@ -116,13 +116,13 @@ The `◆ Auth Providers` section will show the current state of every provider, 
 ```bash
 hermes model
 # → Select "xAI Grok OAuth (SuperGrok / X Premium+)"
-# → Pick from the model list (grok-4.3 is pinned to the top)
+# → Pick from the model list (grok-build-0.1 is pinned to the top)
 ```
 
 Or set the model directly:
 
 ```bash
-hermes config set model.default grok-4.3
+hermes config set model.default grok-build-0.1
 hermes config set model.provider xai-oauth
 ```
 
@@ -132,7 +132,7 @@ After login, `~/.hermes/config.yaml` will contain:
 
 ```yaml
 model:
-  default: grok-4.3
+  default: grok-build-0.1
   provider: xai-oauth
   base_url: https://api.x.ai/v1
 ```
@@ -176,16 +176,18 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 
 | Tool | Model | Notes |
 |------|-------|-------|
-| Chat | `grok-4.3` | Default; auto-selected when you log in via OAuth |
+| Chat | `grok-build-0.1` | Default; auto-selected when you log in via OAuth |
+| Chat | `grok-4.3` | Previous default |
 | Chat | `grok-4.20-0309-reasoning` | Reasoning variant |
 | Chat | `grok-4.20-0309-non-reasoning` | Non-reasoning variant |
 | Chat | `grok-4.20-multi-agent-0309` | Multi-agent variant |
 | Image | `grok-imagine-image` | Default; ~5–10 s |
 | Image | `grok-imagine-image-quality` | Higher fidelity; ~10–20 s |
-| Video | `grok-imagine-video` | Text-to-video and image-to-video; up to 7 reference images |
+| Video | `grok-imagine-video` | Text-to-video |
+| Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |
 | TTS | (default voice) | xAI `/v1/tts` endpoint |
 
-The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.3` is always pinned to the top of the list.
+The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-build-0.1` is always pinned to the top of the list.
 
 ## Environment Variables
 

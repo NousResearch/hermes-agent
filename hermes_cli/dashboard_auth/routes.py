@@ -16,11 +16,14 @@ The routes:
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from typing import Any
+from collections import defaultdict, deque
+from typing import Any, Deque, Dict, Tuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 
 from hermes_cli.dashboard_auth import (
     get_provider,
@@ -29,6 +32,7 @@ from hermes_cli.dashboard_auth import (
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
     InvalidCodeError,
+    InvalidCredentialsError,
     ProviderError,
 )
 from hermes_cli.dashboard_auth.cookies import (
@@ -154,7 +158,13 @@ async def api_auth_providers() -> Any:
         )
     return {
         "providers": [
-            {"name": p.name, "display_name": p.display_name}
+            {
+                "name": p.name,
+                "display_name": p.display_name,
+                "supports_password": bool(
+                    getattr(p, "supports_password", False)
+                ),
+            }
             for p in providers
         ],
     }
@@ -375,6 +385,152 @@ def _validate_post_login_target(raw: str) -> str:
     if decoded == "/api" or decoded.startswith("/api/"):
         return ""
     return decoded
+
+
+# ---------------------------------------------------------------------------
+# Public: password (non-redirect) login
+# ---------------------------------------------------------------------------
+#
+# Brute-force throttle. The OAuth flow has no guessable secret on our side
+# (the IDP owns credentials), but ``/auth/password-login`` accepts a
+# password we verify locally, so it's a credential-stuffing target. A
+# simple in-process sliding-window limiter per client IP raises the cost
+# of online guessing without any external dependency. It is intentionally
+# best-effort: process-local (resets on restart), and behind a trusting
+# proxy the IP is the proxy's unless X-Forwarded-For is set — which is why
+# this is defence-in-depth on top of the provider's own constant-time
+# verify, not the only line of defence.
+
+_PW_RATE_MAX_ATTEMPTS = 10
+_PW_RATE_WINDOW_SEC = 60.0
+_pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)
+_pw_attempts_lock = threading.Lock()
+
+
+def _password_rate_limited(ip: str) -> bool:
+    """True if ``ip`` has exceeded the password-login attempt budget.
+
+    Sliding window: prune attempts older than the window, then check the
+    count. Records the attempt timestamp when allowed. An empty IP (no
+    discernible client) shares a single bucket — fail-safe toward
+    throttling rather than letting unattributable traffic through
+    unmetered.
+    """
+    now = time.monotonic()
+    cutoff = now - _PW_RATE_WINDOW_SEC
+    key = ip or "_unknown_"
+    with _pw_attempts_lock:
+        bucket = _pw_attempts[key]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _PW_RATE_MAX_ATTEMPTS:
+            return True
+        bucket.append(now)
+        return False
+
+
+def _reset_password_rate_limit() -> None:
+    """Test-only: clear all rate-limit buckets."""
+    with _pw_attempts_lock:
+        _pw_attempts.clear()
+
+
+class _PasswordLoginBody(BaseModel):
+    provider: str
+    username: str
+    password: str
+    next: str = ""
+
+
+@router.post("/auth/password-login", name="auth_password_login")
+async def auth_password_login(request: Request, body: _PasswordLoginBody):
+    """Authenticate a username/password against a password provider.
+
+    Mirrors the cookie-minting tail of ``/auth/callback`` but skips the
+    PKCE/state/code machinery (those are OAuth-only). On success sets the
+    session cookies and returns JSON ``{"ok": true, "next": <path>}`` —
+    the credential form POSTs via fetch and navigates client-side, so a
+    302 (which fetch follows opaquely) is the wrong shape here.
+
+    Failure modes, all deliberately generic so the endpoint can't be used
+    as a username oracle or a provider-enumeration oracle:
+      * unknown provider / provider lacks password support → 404
+      * bad credentials → 401 ("Invalid credentials")
+      * backing store unreachable → 503
+      * too many attempts from this IP → 429
+    """
+    ip = _client_ip(request)
+    if _password_rate_limited(ip):
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            provider=body.provider,
+            reason="rate_limited",
+            ip=ip,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Try again shortly.",
+        )
+
+    p = get_provider(body.provider)
+    if p is None or not getattr(p, "supports_password", False):
+        # Don't leak which providers exist or which support passwords —
+        # same 404 whether the provider is unknown or OAuth-only.
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            provider=body.provider,
+            reason="unknown_password_provider",
+            ip=ip,
+        )
+        raise HTTPException(status_code=404, detail="Unknown provider")
+
+    try:
+        session = p.complete_password_login(
+            username=body.username, password=body.password
+        )
+    except InvalidCredentialsError:
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            provider=body.provider,
+            reason="invalid_credentials",
+            ip=ip,
+        )
+        # Generic message — never distinguish unknown-user from wrong-password.
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    except NotImplementedError:
+        # supports_password was True but the method isn't actually
+        # implemented — a provider bug, not a client error.
+        raise HTTPException(status_code=500, detail="Provider misconfigured")
+    except ProviderError as e:
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            provider=body.provider,
+            reason="provider_unreachable",
+            ip=ip,
+        )
+        raise HTTPException(status_code=503, detail=f"Provider unreachable: {e}")
+
+    audit_log(
+        AuditEvent.LOGIN_SUCCESS,
+        provider=body.provider,
+        user_id=session.user_id,
+        email=session.email,
+        org_id=session.org_id,
+        ip=ip,
+    )
+
+    expires_in = max(60, session.expires_at - int(time.time()))
+    landing = _validate_post_login_target(body.next) or "/"
+    resp = JSONResponse({"ok": True, "next": landing})
+    set_session_cookies(
+        resp,
+        access_token=session.access_token,
+        refresh_token=session.refresh_token,
+        access_token_expires_in=expires_in,
+        use_https=detect_https(request),
+        prefix=_prefix(request),
+    )
+    return resp
 
 
 @router.post("/auth/logout", name="auth_logout")

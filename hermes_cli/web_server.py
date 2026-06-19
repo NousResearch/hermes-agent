@@ -1557,6 +1557,7 @@ async def upload_managed_file_stream(
     )
     tmp_path = Path(tmp_name)
     total = 0
+    renamed = False
     try:
         with os.fdopen(tmp_fd, "wb") as out:
             while True:
@@ -1568,16 +1569,21 @@ async def upload_managed_file_stream(
                     raise HTTPException(status_code=413, detail="File is too large")
                 out.write(chunk)
         os.replace(tmp_path, target)
+        renamed = True
     except HTTPException:
-        tmp_path.unlink(missing_ok=True)
         raise
     except PermissionError:
-        tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=403, detail="File is not writable")
     except OSError as exc:
-        tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
     finally:
+        # Clean up the temp file on every non-success exit, including
+        # BaseException paths the `except` clauses above don't catch — most
+        # importantly asyncio.CancelledError when a browser aborts a large
+        # upload mid-stream (the exact NS-501 scenario). os.replace clears
+        # tmp_path on success, so only unlink when the rename didn't happen.
+        if not renamed:
+            tmp_path.unlink(missing_ok=True)
         await file.close()
 
     return {
@@ -2317,6 +2323,43 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
 
 def _gateway_display_command(profile: Optional[str], verb: str) -> str:
     return " ".join(["hermes", *_gateway_subcommand(profile, verb)])
+
+
+# Slack member IDs (users U..., Enterprise Grid W...). Kept in sync with the
+# frontend SLACK_MEMBER_ID_RE in web/src/pages/ChannelsPage.tsx.
+_SLACK_MEMBER_ID_RE = re.compile(r"[UW][A-Z0-9]{2,}")
+
+
+def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
+    """Reject platform credentials that are clearly in the wrong field."""
+    if platform_id != "slack" or not value:
+        return
+
+    if key == "SLACK_BOT_TOKEN" and not value.startswith("xoxb-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Slack Bot Token must start with xoxb-. Paste the bot token from OAuth & Permissions.",
+        )
+    if key == "SLACK_APP_TOKEN" and not value.startswith("xapp-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Slack App Token must start with xapp-. Paste the app-level token from Basic Information > App-Level Tokens.",
+        )
+    if key == "SLACK_ALLOWED_USERS":
+        # Mirror the gateway's parse (gateway/platforms/slack.py): split on comma,
+        # strip, and drop empty entries so a trailing/interior comma isn't rejected
+        # here when the runtime would accept it. "*" is the allow-all wildcard.
+        user_ids = [part.strip() for part in value.split(",") if part.strip()]
+        invalid = [
+            user_id
+            for user_id in user_ids
+            if user_id != "*" and not _SLACK_MEMBER_ID_RE.fullmatch(user_id)
+        ]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail="Slack allowed user IDs must be comma-separated member IDs like U01ABC2DEF3.",
+            )
 
 
 def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
@@ -4149,9 +4192,9 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "slack": {
         "name": "Slack",
-        "description": "Use Hermes from Slack via Socket Mode.",
+        "description": "Use Hermes from Slack via Socket Mode. Add allowed Slack member IDs so connected bots can respond.",
         "docs_url": "https://api.slack.com/apps",
-        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
+        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"),
         "required_env": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
     },
     "mattermost": {
@@ -4636,6 +4679,7 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
+        "help": info.get("help", ""),
         "url": info.get("url"),
         "is_password": info.get("password", False),
         "advanced": info.get("advanced", False),
@@ -5215,6 +5259,7 @@ async def update_messaging_platform(
                     )
                 trimmed = value.strip()
                 if trimmed:
+                    _validate_messaging_env_value(platform_id, key, trimmed)
                     save_env_value(key, trimmed)
 
             if body.enabled is not None:
@@ -10830,6 +10875,7 @@ def _resolve_chat_argv(
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
     env.setdefault("HERMES_TUI_INLINE", "1")
+    env["HERMES_TUI_DASHBOARD"] = "1"
 
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)

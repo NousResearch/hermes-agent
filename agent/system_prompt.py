@@ -61,6 +61,34 @@ def _ra():
     return run_agent
 
 
+def _should_include_system_prompt_timestamp() -> bool:
+    """Honor explicit config for the prompt's date line.
+
+    Keep the historical default (enabled) unless the user explicitly wrote a
+    raw config override. ``agent.system_prompt_timestamp`` is the dedicated
+    switch; explicit legacy ``display.timestamps`` also disables/enables it
+    for backward compatibility with existing user expectations.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw_cfg = read_raw_config()
+        if not isinstance(raw_cfg, dict):
+            return True
+
+        agent_cfg = raw_cfg.get("agent")
+        if isinstance(agent_cfg, dict) and "system_prompt_timestamp" in agent_cfg:
+            return bool(agent_cfg.get("system_prompt_timestamp"))
+
+        display_cfg = raw_cfg.get("display")
+        if isinstance(display_cfg, dict) and "timestamps" in display_cfg:
+            return bool(display_cfg.get("timestamps"))
+    except Exception:
+        pass
+
+    return True
+
+
 def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> str:
     """Apply a per-platform prompt-hint override to the default hint.
 
@@ -449,14 +477,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # session resume without a stored prompt).  The model can still query the
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    timestamp_lines: List[str] = []
+    if _should_include_system_prompt_timestamp():
+        timestamp_lines.append(
+            f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+        )
     if agent.pass_session_id and agent.session_id:
-        timestamp_line += f"\nSession ID: {agent.session_id}"
+        timestamp_lines.append(f"Session ID: {agent.session_id}")
     if agent.model:
-        timestamp_line += f"\nModel: {agent.model}"
+        timestamp_lines.append(f"Model: {agent.model}")
     if agent.provider:
-        timestamp_line += f"\nProvider: {agent.provider}"
-    volatile_parts.append(timestamp_line)
+        timestamp_lines.append(f"Provider: {agent.provider}")
+    if timestamp_lines:
+        volatile_parts.append("\n".join(timestamp_lines))
 
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
@@ -527,6 +560,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 
 __all__ = [
+    "_should_include_system_prompt_timestamp",
     "build_system_prompt_parts",
     "build_system_prompt",
     "invalidate_system_prompt",

@@ -1137,6 +1137,33 @@ class TestBuildSystemPrompt:
         else:
             assert False, "Expected a 'Conversation started:' line in the system prompt"
 
+    def test_explicit_display_timestamps_false_disables_prompt_date_line(self, agent):
+        with patch("hermes_cli.config.read_raw_config", return_value={"display": {"timestamps": False}}):
+            prompt = agent._build_system_prompt()
+
+        assert "Conversation started:" not in prompt
+
+    def test_explicit_agent_system_prompt_timestamp_false_disables_prompt_date_line(self, agent):
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"agent": {"system_prompt_timestamp": False}},
+        ):
+            prompt = agent._build_system_prompt()
+
+        assert "Conversation started:" not in prompt
+
+    def test_agent_system_prompt_timestamp_overrides_legacy_display_setting(self, agent):
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={
+                "agent": {"system_prompt_timestamp": True},
+                "display": {"timestamps": False},
+            },
+        ):
+            prompt = agent._build_system_prompt()
+
+        assert "Conversation started:" in prompt
+
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()

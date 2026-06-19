@@ -629,6 +629,10 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # Include the cached system prompt's "Conversation started: ..." date line.
+  # Set false if a provider or proxy rejects that prompt content.
+  # system_prompt_timestamp: true
   
   # Predefined personalities (use with /personality command)
   personalities:

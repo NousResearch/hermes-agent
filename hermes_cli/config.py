@@ -913,6 +913,10 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
+        # Include the "Conversation started: ..." date line in the cached
+        # system prompt. Set False to suppress it for providers/endpoints
+        # that reject or mishandle that prompt content.
+        "system_prompt_timestamp": True,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false

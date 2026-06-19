@@ -166,9 +166,11 @@ def _is_protected_cron_path(p: Path) -> bool:
     """Return True if *p* is a cron control-plane file/directory that must
     never be deleted.
 
-    This only matches the directory itself and known control-plane files
-    (``jobs.json``, ``.tick.lock``) — it does NOT blanket-protect
-    everything under ``cron/`` because ``cron/output/`` is disposable.
+    This only matches the directory itself, known control-plane files
+    (``jobs.json``, ``.tick.lock``), and the ``output/`` root directory.
+    It does NOT blanket-protect files under ``cron/output/`` because those
+    run artifacts are disposable, but deleting the output root itself is too
+    broad and can erase every job's retained run history at once.
     """
     # Lazily build the set once per process so HERMES_HOME is resolved
     # exactly once.
@@ -177,6 +179,7 @@ def _is_protected_cron_path(p: Path) -> bool:
         for parent in ("cron", "cronjobs"):
             base = hermes_home / parent
             _PROTECTED_CRON_PATHS.add(str(base))
+            _PROTECTED_CRON_PATHS.add(str(base / "output"))
             _PROTECTED_CRON_PATHS.add(str(base / "jobs.json"))
             _PROTECTED_CRON_PATHS.add(str(base / ".tick.lock"))
     resolved = str(p.resolve())
@@ -566,7 +569,7 @@ def guess_category(path: Path) -> Optional[str]:
             # (e.g. ``jobs.json``, ``.tick.lock``) must never be
             # auto-tracked — deleting it wipes the live scheduler
             # registry. See issue #32164.
-            if len(rel.parts) >= 2 and rel.parts[1] == "output":
+            if len(rel.parts) >= 3 and rel.parts[1] == "output":
                 return "cron-output"
             return None
         if top == "cache":

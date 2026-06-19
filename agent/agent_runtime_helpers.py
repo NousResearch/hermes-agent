@@ -2031,8 +2031,58 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+def merge_split_assistant_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Merge consecutive assistant messages that were incorrectly split.
+
+    Some code paths (streaming accumulation, provider adapters, session
+    replay) can split a single assistant turn that has both ``content``
+    and ``tool_calls`` into two consecutive assistant messages:
+
+        msg[N]:   {"role": "assistant", "content": "Thinking..."}
+        msg[N+1]: {"role": "assistant", "tool_calls": [...]}
+
+    Strict APIs like DeepSeek v4 Flash reject consecutive assistant
+    messages with HTTP 400 (role alternation violation).  This function
+    merges them back into a single message:
+
+        {"role": "assistant", "content": "Thinking...", "tool_calls": [...]}
+
+    Operates on a copy so the caller's list is never mutated.  Returns
+    the merged list (or the original unchanged if no merge was needed).
+    """
+    merged: List[Dict[str, Any]] = []
+    for msg in messages:
+        if (
+            merged
+            and merged[-1].get("role") == "assistant"
+            and msg.get("role") == "assistant"
+            # First msg: has content but NO tool_calls
+            and merged[-1].get("content")
+            and not merged[-1].get("tool_calls")
+            # Second msg: has tool_calls but NO content
+            and msg.get("tool_calls")
+            and not msg.get("content")
+        ):
+            # Merge: carry tool_calls to the first message
+            merged[-1]["tool_calls"] = msg["tool_calls"]
+            continue
+        merged.append(msg)
+
+    if len(merged) != len(messages):
+        _ra().logger.debug(
+            "Merged %d split assistant message pair(s) before API call",
+            len(messages) - len(merged),
+        )
+    return merged
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
+
+    Also merges consecutive assistant messages that were incorrectly
+    split (``merge_split_assistant_messages``).
 
     Runs unconditionally — not gated on whether the context compressor
     is present — so orphans from session loading or manual message
@@ -2050,6 +2100,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             continue
         filtered.append(msg)
     messages = filtered
+
+    # Merge consecutive assistant messages that were incorrectly split
+    # (content and tool_calls from the same turn ending up as two msgs).
+    # Strict providers (DeepSeek v4 Flash) reject consecutive assistant
+    # messages with HTTP 400.
+    merged_count = len(messages)
+    messages = merge_split_assistant_messages(messages)
+    merged_count -= len(messages)
 
     surviving_call_ids: set = set()
     for msg in messages:

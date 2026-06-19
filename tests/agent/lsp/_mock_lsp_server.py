@@ -91,7 +91,7 @@ def main():
         if msg.get("method") == "workspace/didChangeWatchedFiles":
             continue
 
-        if msg.get("method") in ("textDocument/didOpen", "textDocument/didChange"):
+        if msg.get("method") in {"textDocument/didOpen", "textDocument/didChange"}:
             params = msg.get("params") or {}
             td = params.get("textDocument") or {}
             uri = td.get("uri", "")

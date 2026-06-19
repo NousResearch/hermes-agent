@@ -105,7 +105,7 @@ class TestApply:
         assert "Cannot enable" in r.message
         assert "npm i -g @openai/codex" in r.message
         # Config NOT mutated on failure
-        assert cfg.get("model", {}).get("openai_runtime") in (None, "")
+        assert cfg.get("model", {}).get("openai_runtime") in {None, ""}
 
     def test_enable_succeeds_when_codex_present(self):
         cfg = {}
@@ -114,8 +114,15 @@ class TestApply:
         def persist(c):
             persisted.update(c)
 
+        # Patch migrate so this test doesn't reach into the user's real
+        # ~/.codex/config.toml. See issue #26250 Bug C — without this patch,
+        # crs.apply() invokes the real migrate() which writes to
+        # Path.home() / ".codex" using whatever HERMES_HOME the running pytest
+        # session has set, leaking pytest tempdir paths into the user's
+        # codex config.
         with patch.object(crs, "check_codex_binary_ok",
-                          return_value=(True, "0.130.0")):
+                          return_value=(True, "0.130.0")), \
+             patch("hermes_cli.codex_runtime_plugin_migration.migrate"):
             r = crs.apply(cfg, "codex_app_server", persist_callback=persist)
         assert r.success
         assert r.new_value == "codex_app_server"

@@ -2864,9 +2864,8 @@ def test_on_memory_write_ignores_non_add_actions(action, content, monkeypatch):
 # the test isolates the generation-gating behavior.
 # ---------------------------------------------------------------------------
 
-def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
-    import threading
 
+def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
     provider._endpoint = "http://test"
@@ -2874,6 +2873,13 @@ def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
     provider._account = "acct"
     provider._user = "usr"
     provider._agent = "hermes"
+    return provider
+
+
+def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
+    import threading
+
+    provider = _make_prefetch_provider()
     provider._session_id = "old-sid"
 
     started = threading.Event()
@@ -2917,13 +2923,7 @@ def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
 
 
 def test_queue_prefetch_sends_limit_not_legacy_top_k():
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._endpoint = "http://test"
-    provider._api_key = ""
-    provider._account = "acct"
-    provider._user = "usr"
-    provider._agent = "hermes"
+    provider = _make_prefetch_provider()
 
     captured_payloads = []
 
@@ -2947,3 +2947,201 @@ def test_queue_prefetch_sends_limit_not_legacy_top_k():
 
     assert captured_payloads == [{"query": "anything", "limit": 5}]
     assert "top_k" not in captured_payloads[0]
+
+
+def test_queue_prefetch_uses_session_search_when_session_id_available():
+    provider = _make_prefetch_provider()
+
+    captured_calls = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured_calls.append((path, payload))
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/peers/hermes/memories/events/mem_1.md",
+                            "score": 0.9,
+                            "abstract": "session-aware memory",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.queue_prefetch("anything", session_id="sid-123")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured_calls == [
+        (
+            "/api/v1/search/search",
+            {"query": "anything", "limit": 5, "session_id": "sid-123"},
+        )
+    ]
+    assert "session-aware memory" in provider._prefetch_result
+
+
+def test_queue_prefetch_falls_back_to_find_when_session_search_fails():
+    provider = _make_prefetch_provider()
+
+    captured_calls = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured_calls.append((path, payload))
+            if path == "/api/v1/search/search":
+                raise RuntimeError("session unavailable")
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/peers/hermes/memories/events/mem_2.md",
+                            "score": 0.8,
+                            "abstract": "non-session fallback",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.queue_prefetch("anything", session_id="sid-123")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured_calls == [
+        (
+            "/api/v1/search/search",
+            {"query": "anything", "limit": 5, "session_id": "sid-123"},
+        ),
+        (
+            "/api/v1/search/find",
+            {"query": "anything", "limit": 5},
+        ),
+    ]
+    assert "non-session fallback" in provider._prefetch_result
+
+
+def test_queue_prefetch_reads_bounded_snippet_for_empty_abstracts_and_includes_skills():
+    provider = _make_prefetch_provider()
+
+    captured_reads = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/peers/hermes/memories/events/mem_3.md",
+                            "score": 0.9,
+                            "abstract": "",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [
+                        {
+                            "uri": "viking://user/skills/release-triage",
+                            "score": 0.7,
+                            "abstract": "skill context",
+                        },
+                    ],
+                }
+            }
+
+        def get(self, path, params=None, **kwargs):
+            captured_reads.append((path, params or {}))
+            return {"result": {"content": "raw memory content\nwith useful context"}}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.queue_prefetch("anything")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured_reads == [
+        (
+            "/api/v1/content/read",
+            {
+                "uri": "viking://user/peers/hermes/memories/events/mem_3.md",
+                "offset": 0,
+                "limit": 50,
+            },
+        )
+    ]
+    assert "raw memory content with useful context" in provider._prefetch_result
+    assert "skill context" in provider._prefetch_result
+
+
+def test_queue_prefetch_caps_empty_abstract_reads_and_keeps_unread_uris():
+    provider = _make_prefetch_provider()
+
+    captured_reads = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            return {
+                "result": {
+                    "memories": [
+                        {"uri": "viking://memories/one.md", "score": 0.9, "abstract": ""},
+                        {"uri": "viking://memories/two.md", "score": 0.8, "abstract": ""},
+                        {"uri": "viking://memories/three.md", "score": 0.7, "abstract": ""},
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, params=None, **kwargs):
+            captured_reads.append((path, params or {}))
+            uri = (params or {}).get("uri", "")
+            return {"result": f"content for {uri}"}
+
+    import plugins.memory.openviking as _mod
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    try:
+        provider.queue_prefetch("anything")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert [params["uri"] for _path, params in captured_reads] == [
+        "viking://memories/one.md",
+        "viking://memories/two.md",
+    ]
+    assert "content for viking://memories/one.md" in provider._prefetch_result
+    assert "content for viking://memories/two.md" in provider._prefetch_result
+    assert "- [0.70] (viking://memories/three.md)" in provider._prefetch_result

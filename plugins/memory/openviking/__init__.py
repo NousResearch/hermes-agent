@@ -101,6 +101,11 @@ _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
 _OPENVIKING_SERVER_LOG_RELATIVE_PATH = Path("logs") / "openviking-server.log"
 _OPENVIKING_RESPONDED_FAILURE_PREFIX = "OpenViking server responded"
+_PREFETCH_SEARCH_LIMIT = 5
+_PREFETCH_ITEMS_PER_TYPE = 3
+_PREFETCH_EMPTY_ABSTRACT_READ_LIMIT = 2
+_PREFETCH_EMPTY_ABSTRACT_READ_LINES = 50
+_PREFETCH_EMPTY_ABSTRACT_SNIPPET_CHARS = 512
 _SETUP_CANCELLED = object()
 
 
@@ -2145,6 +2150,56 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return ""
         return f"## OpenViking Context\n{result}"
 
+    @staticmethod
+    def _prefetch_snippet_from_read_response(resp: Any) -> str:
+        result = OpenVikingMemoryProvider._unwrap_result(resp)
+        if isinstance(result, dict):
+            result = result.get("content", "") or result.get("text", "")
+        if isinstance(result, bytes):
+            result = result.decode("utf-8", errors="replace")
+        if result is None:
+            return ""
+        text = " ".join(str(result).split())
+        if len(text) > _PREFETCH_EMPTY_ABSTRACT_SNIPPET_CHARS:
+            text = text[:_PREFETCH_EMPTY_ABSTRACT_SNIPPET_CHARS].rstrip() + "..."
+        return text
+
+    @staticmethod
+    def _read_prefetch_snippet(client: _VikingClient, uri: str) -> str:
+        try:
+            resp = client.get(
+                "/api/v1/content/read",
+                params={
+                    "uri": uri,
+                    "offset": 0,
+                    "limit": _PREFETCH_EMPTY_ABSTRACT_READ_LINES,
+                },
+            )
+        except Exception:
+            return ""
+        return OpenVikingMemoryProvider._prefetch_snippet_from_read_response(resp)
+
+    @staticmethod
+    def _post_prefetch_search(
+        client: _VikingClient,
+        query: str,
+        session_id: str,
+    ) -> dict:
+        base_payload = {"query": query, "limit": _PREFETCH_SEARCH_LIMIT}
+        if session_id:
+            try:
+                return client.post(
+                    "/api/v1/search/search",
+                    {**base_payload, "session_id": session_id},
+                )
+            except Exception as e:
+                logger.debug(
+                    "OpenViking session-aware prefetch failed, "
+                    "falling back to search/find: %s",
+                    e,
+                )
+        return client.post("/api/v1/search/find", base_payload)
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""
         query = _derive_openviking_user_text(query)
@@ -2154,6 +2209,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Drop prefetch results from older switch generations.
         with self._prefetch_lock:
             gen = self._prefetch_generation
+        with self._session_state_lock:
+            prefetch_session_id = str(session_id or self._session_id or "").strip()
 
         holder: List[threading.Thread] = []
 
@@ -2163,20 +2220,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                resp = client.post("/api/v1/search/find", {
-                    "query": query,
-                    "limit": 5,
-                })
+                resp = self._post_prefetch_search(client, query, prefetch_session_id)
                 result = resp.get("result", {})
                 parts = []
-                for ctx_type in ("memories", "resources"):
+                empty_abstract_reads_left = _PREFETCH_EMPTY_ABSTRACT_READ_LIMIT
+                for ctx_type in ("memories", "resources", "skills"):
                     items = result.get(ctx_type, [])
-                    for item in items[:3]:
+                    for item in items[:_PREFETCH_ITEMS_PER_TYPE]:
                         uri = item.get("uri", "")
                         abstract = item.get("abstract", "")
                         score = item.get("score", 0)
+                        if (
+                            not abstract
+                            and uri
+                            and empty_abstract_reads_left > 0
+                        ):
+                            empty_abstract_reads_left -= 1
+                            abstract = self._read_prefetch_snippet(client, uri)
                         if abstract:
                             parts.append(f"- [{score:.2f}] {abstract} ({uri})")
+                        elif uri:
+                            parts.append(f"- [{score:.2f}] ({uri})")
                 if parts:
                     with self._prefetch_lock:
                         if gen != self._prefetch_generation:

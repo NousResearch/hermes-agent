@@ -344,9 +344,17 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
-  getSessions: (limit = 20, offset = 0, profile = getManagementProfile()) =>
+  getSessions: (
+    limit = 20,
+    offset = 0,
+    profile = getManagementProfile(),
+    order: "created" | "recent" = "created",
+  ) =>
     fetchJSON<PaginatedSessions>(
-      appendProfileParam(`/api/sessions?limit=${limit}&offset=${offset}`, profile),
+      appendProfileParam(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
+        profile,
+      ),
     ),
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
@@ -411,12 +419,21 @@ export const api = {
     fetchJSON<ManagedFileReadResponse>(
       `/api/files/read?path=${encodeURIComponent(path)}`,
     ),
-  uploadFile: (path: string, dataUrl: string, overwrite = true) =>
-    fetchJSON<ManagedFileWriteResponse>("/api/files/upload", {
+  uploadFile: (path: string, file: File, overwrite = true) => {
+    // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
+    // the browser adds the multipart boundary automatically. Sending the file
+    // as base64 JSON (the old path) inflated the body ~33%, buffered the whole
+    // file in memory, and 502'd on large backup archives behind the proxy
+    // (NS-501).
+    const form = new FormData();
+    form.append("path", path);
+    form.append("overwrite", String(overwrite));
+    form.append("file", file, file.name);
+    return fetchJSON<ManagedFileWriteResponse>("/api/files/upload-stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, data_url: dataUrl, overwrite }),
-    }),
+      body: form,
+    });
+  },
   createDirectory: (path: string) =>
     fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
       method: "POST",
@@ -1292,6 +1309,17 @@ export interface McpCatalogEntry {
   transport: "http" | "stdio";
   auth_type: "api_key" | "oauth" | "none";
   required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  // Transport details — what actually connects (http) or runs (stdio).
+  command: string | null;
+  args: string[];
+  url: string | null;
+  // Git bootstrap (only set for entries that clone + build locally).
+  install_url: string | null;
+  install_ref: string | null;
+  bootstrap: string[];
+  // Default tool pre-selection (null = all tools pre-checked) + guidance text.
+  default_enabled: string[] | null;
+  post_install: string;
   needs_install: boolean;
   installed: boolean;
   enabled: boolean;
@@ -1326,6 +1354,7 @@ export interface MessagingPlatformEnvVar {
   redacted_value: string | null;
   description: string;
   prompt: string;
+  help: string;
   url: string | null;
   is_password: boolean;
   advanced: boolean;

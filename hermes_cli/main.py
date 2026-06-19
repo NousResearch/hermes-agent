@@ -531,6 +531,16 @@ try:
     if _cfg_path.exists():
         with open(_cfg_path, encoding="utf-8") as _f:
             _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        # Managed scope: overlay administrator-pinned values so a managed
+        # security.redact_secrets / network.force_ipv4 wins here too. This early
+        # bridge reads config.yaml directly (before load_config is usable), so
+        # without the overlay a managed redact_secrets toggle would be ignored.
+        # Fail-open via the shared helper.
+        try:
+            from hermes_cli import managed_scope
+            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
+        except Exception:
+            pass
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -6073,6 +6083,10 @@ def _update_via_zip(args):
             )
         if result.get("user_modified"):
             print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+            print(
+                "    → see them: hermes skills list-modified  "
+                "(diff/reset to resume updates)"
+            )
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
         if not result["copied"] and not result.get("updated"):
@@ -8114,7 +8128,13 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    enabled = updates_cfg.get("pre_update_backup", False)
+    # The default config ships with ``pre_update_backup: true`` (see
+    # ``hermes_cli/config.py``). Fall back to true if the key is missing
+    # (e.g. a user has an older custom config without the field). The
+    # ``False`` default from before #48200 caused silent data loss when
+    # an update step computed a wrong path — the cost of a few minutes
+    # of zip time per update is negligible compared to the alternative.
+    enabled = updates_cfg.get("pre_update_backup", True)
     keep = updates_cfg.get("backup_keep", 5)
 
     if not enabled and not force_backup:
@@ -9061,6 +9081,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("user_modified"):
                 print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+                print(
+                    "    → see them: hermes skills list-modified  "
+                    "(diff/reset to resume updates)"
+                )
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
             if not result["copied"] and not result.get("updated"):
@@ -11007,6 +11031,13 @@ def cmd_dashboard_register(args):
     _impl(args)
 
 
+def cmd_gateway_enroll(args):
+    """Enroll a self-hosted gateway with a relay connector."""
+    from hermes_cli.gateway_enroll import cmd_gateway_enroll as _impl
+
+    _impl(args)
+
+
 def cmd_completion(args, parser=None):
     """Print shell completion script."""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
@@ -11699,7 +11730,9 @@ def main():
     # =========================================================================
     # gateway + proxy commands  (parsers built in hermes_cli/subcommands/gateway.py)
     # =========================================================================
-    build_gateway_parser(subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy)
+    build_gateway_parser(
+        subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
+    )
 
     # =========================================================================
     # lsp command

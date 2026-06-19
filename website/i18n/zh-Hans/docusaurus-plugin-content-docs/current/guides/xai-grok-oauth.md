@@ -99,7 +99,7 @@ hermes model --manual-paste
 1. Hermes 在浏览器中打开 `accounts.x.ai`。
 2. 你登录（或确认现有会话）并批准访问。
 3. xAI 重定向回 Hermes，token 保存到 `~/.hermes/auth.json`。
-4. 此后，Hermes 在后台刷新 access token——你将保持登录状态，直到执行 `hermes auth remove xai-oauth` 或在 xAI 账号设置中撤销访问。
+4. 此后，Hermes 在后台刷新 access token——你将保持登录状态，直到执行 `hermes auth logout xai-oauth` 或在 xAI 账号设置中撤销访问。
 
 ## 检查登录状态
 

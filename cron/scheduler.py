@@ -1826,23 +1826,40 @@ def _run_job_unscoped(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured
-        # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+        # duration is caught and killed.  Default 600s (10 min inactivity).
+        # Prefer config.yaml ``cron.timeout_seconds`` for non-secret behavior;
+        # keep HERMES_CRON_TIMEOUT as a backwards-compatible env override.
+        # 0 = unlimited.
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
+        _cron_timeout = 600.0
+        _configured_timeout = None
+        try:
+            _cfg = load_config() or {}
+            _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+            _configured_timeout = _cron_cfg.get("timeout_seconds")
+            if _configured_timeout is not None:
+                _cron_timeout = float(_configured_timeout)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid cron.timeout_seconds=%r; using default 600s",
+                _configured_timeout,
+            )
+            _cron_timeout = 600.0
+        except Exception as exc:
+            logger.debug("Failed to load cron timeout from config: %s", exc)
+
         _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
         if _raw_cron_timeout:
             try:
                 _cron_timeout = float(_raw_cron_timeout)
             except (ValueError, TypeError):
                 logger.warning(
-                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
+                    "Invalid HERMES_CRON_TIMEOUT=%r; using configured/default %.0fs",
                     _raw_cron_timeout,
+                    _cron_timeout,
                 )
-                _cron_timeout = 600.0
-        else:
-            _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)

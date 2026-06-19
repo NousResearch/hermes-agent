@@ -166,20 +166,36 @@ class TestInactivityTimeout:
 
         assert result["final_response"] == "Done"
 
-    def _parse_cron_timeout(self, raw_value):
+    def _parse_cron_timeout(self, raw_value, config_value=None):
         """Mirror the defensive parsing logic from cron/scheduler.py run_job()."""
+        timeout = 600.0
+        if config_value is not None:
+            try:
+                timeout = float(config_value)
+            except (ValueError, TypeError):
+                timeout = 600.0
         if raw_value:
             try:
-                return float(raw_value)
+                timeout = float(raw_value)
             except (ValueError, TypeError):
-                return 600.0
-        return 600.0
+                pass
+        return timeout
+
+    def test_timeout_config_value_is_respected(self, monkeypatch):
+        """cron.timeout_seconds config value is respected when env override is absent."""
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+        _cron_timeout = self._parse_cron_timeout(raw, config_value="900")
+        assert _cron_timeout == 900.0
+
+        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        assert _cron_inactivity_limit == 900.0
 
     def test_timeout_env_var_parsing(self, monkeypatch):
-        """HERMES_CRON_TIMEOUT env var is respected."""
+        """HERMES_CRON_TIMEOUT env var overrides config for backward compatibility."""
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
         raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        _cron_timeout = self._parse_cron_timeout(raw)
+        _cron_timeout = self._parse_cron_timeout(raw, config_value="900")
         assert _cron_timeout == 1200.0
 
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
@@ -201,6 +217,13 @@ class TestInactivityTimeout:
         assert _cron_timeout == 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         assert _cron_inactivity_limit == 600.0
+
+    def test_timeout_invalid_env_value_keeps_config(self, monkeypatch):
+        """Invalid env override should keep the configured timeout."""
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "abc")
+        raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+        _cron_timeout = self._parse_cron_timeout(raw, config_value="900")
+        assert _cron_timeout == 900.0
 
     def test_timeout_empty_string_uses_default(self, monkeypatch):
         """HERMES_CRON_TIMEOUT='' (empty) should use the 600s default."""

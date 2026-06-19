@@ -99,7 +99,7 @@ POST_SCHEMA = {
             },
             "media_paths": {
                 "type": "array",
-                "description": "Optional local media paths to attach. Uses xurl media upload under lm-twitterer.",
+                "description": "Optional local media paths to attach. Uses lm-twitterer Cookie-session media upload.",
                 "items": {"type": "string"},
             },
         },

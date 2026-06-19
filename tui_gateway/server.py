@@ -1483,13 +1483,18 @@ def _resolve_model() -> str:
         os.environ.get("HERMES_MODEL", "")
         or os.environ.get("HERMES_INFERENCE_MODEL", "")
     ).strip()
-    if env:
+    explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
+    if explicit_provider and env:
         return env
     m = _load_cfg().get("model", "")
     if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
-    if isinstance(m, str) and m:
+        model = str(m.get("default", "") or "").strip()
+        if model:
+            return model
+    elif isinstance(m, str) and m:
         return m.strip()
+    if env:
+        return env
     return "anthropic/claude-sonnet-4"
 
 
@@ -1524,6 +1529,19 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     if explicit_provider:
         return model, explicit_provider
 
+    cfg_model = _load_cfg().get("model") or {}
+    configured_provider = ""
+    configured_model = ""
+    if isinstance(cfg_model, dict):
+        configured_model = str(cfg_model.get("default", "") or "").strip()
+        configured_provider = str(cfg_model.get("provider") or "").strip()
+        if configured_provider.lower() == "auto":
+            configured_provider = ""
+    elif isinstance(cfg_model, str):
+        configured_model = cfg_model.strip()
+    if configured_provider:
+        return configured_model or model, configured_provider
+
     explicit_model = (
         os.environ.get("HERMES_MODEL", "")
         or os.environ.get("HERMES_INFERENCE_MODEL", "")
@@ -1534,13 +1552,8 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     try:
         from hermes_cli.models import detect_static_provider_for_model
 
-        cfg = _load_cfg().get("model") or {}
         current_provider = (
-            (
-                str(cfg.get("provider") or "").strip().lower()
-                if isinstance(cfg, dict)
-                else ""
-            )
+            configured_provider.lower()
             or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower()
             or "auto"
         )

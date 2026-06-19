@@ -2340,6 +2340,18 @@ def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> Non
             status_code=400,
             detail="Slack App Token must start with xapp-. Paste the app-level token from Basic Information > App-Level Tokens.",
         )
+    if key == "SLACK_ALLOWED_USERS":
+        user_ids = [part.strip() for part in value.split(",")]
+        invalid = [
+            user_id
+            for user_id in user_ids
+            if not user_id or not re.fullmatch(r"[UW][A-Z0-9]{2,}", user_id)
+        ]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail="Slack allowed user IDs must be comma-separated member IDs like U01ABC2DEF3.",
+            )
 
 
 def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
@@ -4659,6 +4671,7 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
+        "help": info.get("help", ""),
         "url": info.get("url"),
         "is_password": info.get("password", False),
         "advanced": info.get("advanced", False),

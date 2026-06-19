@@ -32,7 +32,7 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, env_int
+from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 
 def _normalize_custom_provider_name(value: str) -> str:
@@ -1297,7 +1297,7 @@ def _resolve_explicit_runtime(
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15.0),
             )
             api_key = creds.get("api_key", "")
             expires_at = creds.get("expires_at")
@@ -1511,7 +1511,7 @@ def resolve_runtime_provider(
     if provider == "nous":
         try:
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15.0),
             )
             return {
                 "provider": "nous",

@@ -53,12 +53,35 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 1
   },
   {
+    prefix: 'OPENAI_',
+    name: 'OpenAI',
+    description: 'Codex CLI or direct OpenAI API',
+    docsUrl: 'https://platform.openai.com/api-keys',
+    priority: 2
+  },
+  {
     prefix: 'ANTHROPIC_',
     name: 'Anthropic',
     description: 'Claude API access (Sonnet, Opus, Haiku)',
     docsUrl: 'https://console.anthropic.com/settings/keys',
     priority: 2
   },
+  {
+    prefix: 'CLAUDE_CODE_',
+    name: 'Anthropic',
+    description: 'Claude Code OAuth token alias',
+    docsUrl: 'https://code.claude.com/docs',
+    priority: 2
+  },
+  {
+    prefix: 'COPILOT_',
+    name: 'GitHub Copilot',
+    description: 'GitHub Copilot model access and ACP endpoint settings',
+    docsUrl: 'https://github.com/settings/tokens',
+    priority: 3
+  },
+  { prefix: 'GH_', name: 'GitHub Copilot', priority: 3 },
+  { prefix: 'GITHUB_', name: 'GitHub Copilot', priority: 3 },
   {
     prefix: 'XAI_',
     name: 'xAI',
@@ -87,6 +110,13 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     name: 'DashScope (Qwen)',
     description: 'Alibaba Cloud DashScope — Qwen and multi-vendor models',
     docsUrl: 'https://modelstudio.console.alibabacloud.com/',
+    priority: 6
+  },
+  {
+    prefix: 'ALIBABA_CODING_PLAN_',
+    name: 'Alibaba Cloud (Coding Plan)',
+    description: 'Alibaba Cloud Coding Plan (Dedicated coding tier)',
+    docsUrl: 'https://help.aliyun.com/zh/model-studio/',
     priority: 6
   },
   { prefix: 'HERMES_QWEN_', name: 'DashScope (Qwen)', priority: 6 },
@@ -149,10 +179,23 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 14
   },
   {
+    prefix: 'KILOCODE_',
+    name: 'Kilo Code',
+    description: 'Kilo Code (Kilo Gateway API)',
+    priority: 14
+  },
+  {
     prefix: 'NVIDIA_',
     name: 'NVIDIA NIM',
     description: 'build.nvidia.com or your own local NIM endpoint',
     docsUrl: 'https://build.nvidia.com/',
+    priority: 15
+  },
+  {
+    prefix: 'NOVITA_',
+    name: 'NovitaAI',
+    description: 'NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)',
+    docsUrl: 'https://novita.ai/settings/key-management',
     priority: 15
   },
   {
@@ -184,6 +227,12 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 19
   },
   {
+    prefix: 'TOKENHUB_',
+    name: 'Tencent TokenHub',
+    description: 'Tencent TokenHub (Hy3 Preview via tokenhub.tencentmaas.com)',
+    priority: 19
+  },
+  {
     prefix: 'ARCEEAI_',
     name: 'Arcee AI',
     description: 'Arcee-hosted small + medium models',
@@ -211,7 +260,8 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     description: 'Authenticate via AWS profile + region',
     docsUrl: 'https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html',
     priority: 23
-  }
+  },
+  { prefix: 'BEDROCK_', name: 'AWS Bedrock', priority: 23 }
 ]
 
 export const BUILTIN_PERSONALITIES = [

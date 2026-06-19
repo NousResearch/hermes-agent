@@ -44,6 +44,26 @@ export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
 
 export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 
+const PROVIDER_ALIAS_KEY_VARS = new Set([
+  'ANTHROPIC_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'GH_TOKEN',
+  'GITHUB_TOKEN'
+])
+
+const PROVIDER_ALIAS_GROUP_KEYS = new Set([
+  'GITHUB_TOKEN'
+])
+
+const shouldIncludeProviderKey = (key: string, info: EnvVarInfo) =>
+  info.category === 'provider' || PROVIDER_ALIAS_GROUP_KEYS.has(key)
+
+const shouldShowAdvancedProviderKey = (key: string, info: EnvVarInfo) =>
+  !isKeyVar(key, info) || info.is_set || PROVIDER_ALIAS_KEY_VARS.has(key)
+
+const providerKeyGroupName = (key: string, info: EnvVarInfo) =>
+  info.provider_group_name?.trim() || info.provider_name?.trim() || providerGroup(key)
+
 // Group the env catalog by provider — one ListRow per vendor plus optional
 // advanced overrides (base URL, region, etc.). Groups without a key field and
 // the "Other" bucket are skipped.
@@ -51,11 +71,11 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
   const buckets = new Map<string, [string, EnvVarInfo][]>()
 
   for (const [key, info] of Object.entries(vars)) {
-    if (info.category !== 'provider') {
+    if (!shouldIncludeProviderKey(key, info)) {
       continue
     }
 
-    const name = providerGroup(key)
+    const name = providerKeyGroupName(key, info)
 
     if (name === 'Other') {
       continue
@@ -74,17 +94,20 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
     }
 
     const meta = providerMeta(name)
+    const providerDescription =
+      primary[1].provider_group_description?.trim() || primary[1].provider_description?.trim()
+    const providerDocsUrl = primary[1].provider_url?.trim()
 
     groups.push({
       // Advanced = the provider's non-key knobs (base URL, region, deployment).
       // Skip redundant alias key vars (e.g. ANTHROPIC_TOKEN vs ANTHROPIC_API_KEY)
       // so we never render a second "Paste key" input — unless one is already
-      // set, in which case keep it visible so it stays clearable.
+      // set or is an explicit provider alias users may need to configure.
       advanced: entries
-        .filter(([k, i]) => k !== primary[0] && (!isKeyVar(k, i) || i.is_set))
+        .filter(([k, i]) => k !== primary[0] && shouldShowAdvancedProviderKey(k, i))
         .sort(([a], [b]) => a.localeCompare(b)),
-      description: meta?.description ?? primary[1].description,
-      docsUrl: meta?.docsUrl ?? primary[1].url ?? undefined,
+      description: providerDescription || meta?.description || primary[1].description,
+      docsUrl: providerDocsUrl || meta?.docsUrl || primary[1].url || undefined,
       hasAnySet: entries.some(([, i]) => i.is_set),
       name,
       primary,
@@ -92,7 +115,7 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
     })
   }
 
-  return groups.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
+  return groups.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // Deliberately a near-1:1 replica of the first-run onboarding picker

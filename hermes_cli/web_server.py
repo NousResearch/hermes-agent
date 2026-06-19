@@ -3904,15 +3904,122 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _provider_env_metadata_by_key() -> Dict[str, Dict[str, Any]]:
+    """Map provider env vars to the same provider metadata used by model setup."""
+    metadata: Dict[str, Dict[str, Any]] = {}
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.models import CANONICAL_PROVIDERS
+        from hermes_cli.models import PROVIDER_GROUPS as MODEL_PROVIDER_GROUPS
+        from hermes_cli.models import provider_group_for_slug
+    except Exception:
+        return metadata
+
+    canonical = {entry.slug: entry for entry in CANONICAL_PROVIDERS}
+    canonical_order = {entry.slug: idx for idx, entry in enumerate(CANONICAL_PROVIDERS)}
+    profiles: Dict[str, Any] = {}
+    try:
+        from providers import list_providers
+        profiles = {profile.name: profile for profile in list_providers()}
+    except Exception:
+        profiles = {}
+
+    def add_provider_var(
+        key: str,
+        *,
+        base_url: str = "",
+        description: str = "",
+        provider_id: str,
+        provider_name: str = "",
+        provider_url: str = "",
+    ) -> None:
+        if not key or key in metadata:
+            return
+        entry = canonical.get(provider_id)
+        group_id = provider_group_for_slug(provider_id)
+        group = MODEL_PROVIDER_GROUPS.get(group_id) if group_id else None
+        group_priority = (
+            min(canonical_order.get(member, 10_000) for member in group[2])
+            if group
+            else canonical_order.get(provider_id, 10_000)
+        )
+        metadata[key] = {
+            "provider_base_url": base_url or "",
+            "provider_description": description or (entry.tui_desc if entry else ""),
+            "provider_group_description": group[1] if group else "",
+            "provider_group_id": group_id,
+            "provider_group_name": group[0] if group else "",
+            "provider_group_priority": group_priority,
+            "provider_id": provider_id,
+            "provider_name": provider_name or (entry.label if entry else provider_id),
+            "provider_priority": canonical_order.get(provider_id, 10_000),
+            "provider_url": provider_url or None,
+        }
+
+    for provider_id, pconfig in PROVIDER_REGISTRY.items():
+        profile = profiles.get(provider_id)
+        entry = canonical.get(provider_id)
+        name = (
+            getattr(profile, "display_name", "") if profile else ""
+        ) or (entry.label if entry else "") or pconfig.name
+        description = (
+            getattr(profile, "description", "") if profile else ""
+        ) or (entry.tui_desc if entry else "") or pconfig.name
+        provider_url = (getattr(profile, "signup_url", "") if profile else "") or ""
+        keys = [*pconfig.api_key_env_vars]
+        if pconfig.base_url_env_var:
+            keys.append(pconfig.base_url_env_var)
+        for key in keys:
+            add_provider_var(
+                key,
+                base_url=pconfig.inference_base_url,
+                description=description,
+                provider_id=pconfig.id or provider_id,
+                provider_name=name,
+                provider_url=provider_url,
+            )
+
+    for provider_id, profile in profiles.items():
+        entry = canonical.get(provider_id)
+        name = profile.display_name or (entry.label if entry else "") or profile.name
+        description = profile.description or (entry.tui_desc if entry else "") or name
+        for key in profile.env_vars:
+            add_provider_var(
+                key,
+                base_url=profile.base_url,
+                description=description,
+                provider_id=provider_id,
+                provider_name=name,
+                provider_url=profile.signup_url,
+            )
+
+    # Bedrock credential discovery is AWS-SDK based, so the registry has no API
+    # key env vars, but these settings still belong to the Bedrock provider card.
+    bedrock = PROVIDER_REGISTRY.get("bedrock")
+    if bedrock:
+        entry = canonical.get("bedrock")
+        for key in ("AWS_REGION", "AWS_PROFILE"):
+            add_provider_var(
+                key,
+                base_url=bedrock.inference_base_url,
+                description=entry.tui_desc if entry else bedrock.name,
+                provider_id="bedrock",
+                provider_name=entry.label if entry else bedrock.name,
+            )
+
+    return metadata
+
+
 @app.get("/api/env")
 async def get_env_vars(profile: Optional[str] = None):
     with _profile_scope(profile):
         env_on_disk = load_env()
     channel_keys = _channel_managed_env_keys()
+    provider_metadata = _provider_env_metadata_by_key()
     result = {}
     for var_name, info in OPTIONAL_ENV_VARS.items():
         value = env_on_disk.get(var_name)
-        result[var_name] = {
+        row = {
             "is_set": bool(value),
             "redacted_value": redact_key(value) if value else None,
             "description": info.get("description", ""),
@@ -3926,6 +4033,9 @@ async def get_env_vars(profile: Optional[str] = None):
             # avoid duplicating the (richer) Channels configuration UI.
             "channel_managed": var_name in channel_keys,
         }
+        if var_name in provider_metadata:
+            row.update(provider_metadata[var_name])
+        result[var_name] = row
     return result
 
 

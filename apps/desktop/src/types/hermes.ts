@@ -108,6 +108,16 @@ export interface EnvVarInfo {
   description: string
   is_password: boolean
   is_set: boolean
+  provider_base_url?: string
+  provider_description?: string
+  provider_group_description?: string
+  provider_group_id?: string
+  provider_group_name?: string
+  provider_group_priority?: number
+  provider_id?: string
+  provider_name?: string
+  provider_priority?: number
+  provider_url?: null | string
   redacted_value: null | string
   tools: string[]
   url: null | string

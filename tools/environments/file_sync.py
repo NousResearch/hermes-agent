@@ -325,7 +325,11 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
                 with tarfile.open(tf.name) as tar:
-                    tar.extractall(staging, filter="data")
+                    try:
+                        tar.extractall(staging, filter="data")
+                    except TypeError:
+                        # Python <3.12 — no filter kwarg
+                        tar.extractall(staging)
 
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):

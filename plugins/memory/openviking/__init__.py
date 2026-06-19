@@ -2548,11 +2548,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
                         continue
                     if tool_id in completed_tool_ids:
                         continue
+                    # Reuse the tool_input parsed in the pre-scan when available
+                    # (non-empty ids are cached); fall back to parsing for the
+                    # uncached empty-id case so we never drop arguments.
+                    prior_call = tool_calls_by_id.get(tool_id) if tool_id else None
+                    tool_input = (
+                        prior_call["tool_input"]
+                        if prior_call is not None
+                        else cls._tool_call_input(tool_call)
+                    )
                     parts.append({
                         "type": "tool",
                         "tool_id": tool_id,
                         "tool_name": tool_name,
-                        "tool_input": cls._tool_call_input(tool_call),
+                        "tool_input": tool_input,
                         "tool_status": "pending",
                     })
 

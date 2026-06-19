@@ -1,0 +1,21 @@
+name: context-handover
+version: 1.0.0
+description: >
+  Auto-triggers a context handover when prompt-token usage exceeds a
+  configurable threshold. Writes a handover document capturing current
+  task/state/decisions, resets the session, and reseeds it so the agent
+  continues uninterrupted. Also sets Discord bot presence to the current
+  context percentage + task each turn.
+author: "Andryo Marzuki"
+hooks:
+  - post_llm_call
+extra:
+  # Fraction of context_length that triggers a handover (0.0–1.0).
+  threshold: 0.90
+  # Directory where handover markdown files are written.
+  notes_dir: "~/notes"
+  # When true, automatically reset + reseed the session after writing the
+  # handover document. When false, just write the doc and post a notice.
+  auto_continue: true
+  # When true, update the Discord bot presence each turn.
+  presence: true

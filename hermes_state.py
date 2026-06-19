@@ -3782,6 +3782,18 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def session_count_by_source(self) -> Dict[str, int]:
+        """Return a ``{source: count}`` dict for all sessions.
+
+        Uses a single ``GROUP BY`` query leveraging ``idx_sessions_source``
+        instead of iterating every row — O(number-of-sources) not O(N).
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COALESCE(source, 'cli'), COUNT(*) FROM sessions GROUP BY source"
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:

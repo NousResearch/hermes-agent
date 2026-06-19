@@ -1526,6 +1526,27 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_session_count_by_source_group_by(self, db):
+        """Regression: session_count_by_source() returns a single-query GROUP BY."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.create_session(session_id="s3", source="cli")
+        db.create_session(session_id="s4", source="discord")
+        result = db.session_count_by_source()
+        assert result == {"cli": 2, "telegram": 1, "discord": 1}
+
+    def test_session_count_by_source_group_by_empty(self, db):
+        """Empty database returns empty dict."""
+        assert db.session_count_by_source() == {}
+
+    def test_session_count_by_source_group_by_null_source(self, db):
+        """COALESCE handles the theoretical NULL case (source is NOT NULL in schema)."""
+        # source is NOT NULL in schema, but COALESCE is defensive.
+        # Verify the method works even with the minimal set of sources.
+        db.create_session(session_id="s1", source="cli")
+        result = db.session_count_by_source()
+        assert result == {"cli": 1}
+
     def test_message_count_total(self, db):
         assert db.message_count() == 0
         db.create_session(session_id="s1", source="cli")

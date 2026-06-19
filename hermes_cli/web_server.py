@@ -7036,13 +7036,7 @@ async def get_session_stats(profile: Optional[str] = None):
         active_store = db.session_count(include_archived=False)
         archived = db.session_count(archived_only=True)
         messages = db.message_count()
-        by_source: Dict[str, int] = {}
-        try:
-            for s in db.list_sessions_rich(limit=10000, include_archived=True):
-                src = str(s.get("source") or "cli")
-                by_source[src] = by_source.get(src, 0) + 1
-        except Exception:
-            pass
+        by_source = db.session_count_by_source()
         return {
             "total": total,
             "active_store": active_store,

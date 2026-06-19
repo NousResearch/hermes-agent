@@ -8,6 +8,7 @@ that GatewayRunner picks them up via the MRO (behavior-neutral relocation).
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 
@@ -49,8 +50,6 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     """Only one holder of the dispatcher lock at a time — the backstop that
     stops concurrent dispatchers double reclaiming and corrupting shared
     kanban SQLite index pages under wal_autocheckpoint=0."""
-    import os
-
     from gateway.kanban_watchers import _acquire_singleton_lock, _release_singleton_lock
 
     lock = tmp_path / "kanban" / ".dispatcher.lock"
@@ -67,3 +66,43 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_completed_notification_uses_full_payload_summary_preview():
+    summary_preview = "x" * 210
+    task = SimpleNamespace(result="legacy summary that should not win")
+
+    msg = GatewayKanbanWatchersMixin._kanban_notification_text(
+        kind="completed",
+        task_id="t_123",
+        title="Example title",
+        assignee="sentinel",
+        event_payload={"summary": summary_preview},
+        task=task,
+    )
+
+    assert msg == f"✔ @sentinel Kanban t_123 done — Example title\n{summary_preview}"
+
+
+def test_completed_slack_blocks_are_structured_and_labeled():
+    task = SimpleNamespace(result=None)
+
+    blocks = GatewayKanbanWatchersMixin._kanban_notification_slack_blocks(
+        kind="completed",
+        task_id="t_123",
+        title="Implement **mrkdwn** cleanup",
+        assignee="sentinel",
+        board_slug="hermes-setup",
+        event_payload={"summary": "First line preview"},
+        task=task,
+    )
+
+    assert blocks[0]["text"]["text"] == "✔ **Kanban task completed**"
+    assert {field["text"] for field in blocks[1]["fields"]} == {
+        "**Task**\n`t_123`",
+        "**Status**\n`done`",
+        "**Worker**\n`sentinel`",
+        "**Board**\n`hermes-setup`",
+    }
+    assert blocks[2]["text"]["text"] == "**Title**\nImplement **mrkdwn** cleanup"
+    assert blocks[3]["text"]["text"] == "**Summary**\nFirst line preview"

@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import copy
 import json
 import logging
 import os
@@ -1375,6 +1376,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
+            formatted_blocks = self._format_outgoing_slack_blocks(metadata)
 
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1399,7 +1401,9 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "mrkdwn": True,
                 }
-                if blocks and i == 0:
+                if formatted_blocks and i == 0 and len(chunks) == 1:
+                    kwargs["blocks"] = formatted_blocks
+                elif blocks and i == 0:
                     kwargs["blocks"] = blocks
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
@@ -1867,6 +1871,32 @@ class SlackAdapter(BasePlatformAdapter):
         ):
             return True
         return self._is_retryable_error(body)
+
+    def _format_outgoing_slack_blocks(
+        self, metadata: Optional[Dict[str, Any]]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Normalize Slack-only Block Kit metadata for outgoing sends."""
+        if not metadata:
+            return None
+        raw_blocks = metadata.get("slack_blocks")
+        if not isinstance(raw_blocks, list) or not raw_blocks:
+            return None
+        blocks = copy.deepcopy(raw_blocks)
+
+        def _format_node(node: Any) -> None:
+            if isinstance(node, dict):
+                if node.get("type") == "mrkdwn" and isinstance(node.get("text"), str):
+                    node["text"] = self.format_message(node["text"])
+                    return
+                for value in node.values():
+                    _format_node(value)
+                return
+            if isinstance(node, list):
+                for item in node:
+                    _format_node(item)
+
+        _format_node(blocks)
+        return blocks
 
     # ----- Markdown → mrkdwn conversion -----
 

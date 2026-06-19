@@ -3267,6 +3267,44 @@ class TestMessageSplitting:
         assert kwargs.get("mrkdwn") is True
 
     @pytest.mark.asyncio
+    async def test_send_includes_formatted_slack_blocks_from_metadata(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        metadata = {
+            "slack_blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "**Summary**\n**important** update",
+                    },
+                }
+            ]
+        }
+
+        await adapter.send("C123", "**hello**", metadata=metadata)
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["text"] == "*hello*"
+        assert kwargs["blocks"][0]["text"]["text"] == "*Summary*\n*important* update"
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_attach_blocks_to_split_messages(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        metadata = {
+            "slack_blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "*Summary*\nhello"},
+                }
+            ]
+        }
+
+        await adapter.send("C123", "x" * 45000, metadata=metadata)
+
+        first_call_kwargs = adapter._app.client.chat_postMessage.call_args_list[0].kwargs
+        assert "blocks" not in first_call_kwargs
+
+    @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
         """Pre-escaped &amp; in sent messages must not become &amp;amp;."""
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})

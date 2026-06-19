@@ -109,8 +109,159 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+_KANBAN_NOTIFICATION_META: dict[str, dict[str, str]] = {
+    "completed": {
+        "emoji": "✔",
+        "headline": "Kanban task completed",
+        "status": "done",
+        "detail_label": "Summary",
+    },
+    "blocked": {
+        "emoji": "⏸",
+        "headline": "Kanban task blocked",
+        "status": "blocked",
+        "detail_label": "Reason",
+    },
+    "gave_up": {
+        "emoji": "✖",
+        "headline": "Kanban task gave up",
+        "status": "gave_up",
+        "detail_label": "Error",
+    },
+    "crashed": {
+        "emoji": "✖",
+        "headline": "Kanban worker crashed",
+        "status": "crashed",
+        "detail_label": "Detail",
+    },
+    "timed_out": {
+        "emoji": "⏱",
+        "headline": "Kanban task timed out",
+        "status": "timed_out",
+        "detail_label": "Detail",
+    },
+}
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
+
+    @staticmethod
+    def _kanban_notification_detail(kind: str, event_payload: Optional[dict], task) -> str:
+        """Return the human-facing detail line for a terminal event.
+
+        For completed events, trust ``payload.summary`` as the canonical preview.
+        The kernel already flattens it to one line with its own length cap, so
+        notifier code must not split/truncate it a second time.
+        """
+        payload = event_payload or {}
+        if kind == "completed":
+            payload_summary = payload.get("summary")
+            if payload_summary:
+                return str(payload_summary).strip()
+            if task and getattr(task, "result", None):
+                legacy = str(task.result).strip()
+                if not legacy:
+                    return ""
+                lines = legacy.splitlines()
+                return lines[0][:160] if lines else legacy[:160]
+            return ""
+        if kind == "blocked":
+            reason = payload.get("reason")
+            return str(reason).strip()[:160] if reason else ""
+        if kind == "gave_up":
+            error = payload.get("error")
+            return str(error).strip()[:200] if error else ""
+        if kind == "crashed":
+            return "worker crashed (pid gone); dispatcher will retry"
+        if kind == "timed_out":
+            limit = payload.get("limit_seconds")
+            if limit:
+                return f"max_runtime={int(limit)}s; will retry"
+            return "dispatcher will retry"
+        return ""
+
+    @classmethod
+    def _kanban_notification_text(
+        cls,
+        *,
+        kind: str,
+        task_id: str,
+        title: str,
+        assignee: Optional[str],
+        event_payload: Optional[dict],
+        task,
+    ) -> str:
+        """Build the cross-platform plain-text notification body."""
+        tag = f"@{assignee} " if assignee else ""
+        detail = cls._kanban_notification_detail(kind, event_payload, task)
+        if kind == "completed":
+            handoff = f"\n{detail}" if detail else ""
+            return f"✔ {tag}Kanban {task_id} done — {title}{handoff}"
+        if kind == "blocked":
+            suffix = f": {detail}" if detail else ""
+            return f"⏸ {tag}Kanban {task_id} blocked{suffix}"
+        if kind == "gave_up":
+            suffix = f"\n{detail}" if detail else ""
+            return f"✖ {tag}Kanban {task_id} gave up after repeated spawn failures{suffix}"
+        if kind == "crashed":
+            return f"✖ {tag}Kanban {task_id} worker crashed (pid gone); dispatcher will retry"
+        if kind == "timed_out":
+            detail = detail or "will retry"
+            return f"⏱ {tag}Kanban {task_id} timed out ({detail})"
+        return ""
+
+    @classmethod
+    def _kanban_notification_slack_blocks(
+        cls,
+        *,
+        kind: str,
+        task_id: str,
+        title: str,
+        assignee: Optional[str],
+        board_slug: Optional[str],
+        event_payload: Optional[dict],
+        task,
+    ) -> list[dict[str, Any]]:
+        """Build Slack Block Kit for Kanban terminal notifications."""
+        meta = _KANBAN_NOTIFICATION_META.get(kind)
+        if not meta:
+            return []
+        detail = cls._kanban_notification_detail(kind, event_payload, task)
+        fields: list[dict[str, str]] = [
+            {"type": "mrkdwn", "text": f"**Task**\n`{task_id}`"},
+            {"type": "mrkdwn", "text": f"**Status**\n`{meta['status']}`"},
+        ]
+        if assignee:
+            fields.append({"type": "mrkdwn", "text": f"**Worker**\n`{assignee}`"})
+        if board_slug:
+            fields.append({"type": "mrkdwn", "text": f"**Board**\n`{board_slug}`"})
+
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"{meta['emoji']} **{meta['headline']}**",
+                },
+            },
+            {"type": "section", "fields": fields},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"**Title**\n{title}"},
+            },
+        ]
+        if detail:
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"**{meta['detail_label']}**\n{detail}",
+                    },
+                }
+            )
+        return blocks
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -342,72 +493,32 @@ class GatewayKanbanWatchersMixin:
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
-                        if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
-                            )
-                        elif kind == "blocked":
-                            reason = ""
-                            if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
-                        elif kind == "gave_up":
-                            err = ""
-                            if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
-                            )
-                        elif kind == "crashed":
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
-                            )
-                        elif kind == "timed_out":
-                            limit = 0
-                            if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
-                            )
-                        elif kind == "status":
-                            new_status = ""
-                            if ev.payload and ev.payload.get("status"):
-                                new_status = str(ev.payload["status"])
-                            msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
-                        else:
-                            # archived / unblocked are claimed by TERMINAL_KINDS
-                            # (so the cursor advances past them and they can't
-                            # wedge a later completed/blocked event behind an
-                            # unclaimed row) but are intentionally SILENT: an
-                            # archive needs no user ping, and unblocked is an
-                            # internal transition. They are also excluded from
-                            # _WAKE_KINDS below, so they never wake the creator.
+                        if kind not in _KANBAN_NOTIFICATION_META:
                             continue
+                        msg = self._kanban_notification_text(
+                            kind=kind,
+                            task_id=sub["task_id"],
+                            title=title,
+                            assignee=who,
+                            event_payload=getattr(ev, "payload", None),
+                            task=task,
+                        )
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
+                        if platform_str == "slack":
+                            slack_blocks = self._kanban_notification_slack_blocks(
+                                kind=kind,
+                                task_id=sub["task_id"],
+                                title=title,
+                                assignee=who,
+                                board_slug=board_slug,
+                                event_payload=getattr(ev, "payload", None),
+                                task=task,
+                            )
+                            if slack_blocks:
+                                metadata["slack_blocks"] = slack_blocks
+
                         sub_key = (
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",

@@ -251,3 +251,66 @@ class TestInPlaceConfigDefault:
         from hermes_cli.config import DEFAULT_CONFIG
 
         assert DEFAULT_CONFIG["compression"].get("in_place") is False
+
+
+class TestCompactedTurnsStaySearchable:
+    """Teknium's review hinges on the pre-compaction transcript staying
+    DISCOVERABLE after in-place compaction. Compaction-archived rows
+    (active=0, compacted=1) must surface in session_search by default, while
+    rewind/undo rows (active=0, compacted=0) must stay hidden. The two share
+    the active flag but are distinguished by the compacted flag."""
+
+    def test_compacted_turns_found_by_default_search(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_search"
+            db.create_session(sid, "cli", model="test/model")
+            for r, c in [
+                ("user", "configure the HMAC secret"),
+                ("assistant", "set it in config.yaml"),
+                ("user", "deploy returns 403"),
+                ("assistant", "rotate the HMAC"),
+                ("user", "works now"),
+                ("assistant", "great"),
+            ]:
+                db.append_message(session_id=sid, role=r, content=c)
+
+            before = db.search_messages("HMAC", role_filter=["user", "assistant"])
+            assert len(before) == 2
+
+            db.archive_and_compact(
+                sid,
+                [
+                    {"role": "user", "content": "[SUMMARY] earlier setup"},
+                    {"role": "assistant", "content": "ok"},
+                ],
+            )
+
+            # The archived originals (active=0, compacted=1) are still found by
+            # the DEFAULT search — this is the durability requirement.
+            after = db.search_messages("HMAC", role_filter=["user", "assistant"])
+            assert {m["id"] for m in after} == {1, 4}
+            # Live context still excludes them.
+            assert len(db.get_messages_as_conversation(sid)) == 2
+
+    def test_rewound_turns_stay_hidden(self):
+        """Rewind/undo (active=0, compacted=0) must NOT leak into default
+        search — the distinction the compacted flag preserves."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_undo"
+            db.create_session(sid, "cli", model="test/model")
+            db.append_message(session_id=sid, role="user", content="ZEBRAWORD remember this")
+            db.append_message(session_id=sid, role="assistant", content="noted")
+            db.rewind_to_message(sid, db.get_messages(sid)[0]["id"])
+
+            assert db.search_messages("ZEBRAWORD", role_filter=["user", "assistant"]) == []
+            recovered = db.search_messages(
+                "ZEBRAWORD", role_filter=["user", "assistant"], include_inactive=True
+            )
+            assert len(recovered) == 1
+

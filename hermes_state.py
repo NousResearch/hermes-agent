@@ -566,7 +566,8 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    compacted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -2709,11 +2710,14 @@ class SessionDB:
         - The live-context load (:meth:`get_messages_as_conversation`,
           :meth:`get_messages`) filters ``active = 1`` by default, so the model
           reloads ONLY the compacted set.
-        - The archived pre-compaction turns stay on disk and remain
-          FTS-searchable (the ``messages_fts*`` triggers index on INSERT / drop
-          on DELETE and do NOT key on ``active``; flipping to ``active = 0`` is a
-          content-preserving UPDATE), and are recoverable via
-          ``get_messages(..., include_inactive=True)`` / ``restore_rewound``.
+        - The archived pre-compaction turns stay on disk (active=0) and stay
+          DISCOVERABLE: they are marked compacted=1, and search_messages()
+          includes compacted=1 rows by default — so session_search still finds
+          them, unlike rewind/undo rows (active=0, compacted=0) which stay
+          hidden. They remain in the FTS index (the messages_fts* triggers
+          index on INSERT / drop on DELETE and don't key on active/compacted;
+          flipping to active=0 is a content-preserving UPDATE) and are
+          recoverable via get_messages(..., include_inactive=True).
 
         This is the durability-preserving alternative to :meth:`replace_messages`
         for compaction. ``message_count`` is set to the ACTIVE (compacted) count,
@@ -2721,8 +2725,15 @@ class SessionDB:
         """
 
         def _do(conn):
+            # Soft-archive the live turns: active=0 hides them from the live
+            # context load, compacted=1 marks them as "summarized away" (vs
+            # rewind/undo's active=0+compacted=0, which means "user took it
+            # back"). search_messages includes compacted=1 rows by default so
+            # the pre-compaction transcript stays discoverable; live-context
+            # loads (active=1 only) still exclude them.
             conn.execute(
-                "UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1",
+                "UPDATE messages SET active = 0, compacted = 1 "
+                "WHERE session_id = ? AND active = 1",
                 (session_id,),
             )
             inserted, tool_calls_total = self._insert_message_rows(
@@ -3475,8 +3486,12 @@ class SessionDB:
         ignores ``sort``. The trigram CJK path honours ``sort`` like the main
         FTS5 path.
 
-        Rewound (``active=0``) rows are excluded by default. Pass
-        ``include_inactive=True`` to search every row.
+        Rewound (``active=0``, ``compacted=0``) rows are excluded by default —
+        the user took those back. Compaction-archived rows (``active=0``,
+        ``compacted=1``) ARE included by default: they were summarized away from
+        the live context but remain part of the conversation's record, so the
+        pre-compaction transcript stays discoverable after in-place compaction
+        (#38763). Pass ``include_inactive=True`` to search every row regardless.
         """
         if not self._fts_enabled:
             return []
@@ -3511,7 +3526,10 @@ class SessionDB:
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
         if not include_inactive:
-            where_clauses.append("m.active = 1")
+            # Live rows (active=1) AND compaction-archived rows (compacted=1)
+            # are discoverable; only rewind/undo rows (active=0, compacted=0)
+            # are hidden. See archive_and_compact() / #38763.
+            where_clauses.append("(m.active = 1 OR m.compacted = 1)")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -3593,7 +3611,7 @@ class SessionDB:
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
                 if not include_inactive:
-                    tri_where.append("m.active = 1")
+                    tri_where.append("(m.active = 1 OR m.compacted = 1)")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)

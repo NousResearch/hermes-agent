@@ -298,6 +298,21 @@ export interface SessionInfo {
   model: null | string
   output_tokens: number
   preview: null | string
+  /** Cached AI-generated 3-5 sentence summary of the conversation,
+   *  surfaced in the sidebar's hover card (issue #45103).
+   *  Pre-generated in the background by the SessionSummaryScheduler
+   *  (PR 3) — see also summarize_session() in hermes_state.
+   *  Null when no summary exists yet (the frontend falls back to
+   *  the {@link preview} field in that case). */
+  summary: null | string
+  /** Unix-seconds when {@link summary} was generated. Null until a
+   *  summary exists. Used to render "Updated 2 hours ago" footers
+   *  and to decide whether to trigger a forced refresh. */
+  summary_updated_at: null | number
+  /** Model that produced {@link summary} (e.g. "gpt-4o-mini"). Null
+   *  until a summary exists. Surfaced in the hover card footer so
+   *  users know which model did the summarization. */
+  summary_model: null | string
   source: null | string
   started_at: number
   title: null | string

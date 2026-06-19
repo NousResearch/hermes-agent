@@ -5660,7 +5660,7 @@ class TelegramAdapter(BasePlatformAdapter):
             data = bytes(await file_obj.download_as_bytearray())
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind, platform="telegram")
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache observed group media: %s", exc, exc_info=True)
             return

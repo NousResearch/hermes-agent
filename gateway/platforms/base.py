@@ -482,7 +482,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
@@ -1342,12 +1342,95 @@ def _resolve_media_ext(filename: str, mime_type: str) -> str:
     return ""
 
 
+def _get_attachment_storage_path() -> Optional[Path]:
+    """Return the configured attachment storage path, or None if disabled."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        raw = cfg.get("gateway", {}).get("attachment_storage_path", "")
+        if raw and isinstance(raw, str):
+            p = Path(os.path.expanduser(raw))
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    except Exception:
+        pass
+    return None
+
+
+def _persist_attachment(
+    data: bytes,
+    *,
+    filename: str = "",
+    platform: str = "unknown",
+) -> None:
+    """Copy attachment bytes to the durable storage directory.
+
+    Silently no-ops if ``gateway.attachment_storage_path`` is empty or the
+    write fails — persistence is best-effort and must never break the cache
+    path that the agent actually consumes.
+    """
+    storage_root = _get_attachment_storage_path()
+    if storage_root is None:
+        return
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        # Strip directory components first, then sanitize
+        raw_name = Path(filename).name if filename else "file"
+        safe_name = re.sub(r"[^\w.\- ]", "_", raw_name).strip()
+        if not safe_name or safe_name in {".", ".."}:
+            safe_name = "file"
+        dest_dir = storage_root / platform
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{ts}_{safe_name}"
+        # Deduplicate: append counter if file already exists
+        if dest.exists():
+            counter = 1
+            while dest.exists():
+                stem = dest.stem.rsplit("_", 1)[0]
+                dest = dest_dir / f"{stem}_{counter}_{safe_name}"
+                counter += 1
+        dest.write_bytes(data)
+        logger.debug("Persisted attachment to %s (%d bytes)", dest, len(data))
+    except Exception as exc:
+        logger.warning("Failed to persist attachment: %s", exc)
+
+
+def cleanup_persisted_attachments() -> int:
+    """Delete persisted attachments older than the configured retention days.
+
+    Returns the number of files removed.  No-op if persistence is disabled
+    or retention_days is 0 (keep forever).
+    """
+    storage_root = _get_attachment_storage_path()
+    if storage_root is None:
+        return 0
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        retention = cfg.get("gateway", {}).get("attachment_retention_days", 30)
+        if not isinstance(retention, (int, float)) or retention <= 0:
+            return 0
+    except Exception:
+        retention = 30
+    cutoff = time.time() - retention * 86400
+    removed = 0
+    try:
+        for f in storage_root.rglob("*"):
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+    except Exception as exc:
+        logger.warning("Attachment cleanup error: %s", exc)
+    return removed
+
+
 def cache_media_bytes(
     data: bytes,
     *,
     filename: str = "",
     mime_type: str = "",
     default_kind: Optional[str] = None,
+    platform: str = "unknown",
 ) -> Optional[CachedMedia]:
     """Classify and cache raw attachment bytes; return a CachedMedia or None.
 
@@ -1356,12 +1439,18 @@ def cache_media_bytes(
     file has no usable name. Unsupported document types return None so the
     caller can record an "unsupported" note. Images that fail validation
     (``cache_image_from_bytes`` raises ValueError) also return None.
+
+    If ``gateway.attachment_storage_path`` is configured, the raw bytes are
+    also persisted to a durable directory before being returned.
     """
     from tools.credential_files import to_agent_visible_cache_path
 
     ext = _resolve_media_ext(filename, mime_type)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
+
+    # Persist to durable storage if configured (best-effort, before cache write)
+    _persist_attachment(data, filename=filename or display, platform=platform)
 
     is_image = (
         mime.startswith("image/")

@@ -16480,7 +16480,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     once per hour.
     """
     from cron.scheduler import tick as cron_tick
-    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
+    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache, cleanup_persisted_attachments
     from hermes_cli.debug import _sweep_expired_pastes
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
@@ -16529,6 +16529,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Document cache cleanup error: %s", e)
+            try:
+                removed = cleanup_persisted_attachments()
+                if removed:
+                    logger.info("Persisted attachment cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Persisted attachment cleanup error: %s", e)
 
         if tick_count % PASTE_SWEEP_EVERY == 0:
             try:

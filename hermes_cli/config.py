@@ -2441,6 +2441,17 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Persist received attachments to a durable directory so they survive
+        # cache cleanup.  When non-empty, every inbound attachment is copied
+        # to ``<attachment_storage_path>/<platform>/<timestamp>_<filename>``
+        # *before* being passed to the agent.  Default "" (empty) disables
+        # persistence — files live only in the temp cache and are cleaned up
+        # after ``cleanup_*_cache(max_age_hours)``.  Tilde paths are expanded.
+        "attachment_storage_path": "",
+        # How many days to keep persisted attachments.  Files older than this
+        # are deleted by the periodic cleanup pass.  Only consulted when
+        # ``attachment_storage_path`` is non-empty.  Set to 0 to keep forever.
+        "attachment_retention_days": 30,
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

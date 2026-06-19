@@ -11097,7 +11097,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # The agent already persisted these messages to SQLite via
             # _flush_messages_to_session_db(), so skip the DB write here
             # to prevent the duplicate-write bug (#860 / #42039).
-            agent_persisted = self._session_db is not None
+            # Exception: the codex app-server runtime is an early-return path
+            # that bypasses conversation_loop and never calls
+            # _flush_messages_to_session_db().  It signals this by returning
+            # agent_persisted=False; the gateway then writes the new turn's
+            # messages to state.db so session_search (FTS) and
+            # conversation-distill can see real gateway conversations.
+            # Default True preserves the existing behaviour for the standard
+            # runtime (no duplicate-write regression, #860 / #42039).
+            agent_persisted = agent_result.get("agent_persisted", self._session_db is not None)
 
             # Find only the NEW messages from this turn (skip history we loaded).
             # Use the filtered history length (history_offset) that was actually
@@ -17735,6 +17743,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
+                # Pass through the agent_persisted flag so the persistence block
+                # above can correctly determine whether the codex app-server path
+                # self-persisted (it didn't — see codex_runtime.py).  Default
+                # True preserves the skip-db behaviour for the standard runtime.
+                "agent_persisted": (result_holder[0].get("agent_persisted", True) if result_holder[0] else True),
             }
         
         # Start progress message sender if enabled. Gate on needs_progress_queue

@@ -1543,9 +1543,18 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+    # Prefer explicit OPENROUTER_API_KEY over credential-pool entries.
+    # Pool entries can become stale (429-exhausted, expired tokens) while
+    # the user's env/dotenv key remains valid (#48829).
+    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
+    if or_key:
+        logger.debug("Auxiliary client: OpenRouter (env key)")
+        return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
+                       default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
-        or_key = explicit_api_key or _pool_runtime_api_key(entry)
+        or_key = _pool_runtime_api_key(entry)
         if not or_key:
             _mark_provider_unhealthy("openrouter", ttl=60)
             return None, None
@@ -1554,23 +1563,19 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         return OpenAI(api_key=or_key, base_url=base_url,
                        default_headers=build_or_headers()), model or _OPENROUTER_MODEL
 
-    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
-    if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
-        return None, None
-    logger.debug("Auxiliary client: OpenRouter")
-    return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+    _mark_provider_unhealthy("openrouter", ttl=60)
+    return None, None
 
 
 def _describe_openrouter_unavailable() -> str:
     """Return a more precise OpenRouter auth failure reason for logs."""
-    pool_present, entry = _select_pool_entry("openrouter")
-    if pool_present:
-        if entry is None:
-            return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
-        if not _pool_runtime_api_key(entry):
-            return "OpenRouter credential pool entry is missing a runtime API key"
+    if not str(os.getenv("OPENROUTER_API_KEY") or "").strip():
+        pool_present, entry = _select_pool_entry("openrouter")
+        if pool_present:
+            if entry is None:
+                return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
+            if not _pool_runtime_api_key(entry):
+                return "OpenRouter credential pool entry is missing a runtime API key"
     if not str(os.getenv("OPENROUTER_API_KEY") or "").strip():
         return "OPENROUTER_API_KEY not set"
     return "no usable OpenRouter credentials found"

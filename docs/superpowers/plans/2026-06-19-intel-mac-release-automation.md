@@ -75,10 +75,11 @@ Use `runs-on: macos-15-intel`, check out
 declared by the project, run `npm ci`, and build with:
 
 ```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --x64
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --x64 --publish never
 ```
 
-from `apps/desktop`.
+from `apps/desktop`. The explicit publish mode prevents Electron Builder from
+inferring an implicit CI publish before the artifacts have been validated.
 
 - [ ] **Step 3: Add fail-closed artifact validation**
 

@@ -85,7 +85,7 @@ jobs:
         working-directory: apps/desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist:mac -- --x64
+        run: npm run dist:mac -- --x64 --publish never
 
       - name: Validate x86_64 packages and write checksums
         id: validate

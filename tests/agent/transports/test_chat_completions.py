@@ -107,12 +107,25 @@ class TestChatCompletionsBasic:
         every turn — stripping it would 400. Keep extra_content for Gemini
         targets (including aggregator slugs like google/gemini-3-pro).
         """
-        for model in ("gemini-3-pro", "google/gemini-3-pro-preview", "gemma-3-27b"):
+        for model in ("gemini-3-pro", "google/gemini-3-pro-preview", "gemini-3-flash"):
             msgs = self._msg_with_extra_content()
             result = transport.convert_messages(msgs, model=model)
             assert result[0]["tool_calls"][0]["extra_content"] == {
                 "google": {"thought_signature": "SIG_123"}
             }, model
+
+    def test_convert_messages_strips_extra_content_for_gemma(self, transport):
+        """Gemma models do NOT use the Gemini-3 thinking format and 400 on
+        ``extra_content``. A cross-model fallback (gemini-3-flash → gemma-4-31b-it)
+        carries a stale Gemini thought_signature in tool-call history; it must be
+        stripped before reaching Gemma. (#36907)
+        """
+        for model in ("gemma-4-31b-it", "google/gemma-3-27b"):
+            msgs = self._msg_with_extra_content()
+            result = transport.convert_messages(msgs, model=model)
+            assert "extra_content" not in result[0]["tool_calls"][0], model
+            # Original list untouched (deepcopy-on-demand)
+            assert "extra_content" in msgs[0]["tool_calls"][0], model
 
     def test_convert_messages_strips_tool_name(self, transport):
         """Internal `tool_name` (used for FTS indexing in the SQLite store) is

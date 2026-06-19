@@ -124,6 +124,48 @@ class TestInPlaceCompaction:
             roles = [m["role"] for m in compressed if m.get("role") != "system"]
             assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
 
+    def test_in_place_skips_redundant_preflush(self):
+        """In-place must NOT pre-flush current-turn messages: replace_messages
+        rewrites the whole row, so a flush would INSERT rows it immediately
+        deletes (wasted writes). The current-turn tail survives via the
+        compressor's `compressed` output, not the flush."""
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "ip_flush", "f")
+            agent = _make_agent(db, "ip_flush", in_place=True)
+            calls = {"n": 0}
+            agent._flush_messages_to_session_db = lambda *a, **k: calls.__setitem__(
+                "n", calls["n"] + 1
+            )
+            compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+            assert calls["n"] == 0
+
+    def test_rotation_still_preflushes(self):
+        """Rotation MUST pre-flush so current-turn messages survive in the
+        preserved old (parent) session before it is ended (#47202)."""
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            _seed(db, "rot_flush", "f")
+            agent = _make_agent(db, "rot_flush", in_place=False)
+            calls = {"n": 0}
+            agent._flush_messages_to_session_db = lambda *a, **k: calls.__setitem__(
+                "n", calls["n"] + 1
+            )
+            compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+            assert calls["n"] == 1
+
 
 class TestRotationStillDefault:
     def test_rotation_when_flag_off(self):

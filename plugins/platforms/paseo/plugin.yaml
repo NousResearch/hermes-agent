@@ -1,0 +1,40 @@
+name: paseo-platform
+label: Paseo
+kind: platform
+version: 0.1.0
+description: >
+  Experimental Paseo gateway adapter for Hermes Agent. Exposes a local,
+  token-protected HTTP bridge that Paseo can post messages to and poll for
+  Hermes responses, without replacing the existing ACP connection until the
+  operator explicitly enables and switches clients.
+author: Hermes Agent
+requires_env: []
+optional_env:
+  - name: PASEO_GATEWAY_ENABLED
+    description: "Set true to auto-enable the Paseo bridge from environment configuration"
+    prompt: "Enable Paseo gateway bridge? (true/false)"
+    password: false
+  - name: PASEO_GATEWAY_HOST
+    description: "Bridge bind host (default: 127.0.0.1)"
+    prompt: "Paseo bridge host"
+    password: false
+  - name: PASEO_GATEWAY_PORT
+    description: "Bridge bind port (default: 8767; intentionally separate from Paseo daemon 6767)"
+    prompt: "Paseo bridge port"
+    password: false
+  - name: PASEO_GATEWAY_TOKEN
+    description: "Bearer token required by Paseo bridge clients"
+    prompt: "Paseo bridge bearer token"
+    password: true
+  - name: PASEO_ALLOWED_USERS
+    description: "Comma-separated Paseo user IDs allowed to send messages"
+    prompt: "Allowed Paseo user IDs"
+    password: false
+  - name: PASEO_ALLOW_ALL_USERS
+    description: "Allow all Paseo users (development only)"
+    prompt: "Allow all Paseo users? (true/false)"
+    password: false
+  - name: PASEO_HOME_CHANNEL
+    description: "Default Paseo chat ID for cron / notification delivery"
+    prompt: "Paseo home channel"
+    password: false

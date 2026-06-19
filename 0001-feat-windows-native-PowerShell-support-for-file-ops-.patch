@@ -1,0 +1,1514 @@
+From 1a3f742b00439b63324a2fc0afed4bef7c7dcef7 Mon Sep 17 00:00:00 2001
+From: kosecom <kosecom1@gmail.com>
+Date: Fri, 19 Jun 2026 05:11:42 +0200
+Subject: [PATCH] feat(windows): native PowerShell support for file ops,
+ process registry, and shell detection
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Make Hermes Agent work natively with PowerShell on Windows by detecting the
+configured shell type and routing all shell-specific operations through
+PowerShell-compatible alternatives.
+
+Key changes:
+
+- environments/base.py: Add shell_type='bash' class attribute to BaseEnvironment
+  so all backends have a default. PowerShellEnvironment overrides to 'powershell'.
+
+- environments/powershell.py: New PowerShellEnvironment with shell_type='powershell',
+  init_session() using Get-ChildItem/Set-Location/Get-Location, _wrap_command()
+  with PowerShell-native command wrapping, _find_powershell() for pwsh 7+/5.1.
+
+- environments/local.py: _find_shell() now returns pwsh when terminal.shell is
+  'powershell' in config.yaml, falling back to bash otherwise.
+
+- file_operations.py: ShellFileOperations detects shell_type and uses python -c
+  snippets for ALL file operations on PowerShell (read, write, patch, search,
+  delete, move, mkdir, stat, line-ending detection, BOM handling, binary
+  detection). Bash commands preserved for non-PowerShell backends. New methods:
+  _atomic_write_python, _read_file_python, _read_file_raw_python,
+  _search_files_python, _search_content_python.
+
+- process_registry.py: spawn_local() uses pwsh -NoProfile -Command instead of
+  bash -lic 'set +m; ...' when PowerShell is configured. spawn_via_env() uses
+  Start-Process/Set-Content instead of nohup/bash for PowerShell backends.
+  _env_temp_dir() accepts Windows paths (C:\\...) instead of only POSIX /tmp.
+  New helpers: _is_powershell_shell(), _find_configured_shell().
+
+- terminal_tool.py: Dynamic terminal tool description based on configured shell.
+  Fix NameError from function ordering of _get_terminal_shell_config().
+
+- prompt_builder.py: Dynamic shell hint in system prompt — PowerShell hint when
+  terminal.shell is 'powershell', bash hint otherwise.
+
+- transcription_tools.py: Use _quote_command_stt_placeholder() and
+  subprocess.list2cmdline() on Windows instead of shlex.quote for STT commands.
+
+- code_execution_tool.py: shell_quote() uses PowerShell single-quote escaping
+  on Windows instead of shlex.quote (bash-only).
+---
+ agent/prompt_builder.py          |  28 +-
+ tools/code_execution_tool.py     |   5 +
+ tools/environments/base.py       |   4 +
+ tools/environments/local.py      |  17 +-
+ tools/environments/powershell.py | 267 +++++++++++++++
+ tools/file_operations.py         | 547 ++++++++++++++++++++++++++++---
+ tools/process_registry.py        | 109 ++++--
+ tools/terminal_tool.py           |  72 +++-
+ tools/transcription_tools.py     |  19 +-
+ 9 files changed, 990 insertions(+), 78 deletions(-)
+ create mode 100644 tools/environments/powershell.py
+
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 97836f27b..bf1c9beac 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -790,6 +790,18 @@ _WINDOWS_BASH_SHELL_HINT = (
+ )
+ 
+ 
++_WINDOWS_POWERSHELL_SHELL_HINT = (
++    "Shell: on this Windows host your `terminal` tool runs commands through "
++    "PowerShell 7+ (pwsh), NOT bash or cmd.exe. Use PowerShell cmdlets and "
++    "syntax inside terminal calls: `Get-ChildItem` (alias: ls), "
++    "`Get-Content` (alias: cat), `Select-String` (alias: sls) for search, "
++    "`$env:VAR_NAME` for environment variables, `;` instead of `&&`/`||` "
++    "for command chaining, `$LASTEXITCODE` for exit codes of external "
++    "programs. Use native Windows paths like `C:\\Users\\<user>\\...`. "
++    "Bash syntax (`$FOO`, `&&`, `||`, `grep`, `sed`) will NOT work."
++)
++
++
+ def _probe_remote_backend(env_type: str) -> str | None:
+     """Run a tiny introspection command inside the active terminal backend.
+ 
+@@ -923,10 +935,20 @@ def build_environment_hints() -> str:
+             )
+         hints.append("\n".join(host_lines))
+ 
+-        # Windows-local terminal runs bash, not PowerShell — the model must
+-        # know this or it will issue PowerShell syntax and fail.
++        # Windows-local terminal: tell the model which shell it has.
++        # When terminal.shell=powershell is configured, emit the PowerShell
++        # hint; otherwise default to the historical bash (git-bash/MSYS) hint.
+         if sys.platform == "win32" and not is_wsl():
+-            hints.append(_WINDOWS_BASH_SHELL_HINT)
++            _shell_hint = _WINDOWS_BASH_SHELL_HINT
++            try:
++                from hermes_cli.config import load_config as _lc
++                _cfg = _lc() or {}
++                _shell = str((_cfg.get("terminal") or {}).get("shell", "")).lower().strip()
++                if _shell in ("powershell", "pwsh"):
++                    _shell_hint = _WINDOWS_POWERSHELL_SHELL_HINT
++            except Exception:
++                pass
++            hints.append(_shell_hint)
+     else:
+         # --- Remote backend block (host info suppressed) ---
+         probe = _probe_remote_backend(backend)
+diff --git a/tools/code_execution_tool.py b/tools/code_execution_tool.py
+index 5514f63b9..2daae36d5 100644
+--- a/tools/code_execution_tool.py
++++ b/tools/code_execution_tool.py
+@@ -311,6 +311,11 @@ def shell_quote(s: str) -> str:
+     Use this when inserting dynamic content into terminal() commands:
+         terminal(f"echo {shell_quote(user_input)}")
+     """
++    import platform as _pf
++    if _pf.system() == "Windows":
++        # PowerShell: wrap in single quotes, escape embedded single quotes
++        # by doubling them ('' → '').
++        return "'" + s.replace("'", "''") + "'"
+     return shlex.quote(s)
+ 
+ 
+diff --git a/tools/environments/base.py b/tools/environments/base.py
+index 251bb18f1..2f7312940 100644
+--- a/tools/environments/base.py
++++ b/tools/environments/base.py
+@@ -299,6 +299,10 @@ class BaseEnvironment(ABC):
+     # Snapshot creation timeout (override for slow cold-starts).
+     _snapshot_timeout: int = 30
+ 
++    # Shell type: "bash" (default) or "powershell".  ShellFileOperations
++    # uses this to select between bash commands and Python snippets.
++    shell_type: str = "bash"
++
+     def get_temp_dir(self) -> str:
+         """Return the backend temp directory used for session artifacts.
+ 
+diff --git a/tools/environments/local.py b/tools/environments/local.py
+index b808816ef..6ada23cc8 100644
+--- a/tools/environments/local.py
++++ b/tools/environments/local.py
+@@ -286,8 +286,19 @@ def _find_bash() -> str:
+     )
+ 
+ 
+-# Backward compat — process_registry.py imports this name
+-_find_shell = _find_bash
++# Backward compat — process_registry.py imports this name.
++# When PowerShell is configured as the terminal shell, return pwsh instead
++# of bash so background processes are spawned with the correct shell.
++def _find_shell() -> str:
++    """Return the path to the configured shell (pwsh or bash)."""
++    try:
++        from tools.terminal_tool import _get_terminal_shell_config
++        if _get_terminal_shell_config() == "powershell":
++            from tools.environments.powershell import _find_powershell
++            return _find_powershell()
++    except Exception:
++        pass
++    return _find_bash()
+ 
+ 
+ # Standard PATH entries for environments with minimal PATH.
+@@ -492,6 +503,8 @@ class LocalEnvironment(BaseEnvironment):
+     CWD persists via file-based read after each command.
+     """
+ 
++    shell_type = "bash"
++
+     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+         if cwd:
+             cwd = os.path.expanduser(cwd)
+diff --git a/tools/environments/powershell.py b/tools/environments/powershell.py
+new file mode 100644
+index 000000000..7289de6c2
+--- /dev/null
++++ b/tools/environments/powershell.py
+@@ -0,0 +1,267 @@
++"""PowerShell execution environment for Windows — spawn-per-call with session snapshot.
++
++Mirrors LocalEnvironment but uses pwsh (PowerShell 7+) instead of Git Bash.
++Activated via ``terminal.shell: powershell`` in config.yaml.
++"""
++
++import logging
++import os
++import platform
++import subprocess
++import tempfile
++import time
++from pathlib import Path
++
++from tools.environments.base import BaseEnvironment, _pipe_stdin
++from tools.environments.local import _make_run_env, _sanitize_subprocess_env
++from hermes_cli._subprocess_compat import windows_hide_flags
++
++_IS_WINDOWS = platform.system() == "Windows"
++
++logger = logging.getLogger(__name__)
++
++
++def _find_powershell() -> str:
++    """Find PowerShell 7+ (pwsh) or fall back to Windows PowerShell 5.1."""
++    import shutil
++
++    pwsh = shutil.which("pwsh")
++    if pwsh:
++        return pwsh
++
++    for candidate in (
++        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "PowerShell", "7", "pwsh.exe"),
++        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "PowerShell", "7-preview", "pwsh.exe"),
++    ):
++        if candidate and os.path.isfile(candidate):
++            return candidate
++
++    powershell = shutil.which("powershell")
++    if powershell:
++        return powershell
++
++    for candidate in (
++        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
++    ):
++        if candidate and os.path.isfile(candidate):
++            return candidate
++
++    raise RuntimeError(
++        "PowerShell not found. Install PowerShell 7+ from: "
++        "https://github.com/PowerShell/PowerShell/releases"
++    )
++
++
++class PowerShellEnvironment(BaseEnvironment):
++    """Run commands via PowerShell on Windows.
++
++    Spawn-per-call: every execute() spawns a fresh pwsh process.
++    Session snapshot preserves env vars across calls via a .ps1 file.
++    CWD persists via file-based read after each command.
++    """
++
++    _stdin_mode = "pipe"
++    shell_type = "powershell"
++
++    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
++        if cwd:
++            cwd = os.path.expanduser(cwd)
++        super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
++        self.init_session()
++
++    def get_temp_dir(self) -> str:
++        if _IS_WINDOWS:
++            try:
++                from hermes_constants import get_hermes_home
++                cache_dir = get_hermes_home() / "cache" / "terminal"
++            except Exception:
++                cache_dir = Path(tempfile.gettempdir()) / "hermes_terminal"
++            cache_dir.mkdir(parents=True, exist_ok=True)
++            return str(cache_dir).replace("\\", "/")
++        return "/tmp"
++
++    def _run_bash(self, cmd_string: str, *, login: bool = False,
++                  timeout: int = 120,
++                  stdin_data: str | None = None) -> subprocess.Popen:
++        """Spawn a PowerShell process to run *cmd_string*.
++
++        Despite the name (kept for BaseEnvironment compatibility), this
++        runs pwsh, not bash.
++        """
++        pwsh = _find_powershell()
++        args = [pwsh, "-NoProfile", "-NoLogo", "-Command", cmd_string]
++        run_env = _make_run_env(self.env)
++
++        safe_cwd = self.cwd
++        if _IS_WINDOWS and not os.path.isdir(safe_cwd):
++            parent = os.path.dirname(safe_cwd)
++            while parent:
++                if os.path.isdir(parent):
++                    safe_cwd = parent
++                    break
++                next_parent = os.path.dirname(parent)
++                if next_parent == parent:
++                    break
++                parent = next_parent
++            else:
++                safe_cwd = tempfile.gettempdir()
++
++        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
++
++        proc = subprocess.Popen(
++            args,
++            text=True,
++            env=run_env,
++            encoding="utf-8",
++            errors="replace",
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
++            preexec_fn=None if _IS_WINDOWS else os.setsid,
++            cwd=safe_cwd,
++            **_popen_kwargs,
++        )
++        if not _IS_WINDOWS:
++            try:
++                proc._hermes_pgid = os.getpgid(proc.pid)
++            except ProcessLookupError:
++                pass
++
++        if stdin_data is not None:
++            _pipe_stdin(proc, stdin_data)
++
++        return proc
++
++    def init_session(self):
++        """Capture PowerShell environment into a snapshot file."""
++        snap_path = self._snapshot_path.replace("/", "\\")
++        cwd_file = self._cwd_file.replace("/", "\\")
++        cwd_escaped = self.cwd.replace("'", "''")
++        marker = self._cwd_marker
++
++        bootstrap = (
++            f"$ErrorActionPreference = 'Continue'\n"
++            f"Get-ChildItem Env: | ForEach-Object {{ "
++            f"  \"$($_.Name)=$($_.Value)\" "
++            f"}} | Set-Content -Path '{snap_path}' -Encoding UTF8\n"
++            f"Set-Location -LiteralPath '{cwd_escaped}' -ErrorAction SilentlyContinue\n"
++            f"(Get-Location).Path | Set-Content -Path '{cwd_file}' -Encoding UTF8\n"
++            f"Write-Output \"`n{marker}$((Get-Location).Path){marker}`n\"\n"
++        )
++        try:
++            proc = self._run_bash(bootstrap, login=False, timeout=self._snapshot_timeout)
++            result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
++            self._snapshot_ready = True
++            self._update_cwd(result)
++            logger.info(
++                "PowerShell session snapshot created (session=%s, cwd=%s)",
++                self._session_id,
++                self.cwd,
++            )
++        except Exception as exc:
++            logger.warning(
++                "PowerShell init_session failed (session=%s): %s — "
++                "falling back to per-command execution",
++                self._session_id,
++                exc,
++            )
++            self._snapshot_ready = False
++
++    def _wrap_command(self, command: str, cwd: str) -> str:
++        """Build a PowerShell script that sources snapshot, cd's, runs command,
++        re-dumps env vars, and emits CWD markers."""
++        snap_path = self._snapshot_path.replace("/", "\\")
++        cwd_file = self._cwd_file.replace("/", "\\")
++        cwd_escaped = cwd.replace("'", "''")
++        marker = self._cwd_marker
++        command_escaped = command.replace("'", "''")
++
++        parts = [
++            f"$ErrorActionPreference = 'Continue'",
++        ]
++
++        if self._snapshot_ready:
++            parts.append(
++                f"if (Test-Path -LiteralPath '{snap_path}') {{ "
++                f"  Get-Content -LiteralPath '{snap_path}' | ForEach-Object {{ "
++                f"    $idx = $_.IndexOf('='); "
++                f"    if ($idx -gt 0) {{ "
++                f"      [Environment]::SetEnvironmentVariable("
++                f"        $_.Substring(0, $idx), $_.Substring($idx + 1), 'Process') "
++                f"    }} "
++                f"  }} "
++                f"}}"
++            )
++
++        parts.append(f"Set-Location -LiteralPath '{cwd_escaped}' -ErrorAction SilentlyContinue")
++
++        parts.append(
++            f"try {{ & {{ {command_escaped} }}; $__hermes_ec = $LASTEXITCODE }} "
++            f"catch {{ Write-Error $_.Exception.Message; $__hermes_ec = 1 }}; "
++            f"if ($__hermes_ec -eq $null) {{ $__hermes_ec = 0 }}"
++        )
++
++        if self._snapshot_ready:
++            parts.append(
++                f"Get-ChildItem Env: | ForEach-Object {{ "
++                f"  \"$($_.Name)=$($_.Value)\" "
++                f"}} | Set-Content -Path '{snap_path}' -Encoding UTF8 -ErrorAction SilentlyContinue"
++            )
++
++        parts.append(
++            f"(Get-Location).Path | Set-Content -Path '{cwd_file}' -Encoding UTF8 -ErrorAction SilentlyContinue"
++        )
++        parts.append(
++            f"Write-Output \"`n{marker}$((Get-Location).Path){marker}`n\""
++        )
++        parts.append(f"exit $__hermes_ec")
++
++        return "\n".join(parts)
++
++    def _update_cwd(self, result: dict):
++        """Read CWD from temp file (PowerShell writes native Windows paths)."""
++        try:
++            with open(self._cwd_file, encoding="utf-8") as f:
++                cwd_path = f.read().strip()
++            if cwd_path and os.path.isdir(cwd_path):
++                self.cwd = cwd_path
++        except (OSError, FileNotFoundError):
++            pass
++
++        self._extract_cwd_from_output(result)
++
++    def _kill_process(self, proc):
++        """Kill the process (Windows: terminate, POSIX: process group)."""
++        try:
++            if _IS_WINDOWS:
++                proc.terminate()
++            else:
++                try:
++                    pgid = os.getpgid(proc.pid)
++                except ProcessLookupError:
++                    pgid = getattr(proc, "_hermes_pgid", None)
++                    if pgid is None:
++                        raise
++                import signal as _signal
++                try:
++                    os.killpg(pgid, _signal.SIGTERM)
++                except ProcessLookupError:
++                    return
++                time.sleep(1.0)
++                try:
++                    os.killpg(pgid, _signal.SIGKILL)
++                except ProcessLookupError:
++                    return
++        except (ProcessLookupError, PermissionError, OSError):
++            try:
++                proc.kill()
++            except Exception:
++                pass
++
++    def cleanup(self):
++        """Clean up temp files."""
++        for f in (self._snapshot_path, self._cwd_file):
++            try:
++                os.unlink(f)
++            except OSError:
++                pass
+diff --git a/tools/file_operations.py b/tools/file_operations.py
+index c9374a4ef..b184593c4 100644
+--- a/tools/file_operations.py
++++ b/tools/file_operations.py
+@@ -725,6 +725,11 @@ class ShellFileOperations(FileOperations):
+     
+     Works with ANY terminal backend that has execute(command, cwd) method.
+     This includes local, docker, singularity, ssh, modal, and daytona environments.
++
++    When the backend's ``shell_type`` is ``"powershell"``, all file operations
++    use Python snippets (``python -c``) instead of bash commands so they work
++    correctly on Windows PowerShell where ``cat``, ``sed``, ``wc``, ``head``,
++    ``mktemp``, ``trap``, etc. are unavailable.
+     """
+     
+     def __init__(self, terminal_env, cwd: str = None):
+@@ -761,7 +766,11 @@ class ShellFileOperations(FileOperations):
+ 
+         # Cache for command availability checks
+         self._command_cache: Dict[str, bool] = {}
+-    
++
++        # Detect PowerShell backends — when true, we use Python-based
++        # operations instead of bash/POSIX commands.
++        self._is_powershell = getattr(terminal_env, 'shell_type', 'bash') == 'powershell'
++
+     def _exec(self, command: str, cwd: str = None, timeout: int = None,
+               stdin_data: str = None) -> ExecuteResult:
+         """Execute command via terminal backend.
+@@ -797,7 +806,10 @@ class ShellFileOperations(FileOperations):
+     def _has_command(self, cmd: str) -> bool:
+         """Check if a command exists in the environment (cached)."""
+         if cmd not in self._command_cache:
+-            result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
++            if self._is_powershell:
++                result = self._exec(f"Get-Command {cmd} -ErrorAction SilentlyContinue | Out-Null; if ($?) {{ echo 'yes' }}")
++            else:
++                result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
+             self._command_cache[cmd] = result.stdout.strip() == 'yes'
+         return self._command_cache[cmd]
+     
+@@ -863,7 +875,10 @@ class ShellFileOperations(FileOperations):
+         # Handle ~ and ~user
+         if path.startswith('~'):
+             # Get home directory via the terminal environment
+-            result = self._exec("echo $HOME")
++            if self._is_powershell:
++                result = self._exec("echo $env:USERPROFILE")
++            else:
++                result = self._exec("echo $HOME")
+             if result.exit_code == 0 and result.stdout.strip():
+                 home = result.stdout.strip()
+                 if path == '~':
+@@ -879,7 +894,10 @@ class ShellFileOperations(FileOperations):
+                 if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
+                     # Only expand ~username (not the full path) to avoid shell
+                     # injection via path suffixes like "~user/$(malicious)".
+-                    expand_result = self._exec(f"echo ~{username}")
++                    if self._is_powershell:
++                        expand_result = self._exec(f"echo (Resolve-Path ~{username}).Path")
++                    else:
++                        expand_result = self._exec(f"echo ~{username}")
+                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
+                         user_home = expand_result.stdout.strip()
+                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
+@@ -889,7 +907,10 @@ class ShellFileOperations(FileOperations):
+     
+     def _escape_shell_arg(self, arg: str) -> str:
+         """Escape a string for safe use in shell commands."""
+-        # Use single quotes and escape any single quotes in the string
++        if self._is_powershell:
++            # PowerShell single-quote escaping: double embedded single quotes
++            return "'" + arg.replace("'", "''") + "'"
++        # bash single-quote escaping
+         return "'" + arg.replace("'", "'\"'\"'") + "'"
+ 
+     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
+@@ -907,6 +928,9 @@ class ShellFileOperations(FileOperations):
+         was swapped into place atomically. A non-zero exit means nothing was
+         renamed and the original (if any) is intact.
+         """
++        if self._is_powershell:
++            return self._atomic_write_python(path, content)
++
+         q_path = self._escape_shell_arg(path)
+         parent = os.path.dirname(path) or "."
+         q_parent = self._escape_shell_arg(parent)
+@@ -946,6 +970,36 @@ class ShellFileOperations(FileOperations):
+         )
+         return self._exec(script, stdin_data=content)
+ 
++    def _atomic_write_python(self, path: str, content: str) -> "ExecuteResult":
++        """Atomic write via Python snippet — used on PowerShell backends.
++
++        Uses ``python -c`` with stdin piping so it works on any shell that
++        has Python available (which Hermes always does via its venv).
++        Creates a temp file in the same directory, writes stdin to it,
++        then atomically replaces the target.
++        """
++        snippet = (
++            "import sys, os, tempfile, pathlib\n"
++            f"target = pathlib.Path({path!r})\n"
++            "parent = target.parent if target.parent else pathlib.Path('.')\n"
++            "parent.mkdir(parents=True, exist_ok=True)\n"
++            "fd, tmp = tempfile.mkstemp(dir=str(parent), prefix='.hermes-tmp.')\n"
++            "try:\n"
++            "    with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:\n"
++            "        f.write(sys.stdin.read())\n"
++            "    if target.exists():\n"
++            "        try:\n"
++            "            os.chmod(tmp, os.stat(str(target)).st_mode & 0o7777)\n"
++            "        except Exception:\n"
++            "            pass\n"
++            "    os.replace(tmp, str(target))\n"
++            "except Exception:\n"
++            "    try: os.unlink(tmp)\n"
++            "    except Exception: pass\n"
++            "    raise\n"
++        )
++        return self._exec(f"python -c {self._escape_shell_arg(snippet)}", stdin_data=content)
++
+     def _detect_file_line_ending(self, path: str, pre_content: Optional[str] = None) -> Optional[str]:
+         """Detect the dominant line ending of a file on disk.
+ 
+@@ -959,10 +1013,20 @@ class ShellFileOperations(FileOperations):
+         """
+         if pre_content:
+             return _detect_line_ending(pre_content)
+-        # File may not exist (new write) — `head` exits 0 with empty
+-        # stdout in that case which yields None below.  Cheap probe.
+-        head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
+-        head_result = self._exec(head_cmd)
++        # File may not exist (new write) — probe returns empty in that case.
++        if self._is_powershell:
++            snippet = (
++                "import sys\n"
++                f"p = {path!r}\n"
++                "try:\n"
++                "    with open(p, 'rb') as f: data = f.read(4096)\n"
++                "    sys.stdout.buffer.write(data)\n"
++                "except Exception: pass\n"
++            )
++            head_result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
++        else:
++            head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
++            head_result = self._exec(head_cmd)
+         if head_result.exit_code != 0 or not head_result.stdout:
+             return None
+         return _detect_line_ending(head_result.stdout)
+@@ -977,8 +1041,19 @@ class ShellFileOperations(FileOperations):
+         """
+         if pre_content is not None:
+             return _has_bom(pre_content)
+-        head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
+-        head_result = self._exec(head_cmd)
++        if self._is_powershell:
++            snippet = (
++                "import sys\n"
++                f"p = {path!r}\n"
++                "try:\n"
++                "    with open(p, 'rb') as f: data = f.read(3)\n"
++                "    sys.stdout.buffer.write(data)\n"
++                "except Exception: pass\n"
++            )
++            head_result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
++        else:
++            head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
++            head_result = self._exec(head_cmd)
+         if head_result.exit_code != 0 or not head_result.stdout:
+             return False
+         return _has_bom(head_result.stdout)
+@@ -1015,7 +1090,10 @@ class ShellFileOperations(FileOperations):
+         path = self._expand_path(path)
+         
+         offset, limit = normalize_read_pagination(offset, limit)
+-        
++
++        if self._is_powershell:
++            return self._read_file_python(path, offset, limit)
++
+         # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
+         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+         stat_result = self._exec(stat_cmd)
+@@ -1096,6 +1174,87 @@ class ShellFileOperations(FileOperations):
+             hint=hint
+         )
+     
++    def _read_file_python(self, path: str, offset: int, limit: int) -> ReadResult:
++        """Read file via Python snippet — used on PowerShell backends."""
++        snippet = (
++            "import sys, os\n"
++            f"p = {path!r}\n"
++            "if not os.path.isfile(p):\n"
++            "    sys.exit(1)\n"
++            "st = os.stat(p)\n"
++            f"print(st.st_size)\n"
++            "with open(p, 'rb') as f:\n"
++            "    data = f.read(1000)\n"
++            "sys.stdout.buffer.write(data)\n"
++        )
++        result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
++        if result.exit_code != 0:
++            return self._suggest_similar_files(path)
++        lines = result.stdout.split('\n', 1)
++        try:
++            file_size = int(lines[0].strip())
++        except (ValueError, IndexError):
++            file_size = 0
++        sample_output = lines[1] if len(lines) > 1 else ""
++        sample_output = _strip_terminal_fence_leaks(sample_output)
++
++        if self._is_image(path):
++            return ReadResult(
++                is_image=True, is_binary=True, file_size=file_size,
++                hint="Image file detected. Use vision_analyze with this file path."
++            )
++        if self._is_likely_binary(path, sample_output):
++            return ReadResult(
++                is_binary=True, file_size=file_size,
++                error="Binary file - cannot display as text."
++            )
++
++        end_line = offset + limit - 1
++        read_snippet = (
++            "import sys\n"
++            f"p = {path!r}\n"
++            "with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
++            "    for i, line in enumerate(f, 1):\n"
++            f"        if i < {offset}: continue\n"
++            f"        if i > {end_line}: break\n"
++            "        sys.stdout.write(line)\n"
++        )
++        read_result = self._exec(f"python -c {self._escape_shell_arg(read_snippet)}")
++        if read_result.exit_code != 0:
++            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
++        read_output = _strip_terminal_fence_leaks(read_result.stdout)
++        if offset == 1:
++            read_output, _ = _strip_bom(read_output)
++
++        count_snippet = (
++            "import sys\n"
++            f"p = {path!r}\n"
++            "try:\n"
++            "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
++            "        print(sum(1 for _ in f))\n"
++            "except Exception:\n"
++            "    print(0)\n"
++        )
++        wc_result = self._exec(f"python -c {self._escape_shell_arg(count_snippet)}")
++        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
++        try:
++            total_lines = int(wc_output.strip())
++        except ValueError:
++            total_lines = 0
++
++        truncated = total_lines > end_line
++        hint = None
++        if truncated:
++            hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
++
++        return ReadResult(
++            content=self._add_line_numbers(read_output, offset),
++            total_lines=total_lines,
++            file_size=file_size,
++            truncated=truncated,
++            hint=hint
++        )
++
+     def _suggest_similar_files(self, path: str) -> ReadResult:
+         """Suggest similar files when the requested file is not found."""
+         dir_path = os.path.dirname(path) or "."
+@@ -1105,8 +1264,19 @@ class ShellFileOperations(FileOperations):
+         lower_name = filename.lower()
+ 
+         # List files in the target directory
+-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
+-        ls_result = self._exec(ls_cmd)
++        if self._is_powershell:
++            list_snippet = (
++                "import os, sys\n"
++                f"d = {dir_path!r}\n"
++                "try:\n"
++                "    for f in sorted(os.listdir(d))[:50]:\n"
++                "        print(f)\n"
++                "except Exception: pass\n"
++            )
++            ls_result = self._exec(f"python -c {self._escape_shell_arg(list_snippet)}")
++        else:
++            ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
++            ls_result = self._exec(ls_cmd)
+ 
+         scored: list = []  # (score, filepath) — higher is better
+         if ls_result.exit_code == 0 and ls_result.stdout.strip():
+@@ -1155,6 +1325,8 @@ class ShellFileOperations(FileOperations):
+         Uses cat so the full file is returned regardless of size.
+         """
+         path = self._expand_path(path)
++        if self._is_powershell:
++            return self._read_file_raw_python(path)
+         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+         stat_result = self._exec(stat_cmd)
+         if stat_result.exit_code != 0:
+@@ -1187,6 +1359,50 @@ class ShellFileOperations(FileOperations):
+             file_size=file_size,
+         )
+ 
++    def _read_file_raw_python(self, path: str) -> ReadResult:
++        """Read full file content via Python snippet — used on PowerShell backends."""
++        stat_snippet = (
++            "import sys, os\n"
++            f"p = {path!r}\n"
++            "if not os.path.isfile(p):\n"
++            "    sys.exit(1)\n"
++            f"print(os.stat(p).st_size)\n"
++            "with open(p, 'rb') as f:\n"
++            "    data = f.read(1000)\n"
++            "sys.stdout.buffer.write(data)\n"
++        )
++        stat_result = self._exec(f"python -c {self._escape_shell_arg(stat_snippet)}")
++        if stat_result.exit_code != 0:
++            return self._suggest_similar_files(path)
++        lines_out = stat_result.stdout.split('\n', 1)
++        try:
++            file_size = int(lines_out[0].strip())
++        except (ValueError, IndexError):
++            file_size = 0
++        sample_output = lines_out[1] if len(lines_out) > 1 else ""
++        sample_output = _strip_terminal_fence_leaks(sample_output)
++        if self._is_image(path):
++            return ReadResult(is_image=True, is_binary=True, file_size=file_size)
++        if self._is_likely_binary(path, sample_output):
++            return ReadResult(
++                is_binary=True, file_size=file_size,
++                error="Binary file — cannot display as text."
++            )
++        read_snippet = (
++            "import sys\n"
++            f"p = {path!r}\n"
++            "with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
++            "    sys.stdout.write(f.read())\n"
++        )
++        read_result = self._exec(f"python -c {self._escape_shell_arg(read_snippet)}")
++        if read_result.exit_code != 0:
++            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
++        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(read_result.stdout))
++        return ReadResult(
++            content=raw_content,
++            file_size=file_size,
++        )
++
+     def delete_file(self, path: str) -> WriteResult:
+         """Delete a single file.
+ 
+@@ -1236,12 +1452,15 @@ class ShellFileOperations(FileOperations):
+             "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+         )
+ 
+-        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+-
+-        # Fall back to ``python`` (Windows / older systems where there's no
+-        # ``python3`` symlink but a ``python`` binary is on PATH).
+-        if result.exit_code != 0 and "python3" in (result.stdout or ""):
++        if self._is_powershell:
+             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
++        else:
++            result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
++
++            # Fall back to ``python`` (Windows / older systems where there's no
++            # ``python3`` symlink but a ``python`` binary is on PATH).
++            if result.exit_code != 0 and "python3" in (result.stdout or ""):
++                result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+ 
+         if result.exit_code != 0:
+             return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
+@@ -1249,15 +1468,27 @@ class ShellFileOperations(FileOperations):
+         return WriteResult()
+ 
+     def move_file(self, src: str, dst: str) -> WriteResult:
+-        """Move a file via mv."""
++        """Move a file via mv (bash) or Python snippet (PowerShell)."""
+         src = self._expand_path(src)
+         dst = self._expand_path(dst)
+         for p in (src, dst):
+             if _is_write_denied(p):
+                 return WriteResult(error=f"Move denied: {p} is a protected path")
+-        result = self._exec(
+-            f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
+-        )
++        if self._is_powershell:
++            snippet = (
++                "import shutil, sys\n"
++                f"src = {src!r}\n"
++                f"dst = {dst!r}\n"
++                "try:\n"
++                "    shutil.move(src, dst)\n"
++                "except Exception as exc:\n"
++                "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
++            )
++            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
++        else:
++            result = self._exec(
++                f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
++            )
+         if result.exit_code != 0:
+             return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
+         return WriteResult()
+@@ -1318,8 +1549,19 @@ class ShellFileOperations(FileOperations):
+             # pre_content as None which makes both downstream consumers
+             # degrade gracefully (lint reports all errors; LSP skips the
+             # shift map).
+-            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-            read_result = self._exec(read_cmd)
++            if self._is_powershell:
++                pre_snippet = (
++                    "import sys\n"
++                    f"p = {path!r}\n"
++                    "try:\n"
++                    "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
++                    "        sys.stdout.write(f.read())\n"
++                    "except Exception: sys.exit(1)\n"
++                )
++                read_result = self._exec(f"python -c {self._escape_shell_arg(pre_snippet)}")
++            else:
++                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++                read_result = self._exec(read_cmd)
+             if read_result.exit_code == 0 and read_result.stdout:
+                 pre_content = read_result.stdout
+ 
+@@ -1358,8 +1600,19 @@ class ShellFileOperations(FileOperations):
+         dirs_created = False
+ 
+         if parent:
+-            mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
+-            mkdir_result = self._exec(mkdir_cmd)
++            if self._is_powershell:
++                mkdir_snippet = (
++                    "import pathlib, sys\n"
++                    f"p = pathlib.Path({parent!r})\n"
++                    "try:\n"
++                    "    p.mkdir(parents=True, exist_ok=True)\n"
++                    "except Exception as exc:\n"
++                    "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
++                )
++                mkdir_result = self._exec(f"python -c {self._escape_shell_arg(mkdir_snippet)}")
++            else:
++                mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
++                mkdir_result = self._exec(mkdir_cmd)
+             if mkdir_result.exit_code == 0:
+                 dirs_created = True
+ 
+@@ -1383,9 +1636,19 @@ class ShellFileOperations(FileOperations):
+         if write_result.exit_code != 0:
+             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+ 
+-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
+-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+-        stat_result = self._exec(stat_cmd)
++        # Get bytes written
++        if self._is_powershell:
++            size_snippet = (
++                "import os, sys\n"
++                f"p = {path!r}\n"
++                "try:\n"
++                "    print(os.path.getsize(p))\n"
++                "except Exception: sys.exit(1)\n"
++            )
++            stat_result = self._exec(f"python -c {self._escape_shell_arg(size_snippet)}")
++        else:
++            stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
++            stat_result = self._exec(stat_cmd)
+ 
+         try:
+             bytes_written = int(stat_result.stdout.strip())
+@@ -1442,8 +1705,19 @@ class ShellFileOperations(FileOperations):
+             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+ 
+         # Read current content
+-        read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-        read_result = self._exec(read_cmd)
++        if self._is_powershell:
++            patch_read_snippet = (
++                "import sys\n"
++                f"p = {path!r}\n"
++                "try:\n"
++                "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
++                "        sys.stdout.write(f.read())\n"
++                "except Exception: sys.exit(1)\n"
++            )
++            read_result = self._exec(f"python -c {self._escape_shell_arg(patch_read_snippet)}")
++        else:
++            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++            read_result = self._exec(read_cmd)
+         
+         if read_result.exit_code != 0:
+             return PatchResult(error=f"Failed to read file: {path}")
+@@ -1495,7 +1769,19 @@ class ShellFileOperations(FileOperations):
+         # pipe, etc.) that would otherwise return success-with-diff while the
+         # file is unchanged on disk.
+         verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-        verify_result = self._exec(verify_cmd)
++        if self._is_powershell:
++            verify_snippet = (
++                "import sys\n"
++                f"p = {path!r}\n"
++                "try:\n"
++                "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
++                "        sys.stdout.write(f.read())\n"
++                "except Exception: sys.exit(1)\n"
++            )
++            verify_result = self._exec(f"python -c {self._escape_shell_arg(verify_snippet)}")
++        else:
++            verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++            verify_result = self._exec(verify_cmd)
+         if verify_result.exit_code != 0:
+             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
+         # Normalize line endings before comparing.  On Windows, Python's
+@@ -1600,8 +1886,19 @@ class ShellFileOperations(FileOperations):
+         if inproc is not None:
+             # Need content — either passed in or read from disk.
+             if content is None:
+-                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-                read_result = self._exec(read_cmd)
++                if self._is_powershell:
++                    lint_read_snippet = (
++                        "import sys\n"
++                        f"p = {path!r}\n"
++                        "try:\n"
++                        "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
++                        "        sys.stdout.write(f.read())\n"
++                        "except Exception: sys.exit(1)\n"
++                    )
++                    read_result = self._exec(f"python -c {self._escape_shell_arg(lint_read_snippet)}")
++                else:
++                    read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++                    read_result = self._exec(read_cmd)
+                 if read_result.exit_code != 0:
+                     return LintResult(skipped=True, message=f"Failed to read {path} for lint")
+                 content = read_result.stdout
+@@ -1942,20 +2239,47 @@ class ShellFileOperations(FileOperations):
+         path = self._expand_path(path)
+         
+         # Validate that the path exists before searching
+-        check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
++        if self._is_powershell:
++            check_snippet = (
++                "import os, sys\n"
++                f"p = {path!r}\n"
++                "print('exists' if os.path.exists(p) else 'not_found')\n"
++            )
++            check = self._exec(f"python -c {self._escape_shell_arg(check_snippet)}")
++        else:
++            check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
+         if "not_found" in check.stdout:
+             # Try to suggest nearby paths
+             parent = os.path.dirname(path) or "."
+             basename_query = os.path.basename(path)
+             hint_parts = [f"Path not found: {path}"]
+             # Check if parent directory exists and list similar entries
+-            parent_check = self._exec(
+-                f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
+-            )
+-            if "yes" in parent_check.stdout and basename_query:
+-                ls_result = self._exec(
+-                    f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
++            if self._is_powershell:
++                parent_snippet = (
++                    "import os, sys\n"
++                    f"p = {parent!r}\n"
++                    "print('yes' if os.path.isdir(p) else 'no')\n"
++                )
++                parent_check = self._exec(f"python -c {self._escape_shell_arg(parent_snippet)}")
++            else:
++                parent_check = self._exec(
++                    f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
+                 )
++            if "yes" in parent_check.stdout and basename_query:
++                if self._is_powershell:
++                    ls_snippet = (
++                        "import os, sys\n"
++                        f"d = {parent!r}\n"
++                        "try:\n"
++                        "    for f in sorted(os.listdir(d))[:20]:\n"
++                        "        print(f)\n"
++                        "except Exception: pass\n"
++                    )
++                    ls_result = self._exec(f"python -c {self._escape_shell_arg(ls_snippet)}")
++                else:
++                    ls_result = self._exec(
++                        f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
++                    )
+                 if ls_result.exit_code == 0 and ls_result.stdout.strip():
+                     lower_q = basename_query.lower()
+                     candidates = []
+@@ -1994,6 +2318,11 @@ class ShellFileOperations(FileOperations):
+             for part in search_root.parts
+         )
+ 
++        # On PowerShell, use Python-based search instead of find/rg
++        if self._is_powershell:
++            return self._search_files_python(search_pattern, path, limit, offset,
++                                              has_hidden_path_ancestor, search_root)
++
+         # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
+         # default, and has parallel directory traversal (~200x faster than
+         # find on wide trees).  Mirrors _search_content which already uses rg.
+@@ -2111,10 +2440,45 @@ class ShellFileOperations(FileOperations):
+             truncated=len(all_files) >= fetch_limit or bool(limit_reason),
+             limit_reason=limit_reason,
+         )
+-    
++
++    def _search_files_python(self, pattern: str, path: str, limit: int, offset: int,
++                             has_hidden_ancestor: bool, search_root: Path) -> SearchResult:
++        """File search via Python snippet — used on PowerShell backends."""
++        snippet = (
++            "import os, fnmatch, sys, time\n"
++            f"root = {path!r}\n"
++            f"pattern = {pattern!r}\n"
++            f"skip_hidden = {not has_hidden_ancestor!r}\n"
++            "results = []\n"
++            "for dirpath, dirnames, filenames in os.walk(root):\n"
++            "    if skip_hidden:\n"
++            "        dirnames[:] = [d for d in dirnames if not d.startswith('.')]\n"
++            "    for fn in filenames:\n"
++            "        if fnmatch.fnmatch(fn, pattern):\n"
++            "            fp = os.path.join(dirpath, fn)\n"
++            "            try: mt = os.path.getmtime(fp)\n"
++            "            except Exception: mt = 0\n"
++            "            results.append((mt, fp))\n"
++            "results.sort(key=lambda x: -x[0])\n"
++            "for mt, fp in results:\n"
++            "    print(fp)\n"
++        )
++        result = self._exec(f"python -c {self._escape_shell_arg(snippet)}", timeout=60)
++        all_files = [f for f in result.stdout.strip().split('\n') if f]
++        page = all_files[offset:offset + limit]
++        return SearchResult(
++            files=page,
++            total_count=len(all_files),
++            truncated=len(all_files) > offset + limit,
++        )
++
+     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
+                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+         """Search for content inside files (grep-like)."""
++        # On PowerShell, use Python-based search to avoid bash pipe syntax
++        if self._is_powershell:
++            return self._search_content_python(pattern, path, file_glob, limit, offset,
++                                                output_mode, context)
+         # Try ripgrep first (fast), fallback to grep (slower but works)
+         if self._has_command('rg'):
+             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
+@@ -2128,7 +2492,102 @@ class ShellFileOperations(FileOperations):
+                 error="Content search requires ripgrep (rg) or grep. "
+                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
+             )
+-    
++
++    def _search_content_python(self, pattern: str, path: str, file_glob: Optional[str],
++                               limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
++        """Content search via Python snippet — used on PowerShell backends."""
++        snippet = (
++            "import os, re, sys, fnmatch\n"
++            f"root = {path!r}\n"
++            f"pattern = {pattern!r}\n"
++            f"file_glob = {file_glob!r}\n"
++            f"output_mode = {output_mode!r}\n"
++            f"context = {context!r}\n"
++            f"limit = {limit + offset + 50!r}\n"
++            "try:\n"
++            "    regex = re.compile(pattern)\n"
++            "except re.error as e:\n"
++            "    print(f'Regex error: {e}', file=sys.stderr); sys.exit(1)\n"
++            "matches = []\n"
++            "if os.path.isfile(root):\n"
++            "    files_to_search = [root]\n"
++            "else:\n"
++            "    files_to_search = []\n"
++            "    for dirpath, dirnames, filenames in os.walk(root):\n"
++            "        dirnames[:] = [d for d in dirnames if not d.startswith('.')]\n"
++            "        for fn in filenames:\n"
++            "            if file_glob and not fnmatch.fnmatch(fn, file_glob):\n"
++            "                continue\n"
++            "            files_to_search.append(os.path.join(dirpath, fn))\n"
++            "for fp in files_to_search:\n"
++            "    try:\n"
++            "        with open(fp, 'r', encoding='utf-8', errors='replace') as f:\n"
++            "            lines = f.readlines()\n"
++            "    except Exception:\n"
++            "        continue\n"
++            "    for i, line in enumerate(lines, 1):\n"
++            "        if regex.search(line):\n"
++            "            if output_mode == 'files_only':\n"
++            "                print(fp)\n"
++            "                break\n"
++            "            elif output_mode == 'count':\n"
++            "                pass\n"
++            "            else:\n"
++            "                start = max(0, i - 1 - context)\n"
++            "                end = min(len(lines), i + context)\n"
++            "                for j in range(start, end):\n"
++            "                    prefix = '>>' if j == i - 1 else '  '\n"
++            "                    print(f'{fp}:{j+1}:{prefix} {lines[j].rstrip()}')\n"
++            "                if context > 0 and i < len(lines):\n"
++            "                    print('--')\n"
++            "    if output_mode == 'count':\n"
++            "        cnt = sum(1 for line in lines if regex.search(line))\n"
++            "        if cnt > 0:\n"
++            "            print(f'{fp}:{cnt}')\n"
++            "    if len(matches) >= limit:\n"
++            "        break\n"
++        )
++        result = self._exec(f"python -c {self._escape_shell_arg(snippet)}", timeout=60)
++        if result.exit_code != 0:
++            return SearchResult(error=f"Search failed: {result.stdout.strip()}")
++
++        stdout = result.stdout
++        if output_mode == "files_only":
++            all_files = [f for f in stdout.strip().split('\n') if f and f != '--']
++            page = all_files[offset:offset + limit]
++            return SearchResult(files=page, total_count=len(all_files))
++        elif output_mode == "count":
++            counts = {}
++            for line in stdout.strip().split('\n'):
++                if ':' in line:
++                    parts = line.rsplit(':', 1)
++                    if len(parts) == 2:
++                        try:
++                            counts[parts[0]] = int(parts[1])
++                        except ValueError:
++                            pass
++            return SearchResult(counts=counts, total_count=sum(counts.values()))
++
++        # content mode
++        matches = []
++        current_path = None
++        for line in stdout.split('\n'):
++            if not line or line == '--':
++                continue
++            parts = line.split(':', 2)
++            if len(parts) >= 3:
++                try:
++                    ln = int(parts[1])
++                except ValueError:
++                    continue
++                matches.append(SearchMatch(path=parts[0], line_number=ln, content=parts[2]))
++        page = matches[offset:offset + limit]
++        return SearchResult(
++            matches=page,
++            total_count=len(matches),
++            truncated=len(matches) > offset + limit,
++        )
++
+     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
+                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+         """Search using ripgrep."""
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index e9f3276ff..23a5335a2 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -51,6 +51,24 @@ from hermes_cli.config import get_hermes_home
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _is_powershell_shell() -> bool:
++    """Return True if the configured terminal shell is PowerShell."""
++    try:
++        from tools.terminal_tool import _get_terminal_shell_config
++        return _get_terminal_shell_config() == "powershell"
++    except Exception:
++        return False
++
++
++def _find_configured_shell() -> str:
++    """Return the path to the configured shell (pwsh or bash).
++
++    Delegates to _find_shell() which now handles PowerShell detection
++    internally via _get_terminal_shell_config().
++    """
++    return _find_shell()
++
++
+ # Checkpoint file for crash recovery (gateway only)
+ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+ 
+@@ -510,10 +528,18 @@ class ProcessRegistry:
+         if callable(get_temp_dir):
+             try:
+                 temp_dir = get_temp_dir()
+-                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
+-                    return temp_dir.rstrip("/") or "/"
++                if isinstance(temp_dir, str) and temp_dir:
++                    # Accept both POSIX (/tmp) and Windows (C:\...) paths.
++                    # Normalise backslashes to forward slashes for consistent
++                    # path joining downstream.
++                    normalised = temp_dir.replace("\\", "/").rstrip("/") or "/"
++                    return normalised
+             except Exception as exc:
+                 logger.debug("Could not resolve environment temp dir: %s", exc)
++        # Platform-appropriate fallback
++        if _IS_WINDOWS:
++            import tempfile as _tmpmod
++            return _tmpmod.gettempdir().replace("\\", "/")
+         return "/tmp"
+ 
+     def spawn_local(
+@@ -551,15 +577,26 @@ class ProcessRegistry:
+                     from winpty import PtyProcess as _PtyProcessCls
+                 else:
+                     from ptyprocess import PtyProcess as _PtyProcessCls
+-                user_shell = _find_shell()
++                user_shell = _find_configured_shell()
+                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
+                 pty_env["PYTHONUNBUFFERED"] = "1"
+-                pty_proc = _PtyProcessCls.spawn(
+-                    [user_shell, "-lic", f"set +m; {command}"],
+-                    cwd=session.cwd,
+-                    env=pty_env,
+-                    dimensions=(30, 120),
+-                )
++                # Detect PowerShell: use pwsh -NoProfile -Command instead of
++                # bash -lic "set +m; ..."
++                is_powershell = _is_powershell_shell()
++                if is_powershell:
++                    pty_proc = _PtyProcessCls.spawn(
++                        [user_shell, "-NoProfile", "-NoLogo", "-Command", command],
++                        cwd=session.cwd,
++                        env=pty_env,
++                        dimensions=(30, 120),
++                    )
++                else:
++                    pty_proc = _PtyProcessCls.spawn(
++                        [user_shell, "-lic", f"set +m; {command}"],
++                        cwd=session.cwd,
++                        env=pty_env,
++                        dimensions=(30, 120),
++                    )
+                 session.pid = pty_proc.pid
+                 # Store the pty handle on the session for read/write
+                 session._pty = pty_proc
+@@ -589,7 +626,7 @@ class ProcessRegistry:
+         # Standard Popen path (non-PTY or PTY fallback)
+         # Use the user's login shell for consistency with LocalEnvironment --
+         # ensures rc files are sourced and user tools are available.
+-        user_shell = _find_shell()
++        user_shell = _find_configured_shell()
+         # Force unbuffered output for Python scripts so progress is visible
+         # during background execution (libraries like tqdm/datasets buffer when
+         # stdout is a pipe, hiding output from process(action="poll")).
+@@ -597,8 +634,15 @@ class ProcessRegistry:
+         bg_env["PYTHONUNBUFFERED"] = "1"
+         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+ 
++        # Detect PowerShell: use pwsh -NoProfile -Command instead of bash -lic
++        is_powershell = _is_powershell_shell()
++        if is_powershell:
++            shell_args = [user_shell, "-NoProfile", "-NoLogo", "-Command", command]
++        else:
++            shell_args = [user_shell, "-lic", f"set +m; {command}"]
++
+         proc = subprocess.Popen(
+-            [user_shell, "-lic", f"set +m; {command}"],
++            shell_args,
+             text=True,
+             cwd=session.cwd,
+             env=bg_env,
+@@ -689,17 +733,38 @@ class ProcessRegistry:
+         log_path = f"{temp_dir}/hermes_bg_{session.id}.log"
+         pid_path = f"{temp_dir}/hermes_bg_{session.id}.pid"
+         exit_path = f"{temp_dir}/hermes_bg_{session.id}.exit"
+-        quoted_command = shlex.quote(command)
+-        quoted_temp_dir = shlex.quote(temp_dir)
+-        quoted_log_path = shlex.quote(log_path)
+-        quoted_pid_path = shlex.quote(pid_path)
+-        quoted_exit_path = shlex.quote(exit_path)
+-        bg_command = (
+-            f"mkdir -p {quoted_temp_dir} && "
+-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+-            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
+-            f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
+-        )
++
++        # Detect PowerShell backends — use PowerShell job syntax instead of
++        # nohup/bash.  Falls back to the original bash path for all others.
++        is_powershell = getattr(env, 'shell_type', 'bash') == 'powershell'
++
++        if is_powershell:
++            # PowerShell: use Start-Job / Start-Process for background execution.
++            # Paths use Windows-style backslashes inside the sandbox.
++            win_log = log_path.replace("/", "\\")
++            win_pid = pid_path.replace("/", "\\")
++            win_exit = exit_path.replace("/", "\\")
++            win_temp = temp_dir.replace("/", "\\")
++            cmd_escaped = command.replace("'", "''")
++            bg_command = (
++                f"if (-not (Test-Path '{win_temp}')) {{ New-Item -ItemType Directory -Path '{win_temp}' -Force | Out-Null }}; "
++                f"$proc = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile','-NoLogo','-Command','{cmd_escaped}' "
++                f"  -RedirectStandardOutput '{win_log}' -RedirectStandardError '{win_log}' -PassThru -NoNewWindow; "
++                f"$proc.Id | Set-Content -Path '{win_pid}' -Encoding UTF8; "
++                f"Get-Content '{win_pid}'"
++            )
++        else:
++            quoted_command = shlex.quote(command)
++            quoted_temp_dir = shlex.quote(temp_dir)
++            quoted_log_path = shlex.quote(log_path)
++            quoted_pid_path = shlex.quote(pid_path)
++            quoted_exit_path = shlex.quote(exit_path)
++            bg_command = (
++                f"mkdir -p {quoted_temp_dir} && "
++                f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
++                f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
++                f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
++            )
+ 
+         try:
+             result = env.execute(
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index 71907a3a3..9d81d6bd4 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -824,6 +824,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
+ 
+ # Environment classes now live in tools/environments/
+ from tools.environments.local import LocalEnvironment as _LocalEnvironment
++from tools.environments.powershell import PowerShellEnvironment as _PowerShellEnvironment
+ from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
+ from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
+ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
+@@ -834,7 +835,45 @@ import sys
+ 
+ 
+ # Tool description for LLM
+-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
++_POWERSHELL_TOOL_DESCRIPTION = """Execute commands in a PowerShell environment on Windows. Filesystem, current working directory, and environment variables persist between calls.
++
++You are running on Windows with PowerShell 7+ (pwsh). Use PowerShell cmdlets and syntax:
++- List files: Get-ChildItem (alias: ls, dir, gci)
++- Read file content: Get-Content (alias: cat, gc) — but prefer read_file tool
++- Search text: Select-String (alias: sls) — but prefer search_files tool
++- Environment variables: $env:VAR_NAME (e.g. $env:PATH, $env:USERPROFILE)
++- Set env var: $env:VAR_NAME = "value"
++- Current dir: Get-Location (alias: pwd, gl)
++- Change dir: Set-Location (alias: cd, sl)
++- Pipe: | (works like bash but passes objects, not text)
++- Variables: $var = "value" (no $ needed on assignment, $ on read)
++- String interpolation: "Hello $name" (double quotes interpolate, single quotes don't)
++- Exit code: $LASTEXITCODE (for external programs), $? (True/False for cmdlets)
++- Run exe: & "C:\\path\\to.exe" arg1 arg2
++- Multi-statement: use ; between commands (not &&). Use ; instead of && and ||
++
++Do NOT use cat/head/tail to read files — use read_file instead.
++Do NOT use grep/rg/find to search — use search_files instead.
++Do NOT use ls to list directories — use search_files(target='files') instead.
++Do NOT use sed/awk to edit files — use patch instead.
++Do NOT use Set-Content/Out-File to create files — use write_file instead.
++Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
++Because environment state persists, activate a virtualenv or set up variables once per session; do not re-set the same environment before every command unless a command proves the shell state was reset.
++
++Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
++Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
++  (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.
++  (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — MUST set notify_on_complete=true. Without it you'll either forget to poll or sit blocked waiting for the user to surface the result.
++For servers/watchers, do NOT use shell-level background wrappers (Start-Process -NoNewWindow / trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
++After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
++Use process(action="poll") for progress checks, process(action="wait") to block until done.
++Working directory: Use 'workdir' for per-command cwd.
++PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
++
++Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to Out-Host or cat if it might page.
++"""
++
++_BASH_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
+ 
+ Do NOT use cat/head/tail to read files — use read_file instead.
+ Do NOT use grep/rg/find to search — use search_files instead.
+@@ -857,6 +896,34 @@ PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REP
+ Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
+ """
+ 
++
++def _get_terminal_shell_config() -> str:
++    """Return the configured shell type for local terminal: 'powershell' or 'bash'.
++
++    Reads ``terminal.shell`` from config.yaml. Defaults to 'bash' (the
++    historical Hermes behaviour on Windows via Git Bash).
++    """
++    try:
++        from hermes_cli.config import load_config
++        cfg = load_config() or {}
++        terminal_cfg = cfg.get("terminal") or {}
++        shell = str(terminal_cfg.get("shell", "")).lower().strip()
++        if shell in ("powershell", "pwsh"):
++            return "powershell"
++        return "bash"
++    except Exception:
++        return "bash"
++
++
++def _get_terminal_tool_description() -> str:
++    """Return the terminal tool description matching the configured shell."""
++    if _get_terminal_shell_config() == "powershell":
++        return _POWERSHELL_TOOL_DESCRIPTION
++    return _BASH_TOOL_DESCRIPTION
++
++
++TERMINAL_TOOL_DESCRIPTION = _get_terminal_tool_description()
++
+ # Global state for environment lifecycle management
+ _active_environments: Dict[str, Any] = {}
+ _last_activity: Dict[str, float] = {}
+@@ -1255,6 +1322,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
+     docker_extra_args = cc.get("docker_extra_args", [])
+ 
+     if env_type == "local":
++        shell_type = _get_terminal_shell_config()
++        if shell_type == "powershell":
++            return _PowerShellEnvironment(cwd=cwd, timeout=timeout)
+         return _LocalEnvironment(cwd=cwd, timeout=timeout)
+     
+     elif env_type == "docker":
+diff --git a/tools/transcription_tools.py b/tools/transcription_tools.py
+index d0712c81e..f02e87d7e 100644
+--- a/tools/transcription_tools.py
++++ b/tools/transcription_tools.py
+@@ -167,7 +167,10 @@ def _get_local_command_template() -> Optional[str]:
+ 
+     whisper_binary = _find_whisper_binary()
+     if whisper_binary:
+-        quoted_binary = shlex.quote(whisper_binary)
++        if os.name == "nt":
++            quoted_binary = subprocess.list2cmdline([whisper_binary])
++        else:
++            quoted_binary = shlex.quote(whisper_binary)
+         return (
+             f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
+             "--output_dir {output_dir} --language {language}"
+@@ -1225,17 +1228,21 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
+                 return {"success": False, "transcript": "", "error": prep_error}
+ 
+             command = command_template.format(
+-                input_path=shlex.quote(prepared_input),
+-                output_dir=shlex.quote(output_dir),
+-                language=shlex.quote(language),
+-                model=shlex.quote(normalized_model),
++                input_path=_quote_command_stt_placeholder(prepared_input, None),
++                output_dir=_quote_command_stt_placeholder(output_dir, None),
++                language=_quote_command_stt_placeholder(language, None),
++                model=_quote_command_stt_placeholder(normalized_model, None),
+             )
+             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
+             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+             if use_shell:
+                 subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+             else:
+-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
++                if os.name == "nt":
++                    # On Windows, use list2cmdline for proper argument splitting
++                    subprocess.run(subprocess.list2cmdline(shlex.split(command)), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
++                else:
++                    subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+             
+ 
+             txt_files = sorted(Path(output_dir).glob("*.txt"))
+-- 
+2.53.0.windows.1
+

@@ -406,6 +406,14 @@ function applyTheme(theme: DashboardTheme) {
 // Provider
 // ---------------------------------------------------------------------------
 
+/** True once we know the active theme is a built-in OR its user
+ *  definition has loaded. Prevents a flash of the default palette when
+ *  the active theme is a user YAML theme whose definition needs to come
+ *  from the server. */
+function isThemeReady(name: string, defs: Record<string, DashboardTheme>): boolean {
+  return name in BUILTIN_THEMES || name in defs;
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   /** Name of the currently active theme (built-in id or user YAML name). */
   const [themeName, setThemeName] = useState<string>(() => {
@@ -435,6 +443,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [userThemeDefs, setUserThemeDefs] = useState<
     Record<string, DashboardTheme>
   >({});
+
+  /** Guards the first paint: false while the active theme is a user
+   *  theme whose definition hasn't arrived yet. */
+  const [ready, setReady] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem(STORAGE_KEY) ?? 'default';
+    return isThemeReady(migrateThemeName(stored), {});
+  });
 
   /** Active font-override id (independent of theme). `THEME_DEFAULT_FONT_ID`
    *  = no override. Seeded from localStorage so it's applied flash-free. */
@@ -494,6 +510,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
         }
         if (resp.active) {
+          if (isThemeReady(migrateThemeName(resp.active), defs) && !ready) setReady(true);
           const migratedActive = migrateThemeName(resp.active);
           if (migratedActive !== themeName) {
             setThemeName(migratedActive);
@@ -578,7 +595,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [themeName, availableThemes, setTheme, resolveTheme, fontId, setFont],
   );
 
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+  // Don't render children until we can apply the correct theme — prevents
+  // a visible flash of the default palette when the active theme is a
+  // user YAML theme whose definition is still loading from the server.
+  return <ThemeContext.Provider value={value}>{ready ? children : null}</ThemeContext.Provider>;
 }
 
 export function useTheme(): ThemeContextValue {

@@ -26,6 +26,19 @@ from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+class _Snowflake:
+    """Minimal object exposing ``.id`` — satisfies discord.py's Snowflake
+    protocol for ``channel.history(before=...)`` without constructing a
+    ``discord.Object`` (which test doubles that stub the discord module
+    cannot build).  Used to anchor reply-context scans inclusively.
+    """
+
+    __slots__ = ("id",)
+
+    def __init__(self, id: int) -> None:  # noqa: A002 - matches discord API
+        self.id = id
+
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
@@ -4255,12 +4268,20 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         channel: Any,
         before: "DiscordMessage",
+        reply_target: Optional[Any] = None,
     ) -> str:
         """Fetch recent channel messages for conversational context.
 
         Scans backwards from *before* and collects messages until it hits
         a message sent by this bot (the natural partition point between
         bot turns) or reaches ``history_backfill_limit``.
+
+        When ``reply_target`` is provided (the user replied to a specific
+        message), a second backward scan is run ending at that target so the
+        agent sees the conversation surrounding what the user pointed at —
+        even when the reply target sits *before* the most recent bot turn and
+        would otherwise be cut off by the self-message partition.  The two
+        windows are merged chronologically and de-duplicated by message ID.
 
         Returns a formatted block like::
 
@@ -4295,7 +4316,47 @@ class DiscordAdapter(BasePlatformAdapter):
             pass  # Malformed cache entry — fall back to cold-start scan
 
         try:
-            collected = []
+            def _keep(msg) -> Optional[str]:
+                """Return a formatted ``[name] content`` line, or None to skip.
+
+                Encapsulates the system-message / non-conversational / other-bot
+                filtering so both the primary and reply-anchored scans apply
+                identical rules.  Does NOT enforce the self-message partition —
+                callers decide where to stop.
+                """
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    return None
+                content = getattr(msg, "clean_content", msg.content) or ""
+                if (
+                    str(getattr(msg, "id", "")) in self._nonconversational_messages
+                    or _looks_like_nonconversational_history_message(content)
+                ):
+                    return None
+                # Respect DISCORD_ALLOW_BOTS for other bots.  For history
+                # context, "mentions" is treated as "all" — we are deciding
+                # what context to show, not whether to respond.
+                if (
+                    getattr(msg.author, "bot", False)
+                    and msg.author != self._client.user
+                    and not include_other_bots
+                ):
+                    return None
+                if not content and msg.attachments:
+                    content = "(attachment)"
+                if not content:
+                    return None
+                name = (
+                    getattr(msg.author, "display_name", None)
+                    or getattr(msg.author, "name", None)
+                    or "unknown"
+                )
+                if getattr(msg.author, "bot", False):
+                    name = f"{name} [bot]"
+                return f"[{name}] {content}"
+
+            # ── Primary window: recent channel activity since the last bot turn ──
+            collected: List[Tuple[str, str]] = []  # (message_id, line)
+            seen_ids: set = set()
             # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
             # silently flips the default to True when `after=` is supplied,
             # which would select the *earliest* N messages after our last
@@ -4309,45 +4370,89 @@ class DiscordAdapter(BasePlatformAdapter):
                 after=_after_obj,
                 oldest_first=False,
             ):
-                # Skip system messages (pins, joins, thread renames, etc.)
-                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
-                    continue
-
-                content = getattr(msg, "clean_content", msg.content) or ""
+                # Non-conversational lifecycle/status bumps (self-improvement
+                # reviews, background-process notices, restart banners) must be
+                # skipped BEFORE the partition check — otherwise a delayed
+                # status bump authored by us would be mistaken for the real
+                # last bot turn and hide messages that came after it.
+                _content = getattr(msg, "clean_content", msg.content) or ""
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
-                    or _looks_like_nonconversational_history_message(content)
+                    or _looks_like_nonconversational_history_message(_content)
                 ):
                     continue
-
-                # Stop at our own message — this is the partition point.
-                # Everything before this is already in the session transcript.
-                # (Redundant when _after_obj is set, but needed for cold start.)
+                # Stop at our own (conversational) message — this is the
+                # partition point.  Everything before this is already in the
+                # session transcript.  (Redundant when _after_obj is set, but
+                # needed for cold start.)
                 if msg.author == self._client.user:
                     break
-
-                # Respect DISCORD_ALLOW_BOTS for other bots.
-                # For history context, "mentions" is treated as "all" — we are
-                # deciding what context to show, not whether to respond.
-                if getattr(msg.author, "bot", False) and not include_other_bots:
+                line = _keep(msg)
+                if line is None:
                     continue
+                mid = str(getattr(msg, "id", ""))
+                collected.append((mid, line))
+                if mid:
+                    seen_ids.add(mid)
 
-                if not content and msg.attachments:
-                    content = "(attachment)"
-                if not content:
-                    continue
+            # ── Reply window: context around the message the user pointed at ──
+            # When the user replied to a specific message that sits BEFORE the
+            # primary window's partition point, the surrounding exchange isn't
+            # captured above.  Fetch a small window ending just after the reply
+            # target so the agent sees what it was referencing.  This window is
+            # NOT partitioned on the self-message boundary — the whole point is
+            # to surface older context the transcript lacks.
+            reply_collected: List[Tuple[str, str]] = []
+            reply_target_id = str(getattr(reply_target, "id", "")) if reply_target else ""
+            if reply_target is not None and reply_target_id and reply_target_id not in seen_ids:
+                # Reuse the same cap as the primary scan but keep the reply
+                # window modest — it's anchored context, not a full backfill.
+                reply_limit = max(1, min(limit, 10))
+                # `before` is exclusive in discord.py, so to *include* the
+                # target we anchor at target_id + 1.  Use a minimal snowflake
+                # shim (any object exposing ``.id`` satisfies discord.py's
+                # Snowflake protocol) rather than discord.Object, so this path
+                # works under test doubles that stub the discord module too.
+                try:
+                    _before_obj = _Snowflake(int(reply_target_id) + 1)
+                except (ValueError, TypeError):
+                    _before_obj = before
+                async for msg in channel.history(
+                    limit=reply_limit,
+                    before=_before_obj,
+                    oldest_first=False,
+                ):
+                    line = _keep(msg)
+                    if line is None:
+                        continue
+                    mid = str(getattr(msg, "id", ""))
+                    if mid and mid in seen_ids:
+                        continue
+                    reply_collected.append((mid, line))
+                    if mid:
+                        seen_ids.add(mid)
 
-                name = msg.author.display_name
-                if getattr(msg.author, "bot", False):
-                    name = f"{name} [bot]"
-                collected.append(f"[{name}] {content}")
-
-            if not collected:
+            if not collected and not reply_collected:
                 return ""
 
-            # channel.history returns newest-first (oldest_first=False); reverse for chronological order
+            # channel.history returns newest-first; reverse each window for
+            # chronological order, then present reply context first (it is
+            # older) followed by the recent activity.
             collected.reverse()
-            return "[Recent channel messages]\n" + "\n".join(collected)
+            reply_collected.reverse()
+
+            blocks: List[str] = []
+            if reply_collected:
+                blocks.append(
+                    "[Context around the replied-to message]\n"
+                    + "\n".join(line for _id, line in reply_collected)
+                )
+            if collected:
+                blocks.append(
+                    "[Recent channel messages]\n"
+                    + "\n".join(line for _id, line in collected)
+                )
+            return "\n\n".join(blocks)
 
         except discord.Forbidden:
             logger.debug("[%s] Missing permissions to fetch channel history", self.name)
@@ -5381,14 +5486,36 @@ class DiscordAdapter(BasePlatformAdapter):
             #   - any thread (in_bot_thread bypasses the mention check, but
             #     processing-window gaps and post-restart context still need
             #     recovery)
+            #   - any reply (the user pointed at a specific message; hydrate
+            #     the context around it even in a free-response channel where
+            #     no mention gap exists — otherwise replies get only the short
+            #     "[Replying to: ...]" snippet with no surrounding context)
             # DMs skip entirely because every DM message triggers the bot,
             # so the session transcript already has everything.
             # Auto-threaded messages also skip — we just created the thread,
             # there's nothing prior to backfill.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            if (_has_mention_gap or is_thread) and auto_threaded_channel is None:
+            _is_reply = message.reference is not None
+
+            # Resolve the replied-to message into an object exposing ``.id``.
+            # discord.py may give us a full Message (resolved), a
+            # DeletedReferencedMessage, or nothing — fall back to a bare
+            # snowflake built from the reference's message_id, which is all
+            # _fetch_channel_context needs to anchor its scan.
+            _reply_target = None
+            if _is_reply:
+                _resolved = getattr(message.reference, "resolved", None)
+                if isinstance(_resolved, discord.Message):
+                    _reply_target = _resolved
+                else:
+                    _ref_mid = getattr(message.reference, "message_id", None)
+                    if _ref_mid is not None:
+                        with suppress(ValueError, TypeError):
+                            _reply_target = _Snowflake(int(_ref_mid))
+
+            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
+                    message.channel, before=message, reply_target=_reply_target,
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text

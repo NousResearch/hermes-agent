@@ -1295,9 +1295,12 @@ DEFAULT_CONFIG = {
                                       # renumbering). Eliminates the session-rotation
                                       # bug cluster (#33618 /goal loss, #14238 lost
                                       # response, #33907 orphans, #45117 search gaps,
-                                      # #42228 null cwd) — see #38763. Compaction is
-                                      # lossy: the pre-compaction transcript is
-                                      # discarded, matching Claude Code / Codex.
+                                      # #42228 null cwd) — see #38763. Non-destructive:
+                                      # the live context is compacted (lossy for what
+                                      # the model reloads), but the pre-compaction
+                                      # turns are soft-archived under the same id
+                                      # (active=0, compacted=1) — still searchable via
+                                      # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
     },

@@ -4578,7 +4578,7 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
     return
   }
 
-  await new Promise(resolve => {
+ await new Promise(resolve => {
     const timer = setTimeout(() => {
       try {
         if (IS_WINDOWS && Number.isInteger(child.pid)) {
@@ -4589,8 +4589,8 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
       } catch {
         // Already gone.
       }
-      resolve()
     }, timeoutMs)
+    
     child.once('exit', () => {
       clearTimeout(timer)
       resolve()

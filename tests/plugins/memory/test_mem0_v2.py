@@ -6,10 +6,11 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 import json
 import os
 import stat
+from unittest.mock import patch
 
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider
+from plugins.memory.mem0 import Mem0MemoryProvider, _RestMem0Client
 
 
 class FakeClientV2:
@@ -239,3 +240,111 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+
+class TestMem0SelfHostedRest:
+    """Self-hosted Mem0 should work without mem0ai or API-key auth."""
+
+    def test_rest_client_auth_none_omits_api_key_header(self, monkeypatch):
+        calls = []
+
+        class Response:
+            content = b'{"results":[]}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        def fake_request(method, url, *, headers, json, params, timeout):
+            calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "headers": headers,
+                    "json": json,
+                    "params": params,
+                    "timeout": timeout,
+                }
+            )
+            return Response()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "request", fake_request)
+        client = _RestMem0Client(
+            "http://127.0.0.1:8420",
+            api_key="proxypal-local",
+            auth_mode="none",
+        )
+
+        result = client.get_all(filters={"user_id": "u123"})
+
+        assert result == {"results": []}
+        assert calls[0]["headers"] == {}
+        assert calls[0]["params"] == {"user_id": "u123"}
+
+    def test_rest_client_search_keeps_filters_nested(self, monkeypatch):
+        calls = []
+
+        class Response:
+            content = b'{"results":[]}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        def fake_request(method, url, *, headers, json, params, timeout):
+            calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "headers": headers,
+                    "json": json,
+                    "params": params,
+                    "timeout": timeout,
+                }
+            )
+            return Response()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "request", fake_request)
+        client = _RestMem0Client(
+            "http://127.0.0.1:8420",
+            api_key="proxypal-local",
+            auth_mode="none",
+        )
+
+        result = client.search(query="hello", filters={"user_id": "u123"}, top_k=3)
+
+        assert result == {"results": []}
+        assert calls[0]["json"] == {
+            "query": "hello",
+            "top_k": 3,
+            "filters": {"user_id": "u123"},
+        }
+        assert "user_id" not in calls[0]["json"]
+
+    def test_provider_uses_rest_client_when_host_configured(self):
+        provider = Mem0MemoryProvider()
+        with patch(
+            "plugins.memory.mem0._load_config",
+            return_value={
+                "api_key": "proxypal-local",
+                "host": "http://127.0.0.1:8420",
+                "auth_mode": "none",
+                "user_id": "hermes-user",
+                "agent_id": "hermes",
+                "rerank": True,
+            },
+        ):
+            provider.initialize("test")
+            assert provider.is_available() is True
+
+        client = provider._get_client()
+
+        assert isinstance(client, _RestMem0Client)

@@ -1,3 +1,4 @@
+import { fileLinkMarkdown, isLoneFilePath, linkifyFilePaths } from '@/lib/file-path-links'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
@@ -138,14 +139,37 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+// A fenced block that is exactly one path line, e.g. ```\n/Users/me/out.ts\n```.
+const SINGLE_LINE_FENCE_RE = /^(?:`{3,}|~{3,})[^\n]*\n([^\n]+)\n(?:`{3,}|~{3,})[ \t]*$/
+
+// An inline-code span (`…`) whose entire content is one file path becomes a
+// clickable link, so a path the agent wrapped in backticks is still openable.
+// Spans that merely contain a path (commands, flags) stay plain code.
+function linkifyInlineCodePath(span: string): string {
+  const inner = span.slice(1, -1)
+
+  return isLoneFilePath(inner) ? fileLinkMarkdown(inner.trim()) : span
+}
+
+// A fenced block whose only content is one file path becomes a clickable link
+// (the agent sometimes emits a path as a one-line code card). Multi-line blocks
+// and blocks containing anything else pass through untouched.
+function linkifyLoneFencedPath(part: string): string {
+  const match = part.match(SINGLE_LINE_FENCE_RE)
+
+  return match && isLoneFilePath(match[1]) ? fileLinkMarkdown(match[1].trim()) : part
+}
+
 function normalizeVisibleProse(text: string): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
       part.startsWith('`')
-        ? part
-        : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        ? linkifyInlineCodePath(part)
+        : linkifyFilePaths(
+            autoLinkRawUrls(
+              part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            )
           )
     )
     .join('')
@@ -354,9 +378,10 @@ export function preprocessMarkdown(text: string): string {
   return strippedEmptyFences
     .split(CODE_FENCE_SPLIT_RE)
     .map(part => {
-      // Fence blocks pass through untouched.
+      // A fenced block that is just one file path becomes a clickable link;
+      // other fenced blocks pass through untouched.
       if (/^(?:```|~~~)/.test(part)) {
-        return part
+        return linkifyLoneFencedPath(part)
       }
 
       // Whitespace-only segments (e.g. the `\n\n` between two adjacent

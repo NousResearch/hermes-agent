@@ -1901,6 +1901,21 @@ export const zh: Translations = {
     }
   },
 
+  filePath: {
+    tooltip: '点击预览 · 右键查看更多',
+    openInDefaultApp: '用默认应用打开',
+    revealInFolder: '在文件夹中显示',
+    copyPath: '复制路径',
+    confirmTitle: '用默认应用打开此文件？',
+    confirmDetail: 'Hermes 将使用系统默认应用打开此文件：',
+    confirmOpen: '打开',
+    openFailed: '无法打开此文件。',
+    openBlocked: '此文件类型无法直接打开。请改为在文件管理器中显示。',
+    blockedSensitive: '此文件可能包含机密信息，已被阻止。',
+    outsideWorkspace: '此文件不在当前工作区内。',
+    revealFailed: '无法显示此文件。'
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在加载会话',

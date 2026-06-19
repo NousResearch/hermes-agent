@@ -60,6 +60,11 @@ declare global {
       setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      // Open a chat-referenced file in the OS default app (hardened: workspace-
+      // confined + inert-extension allowlist + symlink/sensitive-file checks).
+      openPath: (path: string, options?: HermesOpenPathOptions) => Promise<HermesOpenPathResult>
+      // Reveal a chat-referenced file in the OS file manager.
+      revealPath: (path: string, options?: HermesOpenPathOptions) => Promise<HermesOpenPathResult>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
@@ -487,6 +492,31 @@ export interface HermesSelectPathsOptions {
   directories?: boolean
   multiple?: boolean
   filters?: Array<{ name: string; extensions: string[] }>
+}
+
+export interface HermesOpenPathConfirm {
+  title?: string
+  detail?: string
+  confirmLabel?: string
+  cancelLabel?: string
+}
+
+export interface HermesOpenPathOptions {
+  // The session workspace root. open (but not reveal) is confined to it.
+  baseDir?: string
+  // When set, a native confirm dialog (showing the resolved real path) is shown
+  // before launching. Copy is supplied by the renderer so it stays localized.
+  confirm?: HermesOpenPathConfirm
+}
+
+export interface HermesOpenPathResult {
+  ok: boolean
+  // The fully resolved real path that was opened/revealed.
+  path?: string
+  // Machine-readable failure code: 'canceled' | 'not-openable' |
+  // 'outside-workspace' | 'sensitive-file' | 'open-failed' | ...
+  reason?: string
+  error?: string
 }
 
 export interface BackendExit {

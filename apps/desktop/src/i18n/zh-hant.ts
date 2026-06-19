@@ -1795,6 +1795,21 @@ export const zhHant = defineLocale({
     }
   },
 
+  filePath: {
+    tooltip: '點擊預覽 · 右鍵查看更多',
+    openInDefaultApp: '以預設應用程式開啟',
+    revealInFolder: '在資料夾中顯示',
+    copyPath: '複製路徑',
+    confirmTitle: '以預設應用程式開啟此檔案？',
+    confirmDetail: 'Hermes 將以系統預設的應用程式開啟此檔案：',
+    confirmOpen: '開啟',
+    openFailed: '無法開啟此檔案。',
+    openBlocked: '此檔案類型無法直接開啟。請改為在檔案管理員中顯示。',
+    blockedSensitive: '此檔案可能包含機密資訊，已被封鎖。',
+    outsideWorkspace: '此檔案不在目前的工作區內。',
+    revealFailed: '無法顯示此檔案。'
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在載入工作階段',

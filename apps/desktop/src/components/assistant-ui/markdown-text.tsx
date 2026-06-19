@@ -20,10 +20,12 @@ import {
 } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { FilePathLink } from '@/components/chat/file-path-link'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { filePathFromMarkdownHref } from '@/lib/file-path-links'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -242,6 +244,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (mediaPath) {
     return <MediaAttachment path={mediaPath} />
+  }
+
+  const filePathTarget = filePathFromMarkdownHref(href)
+
+  if (filePathTarget) {
+    return <FilePathLink target={filePathTarget} />
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)

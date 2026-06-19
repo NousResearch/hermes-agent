@@ -1362,6 +1362,21 @@ export interface Translations {
     }
   }
 
+  filePath: {
+    tooltip: string
+    openInDefaultApp: string
+    revealInFolder: string
+    copyPath: string
+    confirmTitle: string
+    confirmDetail: string
+    confirmOpen: string
+    openFailed: string
+    openBlocked: string
+    blockedSensitive: string
+    outsideWorkspace: string
+    revealFailed: string
+  }
+
   assistant: {
     thread: {
       loadingSession: string

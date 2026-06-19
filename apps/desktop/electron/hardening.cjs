@@ -186,7 +186,10 @@ async function statForIpc(fsImpl, resolvedPath, purpose, typeLabel) {
     if (code === 'ENOENT' || code === 'ENOTDIR') {
       throw ipcPathError(code || 'ENOENT', `${purpose} failed: ${typeLabel} does not exist.`)
     }
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
+    throw ipcPathError(
+      code || 'read-error',
+      `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 
@@ -201,7 +204,10 @@ async function realpathForIpc(fsImpl, resolvedPath, purpose) {
     return realPath
   } catch (error) {
     const code = error && typeof error === 'object' ? error.code : ''
-    throw ipcPathError(code || 'read-error', `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`)
+    throw ipcPathError(
+      code || 'read-error',
+      `${purpose} failed: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 
@@ -265,13 +271,169 @@ async function resolveReadableFileForIpc(filePath, options = {}) {
   return { realPath, resolvedPath, stat }
 }
 
+// Files we are willing to hand to the OS "open in default app" handler
+// (shell.openPath) when a chat-/LLM-supplied path is clicked. This is a strict
+// ALLOWLIST of inert document/media types — never executables, scripts,
+// shortcuts, or launchers. A path emitted in chat is an attacker-influenced
+// string (SECURITY.md: the LLM is assumed potentially adversarial), and the
+// agent can write the very file it links, so opening one by OS file
+// association is a code-execution primitive unless the type is provably inert.
+// `.html`/`.svg` are excluded on purpose: they execute with a file:// origin in
+// the OS browser, so the renderer routes them to the sandboxed preview pane.
+const OPENABLE_DEFAULT_APP_EXTENSIONS = new Set([
+  '.aac',
+  '.avi',
+  '.avif',
+  '.bmp',
+  '.conf',
+  '.csv',
+  '.flac',
+  '.gif',
+  '.heic',
+  '.ico',
+  '.ini',
+  '.jpeg',
+  '.jpg',
+  '.json',
+  '.log',
+  '.m4a',
+  '.m4v',
+  '.markdown',
+  '.md',
+  '.mkv',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.ogg',
+  '.pdf',
+  '.png',
+  '.rtf',
+  '.text',
+  '.tif',
+  '.tiff',
+  '.toml',
+  '.tsv',
+  '.txt',
+  '.wav',
+  '.webm',
+  '.webp',
+  '.xml',
+  '.yaml',
+  '.yml'
+])
+
+// Reject network / UNC paths (`\\host\share`, `//host/share`). rejectUnsafe-
+// PathSyntax already blocks Windows device paths; this closes the SMB/NTLM-leak
+// and remote-exec surface for the open/reveal handlers.
+function rejectRemotePathSyntax(filePath, purpose = 'Open file') {
+  const normalized = String(filePath || '').replace(/\\/g, '/')
+
+  if (normalized.startsWith('//')) {
+    throw ipcPathError('remote-path', `${purpose} blocked: network/UNC paths are not allowed.`)
+  }
+
+  return filePath
+}
+
+// Reject paths containing control characters. rejectUnsafePathSyntax already
+// blocks NUL; this also blocks newlines/tabs/etc. so a chat-supplied filename
+// like `safe.pdf\n\n\n<scary text>.pdf` can't spoof the open-confirm dialog
+// (which renders newlines as line breaks and would scroll the real path away).
+function rejectControlCharPath(filePath, purpose = 'Open file') {
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f]/.test(String(filePath || ''))) {
+    throw ipcPathError('invalid-path', `${purpose} blocked: path contains control characters.`)
+  }
+
+  return filePath
+}
+
+// Confine `target` to an already-resolved `base` (the session workspace). Used
+// only on the open-in-default-app path so a chat-supplied absolute path can't
+// reach arbitrary host files. Callers compare the pre-symlink path against the
+// resolved base AND the realpath against the realpath'd base, so a symlinked
+// workspace root (e.g. macOS /var → /private/var) doesn't false-reject.
+function assertPathWithinBase(target, base, purpose) {
+  const rel = path.relative(base, target)
+
+  if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw ipcPathError('outside-workspace', `${purpose} blocked: file is outside the current workspace.`)
+  }
+}
+
+function assertOpenableInDefaultApp(filePath, purpose = 'Open file') {
+  const ext = path.extname(String(filePath || '')).toLowerCase()
+
+  if (!ext || !OPENABLE_DEFAULT_APP_EXTENSIONS.has(ext)) {
+    throw ipcPathError(
+      'not-openable',
+      `${purpose} blocked: "${ext || 'this file type'}" cannot be opened in the OS default app.`
+    )
+  }
+}
+
+// Resolve + harden an agent-/chat-supplied path for an OS-level "open" or
+// "reveal" action. Rejects null-byte / device / UNC paths, blocks sensitive
+// files (.ssh, .env, private keys, ...), requires a real existing regular file,
+// resolves symlinks (realpath) and re-checks on the real path, and — when
+// `requireWithinBase` is set — confines the file to `baseDir`. Does NOT enforce
+// the open-in-default-app extension allowlist; callers that launch via
+// shell.openPath must additionally call assertOpenableInDefaultApp().
+async function resolveOpenablePathForIpc(filePath, options = {}) {
+  const purpose = String(options.purpose || 'Open file')
+  const fsImpl = options.fs || fs
+  const resolvedPath = resolveRequestedPathForIpc(filePath, { baseDir: options.baseDir, purpose })
+
+  rejectControlCharPath(resolvedPath, purpose)
+  rejectRemotePathSyntax(resolvedPath, purpose)
+  rejectSensitiveFilePath(resolvedPath, purpose)
+
+  const stat = await statForIpc(fsImpl, resolvedPath, purpose, 'file')
+
+  if (stat.isDirectory()) {
+    throw ipcPathError('EISDIR', `${purpose} failed: path points to a directory.`)
+  }
+
+  if (!stat.isFile()) {
+    throw ipcPathError('EINVAL', `${purpose} failed: only regular files can be opened.`)
+  }
+
+  const realPath = await realpathForIpc(fsImpl, resolvedPath, purpose)
+
+  rejectControlCharPath(realPath, purpose)
+  rejectRemotePathSyntax(realPath, purpose)
+  rejectSensitiveFilePath(realPath, purpose)
+
+  if (options.requireWithinBase) {
+    const baseInput = typeof options.baseDir === 'string' && options.baseDir.trim() ? options.baseDir : process.cwd()
+    const resolvedBase = path.resolve(rejectUnsafePathSyntax(baseInput, purpose))
+    let realBase = resolvedBase
+
+    try {
+      realBase = await realpathForIpc(fsImpl, resolvedBase, purpose)
+    } catch {
+      realBase = resolvedBase
+    }
+
+    assertPathWithinBase(resolvedPath, resolvedBase, purpose)
+    assertPathWithinBase(realPath, realBase, purpose)
+  }
+
+  return { realPath, resolvedPath, stat }
+}
+
 module.exports = {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
+  OPENABLE_DEFAULT_APP_EXTENSIONS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  assertOpenableInDefaultApp,
   encryptDesktopSecret,
+  rejectRemotePathSyntax,
+  rejectSensitiveFilePath,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
+  resolveOpenablePathForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,

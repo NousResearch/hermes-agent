@@ -75,7 +75,9 @@ const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  assertOpenableInDefaultApp,
   encryptDesktopSecret: encryptDesktopSecretStrict,
+  resolveOpenablePathForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs
@@ -1879,7 +1881,9 @@ async function handOffWindowsBootstrapRecovery(reason) {
   })
   child.unref()
 
-  rememberLog(`[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`)
+  rememberLog(
+    `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
+  )
   setTimeout(() => {
     app.quit()
   }, 600)
@@ -2489,7 +2493,9 @@ async function ensureRuntime(backend) {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
-      const handoffError = new Error('Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.')
+      const handoffError = new Error(
+        'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
+      )
       handoffError.isBootstrapFailure = true
       handoffError.bootstrapHandedOff = true
       bootstrapFailure = handoffError
@@ -2624,7 +2630,6 @@ async function ensureRuntime(backend) {
   })
   return backend
 }
-
 
 function fetchJson(url, token, options = {}) {
   return new Promise((resolve, reject) => {
@@ -5791,6 +5796,102 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
 ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
+  }
+})
+
+// Open a chat-referenced file in the OS default application. Unlike the
+// artifacts-panel `openExternalUrl` file: branch (which only path-resolves),
+// this is the hardened path used for auto-linkified chat file paths:
+// resolveOpenablePathForIpc confines the file to the session workspace, blocks
+// sensitive files, resolves symlinks, and rejects device/UNC paths;
+// assertOpenableInDefaultApp then enforces an inert-extension allowlist so an
+// agent-written .command/.sh/.app/.html can never be launched by association.
+// An optional `confirm` (localized copy from the renderer) shows the fully
+// resolved real path before launch, defusing label spoofing.
+//
+// NOTE (follow-up, see PR): the older openExternalUrl file: branch shares the
+// same launch primitive without these guards. Routing it through this helper
+// would close that latent gap, but is left out of this PR to keep the change
+// scoped to the new feature.
+ipcMain.handle('hermes:openPath', async (event, filePath, options = {}) => {
+  const purpose = 'Open file'
+  const baseDir = typeof options.baseDir === 'string' ? options.baseDir : undefined
+
+  // Full validation: resolve + confine + symlink-resolve + sensitive-block +
+  // (on the realpath) inert-extension allowlist. resolveOpenablePathForIpc also
+  // rejects control-char paths, so a newline-laden filename can't reach the
+  // dialog and spoof the displayed path.
+  async function validateOpenable() {
+    const { realPath } = await resolveOpenablePathForIpc(filePath, { baseDir, purpose, requireWithinBase: true })
+
+    assertOpenableInDefaultApp(realPath, purpose)
+
+    return realPath
+  }
+
+  try {
+    const realPath = await validateOpenable()
+
+    const confirm = options.confirm
+
+    if (confirm && typeof confirm === 'object') {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const messageOptions = {
+        type: 'question',
+        buttons: [String(confirm.confirmLabel || 'Open'), String(confirm.cancelLabel || 'Cancel')],
+        cancelId: 1,
+        defaultId: 0,
+        detail: `${confirm.detail ? `${confirm.detail}\n\n` : ''}${realPath}`,
+        message: String(confirm.title || 'Open file in its default app?'),
+        noLink: true
+      }
+      const { response } = win
+        ? await dialog.showMessageBox(win, messageOptions)
+        : await dialog.showMessageBox(messageOptions)
+
+      if (response !== 0) {
+        return { ok: false, reason: 'canceled' }
+      }
+    }
+
+    // Re-validate immediately before launch. The agent runs concurrently and
+    // can swap the file for a symlink to a .command/.app during the (user-
+    // paced) confirm dialog; re-resolving realpath and re-running the
+    // allowlist/confinement here collapses that TOCTOU window to the few
+    // microseconds before shell.openPath (an irreducible residual, since
+    // shell.openPath re-resolves the path string itself).
+    const launchPath = await validateOpenable()
+    const openError = await shell.openPath(launchPath)
+
+    if (openError) {
+      return { error: openError, ok: false, reason: 'open-failed' }
+    }
+
+    return { ok: true, path: launchPath }
+  } catch (error) {
+    return { error: error?.message, ok: false, reason: error?.code || 'error' }
+  }
+})
+
+// Reveal a chat-referenced file in the OS file manager. Reveal never launches
+// the file, so it is not workspace-confined (generated files often live in a
+// temp dir), but it still resolves symlinks, blocks sensitive files, and
+// rejects device/UNC paths.
+ipcMain.handle('hermes:revealInFolder', async (_event, filePath, options = {}) => {
+  const purpose = 'Reveal file'
+
+  try {
+    const { realPath } = await resolveOpenablePathForIpc(filePath, {
+      baseDir: typeof options.baseDir === 'string' ? options.baseDir : undefined,
+      purpose,
+      requireWithinBase: false
+    })
+
+    shell.showItemInFolder(realPath)
+
+    return { ok: true, path: realPath }
+  } catch (error) {
+    return { error: error?.message, ok: false, reason: error?.code || 'error' }
   }
 })
 

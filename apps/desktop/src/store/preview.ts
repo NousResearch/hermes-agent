@@ -30,7 +30,7 @@ export interface PreviewServerRestart {
   url: string
 }
 
-export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
+export type PreviewRecordSource = 'chat-path' | 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
 
 export interface SessionPreviewRecord {
   autoOpen?: boolean
@@ -118,10 +118,11 @@ function openFilePreviewTarget(target: PreviewTarget) {
   selectRightRailTab(id)
 }
 
-// Manual/file-browser opens are "peeking at a file" → source view in the file
-// pane. Tool/explicit-link opens are runnable artifacts → live preview pane.
+// Manual/file-browser/chat-path opens are "peeking at a file" → source view in
+// the file pane. Tool/explicit-link opens are runnable artifacts → live preview
+// pane.
 function isFilePreviewSource(source: PreviewRecordSource): boolean {
-  return source === 'file-browser' || source === 'manual'
+  return source === 'chat-path' || source === 'file-browser' || source === 'manual'
 }
 
 function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
@@ -169,7 +170,7 @@ function isPreviewRecord(value: unknown): value is SessionPreviewRecord {
     typeof r.id === 'string' &&
     isPreviewTarget(r.normalized) &&
     typeof r.sessionId === 'string' &&
-    ['explicit-link', 'file-browser', 'manual', 'tool-result'].includes(String(r.source)) &&
+    ['chat-path', 'explicit-link', 'file-browser', 'manual', 'tool-result'].includes(String(r.source)) &&
     typeof r.target === 'string' &&
     (r.dismissedAt === undefined || typeof r.dismissedAt === 'number')
   )

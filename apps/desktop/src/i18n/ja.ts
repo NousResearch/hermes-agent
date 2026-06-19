@@ -194,8 +194,7 @@ export const ja = defineLocale({
     },
     notifications: {
       title: '通知',
-      intro:
-        'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
+      intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
       enableAll: '通知を有効にする',
       enableAllDesc: 'マスタースイッチ。オフにすると以下のすべての通知を無効にします。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
@@ -1410,7 +1409,8 @@ export const ja = defineLocale({
     queueSend: '送信',
     queueDelete: '削除',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
-    queueStuckBody: 'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
+    queueStuckBody:
+      'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1853,6 +1853,21 @@ export const ja = defineLocale({
     }
   },
 
+  filePath: {
+    tooltip: 'クリックでプレビュー · 右クリックでその他の操作',
+    openInDefaultApp: '既定のアプリで開く',
+    revealInFolder: 'フォルダーで表示',
+    copyPath: 'パスをコピー',
+    confirmTitle: '既定のアプリでファイルを開きますか？',
+    confirmDetail: 'Hermes はこのファイルをシステムの既定のアプリケーションで開きます：',
+    confirmOpen: '開く',
+    openFailed: 'このファイルを開けませんでした。',
+    openBlocked: 'この種類のファイルは直接開けません。代わりにファイルマネージャーで表示してください。',
+    blockedSensitive: 'このファイルは機密情報を含む可能性があるためブロックされました。',
+    outsideWorkspace: 'このファイルは現在のワークスペースの外にあります。',
+    revealFailed: 'このファイルを表示できませんでした。'
+  },
+
   assistant: {
     thread: {
       loadingSession: 'セッションを読み込み中',
@@ -1976,7 +1991,8 @@ export const ja = defineLocale({
     editFailed: '編集に失敗しました',
     resumeFailed: '再開に失敗しました',
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
-    resumeStrandedBody: 'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+    resumeStrandedBody:
+      'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
     resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',

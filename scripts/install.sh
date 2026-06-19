@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -413,6 +413,25 @@ get_command_link_display_dir() {
     fi
 }
 
+# Point a Hermes-managed Node's `npm install -g` at a directory that is on
+# PATH. npm's default global prefix for a bundled Node is the Node dir itself,
+# so global package binaries land in $HERMES_HOME/node/bin — which is NOT on
+# PATH (only the command link dir is) and is wiped on every Node upgrade.
+# Redirecting the prefix to the link dir's parent makes global bins resolve to
+# the command link dir (node/npm/npx live there too, already on PATH) and
+# survive upgrades. Scoped to the managed Node via its prefix-local global
+# npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
+# Hermes's own global installs pass an explicit --prefix and are unaffected.
+# Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
+# every install run repairs pre-existing installs, not just fresh ones.
+configure_managed_node_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
@@ -451,7 +470,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
             exit 1
             ;;
         *)
@@ -722,6 +741,11 @@ node_satisfies_build() {
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
+    # Repair pre-existing Hermes-managed installs where `npm install -g` lands
+    # off PATH. No-op when there's no managed Node, so this is safe to run on
+    # every install — including re-runs that skip the Node (re)install below.
+    configure_managed_node_npm_prefix
+
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
         log_success "Node.js $(node --version) found"
         HAS_NODE=true
@@ -850,6 +874,8 @@ install_node() {
     ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
     ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
     ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    configure_managed_node_npm_prefix
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -1092,29 +1118,85 @@ show_manual_install_hint() {
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
+    # An interrupted previous clone leaves a .git with no initial commit, where
+    # the update path's `git stash` / `git checkout` abort with "You do not
+    # have the initial commit yet" and fail the install (#40998). Move such a
+    # partial checkout aside -- never delete it, in case it holds something the
+    # user wants -- so the fresh-clone path below can proceed.
+    if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+        backup_dir="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
+        log_warn "Existing checkout at $INSTALL_DIR has no commits (interrupted clone)."
+        log_warn "Moving it aside to $backup_dir before re-cloning."
+        mv "$INSTALL_DIR" "$backup_dir"
+    fi
+
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
 
-            # This is a managed clone the user never edits, so any working-tree
-            # dirt is git artifact (CRLF renormalization, npm lockfile churn,
-            # files left behind when a directory was deleted upstream such as
-            # apps/bootstrap-installer/). The old path stashed that dirt and
-            # re-applied it after the pull, but the stash/restore cycle has
-            # clobbered freshly-pulled source files (apps/desktop/ →
-            # "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
-            # Discard the dirt with a hard reset instead — mirrors install.ps1's
-            # update path. Fork users customize via `hermes update`, which keeps
-            # the stash machinery; the installer is a managed-only entry point.
-            git fetch origin
+            local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
-                log_info "Discarding working-tree changes on managed clone before update..."
-                git reset --hard HEAD >/dev/null 2>&1 || true
-                git clean -fd >/dev/null 2>&1 || true
+                # A previously interrupted update can leave the index with
+                # unmerged entries. In that state `git stash` aborts with
+                # "could not write index" and the later `git checkout` aborts
+                # with "you need to resolve your current index first", failing
+                # the whole install at the repository stage. Clear the conflict
+                # markers with `git reset` first -- this keeps working-tree
+                # changes (they're still stashed just below) and only drops the
+                # index-level conflict state. Mirrors the `hermes update` path
+                # (#4735).
+                if [ -n "$(git ls-files --unmerged)" ]; then
+                    log_info "Clearing unmerged index entries from a previous conflict..."
+                    git reset -q
+                fi
+                local stash_name
+                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
+                log_info "Local changes detected, stashing before update..."
+                git stash push --include-untracked -m "$stash_name"
+                autostash_ref="stash@{0}"
             fi
+
+            # Fetch only the target branch. A bare `git fetch origin` pulls
+            # every ref, and this repo carries thousands of auto-generated
+            # branches — on a non-single-branch checkout that turns each update
+            # into a multi-minute download that can stall the installer.
+            git remote set-branches origin "$BRANCH" 2>/dev/null || true
+            git fetch origin "$BRANCH"
             git checkout "$BRANCH"
-            git reset --hard "origin/$BRANCH"
+            git pull --ff-only origin "$BRANCH"
+
+            if [ -n "$autostash_ref" ]; then
+                local restore_now="yes"
+                if [ -t 0 ] && [ -t 1 ]; then
+                    echo
+                    log_warn "Local changes were stashed before updating."
+                    log_warn "Restoring them may reapply local customizations onto the updated codebase."
+                    printf "Restore local changes now? [Y/n] "
+                    read -r restore_answer
+                    case "$restore_answer" in
+                        ""|y|Y|yes|YES|Yes) restore_now="yes" ;;
+                        *) restore_now="no" ;;
+                    esac
+                fi
+
+                if [ "$restore_now" = "yes" ]; then
+                    log_info "Restoring local changes..."
+                    if git stash apply "$autostash_ref"; then
+                        git stash drop "$autostash_ref" >/dev/null
+                        log_warn "Local changes were restored on top of the updated codebase."
+                        log_warn "Review git diff / git status if Hermes behaves unexpectedly."
+                    else
+                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                        log_info "Resolve manually with: git stash apply $autostash_ref"
+                        exit 1
+                    fi
+                else
+                    log_info "Skipped restoring local changes."
+                    log_info "Your changes are still preserved in git stash."
+                    log_info "Restore manually with: git stash apply $autostash_ref"
+                fi
+            fi
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"
             log_info "Remove it or choose a different directory with --dir"
@@ -1126,12 +1208,12 @@ clone_repo() {
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -2238,6 +2320,144 @@ postinstall_mode() {
     fi
 }
 
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache - most often a partial/resumed download
+# that leaves concatenated junk - makes electron-builder's `unpack-electron`
+# extract a tree MISSING the electron binary, so the `electron`->`Hermes` rename
+# dies with ENOENT and every re-run repeats the broken extraction forever. This
+# is the bash sibling of install.ps1's Clear-ElectronBuildCache and the Python
+# _purge_electron_build_cache() used by `hermes desktop`; install.sh was the only
+# build path lacking it. Echoes the removed paths (one per line); best-effort.
+clear_electron_build_cache() {
+    local desktop_dir="$1"
+    local removed=""
+
+    # Per-user Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the platform defaults (macOS: ~/Library/Caches/electron,
+    # Linux: $XDG_CACHE_HOME/electron or ~/.cache/electron).
+    local cache_dirs=()
+    [ -n "${electron_config_cache:-}" ] && cache_dirs+=("$electron_config_cache")
+    [ -n "${ELECTRON_CACHE:-}" ] && cache_dirs+=("$ELECTRON_CACHE")
+    if [ "$OS" = "macos" ]; then
+        cache_dirs+=("$HOME/Library/Caches/electron")
+    else
+        [ -n "${XDG_CACHE_HOME:-}" ] && cache_dirs+=("$XDG_CACHE_HOME/electron")
+        cache_dirs+=("$HOME/.cache/electron")
+    fi
+
+    local dir zip
+    for dir in "${cache_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        # Recurse: the bad copy may be the top-level zip OR a copy inside an
+        # @electron/get hash subdir.
+        while IFS= read -r zip; do
+            [ -n "$zip" ] || continue
+            if rm -f "$zip" 2>/dev/null; then
+                removed="$removed$zip
+"
+            fi
+        done <<EOF
+$(find "$dir" -type f -name 'electron-*.zip' 2>/dev/null)
+EOF
+    done
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed (mac-arm64-unpacked / linux-unpacked).
+    local release_dir="$desktop_dir/release"
+    if [ -d "$release_dir" ]; then
+        local unpacked
+        while IFS= read -r unpacked; do
+            [ -n "$unpacked" ] || continue
+            if rm -rf "$unpacked" 2>/dev/null; then
+                removed="$removed$unpacked
+"
+            fi
+        done <<EOF
+$(find "$release_dir" -maxdepth 1 -type d -name '*-unpacked' 2>/dev/null)
+EOF
+    fi
+
+    printf '%s' "$removed"
+}
+
+# Run the desktop pack in $1 (the apps/desktop dir). `npm run pack` = tsc +
+# vite build + electron-builder --dir, producing an unpacked app for the
+# current OS. Signing auto-discovery is disabled so electron-builder falls back
+# to an ad-hoc signature instead of grabbing an unrelated Developer ID from the
+# keychain (a real signed/notarized .dmg needs Apple credentials — a separate
+# release concern). Optional $2 = an ELECTRON_MIRROR base URL for this attempt,
+# used as a fallback when the default GitHub release download is blocked.
+_desktop_pack() {
+    local desktop_dir="$1"
+    local mirror="${2:-}"
+    if [ -n "$mirror" ]; then
+        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    else
+        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    fi
+}
+
+# Last-resort Electron mirror after GitHub download fails (#47266).
+DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
+
+# Electron package dir — workspace-local nest first, then root hoist.
+_electron_dir() {
+    local install_dir="$1"
+    if [ -d "$install_dir/apps/desktop/node_modules/electron" ]; then
+        printf '%s\n' "$install_dir/apps/desktop/node_modules/electron"
+    else
+        printf '%s\n' "$install_dir/node_modules/electron"
+    fi
+}
+
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
+_electron_dist_ok() {
+    local install_dir="$1"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    if [ "$OS" = "macos" ]; then
+        [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
+    else
+        [ -e "$electron_dir/dist/electron" ]
+    fi
+}
+
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
+_restore_electron_dist() {
+    local install_dir="$1"
+    local mirror="${2:-}"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    _electron_dist_ok "$install_dir" && return 0
+
+    [ -f "$electron_dir/install.js" ] || return 1
+    command -v node >/dev/null 2>&1 || return 1
+
+    rm -rf "$electron_dir/dist" 2>/dev/null || true
+    rm -f "$electron_dir/path.txt" 2>/dev/null || true
+
+    if [ -n "$mirror" ]; then
+        ( cd "$electron_dir" && ELECTRON_MIRROR="$mirror" node install.js ) || true
+    else
+        ( cd "$electron_dir" && node install.js ) || true
+    fi
+    _electron_dist_ok "$install_dir"
+}
+
+_electron_pkg_staged_missing_dist() {
+    local install_dir="$1"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    [ -f "$electron_dir/package.json" ] && [ -f "$electron_dir/install.js" ] && ! _electron_dist_ok "$install_dir"
+}
+
+_restore_electron_dist_with_fallback() {
+    local install_dir="$1"
+    _restore_electron_dist "$install_dir" \
+        || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
+}
+
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
@@ -2279,24 +2499,75 @@ install_desktop() {
     #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
     #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
+    if ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ); then
+        log_success "Desktop workspace dependencies installed"
+    elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
+        log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+        _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+    else
         log_error "Desktop workspace npm install failed"
+        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
+        # ~/.npm, so this non-root install can't write the shared cache. npm hides
+        # it behind a confusing EEXIST / "File exists" message while the real errno
+        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
+        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
+        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
+        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
+        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+        log_info "Then re-run this installer, or build manually:"
+        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
-    }
-    log_success "Desktop workspace dependencies installed"
+    fi
 
-    # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
-    #    producing an unpacked app for the current OS. We disable signing
-    #    auto-discovery so electron-builder falls back to an ad-hoc signature
-    #    instead of grabbing an unrelated Developer ID from the keychain; a
-    #    real signed/notarized .dmg needs Apple credentials and is a separate
-    #    release concern.
+    # 2. Build, with up to three escalating attempts so a transient/blocked
+    #    Electron download self-heals instead of failing the whole install:
+    #      a) plain `npm run pack` (downloads Electron from GitHub),
+    #      b) on failure, purge a corrupt cached zip + stale unpacked dir and
+    #         retry (matches install.ps1 / `hermes desktop`),
+    #      c) on still-failing, fall back to a public Electron mirror — this is
+    #         the GitHub-blocked/throttled case (the repeating "retrying" log).
     log_info "Building desktop app (this takes 1-3 minutes)..."
-    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
+    local pack_ok=false
+    if _desktop_pack "$desktop_dir"; then
+        pack_ok=true
+    else
+        local purged=""
+        local restored=false
+        if ! _electron_dist_ok "$INSTALL_DIR"; then
+            purged="$(clear_electron_build_cache "$desktop_dir")"
+            if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
+        fi
+        if [ "$restored" = true ]; then
+            log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
+            if _desktop_pack "$desktop_dir"; then
+                pack_ok=true
+            fi
+        fi
+    fi
+
+    # (c) GitHub blocked → mirror fallback (#47266).
+    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
+        log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
+        log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
+        log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+        _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
+        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+            pack_ok=true
+        fi
+    fi
+
+    if [ "$pack_ok" = false ]; then
         log_error "Desktop app build failed"
-        log_info "Run manually: cd $desktop_dir && npm run pack"
+        # If the log shows repeated "retrying" lines fetching the Electron zip,
+        # the binary download is blocked/throttled (firewall, proxy, region) and
+        # the mirror fallback above also couldn't reach a host. Try a mirror you
+        # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
+        log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
+        log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
+        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
         return 1
-    }
+    fi
 
     local app=""
     if [ "$OS" = "linux" ]; then
@@ -2461,7 +2732,12 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
-            echo "git" > "$HERMES_HOME/.install_method"
+            # Code-scoped stamp: write next to the install tree, not into
+            # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
+            # bind-mounted into a Docker gateway too), so a stamp there gets
+            # clobbered by the container's 'docker' stamp and wrongly blocks
+            # 'hermes update' on this host install. See detect_install_method().
+            echo "git" > "$INSTALL_DIR/.install_method"
             ;;
         *)
             log_error "Unknown stage: $stage"
@@ -2540,7 +2816,12 @@ main() {
 
     print_success
 
-    echo "git" > "$HERMES_HOME/.install_method"
+    # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
+    # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
+    # gateway too), so a stamp there gets clobbered by the container's 'docker'
+    # stamp and wrongly blocks 'hermes update' on this host install.
+    # See detect_install_method().
+    echo "git" > "$INSTALL_DIR/.install_method"
 }
 
 if [ "$MANIFEST_MODE" = true ]; then

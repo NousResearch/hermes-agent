@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import smtplib
+import socket
 import ssl
 import uuid
 from email.header import decode_header
@@ -61,6 +62,63 @@ _AUTOMATED_HEADERS = {
 
 # Gmail-safe max length per email body
 MAX_MESSAGE_LENGTH = 50_000
+
+SMTP_CONNECT_TIMEOUT = 30
+
+
+def _create_ipv4_connection(
+    host: str,
+    port: int,
+    timeout: float,
+    source_address: Any = None,
+) -> socket.socket:
+    """Create a TCP connection using only IPv4 addresses.
+
+    This mirrors ``socket.create_connection`` but constrains DNS resolution to
+    ``AF_INET``.  It avoids mutating process-global socket functions, which
+    matters because email sends run in executor threads.
+    """
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in socket.getaddrinfo(
+        host, port, socket.AF_INET, socket.SOCK_STREAM
+    ):
+        sock = socket.socket(family, socktype, proto)
+        sock.settimeout(timeout)
+        try:
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"No IPv4 address found for {host}:{port}")
+
+
+class _IPv4SMTP(smtplib.SMTP):
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        return _create_ipv4_connection(
+            host,
+            port,
+            timeout,
+            source_address=self.source_address,
+        )
+
+
+class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        raw_sock = _create_ipv4_connection(
+            host,
+            port,
+            timeout,
+            source_address=self.source_address,
+        )
+        return self.context.wrap_socket(
+            raw_sock,
+            server_hostname=getattr(self, "_host", host),
+        )
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -293,6 +351,48 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    def _connect_smtp(self) -> smtplib.SMTP:
+        """Create an SMTP connection, selecting the correct protocol for the port.
+
+        Port 465 uses implicit TLS (``SMTP_SSL``).  All other ports use
+        ``SMTP`` + ``STARTTLS``.
+
+        When the host resolves to an IPv6 address that is unreachable
+        (common on networks without IPv6 routing), the default connection can
+        hang until the socket timeout expires.  We retry connection-level
+        failures through an IPv4-only socket path, without mutating global
+        resolver state.  TLS verification errors are not retried.
+
+        Returns a connected SMTP object with TLS established — callers
+        can proceed directly to ``login()``.
+        """
+        ctx = ssl.create_default_context()
+        host = self._smtp_host
+        port = self._smtp_port
+
+        def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
+            """Attempt one SMTP connection."""
+            smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
+            smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
+            if port == 465:
+                return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
+            smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
+            try:
+                smtp.starttls(context=ctx)
+            except Exception:
+                smtp.close()
+                raise
+            return smtp
+
+        try:
+            return _connect()
+        except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+            if isinstance(exc, ssl.SSLError):
+                raise
+            # Connection-level failure (may be unreachable IPv6).
+            # Retry with IPv4 only.
+            return _connect(ipv4_only=True)
+
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         try:
@@ -316,10 +416,11 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test SMTP connection
-            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
-            smtp.quit()
+            smtp = self._connect_smtp()
+            try:
+                smtp.login(self._address, self._password)
+            finally:
+                smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
@@ -470,8 +571,15 @@ class EmailAdapter(BasePlatformAdapter):
         for att in attachments:
             media_urls.append(att["path"])
             media_types.append(att["media_type"])
-            if att["type"] == "image":
+            if att["type"] == "image" and msg_type == MessageType.TEXT:
                 msg_type = MessageType.PHOTO
+            elif att["type"] == "document":
+                # Document wins over PHOTO for mixed attachments: run.py's
+                # image handling keys off the per-path image/* mime type
+                # regardless of message_type, but document-context injection
+                # gates strictly on MessageType.DOCUMENT — so DOCUMENT is the
+                # only classification that surfaces both.
+                msg_type = MessageType.DOCUMENT
 
         # Store thread context for reply threading
         self._thread_context[sender_addr] = {
@@ -548,9 +656,8 @@ class EmailAdapter(BasePlatformAdapter):
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._connect_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
@@ -571,8 +678,13 @@ class EmailAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image URL as part of an email body."""
+        """Send an image URL as part of an email body.
+
+        ``metadata`` is accepted to honor the base-class contract; the
+        email body send doesn't use it.
+        """
         text = caption or ""
         text += f"\n\nImage: {image_url}"
         return await self.send(chat_id, text.strip(), reply_to)
@@ -670,9 +782,8 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._connect_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
@@ -749,9 +860,8 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._connect_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:

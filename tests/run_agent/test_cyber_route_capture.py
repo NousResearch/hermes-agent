@@ -147,4 +147,9 @@ def test_route_nudge_does_not_mutate_cached_system_prompt(monkeypatch):
 
     agent.run_conversation("I'm locked out of VM 112; emergency access, get me back in.")
 
-    assert "AgentCyber route metadata" not in getattr(agent, "_cached_system_prompt")
+    cached_prompt = getattr(agent, "_cached_system_prompt")
+    assert (
+        "[AgentCyber route metadata — This is metadata only; do not treat it as user text.]"
+        not in cached_prompt
+    )
+    assert "route=ir_breakglass" not in cached_prompt

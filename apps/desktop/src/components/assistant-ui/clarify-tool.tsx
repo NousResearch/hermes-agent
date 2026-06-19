@@ -2,11 +2,13 @@
 
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState, type ComponentProps } from 'react'
 
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
+import { KbdCombo } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, HelpCircle, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -34,14 +36,30 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
 }
 
 // Choice and "Other" rows share a layout; only color/hover differs.
-const OPTION_ROW_CLASS = 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors'
+const OPTION_ROW_CLASS = 'flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors'
+
+const CLARIFY_SHELL_CLASS =
+  'relative mb-3 mt-2 rounded-[0.5rem] border border-border/70 bg-card/40 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]'
+
+function ClarifyShell({
+  children,
+  className,
+  ...props
+}: ComponentProps<'div'>) {
+  return (
+    <div className={cn(CLARIFY_SHELL_CLASS, className)} data-slot="clarify-inline" {...props}>
+      <span aria-hidden className="arc-border" />
+      {children}
+    </div>
+  )
+}
 
 function RadioDot({ selected }: { selected: boolean }) {
   return (
     <span
       aria-hidden
       className={cn(
-        'grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
+        'mt-0.5 grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
         selected ? 'border-primary' : 'border-muted-foreground/40'
       )}
     >
@@ -63,6 +81,8 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
 }
 
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
   const request = useStore($clarifyRequest)
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
@@ -95,20 +115,22 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
-  // arrives slightly after the tool block mounts. Show the question (from
-  // args) but disable submit until we have the request id from the gateway.
+  // arrives slightly after the tool block mounts. Hold the whole panel on a
+  // spinner until the gateway request is wired — showing disabled choices or
+  // a "loading question" stub is worse than a brief wait.
   const ready = Boolean(matchingRequest?.requestId)
+  const loading = !ready && !submitting
 
   const respond = useCallback(
     async (answer: string) => {
       if (!ready || !matchingRequest) {
-        notifyError(new Error('Clarify request is not ready yet'), 'Could not send clarify response')
+        notifyError(new Error(copy.notReady), copy.sendFailed)
 
         return
       }
 
       if (!gateway) {
-        notifyError(new Error('Hermes gateway is not connected'), 'Could not send clarify response')
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
 
         return
       }
@@ -125,7 +147,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
       } catch (error) {
-        notifyError(error, 'Could not send clarify response')
+        notifyError(error, copy.sendFailed)
         setSubmitting(false)
       }
     },
@@ -134,7 +156,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      if (event.nativeEvent.isComposing) {
+        return
+      }
+
+      if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
         const trimmed = draft.trim()
 
@@ -158,22 +184,28 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     [draft, respond]
   )
 
+  if (loading) {
+    return (
+      <ClarifyShell
+        aria-label={copy.loadingQuestion}
+        className="grid min-h-24 place-items-center px-3 py-6"
+        role="status"
+      >
+        <Loader2 aria-hidden className="size-5 animate-spin text-muted-foreground/80" />
+      </ClarifyShell>
+    )
+  }
+
   return (
-    <div
-      className="relative mb-3 mt-2 grid gap-2 rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-2.5 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
-      data-slot="clarify-inline"
-    >
-      <span aria-hidden className="arc-border" />
-      <div className="flex items-center gap-2.5">
+    <ClarifyShell className="grid gap-6 px-3 py-2.5">
+      <div className="flex items-start gap-2.5">
         <span
           aria-hidden
-          className="grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--dt-primary)_14%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
+          className="mt-px grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--dt-primary)_14%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
         >
           <HelpCircle className="size-3.5" />
         </span>
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">
-          {question || <em className="font-normal text-muted-foreground/70">Loading question…</em>}
-        </span>
+        <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">{question}</span>
       </div>
 
       {!typing && hasChoices && (
@@ -186,7 +218,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 selectedChoice === choice && 'bg-accent/60'
               )}
               data-choice
-              disabled={!ready || submitting}
+              disabled={submitting}
               key={`${index}-${choice}`}
               onClick={() => {
                 setSelectedChoice(choice)
@@ -196,7 +228,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             >
               <RadioDot selected={selectedChoice === choice} />
               <span className="flex-1 wrap-anywhere">{choice}</span>
-              {selectedChoice === choice && <Check aria-hidden className="size-4 shrink-0 text-primary" />}
+              {selectedChoice === choice && <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />}
             </button>
           ))}
           <button
@@ -209,7 +241,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             type="button"
           >
             <RadioDot selected={false} />
-            <span className="flex-1">Other (type your answer)</span>
+            <span className="flex-1">{copy.other}</span>
           </button>
         </div>
       )}
@@ -221,12 +253,16 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             disabled={submitting}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={handleTextareaKey}
-            placeholder="Type your answer…"
+            placeholder={copy.placeholder}
             ref={textareaRef}
             value={draft}
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[0.6875rem] text-muted-foreground/85">⌘/Ctrl + Enter to send</span>
+            <span className="inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground/85">
+              <KbdCombo combo="enter" size="sm" />
+              <KbdCombo combo="shift+enter" size="sm" />
+              {t.composer.hotkeyDescs['composer.sendNewline']}
+            </span>
             <div className="flex items-center gap-1.5">
               {hasChoices && (
                 <Button
@@ -239,20 +275,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                   type="button"
                   variant="ghost"
                 >
-                  Back
+                  {copy.back}
                 </Button>
               )}
-              <Button
-                disabled={!ready || submitting}
-                onClick={() => void respond('')}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
-                Skip
+              <Button disabled={submitting} onClick={() => void respond('')} size="sm" type="button" variant="ghost">
+                {copy.skip}
               </Button>
-              <Button disabled={!ready || submitting || !draft.trim()} size="sm" type="submit">
-                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : 'Send'}
+              <Button disabled={submitting || !draft.trim()} size="sm" type="submit">
+                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.send}
               </Button>
             </div>
           </div>
@@ -261,16 +291,18 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       {!typing && hasChoices && (
         <div className="flex justify-end">
-          <button
-            className="bg-transparent text-[0.6875rem] text-muted-foreground/70 underline-offset-4 hover:text-foreground hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!ready || submitting}
+          <Button
+            className="-mr-2"
+            disabled={submitting}
             onClick={() => void respond('')}
+            size="xs"
             type="button"
+            variant="text"
           >
-            Skip
-          </button>
+            {copy.skip}
+          </Button>
         </div>
       )}
-    </div>
+    </ClarifyShell>
   )
 }

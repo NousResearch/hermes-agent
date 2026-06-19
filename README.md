@@ -3,13 +3,16 @@
 </p>
 
 # Hermes AgentCyber ☤
-
+<p align="center">
+  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+</p>
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
 </p>
 
 **Hermes AgentCyber is a cybersecurity-focused fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) — the self-improving AI agent by [Nous Research](https://nousresearch.com).** It adds a native cybersecurity toolkit (threat intelligence, IOC extraction, vulnerability triage, incident response) and a live USB system that boots any x86-64 PC into an autonomous cyber operations environment. The base agent's learning loop, multi-platform gateway, and subagent delegation are all intact.
@@ -332,7 +335,7 @@ hermes-live version        # show installed version
 ### Linux, macOS, WSL2, Termux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 ### Windows (native, PowerShell)
@@ -342,7 +345,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 Run this in PowerShell:
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
@@ -351,7 +354,7 @@ If you already have Git installed, the installer detects it and uses that instea
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
-> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.  The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
+> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
 After installation:
 
@@ -504,7 +507,7 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
 
-Quick start for contributors:
+Quick start for AgentCyber contributors:
 
 ```bash
 git clone https://github.com/breakingcircuits1337/hermes-agentcyber.git
@@ -513,7 +516,17 @@ cd hermes-agentcyber
 ./hermes              # auto-detects the venv, no need to `source` first
 ```
 
-Manual path:
+Managed upstream-style installer path:
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+uv pip install -e ".[all,dev]"
+scripts/run_tests.sh
+```
+
+Manual clone fallback (for throwaway clones/CI where you intentionally do not
+want the managed install layout):
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh

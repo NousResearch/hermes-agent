@@ -2,8 +2,10 @@ import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 
+import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -14,7 +16,11 @@ import {
 } from '@/store/layout'
 import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
+import { isSecondaryWindow } from '@/store/windows'
 
+import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
+
+import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
 import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
@@ -23,9 +29,19 @@ interface AppShellProps {
   children: ReactNode
   leftStatusbarItems?: readonly StatusbarItem[]
   leftTitlebarTools?: readonly TitlebarTool[]
+  // Fixed-position overlays that must share <main>'s stacking context so pane
+  // resize handles (z-20) paint above them. The persistent terminal lives here:
+  // hoisting it to the root `overlays` layer (sibling of <main>, z above z-3)
+  // would cover every pane's drag handle.
+  mainOverlays?: ReactNode
   onOpenSettings: () => void
   overlays?: ReactNode
+  // Rails that sit at the window's left edge in the flipped layout but never
+  // force-collapse to hover-reveal overlays — so they cover the top-left traffic
+  // lights (and zero the titlebar inset) even below the collapse breakpoint.
+  previewPaneOpen?: boolean
   statusbarItems?: readonly StatusbarItem[]
+  terminalPaneOpen?: boolean
   titlebarTools?: readonly TitlebarTool[]
 }
 
@@ -48,18 +64,26 @@ export function AppShell({
   children,
   leftStatusbarItems,
   leftTitlebarTools,
+  mainOverlays,
   onOpenSettings,
   overlays,
+  previewPaneOpen = false,
   statusbarItems,
+  terminalPaneOpen = false,
   titlebarTools
 }: AppShellProps) {
   const sidebarOpen = useStore($sidebarOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const panesFlipped = useStore($panesFlipped)
+  const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
   const fileBrowserWidthOverride = useStore($paneWidthOverride(FILE_BROWSER_PANE_ID))
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
   const isFullscreen = Boolean(connection?.isFullscreen) || viewportFullscreen
+  // Every secondary window (new-session scratch, subagent watch, cmd-click
+  // pop-out) is a compact side panel — none of them carry the full titlebar
+  // tool cluster. Gate on isSecondaryWindow, never the narrower new-session flag.
+  const hideTitlebarControls = isSecondaryWindow()
   const titlebarControls = titlebarControlsPosition(connection?.windowButtonPosition, isFullscreen)
   // Width Windows/Linux reserve for the OS-painted min/max/close overlay (zero
   // on macOS, where window controls sit on the left and are reported via
@@ -69,8 +93,17 @@ export function AppShell({
 
   // The inset clears the top-left titlebar buttons when nothing covers the
   // window's left edge. Default layout: the sessions sidebar sits there.
-  // Flipped layout: the file browser does instead.
-  const leftEdgePaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+  // Flipped layout: the file browser does instead. Both force-collapse to a
+  // hover-reveal overlay (0px track) below the collapse breakpoint, so the edge
+  // is uncovered there regardless of their stored open state. A standalone
+  // session window renders no sidebar at all, so its edge is always uncovered.
+  const collapsibleLeftPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+  // The terminal + preview rails never force-collapse, so when they're the
+  // leftmost open pane (flipped layout) they cover the edge even when narrow.
+  const persistentLeftPaneOpen = panesFlipped && (terminalPaneOpen || previewPaneOpen)
+
+  const leftEdgePaneOpen =
+    !isSecondaryWindow() && ((!narrowViewport && collapsibleLeftPaneOpen) || persistentLeftPaneOpen)
 
   const titlebarContentInset = leftEdgePaneOpen
     ? 0
@@ -133,7 +166,9 @@ export function AppShell({
         } as CSSProperties
       }
     >
-      <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+      {!hideTitlebarControls && (
+        <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+      )}
 
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">
         <PaneShell className="min-h-0 flex-1">
@@ -149,10 +184,24 @@ export function AppShell({
           {children}
         </PaneShell>
 
-        <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
+        {/* Fixed overlays scoped to main's stacking context (terminal). Rendered
+            after PaneShell so it paints over pane content, but its z stays under
+            the panes' z-20 resize handles, keeping every pane resizable. */}
+        {mainOverlays}
+
+        {/* The compact pop-out drops the statusbar — it's a scratch window, not
+            the full shell. */}
+        {!isSecondaryWindow() && <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />}
       </main>
 
       {overlays}
+
+      {/* Keybind map dialog (titlebar ⌨ button / ⌘/). */}
+      <KeybindPanel />
+
+      {/* Mounted at the shell root (after overlays) so success/error toasts
+          surface above every route and overlay — not just the chat view. */}
+      <NotificationStack />
     </SidebarProvider>
   )
 }

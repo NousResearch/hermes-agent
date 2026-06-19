@@ -64,9 +64,8 @@ class OpenCodeGoProfile(ProviderProfile):
                 return extra_body, top_level
 
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
-
             if not enabled:
+                extra_body["thinking"] = {"type": "disabled"}
                 return extra_body, top_level
 
             effort = (reasoning_config.get("effort") or "").strip().lower()
@@ -74,6 +73,11 @@ class OpenCodeGoProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "high"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
+
+            # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
+            # only send extra_body["thinking"] when no reasoning_effort is set.
+            if "reasoning_effort" not in top_level:
+                extra_body["thinking"] = {"type": "enabled"}
             return extra_body, top_level
 
         if not _is_deepseek_thinking_model(model):
@@ -82,9 +86,9 @@ class OpenCodeGoProfile(ProviderProfile):
         enabled = True
         if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
             enabled = False
-        extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
         if not enabled:
+            extra_body["thinking"] = {"type": "disabled"}
             return extra_body, top_level
 
         if isinstance(reasoning_config, dict):
@@ -93,6 +97,11 @@ class OpenCodeGoProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "max"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
+
+        # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
+        # only send extra_body["thinking"] when no reasoning_effort is set.
+        if "reasoning_effort" not in top_level:
+            extra_body["thinking"] = {"type": "enabled"}
 
         return extra_body, top_level
 

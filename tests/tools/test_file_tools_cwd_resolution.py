@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import tools.file_tools as ft
+import tools.terminal_tool as terminal_tool
 
 
 @pytest.fixture
@@ -152,10 +153,129 @@ def test_no_warning_for_absolute_input(_isolated_cwd, monkeypatch):
 def test_no_warning_when_no_live_cwd(_isolated_cwd, monkeypatch):
     workspace, decoy = _isolated_cwd
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
     warn = ft._path_resolution_warning("target.py", decoy / "target.py", task_id="default")
 
     assert warn is None
+
+
+# ── Fix C: sentinel TERMINAL_CWD + empty-registry worktree anchoring ─────────
+# (May 2026 follow-up: PR #35399 made misroutes visible via resolved_path but
+# the divergence warning only fired when the live terminal cwd was known. A
+# worktree session whose terminal registry is still empty — no `cd` run yet —
+# got neither a worktree anchor nor a warning, so a relative edit silently
+# landed in main. These tests pin the sentinel handling + empty-registry
+# anchoring + early warning.)
+
+
+@pytest.mark.parametrize("sentinel", ["", ".", "./", "auto", "cwd", "CWD", "Auto"])
+def test_sentinel_terminal_cwd_is_treated_as_unset(_isolated_cwd, monkeypatch, sentinel):
+    """Sentinel TERMINAL_CWD values are NOT used as a directory anchor.
+
+    They fall through to the (absolute) process cwd, exactly as if unset —
+    never resolved as a literal relative directory.
+    """
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setenv("TERMINAL_CWD", sentinel)
+
+    assert ft._configured_terminal_cwd() is None
+    resolved = ft._resolve_path_for_task("target.py", task_id="default")
+    assert resolved.is_absolute()
+    assert resolved == (decoy / "target.py").resolve()
+
+
+def test_relative_nonsentinel_terminal_cwd_rejected(_isolated_cwd, monkeypatch):
+    """A relative (but non-sentinel) TERMINAL_CWD is still rejected as an anchor.
+
+    A relative anchor is ambiguous (relative to which cwd?), which is the exact
+    ambiguity that misroutes edits. It must fall through to the process cwd, not
+    be joined onto it as a literal subdir.
+    """
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setenv("TERMINAL_CWD", "some/rel/path")
+
+    assert ft._configured_terminal_cwd() is None
+    resolved = ft._resolve_path_for_task("target.py", task_id="default")
+    assert resolved == (decoy / "target.py").resolve()
+
+
+def test_absolute_terminal_cwd_anchors_with_empty_registry(_isolated_cwd, monkeypatch):
+    """The incident-preventing case: worktree session, registry still empty.
+
+    With no live terminal cwd recorded yet but an absolute TERMINAL_CWD (the
+    worktree path cli.py/main.py set for `-w`), a relative edit must land in the
+    worktree — not the process cwd (main repo).
+    """
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    resolved = ft._resolve_path_for_task("target.py", task_id="default")
+
+    assert resolved == (workspace / "target.py")
+    assert not str(resolved).startswith(str(decoy))
+
+
+def test_registered_task_cwd_override_anchors_before_terminal_env_exists(_isolated_cwd, monkeypatch):
+    """TUI/Desktop sessions register cwd by raw session key before tools run.
+
+    CWD-only overrides collapse to the shared terminal environment key, but the
+    file resolver must still read the raw task/session override before falling
+    back to TERMINAL_CWD or the process cwd.
+    """
+    workspace, decoy = _isolated_cwd
+    task_id = "desktop-session-cwd"
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+
+    resolved = ft._resolve_path_for_task("target.py", task_id=task_id)
+
+    assert terminal_tool._resolve_container_task_id(task_id) == "default"
+    assert resolved == (workspace / "target.py")
+    assert not str(resolved).startswith(str(decoy))
+
+
+def test_warning_fires_from_terminal_cwd_when_registry_empty(_isolated_cwd, monkeypatch):
+    """Divergence warning must fire even before any terminal command runs.
+
+    PR #35399's warning required a live terminal cwd; a fresh worktree session
+    (empty registry) silently misrouted with no warning. Now the warning falls
+    back to the absolute TERMINAL_CWD anchor, so an edit aimed outside the
+    worktree is flagged on the very first write.
+    """
+    workspace, decoy = _isolated_cwd
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    # Relative path that escapes the worktree into the decoy/main checkout.
+    escaping = os.path.relpath(str(decoy / "target.py"), str(workspace))
+    resolved = ft._resolve_path_for_task(escaping, task_id="default")
+
+    warn = ft._path_resolution_warning(escaping, resolved, task_id="default")
+
+    assert warn is not None
+    assert "OUTSIDE the active workspace" in warn
+    assert str(workspace) in warn
+
+
+def test_live_cwd_still_wins_over_absolute_terminal_cwd(_isolated_cwd, monkeypatch):
+    """When both are present, the live terminal cwd remains authoritative."""
+    workspace, decoy = _isolated_cwd
+    other = decoy.parent / "other"
+    other.mkdir()
+    # Live cwd = workspace; TERMINAL_CWD points elsewhere — live must win.
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(other))
+
+    resolved = ft._resolve_path_for_task("target.py", task_id="default")
+
+    assert resolved == (workspace / "target.py")
 
 
 # ── Fix A: write_file / patch report the resolved ABSOLUTE path ──────────────

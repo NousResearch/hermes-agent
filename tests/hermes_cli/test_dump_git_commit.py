@@ -116,3 +116,44 @@ def test_get_git_commit_output_format_identical_between_sources(tmp_path):
     # Same length, same charset — no decoration in either branch.
     assert len(live) == 8
     assert all(c in "0123456789abcdef" for c in live)
+
+
+def test_get_git_commit_date_uses_live_git(tmp_path):
+    """Source install: ``git log -1 --format=%cd --date=short`` returns the date."""
+    from hermes_cli import dump
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+
+    git_result = MagicMock(returncode=0, stdout="2026-06-17\n")
+    with patch("hermes_cli.dump.subprocess.run", return_value=git_result):
+        date = dump._get_git_commit_date(repo_dir)
+
+    assert date == "2026-06-17"
+
+
+def test_get_git_commit_date_empty_when_git_fails(tmp_path):
+    """Docker image / pip wheel: no git → '' so the dump line drops the date."""
+    from hermes_cli import dump
+
+    repo_dir = tmp_path / "no-git-here"
+    repo_dir.mkdir()
+
+    failed = MagicMock(returncode=128, stdout="")
+    with patch("hermes_cli.dump.subprocess.run", return_value=failed):
+        date = dump._get_git_commit_date(repo_dir)
+
+    assert date == ""
+
+
+def test_get_git_commit_date_empty_when_git_raises(tmp_path):
+    """git binary missing → '' (no crash, suffix simply omitted)."""
+    from hermes_cli import dump
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+
+    with patch("hermes_cli.dump.subprocess.run", side_effect=FileNotFoundError("git")):
+        date = dump._get_git_commit_date(repo_dir)
+
+    assert date == ""

@@ -120,6 +120,15 @@ def ensure_dependency(
             print(f"  Install {dep} manually and try again.")
         return False
 
+    if interactive and not sys.stdin.isatty():
+        # No TTY to ask for consent — e.g. the gateway, a scheduled task, or
+        # any non-interactive service. Don't silently run a possibly-blocking
+        # install in a long-running process; skip and let the capability
+        # degrade instead of hanging on a prompt that can never be answered
+        # (#49206). Callers that want an unattended install pass
+        # ``interactive=False`` explicitly.
+        return False
+
     if interactive and sys.stdin.isatty():
         desc = _DEP_DESCRIPTIONS.get(dep, dep)
         try:

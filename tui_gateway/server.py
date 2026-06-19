@@ -3557,26 +3557,19 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             ):
                 return
             try:
-                from model_tools import get_tool_definitions
+                from tools.mcp_tool import refresh_agent_mcp_tools
 
-                new_defs = get_tool_definitions(
-                    enabled_toolsets=_load_enabled_toolsets(),
-                    quiet_mode=True,
-                )
+                added = refresh_agent_mcp_tools(agent, quiet_mode=True)
             except Exception as exc:
                 logger.warning(
-                    "Late MCP refresh: get_tool_definitions failed for %s: %s",
+                    "Late MCP refresh: tool snapshot rebuild failed for %s: %s",
                     sid,
                     exc,
                 )
                 return
-            # No change (discovery added nothing new) → don't churn the client.
-            if len(new_defs or []) == len(getattr(agent, "tools", []) or []):
+            # No new tools landed (discovery added nothing) → don't churn the client.
+            if not added:
                 return
-            agent.tools = new_defs
-            agent.valid_tool_names = (
-                {t["function"]["name"] for t in new_defs} if new_defs else set()
-            )
             info = _session_info(agent, session)
         # Emit outside the lock — write_json must not block under _sessions_lock.
         _emit("session.info", sid, info)
@@ -8414,16 +8407,9 @@ def _(rid, params: dict) -> dict:
             # The user already consented to the prompt-cache invalidation via
             # the confirm gate above.  Mirrors gateway/run.py::_execute_mcp_reload.
             try:
-                from model_tools import get_tool_definitions
+                from tools.mcp_tool import refresh_agent_mcp_tools
 
-                new_defs = get_tool_definitions(
-                    enabled_toolsets=_load_enabled_toolsets(),
-                    quiet_mode=True,
-                )
-                agent.tools = new_defs
-                agent.valid_tool_names = (
-                    {t["function"]["name"] for t in new_defs} if new_defs else set()
-                )
+                refresh_agent_mcp_tools(agent, quiet_mode=True)
             except Exception as _exc:
                 logger.warning(
                     "Failed to refresh cached agent tools after /reload-mcp: %s",

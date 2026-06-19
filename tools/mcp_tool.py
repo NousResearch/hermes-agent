@@ -4228,6 +4228,61 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     return result
 
 
+# Serializes in-place mutation of an agent's tool snapshot.  The reload RPC,
+# the gateway reload, and the late-binding refresh thread all swap
+# ``agent.tools`` / ``agent.valid_tool_names`` after the agent was built; the
+# agent's run loop reads those during tool iteration, so a concurrent write
+# mid-read could otherwise expose a half-updated list.
+_agent_tools_lock = threading.Lock()
+
+
+def refresh_agent_mcp_tools(agent, *, quiet_mode: bool = True) -> set:
+    """Re-derive an already-built agent's tool snapshot from the live registry.
+
+    The agent snapshots ``agent.tools`` once at build time and never re-reads
+    the registry (see ``run_agent`` / ``agent_init``).  When MCP servers connect
+    *after* that snapshot — a slow HTTP/OAuth server that misses the bounded
+    startup wait, or a ``/reload-mcp`` — their tools are invisible until the
+    snapshot is rebuilt.  This is the single shared rebuild used by every such
+    caller (the TUI ``reload.mcp`` RPC, the gateway reload, and the late-binding
+    refresh thread) so they can't drift apart again.
+
+    The rebuild respects the agent's own ``enabled_toolsets`` /
+    ``disabled_toolsets`` (the same filtering it was built with), diffs by tool
+    **name** (not count — a count compare misses an equal-size add/remove swap),
+    and mutates the agent under ``_agent_tools_lock``.
+
+    Returns the set of newly-added tool names (empty when nothing changed), so
+    callers can decide whether to notify the user / re-emit session info.  The
+    caller owns the prompt-cache contract: this helper does NOT check turn state,
+    because each caller has a different policy (``/reload-mcp`` rebuilds after
+    explicit user consent; the late-binding thread only rebuilds pre-first-turn).
+    """
+    from model_tools import get_tool_definitions
+
+    with _agent_tools_lock:
+        current = {
+            t["function"]["name"]
+            for t in (getattr(agent, "tools", None) or [])
+        }
+
+    new_defs = get_tool_definitions(
+        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+        quiet_mode=quiet_mode,
+    )
+    new_names = {t["function"]["name"] for t in new_defs} if new_defs else set()
+
+    if new_names == current:
+        return set()
+
+    with _agent_tools_lock:
+        agent.tools = new_defs
+        agent.valid_tool_names = new_names
+
+    return new_names - current
+
+
 def shutdown_mcp_servers():
     """Close all MCP server connections and stop the background loop.
 

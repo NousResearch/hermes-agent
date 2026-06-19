@@ -51,9 +51,36 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly wait for background MCP discovery before the first tool snapshot."""
+def _resolve_discovery_timeout(explicit: "float | None") -> float:
+    """Resolve the MCP discovery wait bound: explicit arg > config > default.
+
+    Reads ``mcp_discovery_timeout`` from config.yaml.  Kept lazy and
+    fail-safe — a missing/invalid value falls back to the historical 0.75s so
+    a broken config can never make startup hang or crash.
+    """
+    if explicit is not None:
+        return explicit
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config() or {}).get("mcp_discovery_timeout", 5.0)
+        val = float(raw)
+        return val if val > 0 else 0.75
+    except Exception:
+        return 0.75
+
+
+def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
+    """Wait for background MCP discovery before the first tool snapshot.
+
+    ``thread.join(timeout)`` returns the INSTANT discovery completes, so this
+    only ever blocks for the real connect time of a still-pending server —
+    users with no MCP servers or fast servers pay ~0s.  The bound (from
+    ``mcp_discovery_timeout`` in config) just caps the wait so a dead server
+    can't freeze startup; servers that miss it are picked up by the automatic
+    late-binding refresh.
+    """
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return
-    thread.join(timeout=timeout)
+    thread.join(timeout=_resolve_discovery_timeout(timeout))

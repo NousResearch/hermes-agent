@@ -137,14 +137,20 @@ jobs:
         with:
           pattern: test-durations-slice-*
           path: durations
-          merge-multiple: true
+          # NOT merge-multiple: every slice uploads a file named exactly
+          # `test_durations.json`, so merging them into one directory collides
+          # all six onto the same path. That overwrite/interleave races and
+          # can leave concatenated JSON, which the merge step below then fails
+          # to parse ("Extra data"). Keeping each artifact in its own
+          # subdirectory (durations/test-durations-slice-N/test_durations.json)
+          # gives six distinct, individually-valid files to merge.
 
       - name: Merge into single durations file
         run: |
           python3 -c "
-          import json, glob, os
+          import json, glob
           merged = {}
-          for f in glob.glob('durations/*test_durations.json'):
+          for f in glob.glob('durations/**/test_durations.json', recursive=True):
             with open(f) as fh:
               merged.update(json.load(fh))
           with open('test_durations.json', 'w') as fh:

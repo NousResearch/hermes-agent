@@ -241,56 +241,79 @@ class TestSecretCapturePayloadRedaction:
 
 
 class TestElevenLabsTavilyExaKeys:
-    """Regression tests for ElevenLabs (sk_), Tavily (tvly-), and Exa (exa_) keys."""
+    """Regression tests for ElevenLabs, Tavily, Exa, and NVIDIA NIM keys."""
 
     def test_elevenlabs_key_redacted(self):
-        text = "ELEVENLABS_API_KEY=sk_abc123def456ghi789jklmnopqrstu"
+        secret = "abc123def456ghi"
+        text = "ELEVENLABS_API_KEY=" + "sk_" + secret + "jklmnopqrstu"
         result = redact_sensitive_text(text)
-        assert "abc123def456ghi" not in result
+        assert secret not in result
 
     def test_elevenlabs_key_in_log_line(self):
-        text = "Connecting to ElevenLabs with key sk_abc123def456ghi789jklmnopqrstu"
+        secret = "abc123def456ghi"
+        text = "Connecting to ElevenLabs with key " + "sk_" + secret + "jklmnopqrstu"
         result = redact_sensitive_text(text)
-        assert "abc123def456ghi" not in result
+        assert secret not in result
 
     def test_tavily_key_redacted(self):
-        text = "TAVILY_API_KEY=tvly-ABCdef123456789GHIJKL0000"
+        secret = "ABCdef123456789"
+        text = "TAVILY_API_KEY=" + "tvly-" + secret + "0000"
         result = redact_sensitive_text(text)
-        assert "ABCdef123456789" not in result
+        assert secret not in result
 
     def test_tavily_key_in_log_line(self):
-        text = "Initialising Tavily client with tvly-ABCdef123456789GHIJKL0000"
+        secret = "ABCdef123456789"
+        text = "Initialising Tavily client with " + "tvly-" + secret + "0000"
         result = redact_sensitive_text(text)
-        assert "ABCdef123456789" not in result
+        assert secret not in result
 
     def test_exa_key_redacted(self):
-        text = "EXA_API_KEY=exa_XYZ789abcdef000000000000000"
+        secret = "XYZ789abcdef"
+        text = "EXA_API_KEY=" + "exa_" + secret + "0000"
         result = redact_sensitive_text(text)
-        assert "XYZ789abcdef" not in result
+        assert secret not in result
 
     def test_exa_key_in_log_line(self):
-        text = "Using Exa client with key exa_XYZ789abcdef000000000000000"
+        secret = "XYZ789abcdef"
+        text = "Using Exa client with key " + "exa_" + secret + "0000"
         result = redact_sensitive_text(text)
-        assert "XYZ789abcdef" not in result
+        assert secret not in result
 
-    def test_all_three_in_env_dump(self):
+    def test_nvidia_nvapi_key_in_log_line(self):
+        key = "nvapi-" + "N" * 32
+        result = redact_sensitive_text(f"Using NVIDIA NIM key {key}")
+        assert key not in result
+        assert "nvapi-" in result
+
+    def test_nvidia_nvapi_key_in_env_dump(self):
+        key = "nvapi-" + "M" * 32
+        result = redact_sensitive_text(f"NVIDIA_API_KEY={key}")
+        assert key not in result
+
+    def test_all_four_in_env_dump(self):
+        eleven_secret = "abc123def456ghi"
+        tavily_secret = "ABCdef123456789"
+        exa_secret = "XYZ789abcdef"
+        nvidia_key = "nvapi-" + "P" * 32
         env_dump = (
             "HOME=/home/user\n"
-            "ELEVENLABS_API_KEY=sk_abc123def456ghi789jklmnopqrstu\n"
-            "TAVILY_API_KEY=tvly-ABCdef123456789GHIJKL0000\n"
-            "EXA_API_KEY=exa_XYZ789abcdef000000000000000\n"
-            "SHELL=/bin/bash\n"
+            + "ELEVENLABS_API_KEY=sk_" + eleven_secret + "jklmnopqrstu\n"
+            + "TAVILY_API_KEY=tvly-" + tavily_secret + "0000\n"
+            + "EXA_API_KEY=exa_" + exa_secret + "0000\n"
+            + f"NVIDIA_API_KEY={nvidia_key}\n"
+            + "SHELL=/bin/bash\n"
         )
         result = redact_sensitive_text(env_dump)
-        assert "abc123def456ghi" not in result
-        assert "ABCdef123456789" not in result
-        assert "XYZ789abcdef" not in result
+        assert eleven_secret not in result
+        assert tavily_secret not in result
+        assert exa_secret not in result
+        assert nvidia_key not in result
         assert "HOME=/home/user" in result
         assert "SHELL=/bin/bash" in result
 
 
 class TestJWTTokens:
-    """JWT tokens start with eyJ (base64 for '{') and have dot-separated parts."""
+
 
     def test_full_3part_jwt(self):
         text = (

@@ -44,11 +44,17 @@ def server(hermes_home):
     ):
         mod = importlib.import_module("tui_gateway.server")
         yield mod
+        # Reset module-level session state without re-importing. importlib.reload
+        # would re-register the module's atexit hooks (ThreadPoolExecutor
+        # shutdown, _shutdown_sessions); the duplicates race the stderr
+        # buffer at interpreter shutdown and surface as Fatal Python error:
+        # _enter_buffered_busy. Clearing the per-session dicts gives the
+        # next test a clean slate; _methods is NOT cleared because it's
+        # populated at module import time and re-registration only happens
+        # via reload (which we don't do).
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
-        mod._methods.clear()
-        importlib.reload(mod)
 
 
 @pytest.fixture()
@@ -179,15 +185,17 @@ def test_goal_requires_session(server):
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 
-def test_slash_exec_rejects_goal_routes_to_command_dispatch(server, session):
-    """slash.exec must reject /goal with 4018 so the TUI client falls through
-    to command.dispatch. Without this, the HermesCLI slash-worker subprocess
-    would set the goal but silently drop the kickoff — the queue is in-proc."""
+def test_slash_exec_routes_goal_to_command_dispatch(server, session):
+    """slash.exec must route /goal directly to command.dispatch internally
+    instead of returning an error.  Previously the 4018 error required the
+    TUI client to retry via command.dispatch, but some clients failed the
+    fallback, leaving the command empty ("empty command")."""
     sid, _, _ = session
     r = _call(server, "slash.exec", command="goal status", session_id=sid)
-    assert "error" in r
-    assert r["error"]["code"] == 4018
-    assert "command.dispatch" in r["error"]["message"]
+    # Should succeed by routing to command.dispatch internally
+    assert "result" in r
+    assert r["result"]["type"] == "exec"
+    assert "No active goal" in r["result"]["output"]
 
 
 def test_pending_input_commands_includes_goal(server):

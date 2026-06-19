@@ -142,6 +142,14 @@ class ComputerUseBackend(ABC):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""
 
+    # ── Native-value mutation ────────────────────────────────────────
+    @abstractmethod
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        """Set a native value on an element (e.g. AXPopUpButton selection).
+
+        `element` is the 1-based SOM index returned by a prior capture call.
+        """
+
     # ── Timing ──────────────────────────────────────────────────────
     def wait(self, seconds: float) -> ActionResult:
         """Default implementation: time.sleep."""

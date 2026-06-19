@@ -43,7 +43,7 @@ Bundled skills (in `skills/`) ship with every Hermes install. They should be **b
 - Document handling, web research, common dev workflows, system administration
 - Used regularly by a wide range of people
 
-If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `hermes skills browse` (labeled "official") and install it with `hermes skills install` (no third-party warning, builtin trust).
+If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo but isn't activated by default. Users can discover it via `hermes skills browse` (labeled "official") and install it with `hermes skills install` (no third-party warning, built-in trust).
 
 If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `hermes skills install`.
 
@@ -73,15 +73,49 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 
 | Requirement | Notes |
 |-------------|-------|
-| **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
+| **Git** | With the `git-lfs` extension installed |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
-### Clone and install
+### Install with the standard installer
+
+For most contributors, the best development bootstrap is the same path users
+take: run the standard installer, then work inside the repository it cloned.
+The installer creates the Hermes venv, wires the `hermes` command, stamps the
+install method for `hermes update`, and clones the full git project into
+`$HERMES_HOME/hermes-agent` (usually `~/.hermes/hermes-agent`). That keeps your
+development environment on the same layout the CLI, updater, lazy dependency
+installer, gateway, and docs assume.
 
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+
+# Add dev/test extras on top of the standard install.
+uv pip install -e ".[all,dev]"
+
+# Optional: browser tools / docs site dependencies.
+npm install
+```
+
+After that, create branches and run tests from that checkout:
+
+```bash
+git checkout -b fix/description
+scripts/run_tests.sh
+```
+
+### Manual clone fallback
+
+Use this only if you intentionally do not want Hermes' managed install layout
+(for example, a throwaway clone inside a container or CI job). If you install
+this way, make sure you run the `hermes` entrypoint from this venv; running the
+system `python3 -m hermes_cli.main` can pick up unrelated system Python
+packages.
+
+```bash
+git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
 # Create venv with Python 3.11
@@ -90,9 +124,6 @@ export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
-
-# Optional: RL training submodule
-# git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
 
 # Optional: browser tools
 npm install
@@ -112,13 +143,17 @@ echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
 ### Run
 
 ```bash
-# Symlink for global access
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-
-# Verify
+# The standard installer already put `hermes` on PATH.
 hermes doctor
 hermes chat -q "Hello"
+```
+
+If you used the manual clone fallback, run `./hermes` from the checkout or
+symlink this clone's venv explicitly:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ```
 
 ### Run tests
@@ -175,7 +210,7 @@ hermes-agent/
 │   ├── vision_tools.py           # Image analysis via multimodal models
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
 │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
-│   ├── session_search_tool.py    # Search past conversations with FTS5 + summarization
+│   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
 │   ├── skill_tools.py            # Skill search, load, manage
 │   └── environments/             # Terminal execution backends
@@ -196,7 +231,6 @@ hermes-agent/
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
-├── environments/             # RL training environments (Atropos integration)
 ├── tests/                    # Test suite
 ├── website/                  # Documentation site (hermes-agent.nousresearch.com)
 │
@@ -214,7 +248,7 @@ hermes-agent/
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | SQLite session database |
-| `~/.hermes/sessions/` | JSON session logs |
+| `~/.hermes/sessions/` | Gateway routing index (`sessions.json`), request-dump breadcrumbs, gateway `*.jsonl` transcripts, and (optionally) per-session JSON snapshots when `sessions.write_json_snapshots: true` is set. The per-session snapshots are off by default; state.db is canonical. |
 | `~/.hermes/cron/` | Scheduled job data |
 | `~/.hermes/whatsapp/session/` | WhatsApp bridge credentials |
 
@@ -243,7 +277,7 @@ User message → AIAgent._run_agent_loop()
 
 - **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
-- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. JSON logs go to `~/.hermes/sessions/`.
+- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. Per-session JSON snapshots in `~/.hermes/sessions/` were superseded by the SQLite store and are off by default; opt back in with `sessions.write_json_snapshots: true` if you have external tooling that consumes the JSON files directly.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
 - **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
 - **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
@@ -803,6 +837,47 @@ Hermes has terminal access. Security matters.
 - **Test on all platforms** if your change touches file paths, process management, or shell commands
 
 If your PR affects security, note it explicitly in the description.
+
+### Dependency pinning policy (supply chain hardening)
+
+After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/issues/24512) in March 2026 and the [Mini Shai-Hulud worm campaign](https://socket.dev/blog/tanstack-npm-packages-compromised-mini-shai-hulud-supply-chain-attack) in May 2026, all dependencies must follow these rules:
+
+| Source type | Required treatment | Rationale |
+|---|---|---|
+| **PyPI package** | `>=floor,<next_major` | PyPI versions are immutable once published, but new versions can be pushed into your range. A `<next_major` ceiling stops a 1.x install from upgrading to a malicious 2.0.0. |
+| **Git URL** (atroposlib, tinker, yc-bench, Baileys) | Full commit SHA | Branches and tags are mutable refs; SHA is content-addressed. |
+| **GitHub Actions** | Full commit SHA + version comment | Action tags are mutable refs (e.g. tj-actions/changed-files March 2025). Pin as `uses: owner/action@<sha>  # vX.Y.Z` |
+| **CI-only pip installs** | `==exact` | Hermetic CI builds; churn is acceptable. |
+
+**Every new PyPI dependency in a PR must have a `<next_major` upper bound.** PRs adding unbounded `>=X.Y.Z` specs will be rejected by reviewers. The `supply-chain-audit.yml` CI workflow also flags dependency manifest changes for manual review.
+
+**How to determine the ceiling:**
+- If the package is at version `1.x.y`, use `<2`.
+- If the package is at version `0.x.y` (pre-1.0), use `<0.(current_minor + 2)` — e.g. if current is `0.29.x`, use `<0.32`. This gives ~2 minor versions of headroom while keeping the window small enough that a hostile takeover version is unlikely to land inside it.
+- Exception: packages with very stable APIs (e.g. `aiohttp-socks`) can use `<1` at reviewer discretion.
+
+**Examples:**
+```toml
+# ✅ Correct — post-1.0
+"openai>=2.21.0,<3"
+"pydantic>=2.12.5,<3"
+
+# ✅ Correct — pre-1.0 (tight minor window)
+"asyncpg>=0.29,<0.32"
+"aiosqlite>=0.20,<0.23"
+"hindsight-client>=0.4.22,<0.5"
+
+# ❌ Rejected — no upper bound
+"some-package>=1.2.3"
+
+# ❌ Rejected — too tight (blocks legitimate patches)
+"some-package==1.2.3"
+
+# ❌ Rejected — too loose for pre-1.0 (allows 80 minor versions)
+"some-package>=0.20,<1"
+```
+
+**Reference PRs:** #2796 (litellm removal), #2810 (upper bounds pass), #9801 (SHA pinning + supply-chain-audit CI).
 
 ---
 

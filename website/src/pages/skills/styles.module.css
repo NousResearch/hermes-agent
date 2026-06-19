@@ -628,6 +628,9 @@
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid rgba(255, 215, 0, 0.06);
   border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .installHint code {
@@ -636,6 +639,64 @@
   color: rgba(255, 215, 0, 0.7);
   background: none;
   padding: 0;
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.installHint code::-webkit-scrollbar {
+  display: none;
+}
+
+.copyBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid rgba(255, 215, 0, 0.18);
+  border-radius: 4px;
+  background: rgba(255, 215, 0, 0.06);
+  color: rgba(255, 215, 0, 0.85);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.copyBtn:hover {
+  background: rgba(255, 215, 0, 0.14);
+  color: rgba(255, 215, 0, 1);
+}
+
+.copyBtnLabel {
+  line-height: 1;
+}
+
+.cardLinks {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.cardLinks .docsLink {
+  flex: 1;
+}
+
+.loadingSpinner {
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: 0 auto 1rem;
+  border: 3px solid rgba(255, 215, 0, 0.15);
+  border-top-color: rgba(255, 215, 0, 0.7);
+  border-radius: 50%;
+  animation: skillsSpin 0.8s linear infinite;
+}
+
+@keyframes skillsSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .overviewBlock {

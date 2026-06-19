@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
@@ -71,6 +72,9 @@ class TurnResult:
     error: Optional[str] = None  # Set if turn ended in a non-recoverable error
     turn_id: Optional[str] = None
     thread_id: Optional[str] = None
+    token_usage_last: Optional[dict[str, Any]] = None
+    token_usage_total: Optional[dict[str, Any]] = None
+    model_context_window: Optional[int] = None
     # Hint to the caller that the underlying codex subprocess is likely
     # wedged (turn-level timeout fired, post-tool watchdog tripped, or
     # token-refresh failure killed the child). The caller should retire
@@ -85,6 +89,39 @@ class TurnResult:
 # items when an interrupt or upstream error tears the turn down before the
 # normal completion path fires. Mirrors openclaw beta.8 fix.
 _TURN_ABORTED_MARKERS = ("<turn_aborted>", "<turn_aborted/>")
+
+
+def _coerce_turn_input_text(user_input: Any) -> str:
+    """Collapse Hermes/OpenAI rich content into app-server text input.
+
+    The current `turn/start` path sends text items only. TUI image attachment
+    can hand us OpenAI-style content parts, so keep the text/path hints and
+    replace opaque image payloads with a small marker instead of putting a
+    Python list into the `text` field.
+    """
+    if isinstance(user_input, str):
+        return user_input
+    if isinstance(user_input, list):
+        parts: list[str] = []
+        for item in user_input:
+            if isinstance(item, str):
+                if item.strip():
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                if item is not None:
+                    parts.append(str(item))
+                continue
+            item_type = item.get("type")
+            if item_type in {"text", "input_text"}:
+                text = item.get("text") or item.get("content") or ""
+                if text:
+                    parts.append(str(text))
+            elif item_type in {"image", "image_url", "input_image"}:
+                parts.append("[image attached]")
+        text = "\n\n".join(p for p in parts if p).strip()
+        return text or "What do you see in this image?"
+    return "" if user_input is None else str(user_input)
 
 
 # Substrings in codex stderr / JSON-RPC error messages that signal the
@@ -327,7 +364,7 @@ class CodexAppServerSession:
 
     def run_turn(
         self,
-        user_input: str,
+        user_input: Any,
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
@@ -365,6 +402,8 @@ class CodexAppServerSession:
         self._interrupt_event.clear()
         projector = CodexEventProjector()
 
+        user_input_text = _coerce_turn_input_text(user_input)
+
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
@@ -372,7 +411,7 @@ class CodexAppServerSession:
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input}],
+                    "input": [{"type": "text", "text": user_input_text}],
                 },
                 timeout=10,
             )
@@ -404,7 +443,7 @@ class CodexAppServerSession:
             return result
 
         result.turn_id = (ts.get("turn") or {}).get("id")
-        deadline = time.time() + turn_timeout
+        deadline = time.monotonic() + turn_timeout
         turn_complete = False
         # Post-tool watchdog state. last_tool_completion_at is set whenever
         # a tool-shaped item completes; if no further notification arrives
@@ -412,7 +451,7 @@ class CodexAppServerSession:
         # fast-fail and retire the session.
         last_tool_completion_at: Optional[float] = None
 
-        while time.time() < deadline and not turn_complete:
+        while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
@@ -440,7 +479,7 @@ class CodexAppServerSession:
             # up on this turn instead of waiting for the outer deadline.
             if (
                 last_tool_completion_at is not None
-                and (time.time() - last_tool_completion_at)
+                and (time.monotonic() - last_tool_completion_at)
                     > post_tool_quiet_timeout
             ):
                 self._issue_interrupt(result.turn_id)
@@ -465,13 +504,14 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    _apply_token_usage_notification(result, pending)
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:
                         result.projected_messages.extend(proj.messages)
                     if proj.is_tool_iteration:
                         result.tool_iterations += 1
-                        last_tool_completion_at = time.time()
+                        last_tool_completion_at = time.monotonic()
                     if proj.final_text is not None:
                         result.final_text = proj.final_text
                         if _has_turn_aborted_marker(proj.final_text):
@@ -500,6 +540,8 @@ class CodexAppServerSession:
                 except Exception:  # pragma: no cover - display callback
                     logger.debug("on_event callback raised", exc_info=True)
 
+            _apply_token_usage_notification(result, note)
+
             # Track in-progress fileChange items so the approval bridge
             # can surface a real change summary when codex requests
             # approval (the approval params themselves don't carry the
@@ -514,7 +556,7 @@ class CodexAppServerSession:
                 result.tool_iterations += 1
                 # Arm/refresh the post-tool quiet watchdog whenever a
                 # tool-shaped item completes.
-                last_tool_completion_at = time.time()
+                last_tool_completion_at = time.monotonic()
             else:
                 # Any non-tool projected activity (assistant message,
                 # status update, etc.) means codex is still producing
@@ -541,12 +583,12 @@ class CodexAppServerSession:
                 turn_status = (
                     (note.get("params") or {}).get("turn") or {}
                 ).get("status")
-                if turn_status and turn_status not in ("completed", "interrupted"):
+                if turn_status and turn_status not in {"completed", "interrupted"}:
                     err_obj = (
                         (note.get("params") or {}).get("turn") or {}
                     ).get("error")
                     if err_obj:
-                        err_msg = err_obj.get("message") or str(err_obj)
+                        err_msg = _format_responses_error(err_obj, str(turn_status))
                         # If the turn failed for an auth/refresh reason,
                         # rewrite the error into a re-auth hint AND mark
                         # the session for retirement.
@@ -766,6 +808,30 @@ class CodexAppServerSession:
         return cached
 
 
+def _apply_token_usage_notification(result: TurnResult, note: dict) -> None:
+    """Capture Codex app-server token usage updates for caller accounting.
+
+    Codex does not put token usage on turn/completed. It emits a separate
+    thread/tokenUsage/updated notification containing cumulative totals and
+    the latest turn breakdown.
+    """
+    if not isinstance(note, dict) or note.get("method") != "thread/tokenUsage/updated":
+        return
+    params = note.get("params") or {}
+    token_usage = params.get("tokenUsage") or {}
+    if not isinstance(token_usage, dict):
+        return
+    last = token_usage.get("last")
+    total = token_usage.get("total")
+    if isinstance(last, dict):
+        result.token_usage_last = dict(last)
+    if isinstance(total, dict):
+        result.token_usage_total = dict(total)
+    window = token_usage.get("modelContextWindow")
+    if isinstance(window, int) and window > 0:
+        result.model_context_window = window
+
+
 def _approval_choice_to_codex_decision(choice: str) -> str:
     """Map Hermes approval choices onto codex's CommandExecutionApprovalDecision
     / FileChangeApprovalDecision wire values.
@@ -775,9 +841,9 @@ def _approval_choice_to_codex_decision(choice: str) -> str:
     (verified against codex-rs/app-server-protocol/src/protocol/v2/item.rs
     on codex 0.130.0).
     """
-    if choice in ("once",):
+    if choice in {"once",}:
         return "accept"
-    if choice in ("session", "always"):
+    if choice in {"session", "always"}:
         return "acceptForSession"
     return "decline"
 

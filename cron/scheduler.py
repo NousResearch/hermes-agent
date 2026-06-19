@@ -1259,13 +1259,29 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+
+        # Build a clean environment for the script subprocess.  We add
+        # NODE_OPTIONS=--no-warnings and NODE_NO_READ_ONLY=1 so that Node.js
+        # scripts (common for no_agent cron watchdogs) don't emit "stdin is
+        # not a TTY" or deprecation warnings to stderr — those warnings
+        # produce a non-zero-looking failure even when the script succeeds
+        # (#48968).  Sanitize the env first via _sanitize_subprocess_env to
+        # strip Hermes-internal env vars.
+        script_env = _sanitize_subprocess_env(os.environ.copy())
+        script_env.setdefault("NODE_OPTIONS", "--no-warnings")
+        script_env.setdefault("NODE_NO_READ_ONLY", "1")
+
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            # Explicit DEVNULL so the script doesn't inherit the parent's
+            # stdin (which may not be a TTY in a cron/gateway context,
+            # triggering Node.js "stdin is not a TTY" warnings #48968).
+            stdin=subprocess.DEVNULL,
+            env=script_env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()

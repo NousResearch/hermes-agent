@@ -749,7 +749,16 @@ class ProcessRegistry:
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
+            # Use PIPE (not DEVNULL) so that:
+            # 1. Node.js and other runtimes don't emit "stdin is not a TTY"
+            #    warnings to stderr — those warnings end up in the output
+            #    buffer and look like process death (#48968).
+            # 2. write_stdin / submit_stdin / close_stdin actually work —
+            #    they check `proc.stdin` which is None under DEVNULL.
+            # The pipe stays open until explicitly closed (close_stdin) or
+            # the session is killed, so the process does not get a premature
+            # EOF that would cause it to exit early.
+            stdin=subprocess.PIPE,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             **_popen_kwargs,
         )

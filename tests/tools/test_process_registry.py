@@ -1330,6 +1330,7 @@ class TestTerminateHostPidPosix:
 
 
 # =========================================================================
+
 # PID-reuse guard — a recycled PID/PGID must never be signalled.
 #
 # Regression: once a background-session process exits and is reaped, the kernel
@@ -1584,3 +1585,156 @@ class TestSigkillEscalation:
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             parent.wait()
+
+# Issue #48968 — stdin=PIPE, not DEVNULL, for background processes
+# =========================================================================
+
+class TestStdinPipeNotDevnull:
+    """Regression tests for issue #48968.
+
+    Background processes spawned via ``spawn_local`` (non-PTY path) used
+    ``stdin=subprocess.DEVNULL``.  This caused two problems:
+
+    1. Node.js (and other runtimes) emit ``"stdin is not a TTY"`` warnings to
+       stderr, which is merged into stdout via ``stderr=STDOUT``.  Those
+       harmless warnings looked like process death / error output.
+    2. ``proc.stdin`` is ``None`` under DEVNULL, so ``write_stdin`` /
+       ``submit_stdin`` / ``close_stdin`` could never work — they guard on
+       ``if not session.process.stdin``.
+
+    The fix: use ``stdin=subprocess.PIPE`` for the non-PTY ``Popen`` path.
+    The pipe stays open until explicitly closed (``close_stdin``) or the
+    session is killed, so the process doesn't get a premature EOF.
+    """
+
+    def test_spawn_local_uses_pipe_not_devnull(self, registry, monkeypatch, tmp_path):
+        """``spawn_local`` non-PTY path must pass ``stdin=PIPE`` to Popen."""
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["stdin"] = kwargs.get("stdin")
+            proc = MagicMock()
+            proc.pid = 9999
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd=str(tmp_path))
+
+        assert captured["stdin"] == subprocess.PIPE, (
+            "spawn_local must use stdin=PIPE (not DEVNULL) so that "
+            "write_stdin/close_stdin work and Node.js doesn't emit "
+            "'stdin is not a TTY' warnings (#48968)"
+        )
+
+    def test_write_stdin_works_with_pipe_mode(self, registry, tmp_path):
+        """End-to-end: a non-PTY background process can receive stdin.
+
+        Before the fix, ``stdin=DEVNULL`` made ``proc.stdin`` None, so
+        ``write_stdin`` returned an error.  With ``stdin=PIPE`` it works.
+        """
+        # Spawn a process that reads stdin and echoes it back.
+        session = registry.spawn_local(
+            'python3 -c "import sys; print(sys.stdin.readline().strip())"',
+            cwd=str(tmp_path),
+            use_pty=False,
+        )
+
+        try:
+            # Give the process a moment to start.
+            time.sleep(0.5)
+
+            # write_stdin must succeed (not error with "stdin not available").
+            result = registry.submit_stdin(session.id, "hello-from-stdin")
+            assert result["status"] == "ok", (
+                f"write_stdin should work with PIPE; got {result!r}"
+            )
+
+            # Close stdin so the process can finish reading.
+            result = registry.close_stdin(session.id)
+            assert result["status"] == "ok", f"close_stdin failed: {result!r}"
+
+            # Wait for the process to exit.
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                poll = registry.poll(session.id)
+                if poll["status"] == "exited":
+                    assert poll["exit_code"] == 0, (
+                        f"Process should exit 0; got {poll['exit_code']}"
+                    )
+                    assert "hello-from-stdin" in poll["output_preview"], (
+                        f"Expected echoed stdin in output; got "
+                        f"{poll['output_preview']!r}"
+                    )
+                    return
+                time.sleep(0.2)
+
+            pytest.fail("process did not exit after stdin write + close")
+        finally:
+            registry.kill_process(session.id)
+
+    def test_stderr_warning_does_not_kill_process(self, registry, tmp_path):
+        """A child that writes to stderr must not be treated as dead.
+
+        Before the fix, ``stderr=STDOUT`` merged harmless warnings (like
+        Node.js ``"stdin is not a TTY"``) into the stdout buffer.  Combined
+        with ``stdin=DEVNULL`` (which actually *caused* the warning), the
+        output looked like an error even though the process was healthy.
+
+        This test spawns a process that writes a warning to stderr then
+        continues normally — the process must still be running and exit 0.
+        """
+        # Write a script file to avoid shell quoting issues with nested quotes.
+        script_file = tmp_path / "stderr_warn.py"
+        script_file.write_text(
+            "import sys, time\n"
+            "sys.stderr.write('stdin is not a TTY\\n')\n"
+            "sys.stderr.flush()\n"
+            "print('still alive')\n"
+            "time.sleep(0.3)\n"
+            "print('done')\n"
+        )
+        session = registry.spawn_local(
+            f"python3 {script_file}",
+            cwd=str(tmp_path),
+            use_pty=False,
+        )
+
+        try:
+            # The process should still be running after writing to stderr.
+            time.sleep(0.1)
+            poll = registry.poll(session.id)
+            # It may have already exited if it's fast, but it must NOT have
+            # been killed by the stderr output. Either running or exited-0.
+            assert poll["status"] in ("running", "exited"), (
+                f"Process should be running or exited; got {poll['status']}"
+            )
+
+            # Wait for it to finish cleanly.
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                poll = registry.poll(session.id)
+                if poll["status"] == "exited":
+                    assert poll["exit_code"] == 0, (
+                        f"Process should exit 0; got {poll['exit_code']}"
+                    )
+                    # The warning should be in the output (merged via
+                    # stderr=STDOUT), but it's just output — not a crash.
+                    assert "done" in poll["output_preview"], (
+                        f"Expected 'done' in output; got "
+                        f"{poll['output_preview']!r}"
+                    )
+                    return
+                time.sleep(0.2)
+
+            pytest.fail("process did not exit cleanly after stderr warning")
+        finally:
+            registry.kill_process(session.id)
+

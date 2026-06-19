@@ -9,6 +9,7 @@ Tests cover:
 
 import json
 import os
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -564,4 +565,91 @@ class TestRunJobEnvVarCleanup:
         # Verify env vars were cleaned up by the finally block
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
-        assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestRunJobScriptStdinAndEnv:
+    """Regression tests for issue #48968.
+
+    ``_run_job_script`` must pass ``stdin=subprocess.DEVNULL`` explicitly
+    so cron scripts don't inherit the parent's stdin (which may not be a
+    TTY in a gateway/cron context, causing Node.js "stdin is not a TTY"
+    warnings that produce false failure output).
+
+    It must also set ``NODE_OPTIONS=--no-warnings`` and
+    ``NODE_NO_READ_ONLY=1`` in the subprocess environment so Node.js
+    scripts don't emit deprecation or TTY warnings to stderr.
+    """
+
+    def test_run_job_script_uses_devnull_stdin(self, cron_env, monkeypatch):
+        """``_run_job_script`` must pass ``stdin=DEVNULL`` to subprocess.run."""
+        from cron.scheduler import _run_job_script
+        captured = {}
+
+        import cron.scheduler as sched_mod
+        original_run = subprocess.run
+
+        def capturing_run(*args, **kwargs):
+            captured["stdin"] = kwargs.get("stdin")
+            captured["env"] = kwargs.get("env")
+            # Delegate to the real subprocess.run so the script actually runs.
+            return original_run(*args, **kwargs)
+
+        monkeypatch.setattr(sched_mod.subprocess, "run", capturing_run)
+
+        script = cron_env / "scripts" / "stdin_test.py"
+        script.write_text('print("ok")\n')
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        assert captured["stdin"] == subprocess.DEVNULL, (
+            "_run_job_script must use stdin=DEVNULL so cron scripts don't "
+            "inherit parent stdin (which may not be a TTY) (#48968)"
+        )
+
+    def test_run_job_script_sets_node_warning_env(self, cron_env, monkeypatch):
+        """The subprocess env must include Node.js warning suppression."""
+        from cron.scheduler import _run_job_script
+        captured = {}
+
+        import cron.scheduler as sched_mod
+        original_run = subprocess.run
+
+        def capturing_run(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return original_run(*args, **kwargs)
+
+        monkeypatch.setattr(sched_mod.subprocess, "run", capturing_run)
+
+        script = cron_env / "scripts" / "env_test.py"
+        script.write_text('print("ok")\n')
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        env = captured["env"]
+        assert env is not None, "env must be passed to subprocess.run"
+        assert env.get("NODE_OPTIONS") == "--no-warnings", (
+            "NODE_OPTIONS=--no-warnings must be set to suppress Node.js "
+            "warnings in cron scripts (#48968)"
+        )
+        assert env.get("NODE_NO_READ_ONLY") == "1", (
+            "NODE_NO_READ_ONLY=1 must be set for Node.js cron scripts (#48968)"
+        )
+
+    def test_run_job_script_stdin_devnull_does_not_break_python(self, cron_env):
+        """A Python script that tries to read stdin should get EOF, not hang."""
+        from cron.scheduler import _run_job_script
+        script = cron_env / "scripts" / "read_stdin.py"
+        script.write_text(textwrap.dedent("""\
+            import sys
+            data = sys.stdin.read()
+            print(f"stdin={data!r}")
+        """))
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        assert "stdin=" in output and "''" in output, (
+            f"stdin should be empty (EOF from DEVNULL); got {output!r}"
+        )

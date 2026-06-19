@@ -109,6 +109,167 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 MAX_COMMANDS_PER_SCOPE = 30
 
 
+def _approval_command_traits(command: str) -> Dict[str, bool]:
+    """Best-effort, UX-only command traits for approval prompts.
+
+    This does not make the approval decision and must not be treated as a
+    security boundary.  The real enforcement stays in ``tools.approval`` and
+    Tirith.  These traits only help the Telegram prompt explain *why* a broad
+    detector fired and what the user should check before pressing a button.
+    """
+    text = command or ""
+    lower = text.lower()
+    compact = " ".join(text.split())
+
+    writes = bool(re.search(
+        r"(?<![0-9])>>?\s*(?!&[0-9])"
+        r"|\b(rm|mv|cp|install|tee|truncate|touch|mkdir|chmod|chown)\b"
+        r"|\b(sed|perl)\s+-[^\s]*i\b"
+        r"|\bgit\s+(reset|clean|push|branch\s+-D)\b"
+        r"|\bsystemctl\s+(stop|restart|disable|mask)\b"
+        r"|\b(pk?kill|killall|reboot|shutdown|mkfs|dd)\b",
+        lower,
+    ))
+    network = bool(re.search(r"https?://|\b(curl|wget|httpie|xurl)\b", lower))
+    inline_code = bool(re.search(r"\b(python[23]?|perl|ruby|node)\s+-[ec]\b", lower))
+    shell_chain = any(op in text for op in ("|", ";", "&&", "||", "$(", "`"))
+    github_repo = bool(re.search(
+        r"github\.com[:/][\w.-]+/[\w.-]+"
+        r"|\bgh\s+repo\s+(view|clone)\b"
+        r"|\bgh\s+api\s+repos/"
+        r"|\bgit\s+clone\b",
+        lower,
+    ))
+
+    # Common Hermes/X extraction pattern: download JSON, feed it to a short
+    # Python -c snippet that calls json.load(sys.stdin).  Tirith reasonably
+    # treats "pipe into an interpreter" as high-risk in the general case, but
+    # this particular shape is data parsing, not executing the downloaded JSON.
+    json_parse_pipe = bool(
+        re.search(r"\|\s*(?:[/\w.-]*/)?python[23]?\s+-c\b", compact, re.IGNORECASE)
+        and re.search(r"json\.load\(\s*sys\.stdin\s*\)", compact, re.IGNORECASE)
+    )
+
+    remote_to_shell = bool(re.search(
+        r"\b(curl|wget)\b[^\n|;]*(?:https?://)?[^\n|;]*\|\s*(?:[/\w.-]*/)?(?:ba)?sh\b",
+        lower,
+    ))
+
+    return {
+        "writes": writes,
+        "network": network,
+        "inline_code": inline_code,
+        "shell_chain": shell_chain,
+        "json_parse_pipe": json_parse_pipe,
+        "remote_to_shell": remote_to_shell,
+        "github_repo": github_repo,
+    }
+
+
+def _approval_decision_text(command: str, description: str) -> Dict[str, str]:
+    """Return decision-oriented copy for a Telegram approval prompt."""
+    desc_lower = (description or "").lower()
+    traits = _approval_command_traits(command)
+
+    why = (
+        "Hermes needs to run one command-line step to continue your request. "
+        "The safety gate paused because this step can use tools, not just chat."
+    )
+    risk_label = "Moderate by default — depends on the kind of step"
+    actual_risk = (
+        "You are not being asked to audit code. The useful question is whether the action fits the request: "
+        "read/check, write/edit, restart, delete, install, or send/post."
+    )
+    check = (
+        "If this is a read/check step for the task you requested, Allow Once is normally fine. "
+        "If it edits, deletes, restarts, installs, sends messages, or touches secrets and you did not ask for that, Deny."
+    )
+    recommendation = "For normal research/diagnostics you requested: Allow Once. Avoid Always unless you deliberately want a broad permanent rule."
+
+    if traits["json_parse_pipe"] and "pipe to interpreter" in desc_lower:
+        why = (
+            "Routine research step: Hermes is reading web/API data and using a small local parser to turn it into text."
+        )
+        risk_label = "Low — read-only web research step"
+        actual_risk = (
+            "A web page can contain malicious instructions, but this step treats the page as data, not as a program. "
+            "It should not edit files, install anything, send messages, or expose secrets."
+        )
+        check = "Only check that the link/source is the one you asked me to inspect."
+        recommendation = "Use Allow Once. Denying will probably block this research step. Do not use Always."
+    elif traits["github_repo"]:
+        why = "GitHub repo review step: Hermes is fetching or cloning the repo so it can inspect its files."
+        risk_label = "Low-moderate — downloads code as files, not as a running program"
+        actual_risk = (
+            "A README or source file can contain bad instructions, but reading/cloning a repo should not execute it. "
+            "Risk rises only if we install dependencies, run scripts/tests, build Docker images, or publish changes."
+        )
+        check = "If you asked me to look at this GitHub repo and the repo name/path matches, Allow Once."
+        recommendation = "Use Allow Once for repo viewing/cloning. Deny if the step unexpectedly runs/builds/installs the repo or pushes/sends anything."
+    elif traits["remote_to_shell"] or any(token in desc_lower for token in ("remote content to shell", "remote script")):
+        why = "High-risk step: this would download code from the internet and run it on your system."
+        risk_label = "High — internet code would get system access"
+        actual_risk = "It could read secrets, change files, install software, or alter running services."
+        check = "Approve only if we explicitly planned to run this exact trusted installer/source and have a rollback path."
+        recommendation = "Usually Deny. Use Allow Once only when we intentionally chose this installer. Never Always."
+    elif any(token in desc_lower for token in ("recursive delete", "delete in root path", "find -delete", "xargs with rm")):
+        why = "High-risk step: this could delete files or folders, possibly many at once."
+        risk_label = "High — possible data loss"
+        actual_risk = "A wrong path or glob could permanently remove important files."
+        check = "Check the exact path, that a backup exists if needed, and that you explicitly asked me to delete it."
+        recommendation = "Deny unless the delete target is exactly what you requested. If yes, Allow Once only."
+    elif any(token in desc_lower for token in ("system config", "/etc", "sudoers")):
+        why = "High-risk step: this could edit operating-system configuration."
+        risk_label = "High — can affect system access or OS behavior"
+        actual_risk = "Could break login, networking, package management, services, or security settings."
+        check = "Approve only if we planned the change, made/confirmed a backup, and have a rollback path."
+        recommendation = "Allow Once only after those checks. Deny if this was not explicitly planned. Never Always."
+    elif any(token in desc_lower for token in ("project env/config", ".env", "config.yaml")):
+        why = "Config-edit step: this could change how an app or Hermes behaves."
+        risk_label = "Medium-high — can break app behavior or secrets/config"
+        actual_risk = "Could remove credentials, alter model/tool behavior, or break a project/service."
+        check = "Confirm a backup exists and the file/path is exactly the one we meant to change."
+        recommendation = "Allow Once if the edit was requested and backed up. Deny if unsure. Avoid Always."
+    elif any(token in desc_lower for token in ("stop/restart", "restart", "gateway", "system service", "hermes update")):
+        why = "Service-control step: this may stop, restart, or update something running."
+        risk_label = "Medium-high — can interrupt running work/services"
+        actual_risk = "May cause temporary downtime, kill active agent work, or change service behavior."
+        check = "Confirm you are okay with the interruption right now."
+        recommendation = "Allow Once if the interruption is acceptable now. Deny if you want to postpone. Avoid Always."
+    elif any(token in desc_lower for token in ("script execution", "heredoc", "-e/-c flag")) or traits["inline_code"]:
+        why = "Temporary-script step: Hermes is about to run a small script to parse, check, or automate part of your request."
+        risk_label = "Moderate by default — scripts can do more than a chat reply"
+        actual_risk = (
+            "For research/parser scripts, risk is usually low. It becomes serious if the script edits/deletes files, "
+            "installs packages, restarts services, sends messages, or touches secrets."
+        )
+        check = "You do not need to read it line by line. Ask: is this a parser/checker for what I asked? If yes, Allow Once."
+        recommendation = "Allow Once for one-off parsing/checks. Use Session only during active coding/admin work. Avoid Always."
+    elif "pipe to interpreter" in desc_lower:
+        why = "Parser-or-executor step: data is being passed into a program. Sometimes that is harmless parsing; sometimes it runs code."
+        risk_label = "Medium-high — depends on whether data is treated as data or code"
+        actual_risk = "Parsing expected data is usually low risk; running downloaded text as code is high risk."
+        check = "If this is for reading/parsing expected data, Allow Once. If it is running downloaded code, Deny."
+        recommendation = "Allow Once only for expected parsing. Deny for internet-code execution. Never Always."
+    elif "shell command via" in desc_lower or traits["shell_chain"]:
+        why = "Multi-action command: this may combine several shell/system steps in one line."
+        risk_label = "Moderate — could be simple, or could bundle changes"
+        actual_risk = "Could read web pages, run scripts, edit files, or start/stop processes depending on the step."
+        check = "Approve if the action type fits your request. Deny if it unexpectedly edits/deletes/restarts/installs/sends."
+        recommendation = "Allow Once if the command matches the task. Use Session only if repeated prompts are blocking active work. Avoid Always."
+
+    if traits["network"] and not traits["writes"] and "read-only" not in actual_risk.lower():
+        actual_risk += " It appears to read from the internet; that is normal for research, but still use Allow Once rather than Always."
+
+    return {
+        "why": why,
+        "risk_label": risk_label,
+        "actual_risk": actual_risk,
+        "check": check,
+        "recommendation": recommendation,
+    }
+
+
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -3221,12 +3382,24 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            decision = _approval_decision_text(command, description)
+
+            cmd_preview = command[:1600] + "..." if len(command) > 1600 else command
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
+                "⚠️ <b>Approve this step?</b>\n\n"
+                f"<b>Plain English:</b> {_html.escape(decision['why'])}\n\n"
+                f"<b>Risk:</b> {_html.escape(decision['risk_label'])}\n"
+                f"<b>What could go wrong:</b> {_html.escape(decision['actual_risk'])}\n\n"
+                "<b>What approving means:</b> Hermes can run this one step and continue your request. "
+                "Denying will probably stop or limit this request.\n\n"
+                f"<b>Your call:</b> {_html.escape(decision['check'])}\n"
+                f"<b>Suggested:</b> {_html.escape(decision['recommendation'])}\n\n"
+                "<b>Quick rule:</b> Allow Once for read/check/parse/clone. "
+                "Deny if it unexpectedly deletes, installs, runs downloaded/repo code, restarts services, touches secrets, pushes, posts, or sends.\n\n"
+                "<b>Buttons:</b> Allow Once = safest default for this task. "
+                "Session = reduce repeated prompts during active work. "
+                "Always Category = broad permanent rule; avoid unless deliberate. Deny = stop this step.\n\n"
+                f"<b>Optional technical details:</b>\n<pre>{_html.escape(cmd_preview)}</pre>"            )
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)

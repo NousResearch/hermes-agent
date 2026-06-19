@@ -356,6 +356,37 @@ def get_curated_nous_models() -> list[str] | None:
     return out or None
 
 
+def seed_cache_from_checkout(project_root: "Path | str") -> bool:
+    """Overwrite the disk cache with the catalog shipped in a local checkout.
+
+    ``hermes update`` pulls the latest repo, so the freshly-pulled
+    ``website/static/api/model-catalog.json`` IS the newest catalog — no
+    network round-trip needed. Copying it straight over the disk cache keeps
+    the model picker current even when the remote manifest fetch is bot-gated
+    or the Portal hiccups.
+
+    Reads the shipped manifest, validates it against the schema, and writes it
+    to ``~/.hermes/cache/model_catalog.json`` via the same atomic writer the
+    network path uses. Returns ``True`` on success, ``False`` if the file is
+    missing, malformed, or fails validation (caller should treat a ``False``
+    as non-fatal — the network fetch path still applies on the next picker
+    open).
+    """
+    src = Path(project_root) / "website" / "static" / "api" / "model-catalog.json"
+    try:
+        with open(src, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("model catalog seed from checkout skipped (%s): %s", src, exc)
+        return False
+    if not _validate_manifest(data):
+        logger.debug("model catalog seed from checkout skipped: invalid manifest at %s", src)
+        return False
+    _write_disk_cache(data)
+    reset_cache()  # drop the in-process copy so the next read picks up the seed
+    return True
+
+
 def reset_cache() -> None:
     """Clear the in-process cache. Used by tests and ``hermes model --refresh``."""
     global _catalog_cache, _catalog_cache_source_mtime

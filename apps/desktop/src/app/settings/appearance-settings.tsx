@@ -1,19 +1,24 @@
 import { useStore } from '@nanostores/react'
+import { useState } from 'react'
 
-import { type Locale, LOCALE_META, useI18n } from '@/i18n'
+import { LanguageSwitcher } from '@/components/language-switcher'
+import { SegmentedControl } from '@/components/ui/segmented-control'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { $translucency, setTranslucency } from '@/store/translucency'
 import { useTheme } from '@/themes/context'
-import { BUILTIN_THEMES } from '@/themes/presets'
+import { installVscodeThemeFromMarketplace } from '@/themes/install'
+import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import { MODE_OPTIONS } from './constants'
-import { Pill, SectionHeading, SettingsContent } from './primitives'
+import { ListRow, SectionHeading, SettingsContent } from './primitives'
 
 function ThemePreview({ name }: { name: string }) {
-  const t = BUILTIN_THEMES[name]
+  const t = resolveTheme(name)
 
   if (!t) {
     return null
@@ -52,221 +57,249 @@ function ThemePreview({ name }: { name: string }) {
   )
 }
 
-export function AppearanceSettings() {
-  const { t, isSavingLocale, locale, setLocale } = useI18n()
-  const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
-  const toolViewMode = useStore($toolViewMode)
-  const activeTheme = availableThemes.find(theme => theme.name === themeName)
+function VscodeThemeInstaller() {
+  const { t } = useI18n()
+  const { setTheme } = useTheme()
   const a = t.settings.appearance
-  const locales = Object.keys(LOCALE_META) as Locale[]
+  const [id, setId] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
 
-  const selectLocale = async (code: Locale) => {
-    if (code === locale || isSavingLocale) {
+  const install = async () => {
+    const trimmed = id.trim()
+
+    if (!trimmed || busy) {
       return
     }
 
-    triggerHaptic('selection')
+    setBusy(true)
+    setStatus(null)
 
     try {
-      await setLocale(code)
-      triggerHaptic('success')
+      const theme = await installVscodeThemeFromMarketplace(trimmed)
+
+      triggerHaptic('crisp')
+      setTheme(theme.name)
+      setStatus({ kind: 'success', text: a.installed(theme.label) })
+      setId('')
     } catch (error) {
-      notifyError(error, t.language.saveError)
+      setStatus({ kind: 'error', text: error instanceof Error ? error.message : a.installError })
+    } finally {
+      setBusy(false)
     }
   }
 
   return (
+    <div className="mt-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="min-w-0 flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 font-mono text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
+          disabled={busy}
+          onChange={event => {
+            setId(event.target.value)
+            setStatus(null)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              void install()
+            }
+          }}
+          placeholder={a.installPlaceholder}
+          spellCheck={false}
+          value={id}
+        />
+        <button
+          className="inline-flex items-center gap-1.5 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] font-medium transition hover:bg-(--chrome-action-hover) disabled:opacity-50"
+          disabled={busy || !id.trim()}
+          onClick={() => void install()}
+          type="button"
+        >
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+          {busy ? a.installing : a.installButton}
+        </button>
+      </div>
+      {status && (
+        <p
+          className={cn(
+            'mt-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)',
+            status.kind === 'error' ? 'text-(--ui-red)' : 'text-(--ui-text-tertiary)'
+          )}
+        >
+          {status.text}
+        </p>
+      )}
+    </div>
+  )
+}
+
+export function AppearanceSettings() {
+  const { t, isSavingLocale } = useI18n()
+  const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
+  const toolViewMode = useStore($toolViewMode)
+  const translucency = useStore($translucency)
+  const profiles = useStore($profiles)
+  const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const a = t.settings.appearance
+
+  // Themes save per profile. Surface that only when the user actually has more
+  // than one profile (single-profile installs never see the distinction).
+  const showProfileNote = profiles.length > 1
+
+  const activeProfileName =
+    profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
+
+  const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
+
+  const toolOptions = [
+    { id: 'product', label: a.product },
+    { id: 'technical', label: a.technical }
+  ] as const
+
+  return (
     <SettingsContent>
-      <div className="space-y-5">
-        <div>
-          <SectionHeading icon={Palette} title={a.title} />
-          <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {a.intro}
-          </p>
-        </div>
+      <div>
+        <SectionHeading icon={Palette} title={a.title} />
+        <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {a.intro}
+        </p>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{t.language.label}</div>
-              <div className="mt-1 text-xs text-muted-foreground">{t.language.description}</div>
-              {isSavingLocale && <div className="mt-1 text-xs text-muted-foreground">{t.language.saving}</div>}
-            </div>
-            <Pill>{LOCALE_META[locale].name}</Pill>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {locales.map(code => {
-              const active = locale === code
+        <div className="mt-2 divide-y divide-(--ui-stroke-tertiary)">
+          <ListRow
+            action={<LanguageSwitcher />}
+            description={isSavingLocale ? t.language.saving : t.language.description}
+            title={t.language.label}
+          />
 
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  disabled={isSavingLocale}
-                  key={code}
-                  onClick={() => void selectLocale(code)}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">
-                      {LOCALE_META[code].name}
-                    </div>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] uppercase tracking-wide text-(--ui-text-tertiary)">
-                    {code}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </section>
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('crisp')
+                  setMode(id)
+                }}
+                options={modeOptions}
+                value={mode}
+              />
+            }
+            description={a.colorModeDesc}
+            title={a.colorMode}
+          />
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{a.colorMode}</div>
-              <div className="mt-1 text-xs text-muted-foreground">{a.colorModeDesc}</div>
-            </div>
-            <Pill>{t.settings.modeOptions[mode].label}</Pill>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {MODE_OPTIONS.map(({ id, icon: Icon }) => {
-              const active = mode === id
-              const copy = t.settings.modeOptions[id]
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  key={id}
-                  onClick={() => {
-                    triggerHaptic('crisp')
-                    setMode(id)
-                  }}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-foreground transition group-hover:bg-background">
-                      <Icon className="size-4" />
-                    </span>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">{copy.label}</div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {copy.description}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </section>
-
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{a.toolViewTitle}</div>
-              <div className="mt-1 text-xs text-muted-foreground">{a.toolViewDesc}</div>
-            </div>
-            <Pill>{toolViewMode === 'technical' ? a.technical : a.product}</Pill>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {(
-              [
-                { id: 'product', label: a.product, description: a.productDesc },
-                { id: 'technical', label: a.technical, description: a.technicalDesc }
-              ] as const
-            ).map(option => {
-              const active = toolViewMode === option.id
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  key={option.id}
-                  onClick={() => {
+          <ListRow
+            action={
+              <div className="flex items-center gap-3">
+                <input
+                  aria-label={a.translucencyTitle}
+                  className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
+                  max={100}
+                  min={0}
+                  onChange={event => {
                     triggerHaptic('selection')
-                    setToolViewMode(option.id)
+                    setTranslucency(Number(event.target.value))
                   }}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">{option.label}</div>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {option.description}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </section>
+                  step={5}
+                  style={{ accentColor: 'var(--dt-primary)' }}
+                  type="range"
+                  value={translucency}
+                />
+                <span className="w-9 text-right text-[length:var(--conversation-caption-font-size)] tabular-nums text-(--ui-text-tertiary)">
+                  {translucency}%
+                </span>
+              </div>
+            }
+            description={a.translucencyDesc}
+            title={a.translucencyTitle}
+          />
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">{a.themeTitle}</div>
-              <div className="mt-1 text-xs text-muted-foreground">{a.themeDesc}</div>
-            </div>
-            {activeTheme && <Pill>{activeTheme.label}</Pill>}
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {availableThemes.map(theme => {
-              const active = themeName === theme.name
+          <ListRow
+            below={
+              <>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {availableThemes.map(theme => {
+                    const active = themeName === theme.name
+                    const removable = isUserTheme(theme.name)
 
-              return (
-                <button
-                  className={cn(
-                    'rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  key={theme.name}
-                  onClick={() => {
-                    triggerHaptic('crisp')
-                    setTheme(theme.name)
-                  }}
-                  type="button"
-                >
-                  <ThemePreview name={theme.name} />
-                  <div className="mt-3 flex items-start justify-between gap-3 px-1">
-                    <div className="min-w-0">
-                      <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
-                        {theme.label}
+                    return (
+                      <div className="group relative" key={theme.name}>
+                        <button
+                          className={cn(
+                            'w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2 text-left transition hover:bg-(--chrome-action-hover)',
+                            active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
+                          )}
+                          onClick={() => {
+                            triggerHaptic('crisp')
+                            setTheme(theme.name)
+                          }}
+                          type="button"
+                        >
+                          <ThemePreview name={theme.name} />
+                          <div className="mt-3 flex items-start justify-between gap-3 px-1">
+                            <div className="min-w-0">
+                              <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
+                                {theme.label}
+                              </div>
+                              <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                                {theme.description}
+                              </div>
+                            </div>
+                            {active && (
+                              <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
+                                <Check className="size-3.5" />
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                        {removable && (
+                          <button
+                            aria-label={a.removeTheme}
+                            className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) opacity-0 backdrop-blur-sm transition hover:text-(--ui-red) focus-visible:opacity-100 group-hover:opacity-100"
+                            onClick={() => {
+                              triggerHaptic('crisp')
+                              removeUserTheme(theme.name)
+
+                              // Re-normalize off the now-missing skin → default.
+                              if (active) {
+                                setTheme(theme.name)
+                              }
+                            }}
+                            title={a.removeTheme}
+                            type="button"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        )}
                       </div>
-                      <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                        {theme.description}
-                      </div>
-                    </div>
-                    {active && (
-                      <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        </section>
+                    )
+                  })}
+                </div>
+                <VscodeThemeInstaller />
+                {showProfileNote && (
+                  <p className="mt-3 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                    {a.themeProfileNote(activeProfileName)}
+                  </p>
+                )}
+              </>
+            }
+            description={a.themeDesc}
+            title={a.themeTitle}
+            wide
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setToolViewMode(id)
+                }}
+                options={toolOptions}
+                value={toolViewMode}
+              />
+            }
+            description={a.toolViewDesc}
+            title={a.toolViewTitle}
+          />
+        </div>
       </div>
     </SettingsContent>
   )

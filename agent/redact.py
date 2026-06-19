@@ -105,18 +105,14 @@ _PREFIX_PATTERNS = [
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"pat-na1-[A-Za-z0-9-]{10,}",       # HubSpot private app token
+    r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
 ]
 
-# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
-# Include SERVICE_KEY because several providers (e.g. HubSpot) name API tokens
-# that way; without it, `env | grep HUBSPOT` leaks the full value.
-_SECRET_ENV_NAMES = r"(?:API_?KEY|SERVICE_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+# ENV assignment patterns: KEY=value where KEY contains a secret-like name
+_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
-_SECRET_ENV_NAME_RE = re.compile(rf"(?:^|_){_SECRET_ENV_NAMES}(?:_|$)")
-_ENV_VALUE_FRAGMENT_MIN_CHARS = 12
-_ENV_VALUE_FRAGMENT_MAX_CHARS = 64
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
@@ -329,65 +325,6 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def _get_sensitive_env_values() -> list[str]:
-    """Return non-empty values from secret-like environment variables."""
-    values: list[str] = []
-    for name, value in os.environ.items():
-        if not value or len(value) < _ENV_VALUE_FRAGMENT_MIN_CHARS:
-            continue
-        if not _SECRET_ENV_NAME_RE.search(name):
-            continue
-        values.append(value)
-    return sorted(set(values), key=len, reverse=True)
-
-
-def _redact_sensitive_env_values(text: str) -> str:
-    """Redact exact values from sensitive environment variables.
-
-    This catches the terminal-output shape from issue #43025: commands like
-    ``echo $HUBSPOT_SERVICE_KEY`` emit only the value, so the usual KEY=value
-    redactor has no variable name to match.
-    """
-    if not text:
-        return text
-
-    for value in _get_sensitive_env_values():
-        if value in text:
-            text = text.replace(value, _mask_token(value))
-    return text
-
-
-def _redact_sensitive_env_value_fragments(text: str) -> str:
-    """Redact long prefix/suffix fragments of sensitive env values.
-
-    Watch notifications are emitted per freshly-read output chunk. If a chunk
-    cuts through a bare secret value, exact-value redaction cannot see the full
-    value yet. Redact long edge fragments too so the notification surface errs
-    closed instead of leaking a usable token prefix.
-    """
-    if not text:
-        return text
-
-    for value in _get_sensitive_env_values():
-        max_len = min(len(value) - 1, _ENV_VALUE_FRAGMENT_MAX_CHARS)
-        if max_len < _ENV_VALUE_FRAGMENT_MIN_CHARS:
-            continue
-        prefix_probe = value[:_ENV_VALUE_FRAGMENT_MIN_CHARS]
-        suffix_probe = value[-_ENV_VALUE_FRAGMENT_MIN_CHARS:]
-        if prefix_probe not in text and suffix_probe not in text:
-            continue
-
-        masked = _mask_token(value)
-        for length in range(max_len, _ENV_VALUE_FRAGMENT_MIN_CHARS - 1, -1):
-            prefix = value[:length]
-            suffix = value[-length:]
-            if prefix in text:
-                text = text.replace(prefix, masked)
-            if suffix in text:
-                text = text.replace(suffix, masked)
-    return text
-
-
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -418,9 +355,6 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
     if not (force or _REDACT_ENABLED):
         return text
-
-    text = _redact_sensitive_env_values(text)
-    text = _redact_sensitive_env_value_fragments(text)
 
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):

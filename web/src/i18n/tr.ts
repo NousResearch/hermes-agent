@@ -158,6 +158,7 @@ export const tr: Translations = {
     selectedSessionsDeleted: "{count} oturum silindi",
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
+    newChat: "Yeni sohbet",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
     roles: {
@@ -286,8 +287,8 @@ export const tr: Translations = {
     nameRequired: "Ad gereklidir",
     nameRule:
       "Yalnızca küçük harfler, rakamlar, _ ve - kullanılabilir; harf veya rakamla başlamalı; en fazla 64 karakter.",
-    invalidName: "Geçersiz profil adı",
-    cloneFromDefault: "Varsayılan profilden yapılandırmayı klonla",
+    invalidName: "Geçersiz profil adı",    cloneFrom: "Profilden yapılandırmayı klonla",
+    cloneFromNone: "Hiçbiri (boş)",
     allProfiles: "Profiller",
     noProfiles: "Profil bulunamadı.",
     defaultBadge: "varsayılan",

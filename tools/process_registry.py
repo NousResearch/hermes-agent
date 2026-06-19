@@ -58,7 +58,6 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
-REDACTION_CONTEXT_CHARS = 8192  # Extra raw context for secrets split near tail boundaries
 
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
@@ -87,38 +86,6 @@ def format_uptime_short(seconds: int) -> str:
     return f"{hours}h {mins}m"
 
 
-def _redact_process_output(text: str) -> str:
-    """Strip terminal escapes and redact secrets before exposing process output."""
-    if not text:
-        return ""
-    from agent.redact import redact_sensitive_text
-    from tools.ansi_strip import strip_ansi
-
-    return redact_sensitive_text(strip_ansi(text))
-
-
-def _tail_redacted_process_output(text: str, chars: int) -> str:
-    """Redact a full process buffer before taking a tail slice."""
-    redacted = _redact_process_output(text)
-    return redacted[-chars:] if redacted else ""
-
-
-def _store_process_output(session: "ProcessSession", text: str, *, append: bool) -> None:
-    """Store raw process output in the rolling buffer.
-
-    User-visible process output is redacted before tailing/pagination. The
-    internal raw buffer keeps a little extra context so secrets split across
-    reader chunks or near display-tail boundaries can still be matched intact.
-    """
-    if append:
-        session.output_buffer += text
-    else:
-        session.output_buffer = text
-    max_buffer_chars = session.max_output_chars + REDACTION_CONTEXT_CHARS
-    if len(session.output_buffer) > max_buffer_chars:
-        session.output_buffer = session.output_buffer[-max_buffer_chars:]
-
-
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -133,6 +100,8 @@ class ProcessSession:
     started_at: float = 0.0                     # time.time() of spawn
     exited: bool = False                        # Whether the process has finished
     exit_code: Optional[int] = None             # Exit code (None if still running)
+    completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
@@ -162,6 +131,7 @@ class ProcessSession:
     _watch_cooldown_until: float = field(default=0.0, repr=False)
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
+    _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -324,9 +294,8 @@ class ProcessRegistry:
                 })
             return
 
-        # Trim matched output to a reasonable size. Redact before truncating so
-        # watch notifications cannot split a secret across the cutoff.
-        output = _redact_process_output("\n".join(matched_lines[:20]))
+        # Trim matched output to a reasonable size
+        output = "\n".join(matched_lines[:20])
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
 
@@ -753,10 +722,14 @@ class ProcessRegistry:
                 session.exit_code = int(result.get("returncode", -1))
                 if session.exit_code == 0:
                     session.exit_code = -1
-                session.output_buffer = _redact_process_output(result.get("output", "").strip())
+                session.completion_reason = "failed_start"
+                session.termination_source = "failed_start"
+                session.output_buffer = result.get("output", "").strip()
         except Exception as e:
             session.exited = True
             session.exit_code = -1
+            session.completion_reason = "failed_start"
+            session.termination_source = "failed_start"
             session.output_buffer = f"Failed to start: {e}"
 
         if not session.exited:
@@ -794,7 +767,9 @@ class ProcessRegistry:
                     chunk = self._clean_shell_noise(chunk)
                     first_chunk = False
                 with session._lock:
-                    _store_process_output(session, chunk, append=True)
+                    session.output_buffer += chunk
+                    if len(session.output_buffer) > session.max_output_chars:
+                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
                 self._check_watch_patterns(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
@@ -805,7 +780,9 @@ class ProcessRegistry:
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
             session.exited = True
-            session.exit_code = session.process.returncode
+            if session.completion_reason != "killed":
+                session.exit_code = session.process.returncode
+                session.completion_reason = "exited"
             self._move_to_finished(session)
 
     def _env_poller_loop(
@@ -827,7 +804,9 @@ class ProcessRegistry:
                     delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
                     prev_output_len = len(new_output)
                     with session._lock:
-                        _store_process_output(session, new_output, append=False)
+                        session.output_buffer = new_output
+                        if len(session.output_buffer) > session.max_output_chars:
+                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     if delta:
                         self._check_watch_patterns(session, delta)
 
@@ -849,6 +828,8 @@ class ProcessRegistry:
                     except (ValueError, IndexError):
                         session.exit_code = -1
                     session.exited = True
+                    if session.completion_reason != "killed":
+                        session.completion_reason = "exited"
                     self._move_to_finished(session)
                     return
 
@@ -856,6 +837,8 @@ class ProcessRegistry:
                 # Environment might be gone (sandbox reaped, etc.)
                 session.exited = True
                 session.exit_code = -1
+                session.completion_reason = "lost"
+                session.termination_source = "backend_lost"
                 self._move_to_finished(session)
                 return
 
@@ -870,7 +853,9 @@ class ProcessRegistry:
                         # ptyprocess returns bytes
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
                         with session._lock:
-                            _store_process_output(session, text, append=True)
+                            session.output_buffer += text
+                            if len(session.output_buffer) > session.max_output_chars:
+                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
                         self._check_watch_patterns(session, text)
                 except EOFError:
                     break
@@ -885,7 +870,9 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("PTY wait timed out or failed: %s", e)
         session.exited = True
-        session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+        if session.completion_reason != "killed":
+            session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+            session.completion_reason = "exited"
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -898,19 +885,23 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
+        session._completion_event.set()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
         if was_running and session.notify_on_complete:
-            output_tail = _tail_redacted_process_output(session.output_buffer, 2000)
+            from tools.ansi_strip import strip_ansi
+            output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
                 "output": output_tail,
             })
 
@@ -1006,9 +997,13 @@ class ProcessRegistry:
 
         with session._lock:
             if drained:
-                _store_process_output(session, drained, append=True)
+                session.output_buffer += drained
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
-            session.exit_code = rc
+            if session.completion_reason != "killed":
+                session.exit_code = rc
+                session.completion_reason = "exited"
         logger.info(
             "Reconciled session %s: direct child exited with code %s but reader "
             "was still blocked (orphaned pipe). Flipped to exited.",
@@ -1018,6 +1013,8 @@ class ProcessRegistry:
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
+        from tools.ansi_strip import strip_ansi
+
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
@@ -1027,7 +1024,7 @@ class ProcessRegistry:
         self._reconcile_local_exit(session)
 
         with session._lock:
-            output_preview = _tail_redacted_process_output(session.output_buffer, 1000)
+            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
 
         result = {
             "session_id": session.id,
@@ -1039,6 +1036,8 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
+            result["completion_reason"] = session.completion_reason
+            result["termination_source"] = session.termination_source
             self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
@@ -1047,12 +1046,14 @@ class ProcessRegistry:
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
+        from tools.ansi_strip import strip_ansi
+
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         with session._lock:
-            full_output = _redact_process_output(session.output_buffer)
+            full_output = strip_ansi(session.output_buffer)
 
         lines = full_output.splitlines()
         total_lines = len(lines)
@@ -1086,6 +1087,7 @@ class ProcessRegistry:
             dict with status ("exited", "timeout", "interrupted", "not_found")
             and output snapshot.
         """
+        from tools.ansi_strip import strip_ansi
         from tools.interrupt import is_interrupted as _is_interrupted
 
         try:
@@ -1113,6 +1115,8 @@ class ProcessRegistry:
 
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
+            if session is None:
+                return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
             # child has already exited (issue #17327).
@@ -1122,7 +1126,9 @@ class ProcessRegistry:
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
-                    "output": _tail_redacted_process_output(session.output_buffer, 2000),
+                    "completion_reason": session.completion_reason,
+                    "termination_source": session.termination_source,
+                    "output": strip_ansi(session.output_buffer[-2000:]),
                 }
                 if timeout_note:
                     result["timeout_note"] = timeout_note
@@ -1131,18 +1137,21 @@ class ProcessRegistry:
             if _is_interrupted():
                 result = {
                     "status": "interrupted",
-                    "output": _tail_redacted_process_output(session.output_buffer, 1000),
+                    "output": strip_ansi(session.output_buffer[-1000:]),
                     "note": "User sent a new message -- wait interrupted",
                 }
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
 
-            time.sleep(1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            session._completion_event.wait(timeout=min(1.0, remaining))
 
         result = {
             "status": "timeout",
-            "output": _tail_redacted_process_output(session.output_buffer, 1000),
+            "output": strip_ansi(session.output_buffer[-1000:]),
         }
         if timeout_note:
             result["timeout_note"] = timeout_note
@@ -1150,7 +1159,7 @@ class ProcessRegistry:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str) -> dict:
+    def kill_process(self, session_id: str, *, source: str = "process.kill") -> dict:
         """Kill a background process."""
         session = self.get(session_id)
         if session is None:
@@ -1214,9 +1223,16 @@ class ProcessRegistry:
                 }
             session.exited = True
             session.exit_code = -15  # SIGTERM
+            session.completion_reason = "killed"
+            session.termination_source = source
             self._move_to_finished(session)
             self._write_checkpoint()
-            return {"status": "killed", "session_id": session.id}
+            return {
+                "status": "killed",
+                "session_id": session.id,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
+            }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -1311,7 +1327,7 @@ class ProcessRegistry:
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
-                "output_preview": _tail_redacted_process_output(s.output_buffer, 200),
+                "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
             if s.exited:
                 entry["exit_code"] = s.exit_code
@@ -1360,7 +1376,7 @@ class ProcessRegistry:
 
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id)
+            result = self.kill_process(session.id, source="kill_all")
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -1515,6 +1531,91 @@ class ProcessRegistry:
 process_registry = ProcessRegistry()
 
 
+def _format_age(seconds: float) -> str:
+    """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
+    try:
+        s = int(max(0, seconds))
+    except (TypeError, ValueError):
+        return "?"
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m" if s == 0 else f"{m}m{s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h" if m == 0 else f"{h}h{m}m"
+
+
+def _format_async_delegation(evt: dict) -> str:
+    """Format an async-delegation completion into a self-contained re-injection.
+
+    Carries the FULL original task source (goal, the context the parent
+    supplied, toolsets, role, model) plus dispatch time, status, and the
+    complete result summary. When this re-enters the conversation the agent
+    may be deep in unrelated context and won't remember why the subagent
+    existed, so the block is written to stand entirely on its own — enough to
+    use the result OR re-dispatch if the world has moved on.
+    """
+    import time as _time
+
+    deleg_id = evt.get("delegation_id", "unknown")
+    goal = evt.get("goal", "") or ""
+    context = evt.get("context")
+    toolsets = evt.get("toolsets")
+    role = evt.get("role") or "leaf"
+    model = evt.get("model") or "?"
+    status = evt.get("status") or "completed"
+    summary = evt.get("summary")
+    error = evt.get("error")
+    api_calls = evt.get("api_calls", 0)
+    duration = evt.get("duration_seconds", "?")
+    dispatched_at = evt.get("dispatched_at")
+    completed_at = evt.get("completed_at") or _time.time()
+
+    age = ""
+    if isinstance(dispatched_at, (int, float)):
+        age = f" ({_format_age(completed_at - dispatched_at)} ago)"
+
+    lines = [
+        f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
+        "A background subagent you dispatched earlier has finished. You may "
+        "have moved on since dispatching it; the full task source is below so "
+        "you can act on the result or re-dispatch if things have changed.",
+        "",
+    ]
+    if isinstance(dispatched_at, (int, float)):
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
+        lines.append(f"Dispatched: {ts}{age}")
+    lines.append(f"Original goal: {goal}")
+    if context:
+        lines.append(f"Context you provided: {context}")
+    if toolsets:
+        lines.append(f"Toolsets: {', '.join(toolsets)}")
+    lines.append(f"Role: {role}   Model: {model}")
+    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
+    lines.append("--- RESULT ---")
+    if status in ("completed", "success") and summary:
+        lines.append(summary)
+    elif status == "interrupted":
+        lines.append(
+            "The subagent was interrupted before completing"
+            + (f": {error}" if error else ".")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    else:
+        # error / timeout / failed
+        lines.append(
+            f"The subagent did not complete successfully (status={status})."
+            + (f"\n{error}" if error else "")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    return "\n".join(lines)
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -1543,11 +1644,29 @@ def format_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "async_delegation":
+        return _format_async_delegation(evt)
+
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
+    _reason = evt.get("completion_reason") or "exited"
+    _source = evt.get("termination_source") or ""
+    _signal = ""
+    if _exit in {-15, 143, "-15", "143"}:
+        _signal = ", SIGTERM"
+    if _reason == "killed":
+        _status = f"terminated by {_source or 'Hermes'}"
+    elif _reason == "lost":
+        _status = "marked lost because the process backend disappeared"
+    elif _reason == "failed_start":
+        _status = "failed to start"
+    elif _exit == 0:
+        _status = "completed normally"
+    else:
+        _status = "exited"
     return (
-        f"[IMPORTANT: Background process {_sid} completed "
-        f"(exit code {_exit}).\n"
+        f"[IMPORTANT: Background process {_sid} {_status} "
+        f"(exit code {_exit}{_signal}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )

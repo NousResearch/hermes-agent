@@ -20,6 +20,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    SUPPORTED_VIDEO_TYPES,
     is_host_excluded_by_no_proxy,
 )
 
@@ -119,6 +120,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     """Point document cache to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
 
 
@@ -234,6 +238,8 @@ class TestAppMentionHandler:
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
+        assert "reaction_added" in registered_events
+        assert "reaction_removed" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
         # Slack slash commands are registered via a single regex matcher
@@ -1440,6 +1446,84 @@ class TestIncomingDocumentHandling:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_video_attachment_cached(self, adapter):
+        """Video attachments should be downloaded into the video cache."""
+        video_bytes = b"\x00\x00\x00\x18ftypmp42fake-mp4"
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = video_bytes
+            event = self._make_event(
+                text="what happens in this?",
+                files=[
+                    {
+                        "mimetype": "video/mp4",
+                        "name": "clip.mp4",
+                        "url_private_download": "https://files.slack.com/clip.mp4",
+                        "size": len(video_bytes),
+                    }
+                ],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.VIDEO
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+        dl.assert_awaited_once_with("https://files.slack.com/clip.mp4", team_id="")
+
+    @pytest.mark.asyncio
+    async def test_file_shared_video_fallback_fetches_file_info(self, adapter):
+        """file_shared-only video events should still reach the agent."""
+        video_bytes = b"\x00\x00\x00\x18ftypmp42fake-mp4"
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "FVIDEO",
+                    "mimetype": "video/mp4",
+                    "name": "clip.mp4",
+                    "url_private_download": "https://files.slack.com/clip.mp4",
+                    "size": len(video_bytes),
+                    "user": "U_USER",
+                    "shares": {
+                        "private": {
+                            "D123": [
+                                {"ts": "1234567890.000001"},
+                            ]
+                        }
+                    },
+                },
+            }
+        )
+
+        with (
+            patch.object(
+                adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+            ) as dl,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            dl.return_value = video_bytes
+            await adapter._handle_slack_file_shared(
+                {
+                    "type": "file_shared",
+                    "channel_id": "D123",
+                    "file_id": "FVIDEO",
+                    "user_id": "U_USER",
+                    "event_ts": "1234567890.000002",
+                }
+            )
+
+        adapter._app.client.files_info.assert_awaited_once_with(file="FVIDEO")
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.VIDEO
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
     @pytest.mark.asyncio
     async def test_download_failure_is_surfaced_in_message_text(self, adapter):

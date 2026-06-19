@@ -1700,6 +1700,19 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert load_env()["SLACK_ALLOWED_USERS"] == "*"
 
+    def test_update_messaging_platform_accepts_slack_allowed_users_trailing_comma(self):
+        # The gateway drops empty entries (gateway/platforms/slack.py), so a
+        # trailing/interior comma must not be rejected by the dashboard.
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/slack",
+            json={"env": {"SLACK_ALLOWED_USERS": "U01ABC2DEF3,,W04XYZ5LMN6,"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["SLACK_ALLOWED_USERS"] == "U01ABC2DEF3,,W04XYZ5LMN6,"
+
     def test_messaging_platform_test_reports_missing_required_setup(self):
         resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
         assert resp.status_code == 200

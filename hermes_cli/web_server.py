@@ -2325,6 +2325,11 @@ def _gateway_display_command(profile: Optional[str], verb: str) -> str:
     return " ".join(["hermes", *_gateway_subcommand(profile, verb)])
 
 
+# Slack member IDs (users U..., Enterprise Grid W...). Kept in sync with the
+# frontend SLACK_MEMBER_ID_RE in web/src/pages/ChannelsPage.tsx.
+_SLACK_MEMBER_ID_RE = re.compile(r"[UW][A-Z0-9]{2,}")
+
+
 def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
     """Reject platform credentials that are clearly in the wrong field."""
     if platform_id != "slack" or not value:
@@ -2341,13 +2346,14 @@ def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> Non
             detail="Slack App Token must start with xapp-. Paste the app-level token from Basic Information > App-Level Tokens.",
         )
     if key == "SLACK_ALLOWED_USERS":
-        user_ids = [part.strip() for part in value.split(",")]
-        # "*" is the gateway's allow-all wildcard (see gateway/platforms/slack.py),
-        # so accept it as a valid entry alongside Slack member IDs (U.../W...).
+        # Mirror the gateway's parse (gateway/platforms/slack.py): split on comma,
+        # strip, and drop empty entries so a trailing/interior comma isn't rejected
+        # here when the runtime would accept it. "*" is the allow-all wildcard.
+        user_ids = [part.strip() for part in value.split(",") if part.strip()]
         invalid = [
             user_id
             for user_id in user_ids
-            if user_id != "*" and (not user_id or not re.fullmatch(r"[UW][A-Z0-9]{2,}", user_id))
+            if user_id != "*" and not _SLACK_MEMBER_ID_RE.fullmatch(user_id)
         ]
         if invalid:
             raise HTTPException(

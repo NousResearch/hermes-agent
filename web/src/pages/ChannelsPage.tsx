@@ -72,10 +72,13 @@ function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string
   }
 
   if (field.key === "SLACK_ALLOWED_USERS") {
-    const parts = trimmed.split(",").map((part) => part.trim());
-    if (parts.some((part) => !part)) {
-      return "Slack member IDs must be comma-separated without empty entries.";
-    }
+    // Mirror the gateway's parse (gateway/platforms/slack.py): drop empty
+    // entries so a trailing/interior comma isn't rejected here. "*" is the
+    // allow-all wildcard the gateway honors.
+    const parts = trimmed
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
     const invalid = parts.find((part) => part !== "*" && !SLACK_MEMBER_ID_RE.test(part));
     if (invalid) {
       return `${invalid} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.`;

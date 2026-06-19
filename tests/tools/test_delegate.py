@@ -1996,6 +1996,23 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_per_task_override_reasoning_effort_beats_config(self, MockAgent, mock_cfg):
+        """Per-task override_reasoning_effort beats delegation.reasoning_effort."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, override_reasoning_effort="high",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
+
 
 # =========================================================================
 # Dispatch helper, progress events, concurrency
@@ -2035,6 +2052,40 @@ class TestDispatchDelegateTask(unittest.TestCase):
             _, kwargs = mock_build.call_args
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_model_and_reasoning_effort_forwarded_to_build_child_agent(
+        self, mock_creds, mock_cfg,
+    ):
+        """Top-level model and reasoning_effort reach _build_child_agent."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": "delegation-model",
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                goal="test",
+                model="claude-sonnet-4-6",
+                reasoning_effort="medium",
+                parent_agent=parent,
+            )
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["model"], "claude-sonnet-4-6")
+            self.assertEqual(kwargs["override_reasoning_effort"], "medium")
 
     @patch("tools.delegate_tool.delegate_task")
     def test_model_and_reasoning_effort_forwarded(self, mock_delegate):
@@ -2315,6 +2366,16 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         task_props = props["tasks"]["items"]["properties"]
         self.assertIn("role", task_props)
         self.assertEqual(task_props["role"]["enum"], ["leaf", "orchestrator"])
+
+    def test_schema_has_model_and_reasoning_effort_top_level_and_per_task(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("model", props)
+        self.assertEqual(props["model"]["type"], "string")
+        self.assertIn("reasoning_effort", props)
+        self.assertEqual(props["reasoning_effort"]["type"], "string")
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("reasoning_effort", task_props)
 
     def test_acp_command_description_has_do_not_set_guidance(self):
         # acp_command/acp_args descriptions must NOT bias the model toward

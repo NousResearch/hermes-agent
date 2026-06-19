@@ -986,6 +986,8 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-task reasoning effort override (beats delegation.reasoning_effort).
+    override_reasoning_effort: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1161,21 +1163,24 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: per-task override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
+        from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
+        effort_source = (
+            str(override_reasoning_effort or "").strip()
+            or str(delegation_cfg.get("reasoning_effort") or "").strip()
+        )
+        if effort_source:
+            parsed = parse_reasoning_effort(effort_source)
             if parsed is not None:
                 child_reasoning = parsed
             else:
                 logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
+                    "Unknown delegation reasoning_effort '%s', inheriting parent level",
+                    effort_source,
                 )
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
@@ -2067,6 +2072,8 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -2179,7 +2186,14 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2220,12 +2234,18 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_model = (
+                str(t.get("model") or model or creds.get("model") or "").strip() or None
+            )
+            task_effort = (
+                str(t.get("reasoning_effort") or reasoning_effort or "").strip() or None
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2241,6 +2261,7 @@ def delegate_task(
                     if task_acp_args is not None
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
+                override_reasoning_effort=task_effort,
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2886,7 +2907,10 @@ def _build_top_level_description() -> str:
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "- Per-task `model` and `reasoning_effort` override the parent and "
+        "delegation config for that child only (e.g. route coding to a stronger "
+        "model while the parent stays on its default)."
     )
 
 
@@ -3009,6 +3033,22 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model id for the subagent (single-task mode). "
+                    "Overrides delegation.model and parent model. Examples: "
+                    "'claude-sonnet-4-6', 'gpt-5.4', 'deepseek-v3'."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "description": (
+                    "Optional reasoning/thinking effort for the subagent "
+                    "(single-task mode). Examples: 'low', 'medium', 'high', "
+                    "'xhigh'. Overrides delegation.reasoning_effort."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3041,6 +3081,20 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model id. Overrides parent and "
+                                "delegation.model for this task only."
+                            ),
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "description": (
+                                "Per-task reasoning effort (low/medium/high/xhigh). "
+                                "Overrides delegation.reasoning_effort for this task."
+                            ),
                         },
                     },
                     "required": ["goal"],
@@ -3113,6 +3167,8 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        model=args.get("model"),
+        reasoning_effort=args.get("reasoning_effort"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

@@ -58,6 +58,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.send_gate_api import check_send_gate_enabled_for_api
 
 logger = logging.getLogger(__name__)
 
@@ -920,6 +921,31 @@ class APIServerAdapter(BasePlatformAdapter):
             status=401,
         )
 
+    def _check_send_gate(self) -> Optional["web.Response"]:
+        """
+        Check if send_gate is enabled for all platforms.
+
+        Layer 3 of send-gate: reject send requests at the API server level.
+        Returns None if sends are allowed, or a 403 web.Response if blocked.
+
+        This complements:
+        - Layer 1: send() raising SendGateDisabledException (base.py)
+        - Layer 2: Tool registration filtering (send_gate_tool.py)
+        """
+        is_enabled, error_msg = check_send_gate_enabled_for_api()
+
+        if not is_enabled:
+            logger.warning(
+                "API server rejecting request due to send_gate configuration: %s",
+                error_msg,
+            )
+            return web.json_response(
+                _openai_error(error_msg),
+                status=403,
+            )
+
+        return None
+
     # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
@@ -1731,6 +1757,11 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Layer 3: check send_gate before processing the request
+        send_gate_err = self._check_send_gate()
+        if send_gate_err:
+            return send_gate_err
 
         # Parse request body
         try:
@@ -2800,6 +2831,11 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Layer 3: check send_gate before processing the request
+        send_gate_err = self._check_send_gate()
+        if send_gate_err:
+            return send_gate_err
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)

@@ -22,6 +22,7 @@ Optional env vars:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -234,6 +235,27 @@ def _get_langfuse() -> Optional[Langfuse]:
         logger.warning("Could not initialize Langfuse client: %s", exc)
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
+
+    # Deterministically flush + close the OTel span processor at interpreter
+    # exit. Without this, long-lived span context managers (use_span generators)
+    # are GC'd during shutdown AFTER opentelemetry.trace.Span is torn down ->
+    # "isinstance() arg 2 must be a type" noise on every SIGTERM. atexit runs
+    # before that teardown, so spans close cleanly. Fail-open: observability
+    # must never break gateway shutdown. (arch review 2026-06-19)
+    def _shutdown_langfuse(_client: Langfuse = _LANGFUSE_CLIENT) -> None:
+        try:
+            _client.flush()
+        except Exception:
+            pass
+        try:
+            _client.shutdown()
+        except Exception:
+            pass
+
+    try:
+        atexit.register(_shutdown_langfuse)
+    except Exception:  # pragma: no cover - fail-open
+        pass
 
     return _LANGFUSE_CLIENT
 

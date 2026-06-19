@@ -938,6 +938,7 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <ProjectsSidebarSection
                 activeSessionId={activeSidebarSessionId}
+                onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
                 onNewProject={onNewProject}
                 onResumeSession={onResumeSession}

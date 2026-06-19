@@ -8,7 +8,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import type { SessionInfo } from '@/hermes'
 import { cn } from '@/lib/utils'
-import { $sidebarProjectsOpen, setSidebarProjectsOpen } from '@/store/layout'
+import { $expandedProjectIds, $sidebarProjectsOpen, setSidebarProjectsOpen, toggleExpandedProjectId } from '@/store/layout'
 import { removeProject } from '@/store/projects'
 import type { Project } from '@/store/projects'
 import { sessionPinId } from '@/store/session'
@@ -19,6 +19,7 @@ import { SidebarSessionRow } from './session-row'
 
 interface ProjectsSidebarSectionProps {
   activeSessionId: string | null
+  onArchiveSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onNewProject: () => void
   onResumeSession: (sessionId: string) => void
@@ -31,6 +32,7 @@ interface ProjectsSidebarSectionProps {
 
 export function ProjectsSidebarSection({
   activeSessionId,
+  onArchiveSession,
   onDeleteSession,
   onNewProject,
   onResumeSession,
@@ -41,6 +43,7 @@ export function ProjectsSidebarSection({
   sessions
 }: ProjectsSidebarSectionProps) {
   const open = useStore($sidebarProjectsOpen)
+  const expandedIds = useStore($expandedProjectIds)
 
   return (
     <SidebarGroup className="shrink-0 p-0 pb-1">
@@ -76,15 +79,19 @@ export function ProjectsSidebarSection({
           ) : (
             projects.map(project => {
               const projectSessions = sessions.filter(s => s.cwd?.startsWith(project.path))
+              const isExpanded = expandedIds.includes(project.id)
 
               return (
                 <div key={project.id}>
                   <ProjectSidebarRow
                     isActive={selectedProjectId === project.id}
+                    isExpanded={isExpanded}
                     onClick={() => onSelectProject(project.id)}
+                    onToggleExpand={() => toggleExpandedProjectId(project.id)}
                     project={project}
+                    sessionCount={projectSessions.length}
                   />
-                  {projectSessions.length > 0 && (
+                  {isExpanded && projectSessions.length > 0 && (
                     <div className="ml-4 flex flex-col gap-px">
                       {projectSessions.map(session => (
                         <SidebarSessionRow
@@ -92,7 +99,7 @@ export function ProjectsSidebarSection({
                           isSelected={activeSessionId === session.id}
                           isWorking={false}
                           key={session.id}
-                          onArchive={() => onDeleteSession(session.id)}
+                          onArchive={() => onArchiveSession(session.id)}
                           onDelete={() => onDeleteSession(session.id)}
                           onPin={() => onTogglePin(sessionPinId(session))}
                           onResume={() => onResumeSession(session.id)}
@@ -113,23 +120,50 @@ export function ProjectsSidebarSection({
 
 function ProjectSidebarRow({
   isActive,
+  isExpanded,
   onClick,
-  project
+  onToggleExpand,
+  project,
+  sessionCount
 }: {
   isActive: boolean
+  isExpanded: boolean
   onClick: () => void
+  onToggleExpand: () => void
   project: Project
+  sessionCount: number
 }) {
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const hasSessions = sessionCount > 0
 
   return (
     <>
       <div
         className={cn(
-          'group/project relative flex min-h-[1.625rem] w-full items-center gap-1.5 rounded-md py-0.5 pl-2 pr-1',
+          'group/project relative flex min-h-[1.625rem] w-full items-center gap-1 rounded-md py-0.5 pl-1 pr-1',
           isActive ? 'bg-(--ui-row-active-background) text-foreground' : 'hover:bg-(--chrome-action-hover)'
         )}
       >
+        {/* Per-project collapse toggle — visible when sessions exist */}
+        <button
+          aria-label={isExpanded ? 'Collapse sessions' : 'Expand sessions'}
+          className={cn(
+            'grid w-3.5 shrink-0 place-items-center bg-transparent focus-visible:outline-none',
+            !hasSessions && 'pointer-events-none opacity-0'
+          )}
+          onClick={event => {
+            event.stopPropagation()
+            onToggleExpand()
+          }}
+          tabIndex={hasSessions ? 0 : -1}
+          type="button"
+        >
+          <DisclosureCaret
+            className={cn('text-(--ui-text-tertiary)', isActive && 'text-foreground')}
+            open={isExpanded}
+          />
+        </button>
+
         <button
           className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left focus-visible:outline-none"
           onClick={onClick}
@@ -157,6 +191,12 @@ function ProjectSidebarRow({
               </span>
             )}
           </span>
+          {/* Session count badge — shown when collapsed and sessions exist */}
+          {hasSessions && !isExpanded && (
+            <span className="mr-5 shrink-0 rounded-full bg-(--ui-control-active-background) px-1.5 py-0.5 text-[0.6rem] font-medium text-(--ui-text-tertiary)">
+              {sessionCount}
+            </span>
+          )}
         </button>
 
         {/* Delete button — revealed on row hover */}
@@ -187,3 +227,4 @@ function ProjectSidebarRow({
     </>
   )
 }
+

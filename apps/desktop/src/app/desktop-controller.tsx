@@ -67,6 +67,7 @@ import {
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   sessionPinId,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setCronSessions,
@@ -78,6 +79,7 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setSelectedStoredSessionId,
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
@@ -91,6 +93,8 @@ import { isSecondaryWindow } from '../store/windows'
 import { ChatView } from './chat'
 import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
+import type { DroppedFile } from './chat/hooks/use-composer-actions'
+import type { ComposerAttachment } from '@/store/composer'
 import {
   ChatPreviewRail,
   PREVIEW_RAIL_MAX_WIDTH,
@@ -824,6 +828,32 @@ export function DesktopController() {
     [requestGateway, startFreshSessionDraft]
   )
 
+  // The project page is a launcher, mirroring the sidebar's "new session"
+  // action (which clears the active session via startFreshSessionDraft). The
+  // difference: we must NOT navigate to '/' — we stay on /project/:id and seed
+  // the project's cwd, so the chatbar's normal submit (submitText) sees no
+  // active session and mints a NEW one in this project, then navigates straight
+  // to it. Staying put also keeps createBackendSessionForSend's route-token
+  // baseline stable so its abort guard doesn't fire mid-create. currentView is
+  // 'project' here, so useRouteResume is inert and won't bounce us off the page.
+  useEffect(() => {
+    if (!selectedProjectId) {
+      return
+    }
+
+    setActiveSessionId(null)
+    activeSessionIdRef.current = null
+    setSelectedStoredSessionId(null)
+    selectedStoredSessionIdRef.current = null
+    setMessages([])
+
+    const project = getProject(selectedProjectId)
+
+    if (project) {
+      setCurrentCwd(project.path)
+    }
+  }, [activeSessionIdRef, selectedProjectId, selectedStoredSessionIdRef])
+
   const handleSkinCommand = useSkinCommand()
 
   const {
@@ -1226,7 +1256,20 @@ export function DesktopController() {
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route
-            element={<ProjectPageViewRoute onStartSession={startSessionInWorkspace} />}
+            element={
+              <ProjectPageViewRoute
+                onAttachDroppedItems={composer.attachDroppedItems}
+                onAttachImageBlob={composer.attachImageBlob}
+                onCancel={cancelRun}
+                onPasteClipboardImage={() => void composer.pasteClipboardImage()}
+                onPickFiles={() => void composer.pickContextPaths('file')}
+                onPickFolders={() => void composer.pickContextPaths('folder')}
+                onPickImages={() => void composer.pickImages()}
+                onRemoveAttachment={id => void composer.removeAttachment(id)}
+                onStartSession={startSessionInWorkspace}
+                onSubmit={submitText}
+              />
+            }
             path="project/:id"
           />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
@@ -1251,12 +1294,48 @@ function LegacySessionRedirect() {
   return <Navigate replace to={sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE} />
 }
 
-function ProjectPageViewRoute({ onStartSession }: { onStartSession: (path: string) => void }) {
+function ProjectPageViewRoute({
+  onAttachDroppedItems,
+  onAttachImageBlob,
+  onCancel,
+  onPasteClipboardImage,
+  onPickFiles,
+  onPickFolders,
+  onPickImages,
+  onRemoveAttachment,
+  onStartSession,
+  onSubmit
+}: {
+  onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
+  onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
+  onCancel: () => Promise<void> | void
+  onPasteClipboardImage: () => void
+  onPickFiles: () => void
+  onPickFolders: () => void
+  onPickImages: () => void
+  onRemoveAttachment: (id: string) => void
+  onStartSession: (path: string) => void
+  onSubmit: (value: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean> | boolean
+}) {
   const { id } = useParams()
 
   if (!id) {
     return <Navigate replace to={NEW_CHAT_ROUTE} />
   }
 
-  return <ProjectPageView onStartSession={onStartSession} projectId={decodeURIComponent(id)} />
+  return (
+    <ProjectPageView
+      onAttachDroppedItems={onAttachDroppedItems}
+      onAttachImageBlob={onAttachImageBlob}
+      onCancel={onCancel}
+      onPasteClipboardImage={onPasteClipboardImage}
+      onPickFiles={onPickFiles}
+      onPickFolders={onPickFolders}
+      onPickImages={onPickImages}
+      onRemoveAttachment={onRemoveAttachment}
+      onStartSession={onStartSession}
+      onSubmit={onSubmit}
+      projectId={decodeURIComponent(id)}
+    />
+  )
 }

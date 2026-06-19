@@ -189,7 +189,7 @@ const NO_MESSAGES: ChatMessage[] = []
  * of re-rendering them by element identity and the stream's render cost stays
  * confined to the streaming message's own subtree.
  */
-function ChatRuntimeBoundary({
+export function ChatRuntimeBoundary({
   busy,
   children,
   onCancel,

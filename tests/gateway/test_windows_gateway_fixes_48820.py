@@ -21,6 +21,16 @@ from gateway.platforms import base as base_mod
 from gateway.platforms.base import resolve_proxy_url, trust_env_for_gateway
 
 
+@pytest.fixture(autouse=True)
+def _clear_trust_proxy_cache():
+    """trust_env_for_gateway() caches the config read; clear it around each
+    test so config-patching tests don't leak state to (or from) others."""
+    from gateway.platforms.base import _config_trust_proxy
+    _config_trust_proxy.cache_clear()
+    yield
+    _config_trust_proxy.cache_clear()
+
+
 # ---------------------------------------------------------------------------
 # Bug 2 — explicit enabled: false wins over env vars (all platforms)
 # ---------------------------------------------------------------------------
@@ -96,13 +106,17 @@ class TestProxyTrustGating:
         self._clear(monkeypatch)
         monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
 
-        # trust_env_for_gateway imports load_gateway_config lazily from
-        # gateway.config, so patch it there.
+        # _config_trust_proxy is lru_cached; clear it so the patch takes effect.
+        from gateway.platforms.base import _config_trust_proxy
+        _config_trust_proxy.cache_clear()
         import gateway.config as gw_config
         monkeypatch.setattr(gw_config, "load_gateway_config",
                             lambda: GatewayConfig(trust_proxy=True))
-        assert trust_env_for_gateway() is True
-        assert resolve_proxy_url() == "http://127.0.0.1:7890"
+        try:
+            assert trust_env_for_gateway() is True
+            assert resolve_proxy_url() == "http://127.0.0.1:7890"
+        finally:
+            _config_trust_proxy.cache_clear()
 
     def test_explicit_platform_proxy_var_always_honored(self, monkeypatch):
         """Explicit per-platform proxy vars bypass the gate — they are a
@@ -112,15 +126,18 @@ class TestProxyTrustGating:
         # No GATEWAY_TRUST_* opt-in, yet the explicit var is honored.
         assert resolve_proxy_url("DISCORD_PROXY") == "http://127.0.0.1:1080"
 
-    def test_config_roundtrip_includes_trust_flags(self):
-        cfg = GatewayConfig(trust_proxy=True, trust_env=True)
+    def test_config_roundtrip_preserves_trust_proxy(self):
+        cfg = GatewayConfig(trust_proxy=True)
         restored = GatewayConfig.from_dict(cfg.to_dict())
         assert restored.trust_proxy is True
-        assert restored.trust_env is True
+
+    def test_legacy_trust_env_alias_maps_to_trust_proxy(self):
+        # Back-compat: a config that wrote the old ``trust_env`` key still opts in.
+        restored = GatewayConfig.from_dict({"trust_env": True})
+        assert restored.trust_proxy is True
 
     def test_trust_flags_default_false(self):
         assert GatewayConfig().trust_proxy is False
-        assert GatewayConfig().trust_env is False
 
 
 # ---------------------------------------------------------------------------

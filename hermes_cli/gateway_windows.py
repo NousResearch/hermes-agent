@@ -544,6 +544,20 @@ def _derive_venv_pythonw(python_exe: str) -> str:
     return python_exe
 
 
+def _derive_console_python(pythonw_exe: str) -> str:
+    """Inverse of ``_derive_venv_pythonw``: map ``pythonw.exe`` → ``python.exe``.
+
+    The watchdog runs as ``pythonw.exe`` (no console) but spawns the actual
+    gateway worker as ``python.exe`` so the worker's stdout/stderr can be
+    captured to ``gateway-stdio.log``. Returns the path unchanged if it isn't a
+    ``*w`` variant (e.g. already ``python.exe``, or a uv base interpreter).
+    """
+    p = Path(pythonw_exe)
+    if p.stem.endswith("w"):
+        return str(p.with_name(p.stem[:-1] + p.suffix))
+    return pythonw_exe
+
+
 def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     cfg_path = venv_dir / "pyvenv.cfg"
     try:
@@ -1498,15 +1512,26 @@ def run_watchdog(working_dir: str, argv: list[str], env_overlay: dict) -> int:
     # Derive python.exe from the watchdog's python (which is pythonw.exe so it
     # runs without a console). The worker also runs windowless via CREATE_NO_WINDOW.
     child_argv = list(argv)
-    if child_argv and child_argv[0].lower().endswith("pythonw.exe"):
-        child_argv[0] = child_argv[0][:-len("pythonw.exe")] + "python.exe"
+    if child_argv:
+        child_argv[0] = _derive_console_python(child_argv[0])
 
     _log(f"starting (pid {os.getpid()}); worker: {child_argv}")
 
     backoff = _WATCHDOG_BACKOFF_START_S
     crash_times: list[float] = []
+    _job_handle = None
 
     while True:
+        # Close the previous iteration's Job Object handle (the worker it was
+        # tied to has already exited by now). Without this, each respawn leaks
+        # one kernel job handle over the supervisor's lifetime.
+        if _job_handle:
+            try:
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(_job_handle)
+            except Exception:
+                pass
+            _job_handle = None
         started_at = _time.monotonic()
         try:
             with open(stray_log, "ab", buffering=0) as log_fh:

@@ -460,9 +460,10 @@ class QQAdapter(BasePlatformAdapter):
         # inherited env proxies (HTTPS_PROXY/ALL_PROXY) are only used when the
         # gateway is configured to trust the environment — a Windows Scheduled
         # Task can otherwise inherit a stray proxy and misroute the WS (#48820).
-        self._session = aiohttp.ClientSession(trust_env=trust_env_for_gateway())
+        _trust_env = trust_env_for_gateway()
+        self._session = aiohttp.ClientSession(trust_env=_trust_env)
         ws_proxy = os.getenv("WSS_PROXY") or os.getenv("wss_proxy")
-        if not ws_proxy and trust_env_for_gateway():
+        if not ws_proxy and _trust_env:
             ws_proxy = (
                 os.getenv("HTTPS_PROXY")
                 or os.getenv("https_proxy")

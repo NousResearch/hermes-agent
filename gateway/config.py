@@ -562,10 +562,9 @@ class GatewayConfig:
     # clients do NOT inherit ``HTTP_PROXY``/``HTTPS_PROXY`` from the process
     # environment — a Windows Scheduled Task / non-interactive launch can
     # inherit a proxy var the user never set for the gateway, breaking polls
-    # with connection-refused loops. Set either flag True (or the
-    # ``GATEWAY_TRUST_PROXY``/``GATEWAY_TRUST_ENV`` env vars) to opt back in.
+    # with connection-refused loops. Set ``gateway.trust_proxy: true`` (or the
+    # internal ``GATEWAY_TRUST_PROXY`` escape-hatch env var) to opt back in.
     trust_proxy: bool = False
-    trust_env: bool = False
 
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -663,7 +662,6 @@ class GatewayConfig:
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "trust_proxy": self.trust_proxy,
-            "trust_env": self.trust_env,
         }
     
     @classmethod
@@ -747,8 +745,10 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
-            trust_proxy=_coerce_bool(data.get("trust_proxy"), False),
-            trust_env=_coerce_bool(data.get("trust_env"), False),
+            # Accept legacy ``trust_env`` as a read-only alias of ``trust_proxy``.
+            trust_proxy=_coerce_bool(
+                data.get("trust_proxy", data.get("trust_env")), False
+            ),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -868,16 +868,19 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
-            # Proxy-trust flags (#48820 Bug 3). Accept both top-level keys and
-            # the nested ``gateway.*`` form written by ``hermes config set``.
+            # Proxy-trust flag (#48820 Bug 3). Accept top-level or nested
+            # ``gateway.*`` form, and the legacy ``trust_env`` alias, all mapped
+            # to the canonical ``trust_proxy``.
             _gateway_section = yaml_cfg.get("gateway")
             if not isinstance(_gateway_section, dict):
                 _gateway_section = {}
-            for _trust_key in ("trust_proxy", "trust_env"):
-                if _trust_key in yaml_cfg:
-                    gw_data[_trust_key] = yaml_cfg[_trust_key]
-                elif _trust_key in _gateway_section:
-                    gw_data[_trust_key] = _gateway_section[_trust_key]
+            for _src_key in ("trust_proxy", "trust_env"):
+                if _src_key in yaml_cfg:
+                    gw_data["trust_proxy"] = yaml_cfg[_src_key]
+                    break
+                if _src_key in _gateway_section:
+                    gw_data["trust_proxy"] = _gateway_section[_src_key]
+                    break
 
             # Merge platform config into gw_data so runtime-only settings under
             # ``gateway.platforms`` are loaded the same way as top-level

@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import functools
 import inspect
 import ipaddress
 import logging
@@ -20,7 +21,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from utils import is_truthy_value, normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -345,9 +346,6 @@ def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[st
     return False
 
 
-_TRUTHY = {"true", "1", "yes", "on"}
-
-
 def trust_env_for_gateway() -> bool:
     """Whether gateway HTTP clients should inherit proxy settings from the env.
 
@@ -358,25 +356,37 @@ def trust_env_for_gateway() -> bool:
     platform poll fails with a connection-refused loop (issue #48820, Bug 3).
 
     Opt back in (restoring the historical ``trust_env=True`` behavior, which
-    also re-enables ``SSL_CERT_FILE`` pickup) via either:
-      * env ``GATEWAY_TRUST_PROXY`` / ``GATEWAY_TRUST_ENV`` set to a truthy value
-      * ``gateway.trust_proxy: true`` / ``gateway.trust_env: true`` in config.yaml
+    also re-enables ``SSL_CERT_FILE`` pickup) by setting ``gateway.trust_proxy:
+    true`` in ``config.yaml`` — the canonical, documented surface for this
+    behavioral toggle. ``GATEWAY_TRUST_PROXY`` is honored as an internal
+    escape-hatch env var (e.g. for ad-hoc/CI overrides) but config.yaml is the
+    user-facing path.
 
     Explicit per-platform proxy vars (e.g. ``DISCORD_PROXY``, ``TELEGRAM_PROXY``)
     are honored regardless of this setting — they are an explicit user choice,
     not implicit environment inheritance.
     """
-    for var in ("GATEWAY_TRUST_PROXY", "GATEWAY_TRUST_ENV"):
-        if os.environ.get(var, "").strip().lower() in _TRUTHY:
-            return True
+    if is_truthy_value(os.environ.get("GATEWAY_TRUST_PROXY")):
+        return True
+    return _config_trust_proxy()
+
+
+@functools.lru_cache(maxsize=1)
+def _config_trust_proxy() -> bool:
+    """Read ``gateway.trust_proxy`` from config.yaml (cached).
+
+    Cached because ``load_gateway_config()`` does a full disk read + YAML parse
+    + plugin discovery, and ``trust_env_for_gateway()`` is called per HTTP
+    client construction. ``trust_proxy`` is a restart-time toggle (the gateway
+    re-reads config.yaml on restart, not live), so a process-lifetime cache
+    introduces no staleness regression.
+    """
     try:
         from gateway.config import load_gateway_config
         gw_cfg = load_gateway_config()
-        if getattr(gw_cfg, "trust_proxy", False) or getattr(gw_cfg, "trust_env", False):
-            return True
+        return bool(getattr(gw_cfg, "trust_proxy", False))
     except Exception:
-        pass
-    return False
+        return False
 
 
 def resolve_proxy_url(

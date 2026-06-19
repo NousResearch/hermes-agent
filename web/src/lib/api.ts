@@ -1161,6 +1161,12 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+  inspectArdEntry: (identifier: string) =>
+    fetchJSON<ArdInspectResponse>("/api/ard/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier }),
+    }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -1215,6 +1221,20 @@ export interface SkillHubResult {
   trust_level: string;
   repo: string | null;
   tags: string[];
+}
+
+export interface ArdInspectResponse {
+  ok: boolean;
+  identifier: string;
+  source_catalog?: string;
+  install_performed?: boolean;
+  error?: string;
+  risk?: {
+    decision?: string;
+    risk?: string | number;
+    next_action?: string;
+    reasons?: string[];
+  };
 }
 
 /** Lock-entry summary for an already-installed hub skill (keyed by identifier). */

@@ -20,7 +20,7 @@ LOCAL_REPAIR_SCHEMA = {
     "description": (
         "Run a deterministic, low-token local repair for known Hermes Feishu ops "
         "issues. For morning briefing / operation summary file matching issues, "
-        "and daily token usage reports, use this before broad execute_code/search_files "
+        "and token usage reports, use this before broad execute_code/search_files "
         "exploration."
     ),
     "parameters": {
@@ -28,12 +28,12 @@ LOCAL_REPAIR_SCHEMA = {
         "properties": {
             "task_type": {
                 "type": "string",
-                "enum": ["morning_briefing_operation_summary", "today_token_usage_report"],
+                "enum": ["morning_briefing_operation_summary", "today_token_usage_report", "token_usage_report"],
                 "description": "Known local repair flow to run.",
             },
             "target_date": {
                 "type": "string",
-                "description": "Optional operation summary date to verify, in YYYY-MM-DD form.",
+                "description": "Optional operation summary or token report date, in YYYY-MM-DD form.",
             },
             "title_hint": {
                 "type": "string",
@@ -47,13 +47,29 @@ LOCAL_REPAIR_SCHEMA = {
             "scope": {
                 "type": "string",
                 "enum": ["all", "feishu"],
-                "description": "For today_token_usage_report, include all Hermes sessions or only Feishu sessions.",
+                "description": "For token_usage_report, include all Hermes sessions or only Feishu sessions.",
                 "default": "all",
             },
             "top_n": {
                 "type": "integer",
-                "description": "For today_token_usage_report, number of highest-input sessions to return.",
+                "description": "For token_usage_report, number of highest-input sessions to return.",
                 "default": 3,
+            },
+            "days": {
+                "type": "integer",
+                "description": "For token_usage_report, rolling lookback window in days.",
+            },
+            "range_start": {
+                "type": "string",
+                "description": "For token_usage_report, inclusive start date/time.",
+            },
+            "range_end": {
+                "type": "string",
+                "description": "For token_usage_report, exclusive end date/time.",
+            },
+            "label": {
+                "type": "string",
+                "description": "For token_usage_report, human-readable window label.",
             },
         },
         "required": ["task_type"],
@@ -96,6 +112,23 @@ def _parse_target_date(value: str | None) -> dt.date | None:
         return dt.date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _parse_local_datetime(value: str | None, tz: ZoneInfo) -> dt.datetime | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            return dt.datetime.combine(dt.date.fromisoformat(raw), dt.time.min, tzinfo=tz)
+        parsed = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
 
 
 def _date_from_filename(path: Path) -> dt.date | None:
@@ -314,38 +347,87 @@ def _session_row_to_item(row: sqlite3.Row, tz: ZoneInfo) -> dict[str, Any]:
     }
 
 
-def collect_today_token_usage_report(
+def collect_token_usage_report(
     *,
     db_path: Path | None = None,
     scope: str = "all",
     top_n: int = 3,
     now: dt.datetime | None = None,
     timezone: str = "Asia/Shanghai",
+    target_date: str | dt.date | None = None,
+    days: int | None = None,
+    range_start: str | dt.datetime | None = None,
+    range_end: str | dt.datetime | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
-    """Collect today's Hermes token usage from state.db with one bounded query."""
+    """Collect Hermes token usage for a bounded local-time window from state.db."""
     db_path = db_path or _default_state_db_path()
     tz = ZoneInfo(timezone)
     now_local = now.astimezone(tz) if now is not None else dt.datetime.now(tz)
-    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_kind = "today"
+    if isinstance(range_start, dt.datetime):
+        start_local = range_start.astimezone(tz) if range_start.tzinfo else range_start.replace(tzinfo=tz)
+    else:
+        start_local = _parse_local_datetime(range_start, tz)
+    if isinstance(range_end, dt.datetime):
+        end_local = range_end.astimezone(tz) if range_end.tzinfo else range_end.replace(tzinfo=tz)
+    else:
+        end_local = _parse_local_datetime(range_end, tz)
+
+    requested_date: dt.date | None
+    if isinstance(target_date, dt.date):
+        requested_date = target_date
+    else:
+        requested_date = _parse_target_date(target_date)
+
+    if start_local is not None and end_local is not None:
+        window_kind = "custom"
+    elif requested_date is not None:
+        start_local = dt.datetime.combine(requested_date, dt.time.min, tzinfo=tz)
+        end_local = start_local + dt.timedelta(days=1)
+        window_kind = "date"
+    elif days is not None:
+        days = max(1, min(int(days), 366))
+        start_local = now_local - dt.timedelta(days=days)
+        end_local = now_local
+        window_kind = f"rolling_{days}_days"
+    else:
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = now_local
+
+    if start_local is None:
+        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    if end_local is None:
+        end_local = now_local
+    if end_local <= start_local:
+        end_local = start_local + dt.timedelta(days=1)
+
     start_ts = start_local.timestamp()
-    end_ts = now_local.timestamp()
+    end_ts = end_local.timestamp()
     scope = "feishu" if str(scope or "").lower() == "feishu" else "all"
     top_n = _clamp_top_n(top_n)
+    window_label = label or {
+        "today": "今日",
+        "date": start_local.strftime("%Y-%m-%d"),
+        "custom": "自定义时间范围",
+    }.get(window_kind, window_kind.replace("_", " "))
 
     result: dict[str, Any] = {
-        "task_type": "today_token_usage_report",
+        "task_type": "token_usage_report",
         "success": False,
         "db_path": str(db_path),
         "scope": scope,
         "timezone": timezone,
+        "window_label": window_label,
+        "window_kind": window_kind,
         "window_start": start_local.strftime("%Y-%m-%d %H:%M:%S"),
-        "window_end": now_local.strftime("%Y-%m-%d %H:%M:%S"),
+        "window_end": end_local.strftime("%Y-%m-%d %H:%M:%S"),
         "top_n": top_n,
     }
     if not db_path.exists():
         return {**result, "error": "state.db not found"}
 
-    where = "started_at >= ? AND started_at <= ?"
+    where = "started_at >= ? AND started_at < ?"
     params: list[Any] = [start_ts, end_ts]
     if scope == "feishu":
         where += " AND source = ?"
@@ -399,14 +481,33 @@ def collect_today_token_usage_report(
     }
 
 
-def format_today_token_usage_report(report: dict[str, Any]) -> str:
+def collect_today_token_usage_report(
+    *,
+    db_path: Path | None = None,
+    scope: str = "all",
+    top_n: int = 3,
+    now: dt.datetime | None = None,
+    timezone: str = "Asia/Shanghai",
+) -> dict[str, Any]:
+    """Backward-compatible wrapper for today's token report."""
+    return collect_token_usage_report(
+        db_path=db_path,
+        scope=scope,
+        top_n=top_n,
+        now=now,
+        timezone=timezone,
+        label="今日",
+    )
+
+
+def format_token_usage_report(report: dict[str, Any]) -> str:
     """Render a compact Chinese report suitable for Feishu text delivery."""
     if not report.get("success"):
-        return f"今日 Token 统计失败：{report.get('error') or 'unknown error'}"
+        return f"Token 统计失败：{report.get('error') or 'unknown error'}"
 
     scope_label = "飞书会话" if report.get("scope") == "feishu" else "Hermes 全部会话"
     lines = [
-        f"今日 Token 消耗统计（{scope_label}）",
+        f"{report.get('window_label') or 'Token'} Token 消耗统计（{scope_label}）",
         f"时间范围：{report['window_start']} 至 {report['window_end']}（{report['timezone']}）",
         (
             f"整体：{report['session_count']} 个 session，"
@@ -433,6 +534,40 @@ def format_today_token_usage_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_today_token_usage_report(report: dict[str, Any]) -> str:
+    """Backward-compatible formatter for callers using the old name."""
+    return format_token_usage_report(report)
+
+
+def render_token_usage_report(
+    *,
+    db_path: Path | None = None,
+    scope: str = "all",
+    top_n: int = 3,
+    now: dt.datetime | None = None,
+    timezone: str = "Asia/Shanghai",
+    target_date: str | dt.date | None = None,
+    days: int | None = None,
+    range_start: str | dt.datetime | None = None,
+    range_end: str | dt.datetime | None = None,
+    label: str | None = None,
+) -> str:
+    return format_token_usage_report(
+        collect_token_usage_report(
+            db_path=db_path,
+            scope=scope,
+            top_n=top_n,
+            now=now,
+            timezone=timezone,
+            target_date=target_date,
+            days=days,
+            range_start=range_start,
+            range_end=range_end,
+            label=label,
+        )
+    )
+
+
 def render_today_token_usage_report(
     *,
     db_path: Path | None = None,
@@ -441,25 +576,29 @@ def render_today_token_usage_report(
     now: dt.datetime | None = None,
     timezone: str = "Asia/Shanghai",
 ) -> str:
-    return format_today_token_usage_report(
-        collect_today_token_usage_report(
-            db_path=db_path,
-            scope=scope,
-            top_n=top_n,
-            now=now,
-            timezone=timezone,
-        )
+    return render_token_usage_report(
+        db_path=db_path,
+        scope=scope,
+        top_n=top_n,
+        now=now,
+        timezone=timezone,
+        label="今日",
     )
 
 
 def _handle_local_repair(args: dict, **kw) -> str:
     task_type = args.get("task_type")
-    if task_type == "today_token_usage_report":
-        result = collect_today_token_usage_report(
+    if task_type in {"today_token_usage_report", "token_usage_report"}:
+        result = collect_token_usage_report(
             scope=args.get("scope") or "all",
             top_n=_clamp_top_n(args.get("top_n")),
+            target_date=args.get("target_date"),
+            days=args.get("days"),
+            range_start=args.get("range_start"),
+            range_end=args.get("range_end"),
+            label=args.get("label"),
         )
-        result["text"] = format_today_token_usage_report(result)
+        result["text"] = format_token_usage_report(result)
         return json.dumps(result, ensure_ascii=False)
 
     if task_type != "morning_briefing_operation_summary":
@@ -467,7 +606,11 @@ def _handle_local_repair(args: dict, **kw) -> str:
             {
                 "success": False,
                 "error": f"Unsupported local_repair task_type: {task_type}",
-                "supported": ["morning_briefing_operation_summary", "today_token_usage_report"],
+                "supported": [
+                    "morning_briefing_operation_summary",
+                    "today_token_usage_report",
+                    "token_usage_report",
+                ],
             },
             ensure_ascii=False,
         )

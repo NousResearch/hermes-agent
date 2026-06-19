@@ -3,6 +3,7 @@
 from gateway.run import (
     _deep_command_message,
     _platform_budget_key_for_message,
+    _platform_task_mode_for_message,
 )
 from gateway.known_ops_tasks import match_known_ops_task
 from hermes_cli.commands import is_gateway_known_command, resolve_command
@@ -20,6 +21,28 @@ def test_feishu_deep_prefix_selects_deep_budget_key():
 
 def test_deep_prefix_does_not_affect_other_platforms():
     assert _platform_budget_key_for_message("telegram", "/deep 继续查") == "telegram"
+
+
+def test_feishu_github_install_request_uses_install_task_mode():
+    message = "请帮我安装这个 : https://github.com/BigPizzaV3/CodexPlusPlus"
+    budget_key = _platform_budget_key_for_message("feishu", message)
+
+    assert budget_key == "feishu"
+    assert _platform_task_mode_for_message("feishu", budget_key, message) == "install"
+
+
+def test_feishu_deep_install_request_does_not_use_install_task_mode():
+    message = "深诊断：请帮我安装这个 : https://github.com/BigPizzaV3/CodexPlusPlus"
+    budget_key = _platform_budget_key_for_message("feishu", message)
+
+    assert budget_key == "feishu_deep"
+    assert _platform_task_mode_for_message("feishu", budget_key, message) == ""
+
+
+def test_non_feishu_install_request_does_not_use_install_task_mode():
+    message = "install https://github.com/BigPizzaV3/CodexPlusPlus"
+
+    assert _platform_task_mode_for_message("telegram", "telegram", message) == ""
 
 
 def test_deep_slash_command_is_registered_for_gateway():
@@ -42,7 +65,7 @@ def test_today_token_usage_request_uses_fast_report_intent():
         "请查一下 今天截止到现在，输入输出Token的整体消耗情况，消耗Token最多的前三项任务是哪几个"
     )
     assert task is not None
-    assert task.name == "today_token_usage_report"
+    assert task.name == "token_usage_report"
     assert match_known_ops_task("feishu", "今日 token 用量统计") is not None
 
 

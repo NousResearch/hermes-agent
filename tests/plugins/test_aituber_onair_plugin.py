@@ -7,7 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from plugins.aituber_onair import core, register
+from plugins.aituber_onair import local_loops_worker
 
 
 class _FakeContext:
@@ -15,6 +18,7 @@ class _FakeContext:
         self.tools = []
         self.commands = {}
         self.cli_commands = {}
+        self.llm = object()
 
     def register_tool(self, **kwargs):
         self.tools.append(kwargs)
@@ -24,6 +28,13 @@ class _FakeContext:
 
     def register_cli_command(self, name, **kwargs):
         self.cli_commands[name] = kwargs
+
+
+@pytest.fixture(autouse=True)
+def _reset_aituber_llm_factory():
+    core.bind_llm_factory(None)
+    yield
+    core.bind_llm_factory(None)
 
 
 def _fake_repo(tmp_path: Path) -> Path:
@@ -59,13 +70,34 @@ def test_registers_tools_slash_and_cli_command():
     assert "aituber_onair_tts_status" in names
     assert "aituber_onair_speak" in names
     assert "aituber_onair_say" in names
+    assert "aituber_onair_context_status" in names
+    assert "aituber_onair_stream_start_tweet" in names
     assert "aituber_onair_youtube_ready" in names
     assert "aituber_onair_youtube_comments_status" in names
     assert "aituber_onair_start_youtube_comments" in names
     assert "aituber_onair_stop_youtube_comments" in names
+    assert "aituber_onair_loops_status" in names
+    assert "aituber_onair_start_autonomous_talk" in names
+    assert "aituber_onair_start_comment_reactions" in names
+    assert "aituber_onair_enqueue_comment" in names
+    assert "aituber_onair_stop_loops" in names
     assert all(tool["toolset"] == "aituber-onair" for tool in ctx.tools)
     assert "aituber" in ctx.commands
     assert "aituber-onair" in ctx.cli_commands
+
+
+def test_register_binds_hermes_llm_factory(monkeypatch):
+    ctx = _FakeContext()
+    bound = {}
+
+    def fake_bind(factory):
+        bound["factory"] = factory
+
+    monkeypatch.setattr(core, "bind_llm_factory", fake_bind)
+
+    register(ctx)
+
+    assert bound["factory"]() is ctx.llm
 
 
 def test_resolve_repo_root_accepts_aituber_checkout(tmp_path):
@@ -87,6 +119,130 @@ def test_child_process_env_omits_provider_secrets(monkeypatch):
     assert "OPENAI_API_KEY" not in env
     assert "GITHUB_TOKEN" not in env
     assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+def test_context_status_reports_env_presence_without_secret_values(monkeypatch):
+    monkeypatch.setenv("LM_TWITTERER_BOT_SCREEN_NAME", "hakua_public")
+    monkeypatch.setenv("LM_TWITTERER_AUTH_TOKEN", "secret-auth-cookie")
+    monkeypatch.setenv("LM_TWITTERER_CT0", "secret-csrf-cookie")
+    monkeypatch.setenv("AITUBER_ONAIR_STREAM_URL", "https://example.com/live")
+
+    result = core.context_status({"prompt": "email bob@example.com"})
+
+    assert result["ok"] is True
+    assert result["privacy"]["input_contains_sensitive_text"] is True
+    assert result["privacy"]["speaks_secret_values"] is False
+    assert result["readiness"]["lm_twitterer_ready"] is True
+    env_by_name = {item["name"]: item for item in result["environment"]}
+    assert env_by_name["LM_TWITTERER_AUTH_TOKEN"]["present"] is True
+    assert "secret-auth-cookie" not in json.dumps(result, ensure_ascii=False)
+    assert env_by_name["LM_TWITTERER_BOT_SCREEN_NAME"]["value"] == "hakua_public"
+    assert result["stream"]["url"] == "https://example.com/live"
+
+
+def test_run_hakua_once_can_include_safe_runtime_context(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+    calls = []
+
+    class Result:
+        text = "[relaxed] safe hello"
+        provider = "local"
+        model = "main"
+        usage = None
+        audit = None
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            calls.append(messages)
+            return Result()
+
+    monkeypatch.setenv("LM_TWITTERER_AUTH_TOKEN", "secret-auth-cookie")
+    monkeypatch.setenv("LM_TWITTERER_CT0", "secret-csrf-cookie")
+    monkeypatch.setenv("LM_TWITTERER_BOT_SCREEN_NAME", "hakua_public")
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    core.bind_llm_factory(lambda: FakeLlm())
+
+    result = core.run_hakua_once(
+        {
+            "repo_root": str(repo),
+            "prompt": "hello bob@example.com",
+            "reply_backend": "hermes",
+            "with_runtime_context": True,
+        }
+    )
+
+    assert result["ok"] is True
+    user_content = calls[0][1]["content"]
+    assert "安全な実行文脈" in user_content
+    assert "lm-twitterer=ready" in user_content
+    assert "Do not repeat it literally" in user_content
+    assert "secret-auth-cookie" not in user_content
+
+
+def test_stream_start_tweet_dry_run_uses_lm_twitterer_with_url(monkeypatch):
+    calls = []
+
+    class FakeLmTwitterer:
+        @staticmethod
+        def post(topic, *, dry_run, provider, model, text):
+            calls.append(
+                {
+                    "topic": topic,
+                    "dry_run": dry_run,
+                    "provider": provider,
+                    "model": model,
+                    "text": text,
+                }
+            )
+            return {"ok": True, "dry_run": dry_run, "tweet_text": text}
+
+    monkeypatch.setattr(
+        core.importlib,
+        "import_module",
+        lambda name: FakeLmTwitterer if name == "plugins.lm-twitterer.core" else None,
+    )
+
+    result = core.stream_start_tweet(
+        {
+            "url": "https://example.com/live",
+            "topic": "Galaxy S9 VRM test",
+            "live": False,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["live"] is False
+    assert calls[0]["dry_run"] is True
+    assert "https://example.com/live" in calls[0]["text"]
+    assert "#hermesagent" in calls[0]["text"]
+
+
+def test_stream_start_tweet_refuses_private_live_url():
+    result = core.stream_start_tweet(
+        {
+            "url": "http://127.0.0.1:5175/",
+            "live": True,
+        }
+    )
+
+    assert result["ok"] is False
+    assert "local or unverified" in result["error"]
+
+
+def test_local_loop_reply_enables_runtime_context(monkeypatch):
+    seen = {}
+
+    def fake_run(values):
+        seen.update(values)
+        return {"ok": True, "reply": "[relaxed] ok"}
+
+    monkeypatch.setattr(core, "run_hakua_once", fake_run)
+
+    result = local_loops_worker._reply("hello", play=False)
+
+    assert result["ok"] is True
+    assert seen["with_runtime_context"] is True
 
 
 def test_tts_status_prefers_installed_irodori(monkeypatch):
@@ -199,6 +355,7 @@ def test_run_hakua_once_dispatches_codex_character_cli(monkeypatch, tmp_path):
         lambda: {"has_access_token": True},
     )
     monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
     monkeypatch.setattr(core, "_plugin_working_directory", lambda _repo: str(repo))
 
     def fake_run(cmd, cwd, env, timeout_seconds):
@@ -208,27 +365,163 @@ def test_run_hakua_once_dispatches_codex_character_cli(monkeypatch, tmp_path):
             "exit_code": 0,
             "command": cmd,
             "cwd": str(cwd),
-            "stdout": "=== Codex Character Chat ===\nはくあ> [happy] こんにちは\n",
+            "stdout": "=== Codex Character Chat ===\nHakua> [happy] hello\n",
             "stderr": "",
         }
 
     monkeypatch.setattr(core, "_run_command", fake_run)
 
-    result = core.run_hakua_once({"repo_root": str(repo), "prompt": "挨拶して"})
+    result = core.run_hakua_once(
+        {"repo_root": str(repo), "prompt": "greet", "reply_backend": "codex"}
+    )
 
     assert result["ok"] is True
-    assert result["reply"] == "[happy] こんにちは"
+    assert result["reply"] == "[happy] hello"
     cmd, cwd, env, timeout_seconds = calls[0]
     assert cmd[0] == "node"
     assert "index.js" in cmd[1]
     once_file_args = [arg for arg in cmd if arg.startswith("--onceFile=")]
     assert len(once_file_args) == 1
     once_file = Path(once_file_args[0].split("=", 1)[1])
-    assert once_file.read_text(encoding="utf-8") == "挨拶して"
-    assert env["CODEX_CHARACTER_NAME"] == "はくあ"
+    assert once_file.read_text(encoding="utf-8") == "greet"
+    assert env["CODEX_CHARACTER_NAME"] == "Hakua"
     assert env["CODEX_CHARACTER_SYSTEM_PROMPT"] == "Hakua prompt"
     assert cwd == repo
     assert timeout_seconds == core.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_run_hakua_once_prefers_bound_hermes_llm(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+    calls = []
+
+    class Result:
+        text = "[happy] Hermes-side hello"
+        provider = "local"
+        model = "main"
+        usage = None
+        audit = {"purpose": "aituber-onair.hakua"}
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return Result()
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(core, "_node_exe", lambda: "node")
+    monkeypatch.setattr(
+        core,
+        "_codex_sdk_installed",
+        lambda _repo: {"ok": True, "installed": True},
+    )
+    monkeypatch.setattr(
+        core, "_codex_cli_auth_status", lambda: {"has_access_token": True}
+    )
+    monkeypatch.setattr(
+        core,
+        "_run_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Codex SDK should not be called when Hermes LLM is bound")
+        ),
+    )
+    core.bind_llm_factory(lambda: FakeLlm())
+    try:
+        result = core.run_hakua_once(
+            {
+                "repo_root": str(repo),
+                "prompt": "say hello",
+                "reply_backend": "auto",
+                "hermes_provider": "local",
+                "hermes_model": "main",
+            }
+        )
+    finally:
+        core.bind_llm_factory(None)
+
+    assert result["ok"] is True
+    assert result["provider"] == "hermes-agent"
+    assert result["reply"] == "[happy] Hermes-side hello"
+    assert calls[0][0] == [
+        {"role": "system", "content": "Hakua prompt"},
+        {"role": "user", "content": "say hello"},
+    ]
+    assert calls[0][1]["provider"] == "local"
+    assert calls[0][1]["model"] == "main"
+    assert calls[0][1]["purpose"] == "aituber-onair.hakua"
+
+
+def test_run_hakua_once_can_use_hermes_cli_backend_without_bound_llm(
+    monkeypatch, tmp_path
+):
+    repo = _fake_repo(tmp_path)
+    calls = []
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+
+    def fake_run(cmd, cwd, env, timeout_seconds):
+        calls.append((cmd, cwd, env, timeout_seconds))
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "command": cmd,
+            "cwd": str(cwd),
+            "stdout": "[relaxed] Hermes CLI hello\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(core, "_run_command", fake_run)
+    core.bind_llm_factory(None)
+
+    result = core.run_hakua_once(
+        {"repo_root": str(repo), "prompt": "say hello", "reply_backend": "hermes"}
+    )
+
+    assert result["ok"] is True
+    assert result["provider"] == "hermes-agent-cli"
+    assert result["reply"] == "[relaxed] Hermes CLI hello"
+    cmd, _cwd, env, _timeout = calls[0]
+    assert "-m" in cmd
+    assert "hermes_cli" in cmd
+    assert "--oneshot" in cmd
+    assert env["HERMES_YOLO_MODE"] == "1"
+
+
+def test_run_hakua_once_falls_back_to_hermes_cli_when_bound_model_is_unsupported(
+    monkeypatch, tmp_path
+):
+    repo = _fake_repo(tmp_path)
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            raise RuntimeError(
+                "The 'gpt-5.5-low' model is not supported when using Codex."
+            )
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(
+        core,
+        "_run_command",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "exit_code": 0,
+            "command": args[0],
+            "cwd": str(kwargs["cwd"]),
+            "stdout": "[relaxed] fallback hello\n",
+            "stderr": "",
+        },
+    )
+    core.bind_llm_factory(lambda: FakeLlm())
+
+    result = core.run_hakua_once(
+        {"repo_root": str(repo), "prompt": "say hello", "reply_backend": "hermes"}
+    )
+
+    assert result["ok"] is True
+    assert result["provider"] == "hermes-agent-cli"
+    assert result["reply"] == "[relaxed] fallback hello"
+    assert "gpt-5.5-low" in result["hermes_facade_error"]
 
 
 def test_run_hakua_once_can_synthesize_reply(monkeypatch, tmp_path):
@@ -317,6 +610,65 @@ def test_run_hakua_once_rejects_empty_provider_failure(monkeypatch, tmp_path):
     assert result["ok"] is False
     assert result["reply"] == ""
     assert result["error"] == "Codex SDK provider failed."
+
+
+def test_run_hakua_once_retries_default_model_for_unsupported_model(
+    monkeypatch, tmp_path
+):
+    repo = _fake_repo(tmp_path)
+    calls = []
+
+    monkeypatch.setattr(core, "_node_exe", lambda: "node")
+    monkeypatch.setattr(
+        core,
+        "_codex_sdk_installed",
+        lambda _repo: {"ok": True, "installed": True},
+    )
+    monkeypatch.setattr(
+        core, "_codex_cli_auth_status", lambda: {"has_access_token": True}
+    )
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(core, "_plugin_working_directory", lambda _repo: str(repo))
+    monkeypatch.setattr(core, "_plugin_model", lambda _explicit=None: "deepseek-v4-pro")
+
+    def fake_run(cmd, cwd, env, timeout_seconds):
+        calls.append((cmd, env))
+        if len(calls) == 1:
+            return {
+                "ok": True,
+                "exit_code": 0,
+                "command": cmd,
+                "cwd": str(cwd),
+                "stdout": "=== Codex Character Chat ===\nHakua> \n",
+                "stderr": (
+                    "[error] codex-sdk provider failed.\n\n"
+                    "Original error:\n"
+                    "Error\n"
+                    '{"error":{"message":"The model is not supported when using Codex."}}'
+                ),
+            }
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "command": cmd,
+            "cwd": str(cwd),
+            "stdout": "=== Codex Character Chat ===\nHakua> [happy] hello\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(core, "_run_command", fake_run)
+
+    result = core.run_hakua_once({"repo_root": str(repo), "prompt": "say hello"})
+
+    assert result["ok"] is True
+    assert result["reply"] == "[happy] hello"
+    assert result["model"] == "Codex CLI default"
+    assert result["fallback_from_model"] == "deepseek-v4-pro"
+    assert len(calls) == 2
+    assert "--model=deepseek-v4-pro" in calls[0][0]
+    assert all(not arg.startswith("--model=") for arg in calls[1][0])
+    assert "CODEX_SDK_MODEL" not in calls[1][1]
 
 
 def test_handle_smoke_uses_hakua_prompt(monkeypatch):
@@ -479,6 +831,45 @@ def test_start_vroid_uses_vrm_app_and_default_port(monkeypatch, tmp_path):
     assert cmd == ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5175"]
     assert kwargs["cwd"].endswith("react-vrm-app")
     assert kwargs["env"]["AITUBER_ONAIR_AVATAR_KIND"] == "vrm"
+
+
+def test_start_vrm_can_bind_for_lan_display(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+    popen_calls = []
+
+    monkeypatch.setattr(core, "_npm_exe", lambda: "npm")
+    monkeypatch.setattr(core, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(core, "_url_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path / "workspace")
+    monkeypatch.setattr(core, "_detect_lan_ipv4", lambda: "192.168.1.23")
+
+    class FakeProc:
+        pid = 45678
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = core.start_avatar_app(
+        {
+            "repo_root": str(repo),
+            "avatar_kind": "vrm",
+            "host": "0.0.0.0",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["url"] == "http://192.168.1.23:5175/"
+    assert result["readiness_url"] == "http://127.0.0.1:5175/"
+    assert result["host"] == "0.0.0.0"
+    assert result["public_host"] == "192.168.1.23"
+    cmd, _kwargs = popen_calls[0]
+    assert cmd == ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5175"]
 
 
 def test_run_command_uses_sanitized_default_env(monkeypatch, tmp_path):
@@ -696,3 +1087,125 @@ def test_start_youtube_comments_spawns_worker_without_recording_api_key(monkeypa
     assert "plugins.aituber_onair.youtube_comments_worker" in cmd
     assert "--skip-existing" in cmd
     assert kwargs["env"]["AITUBER_ONAIR_YOUTUBE_API_KEY"] == "secret-youtube-key"
+
+
+def test_start_autonomous_talk_spawns_local_loop_worker(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(core, "_pid_alive", lambda _pid: False)
+    popen_calls = []
+
+    class FakeProc:
+        pid = 45678
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = core.start_autonomous_talk_loop(
+        {"interval_seconds": 30, "topic": "Galaxy display test", "play": False}
+    )
+
+    assert result["ok"] is True
+    assert result["active"]["pid"] == 45678
+    assert result["active"]["interval_seconds"] == 30.0
+    cmd, kwargs = popen_calls[0]
+    assert "plugins.aituber_onair.local_loops_worker" in cmd
+    assert "--mode" in cmd
+    assert "autonomous" in cmd
+    assert "--topic" in cmd
+    assert "Galaxy display test" in cmd
+    assert "--play" not in cmd
+    assert kwargs["env"]["PYTHONPATH"]
+
+
+def test_enqueue_comment_writes_local_queue(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path)
+
+    result = core.enqueue_comment(
+        {"author": "bob", "text": "反応して", "source": "local-test"}
+    )
+
+    assert result["ok"] is True
+    queue_file = Path(result["queue_file"])
+    rows = [json.loads(line) for line in queue_file.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["author"] == "bob"
+    assert rows[-1]["text"] == "反応して"
+    assert rows[-1]["source"] == "local-test"
+
+
+def test_start_comment_reactions_spawns_local_loop_worker(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(core, "_pid_alive", lambda _pid: False)
+    popen_calls = []
+
+    class FakeProc:
+        pid = 56789
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = core.start_comment_reaction_loop({"poll_seconds": 2, "play": True})
+
+    assert result["ok"] is True
+    assert result["active"]["pid"] == 56789
+    cmd, _kwargs = popen_calls[0]
+    assert "plugins.aituber_onair.local_loops_worker" in cmd
+    assert "--mode" in cmd
+    assert "comments" in cmd
+    assert "--queue-file" in cmd
+    assert "--processed-file" in cmd
+    assert "--play" in cmd
+
+
+def test_comment_reaction_worker_skips_processed_comments(monkeypatch, tmp_path):
+    queue_file = tmp_path / "queue.jsonl"
+    processed_file = tmp_path / "processed.json"
+    queue_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"id": "one", "author": "bob", "text": "first"}),
+                json.dumps({"id": "two", "author": "bob", "text": "second"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    processed_file.write_text(json.dumps({"ids": ["one"]}), encoding="utf-8")
+
+    replies = []
+    monkeypatch.setattr(
+        local_loops_worker,
+        "_reply",
+        lambda prompt, play: replies.append(prompt)
+        or {"ok": True, "reply": "[happy] ok"},
+    )
+    monkeypatch.setattr(local_loops_worker, "_log", lambda _payload: None)
+
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(local_loops_worker.time, "sleep", fake_sleep)
+
+    args = type(
+        "Args",
+        (),
+        {
+            "queue_file": str(queue_file),
+            "processed_file": str(processed_file),
+            "poll_seconds": 1.0,
+            "play": False,
+        },
+    )()
+
+    assert local_loops_worker.run_comments(args) == 0
+    assert len(replies) == 1
+    assert "second" in replies[0]
+    processed = json.loads(processed_file.read_text(encoding="utf-8"))
+    assert set(processed["ids"]) == {"one", "two"}

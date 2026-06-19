@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import importlib
+import ipaddress
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -15,7 +19,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 try:
     from hermes_constants import get_hermes_home
@@ -31,6 +35,7 @@ CONFIG_ALIASES = (PLUGIN_ID, "aituber_onair", "aituber")
 TOOLSET = "aituber-onair"
 DEFAULT_FBX_PORT = 5174
 DEFAULT_VRM_PORT = 5175
+DEFAULT_AVATAR_HOST = "127.0.0.1"
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_RESPONSE_LENGTH = "short"
 DEFAULT_TTS_PROVIDER = "auto"
@@ -40,6 +45,24 @@ DEFAULT_TTS_FORMAT = "wav"
 SUPPORTED_TTS_PROVIDERS = {"auto", "irodori", "voicevox", "none"}
 CODEX_SDK_PACKAGE = "@openai/codex-sdk"
 CODEX_CLI_PACKAGE = "@openai/codex"
+SUPPORTED_REPLY_BACKENDS = {"auto", "hermes", "hermes-agent", "codex", "codex-sdk"}
+PUBLIC_ENV_VALUE_KEYS = {
+    "AITUBER_ONAIR_STREAM_URL",
+    "AITUBER_ONAIR_YOUTUBE_LIVE_ID",
+    "YOUTUBE_LIVE_ID",
+    "LM_TWITTERER_BOT_SCREEN_NAME",
+}
+ENV_VALIDATION_KEYS = (
+    ("AITUBER_ONAIR_YOUTUBE_API_KEY", True, "YouTube comment monitor API key"),
+    ("YOUTUBE_API_KEY", True, "YouTube comment monitor API key"),
+    ("GOOGLE_API_KEY", True, "Google/YouTube API key fallback"),
+    ("AITUBER_ONAIR_YOUTUBE_LIVE_ID", False, "YouTube live id"),
+    ("YOUTUBE_LIVE_ID", False, "YouTube live id fallback"),
+    ("AITUBER_ONAIR_STREAM_URL", False, "public stream URL"),
+    ("LM_TWITTERER_BOT_SCREEN_NAME", False, "X bot screen name"),
+    ("LM_TWITTERER_AUTH_TOKEN", True, "X auth cookie"),
+    ("LM_TWITTERER_CT0", True, "X csrf cookie"),
+)
 SAFE_CHILD_ENV_KEYS = {
     "APPDATA",
     "COMSPEC",
@@ -79,6 +102,21 @@ DEFAULT_HAKUA_SYSTEM_PROMPT = (
     "見えていない映像や音声を操作できるとは言い切らないでください。"
 )
 
+SENSITIVE_TEXT_PATTERNS = (
+    re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE),
+    re.compile(r"\b(?:\+?\d[\d .()_-]{8,}\d)\b"),
+    re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"),
+    re.compile(r"\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*\S+", re.IGNORECASE),
+)
+
+_llm_factory: Callable[[], Any] | None = None
+
+
+def bind_llm_factory(factory: Callable[[], Any] | None) -> None:
+    global _llm_factory
+    _llm_factory = factory
+
+
 STATUS_SCHEMA = {
     "name": "aituber_onair_status",
     "description": "Show AITuber OnAir bridge readiness without changing files.",
@@ -99,6 +137,19 @@ CONFIGURE_HAKUA_SCHEMA = {
                 "type": "string",
                 "description": "Optional Codex SDK model id. Empty uses the local Codex CLI default.",
             },
+            "reply_backend": {
+                "type": "string",
+                "enum": ["auto", "hermes", "codex"],
+                "description": "Default Hakua reply backend. auto uses Hermes Agent ctx.llm when the plugin is registered.",
+            },
+            "hermes_provider": {
+                "type": "string",
+                "description": "Optional Hermes provider override for Hakua replies.",
+            },
+            "hermes_model": {
+                "type": "string",
+                "description": "Optional Hermes model override for Hakua replies.",
+            },
             "fbx_port": {
                 "type": "integer",
                 "minimum": 1024,
@@ -115,6 +166,14 @@ CONFIGURE_HAKUA_SCHEMA = {
                 "type": "string",
                 "enum": ["fbx", "vrm", "vroid"],
                 "description": "Default avatar app. vroid is treated as VRM.",
+            },
+            "avatar_host": {
+                "type": "string",
+                "description": "Vite bind host for the avatar app. Use 0.0.0.0 for phones on the same LAN.",
+            },
+            "avatar_public_host": {
+                "type": "string",
+                "description": "Host or IP shown to other devices. Empty auto-detects a LAN IPv4 address when avatar_host is 0.0.0.0.",
             },
             "system_prompt": {
                 "type": "string",
@@ -148,6 +207,14 @@ CONFIGURE_HAKUA_SCHEMA = {
             "youtube_live_id": {
                 "type": "string",
                 "description": "Optional YouTube live video id or URL for Hermes-side comment monitoring. API keys stay in environment variables.",
+            },
+            "stream_url": {
+                "type": "string",
+                "description": "Public stream URL used in spoken readiness context and stream-start tweets.",
+            },
+            "with_runtime_context": {
+                "type": "boolean",
+                "description": "Include safe Hermes memory/env validation context in Hakua replies by default.",
             },
         },
     },
@@ -203,6 +270,14 @@ START_SCHEMA = {
                 "type": "boolean",
                 "description": "Stop an existing plugin-managed avatar app before starting.",
             },
+            "host": {
+                "type": "string",
+                "description": "Vite bind host. Use 0.0.0.0 for a Galaxy S9 or other LAN display.",
+            },
+            "public_host": {
+                "type": "string",
+                "description": "Host or IP returned for external devices. Empty auto-detects LAN IPv4 when host is 0.0.0.0.",
+            },
         },
     },
 }
@@ -223,14 +298,30 @@ STOP_SCHEMA = {
 
 SAY_SCHEMA = {
     "name": "aituber_onair_say",
-    "description": "Ask Hakua to reply once through AITuber OnAir's Codex SDK character chat.",
+    "description": "Ask Hakua to reply once using Hermes Agent's plugin LLM first, with the Codex SDK path as an explicit fallback.",
     "parameters": {
         "type": "object",
         "required": ["prompt"],
         "properties": {
             "prompt": {"type": "string"},
             "repo_root": {"type": "string"},
-            "model": {"type": "string"},
+            "model": {
+                "type": "string",
+                "description": "Optional Codex SDK model id for the legacy codex backend.",
+            },
+            "reply_backend": {
+                "type": "string",
+                "enum": ["auto", "hermes", "codex"],
+                "description": "auto uses Hermes Agent ctx.llm when available; codex forces the legacy AITuber OnAir Codex SDK path.",
+            },
+            "hermes_provider": {
+                "type": "string",
+                "description": "Optional Hermes provider override, subject to plugin LLM trust policy.",
+            },
+            "hermes_model": {
+                "type": "string",
+                "description": "Optional Hermes model override, subject to plugin LLM trust policy.",
+            },
             "response_length": {
                 "type": "string",
                 "enum": ["veryShort", "short", "medium", "long"],
@@ -252,6 +343,60 @@ SAY_SCHEMA = {
             "play": {"type": "boolean"},
             "tts_voice": {"type": "string"},
             "tts_speed": {"type": "number"},
+            "with_runtime_context": {
+                "type": "boolean",
+                "description": "Include safe Hermes memory/env validation context before asking Hakua to reply.",
+            },
+        },
+    },
+}
+
+CONTEXT_STATUS_SCHEMA = {
+    "name": "aituber_onair_context_status",
+    "description": "Validate safe Hermes memory, public identity, stream URL, and environment readiness without revealing secrets.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "Optional incoming text to scan for personal information or secret-looking strings.",
+            },
+            "url": {
+                "type": "string",
+                "description": "Optional stream URL to validate.",
+            },
+        },
+    },
+}
+
+STREAM_START_TWEET_SCHEMA = {
+    "name": "aituber_onair_stream_start_tweet",
+    "description": "Draft or publish a stream-start X post through lm-twitterer with a validated URL.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Public stream URL. Falls back to configured stream_url or YouTube live id.",
+            },
+            "text": {
+                "type": "string",
+                "description": "Exact post body. The URL is appended if missing.",
+            },
+            "topic": {
+                "type": "string",
+                "description": "Short stream topic used when text is not supplied.",
+            },
+            "live": {
+                "type": "boolean",
+                "description": "Actually publish via lm-twitterer. Default false drafts only.",
+            },
+            "allow_private_url": {
+                "type": "boolean",
+                "description": "Allow localhost/LAN/Tailscale style URLs. Default false for live posts.",
+            },
+            "provider": {"type": "string"},
+            "model": {"type": "string"},
         },
     },
 }
@@ -341,6 +486,94 @@ STOP_YOUTUBE_COMMENTS_SCHEMA = {
     },
 }
 
+LOOPS_STATUS_SCHEMA = {
+    "name": "aituber_onair_loops_status",
+    "description": "Show autonomous talk and local comment reaction loop status.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+START_AUTONOMOUS_TALK_SCHEMA = {
+    "name": "aituber_onair_start_autonomous_talk",
+    "description": "Start Hakua's autonomous idle talk loop through local TTS.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "interval_seconds": {
+                "type": "number",
+                "minimum": 10,
+                "maximum": 3600,
+                "description": "Seconds between autonomous utterances.",
+            },
+            "topic": {
+                "type": "string",
+                "description": "Optional stream topic or standing context.",
+            },
+            "play": {
+                "type": "boolean",
+                "description": "Play synthesized speech locally. Default: true.",
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Restart an existing autonomous loop if one is alive.",
+            },
+        },
+    },
+}
+
+START_COMMENT_REACTIONS_SCHEMA = {
+    "name": "aituber_onair_start_comment_reactions",
+    "description": "Start Hakua's local comment reaction loop using the plugin comment queue.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "poll_seconds": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 120,
+                "description": "How often to check the local comment queue.",
+            },
+            "play": {
+                "type": "boolean",
+                "description": "Play synthesized speech locally. Default: true.",
+            },
+            "force": {
+                "type": "boolean",
+                "description": "Restart an existing comment reaction loop if one is alive.",
+            },
+        },
+    },
+}
+
+ENQUEUE_COMMENT_SCHEMA = {
+    "name": "aituber_onair_enqueue_comment",
+    "description": "Append a local comment for Hakua's comment reaction loop.",
+    "parameters": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text": {"type": "string"},
+            "author": {"type": "string"},
+            "source": {"type": "string"},
+        },
+    },
+}
+
+STOP_LOOPS_SCHEMA = {
+    "name": "aituber_onair_stop_loops",
+    "description": "Stop Hakua's autonomous talk and/or local comment reaction loops.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "enum": ["all", "autonomous", "comments"],
+                "description": "Which loop to stop. Default: all.",
+            },
+            "force": {"type": "boolean"},
+        },
+    },
+}
+
 TTS_STATUS_SCHEMA = {
     "name": "aituber_onair_tts_status",
     "description": "Show local irodoriTTS and VOICEVOX readiness for Hakua voice output.",
@@ -425,6 +658,26 @@ def _tts_active_file() -> Path:
 
 def _youtube_comments_active_file() -> Path:
     return _workspace_root() / "youtube-comments-active.json"
+
+
+def _autonomous_talk_active_file() -> Path:
+    return _workspace_root() / "autonomous-talk-active.json"
+
+
+def _comment_reactions_active_file() -> Path:
+    return _workspace_root() / "comment-reactions-active.json"
+
+
+def _local_comment_queue_file() -> Path:
+    path = _workspace_root() / "comment-queue.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _local_comment_processed_file() -> Path:
+    path = _workspace_root() / "comment-processed.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _log_file(name: str) -> Path:
@@ -637,14 +890,75 @@ def _npm_exe() -> str | None:
     return _which("npm")
 
 
+def _hermes_python_exe() -> str:
+    python_exe = Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "python.exe"
+    if python_exe.is_file():
+        return str(python_exe)
+    return sys.executable
+
+
 def _plugin_model(explicit: str | None = None) -> str:
     cfg = _plugin_config()
     return _path_text(explicit or cfg.get("model"))
 
 
+def _plugin_reply_backend(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    raw = _path_text(explicit if explicit is not None else cfg.get("reply_backend"))
+    backend = (raw or "auto").lower().strip()
+    if backend == "hermes-agent":
+        backend = "hermes"
+    if backend == "codex-sdk":
+        backend = "codex"
+    return backend if backend in SUPPORTED_REPLY_BACKENDS else "auto"
+
+
+def _plugin_hermes_provider(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    return _path_text(
+        explicit
+        if explicit is not None
+        else cfg.get("hermes_provider") or cfg.get("provider")
+    )
+
+
+def _plugin_hermes_model(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    return _path_text(explicit if explicit is not None else cfg.get("hermes_model"))
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled"}:
+        return False
+    return default
+
+
+def _plugin_runtime_context_enabled(explicit: Any = None) -> bool:
+    cfg = _plugin_config()
+    if explicit is not None:
+        return _coerce_bool(explicit, False)
+    return _coerce_bool(cfg.get("with_runtime_context"), False)
+
+
 def _plugin_response_length(explicit: str | None = None) -> str:
     cfg = _plugin_config()
     return _path_text(explicit or cfg.get("response_length")) or DEFAULT_RESPONSE_LENGTH
+
+
+def _response_length_to_tokens(response_length: str) -> int:
+    return {
+        "veryshort": 80,
+        "short": 160,
+        "medium": 360,
+        "long": 800,
+    }.get((response_length or "").replace("_", "").replace("-", "").lower(), 160)
 
 
 def _plugin_working_directory(repo_root: Path) -> str:
@@ -693,6 +1007,46 @@ def _plugin_avatar_port(avatar_kind: str, explicit: Any = None) -> int:
     if _coerce_avatar_kind(avatar_kind) == "vrm":
         return _plugin_vrm_port(explicit)
     return _plugin_fbx_port(explicit)
+
+
+def _plugin_avatar_host(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    raw = _path_text(explicit) or _path_text(cfg.get("avatar_host"))
+    host = raw or DEFAULT_AVATAR_HOST
+    if host in {"localhost", DEFAULT_AVATAR_HOST, "0.0.0.0", "::"}:
+        return host
+    if any(ch.isspace() for ch in host):
+        return DEFAULT_AVATAR_HOST
+    return host
+
+
+def _detect_lan_ipv4() -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return DEFAULT_AVATAR_HOST
+    finally:
+        sock.close()
+
+
+def _plugin_avatar_public_host(explicit: Any = None, host: str | None = None) -> str:
+    cfg = _plugin_config()
+    raw = _path_text(explicit) or _path_text(cfg.get("avatar_public_host"))
+    if raw:
+        return raw
+    bind_host = host or _plugin_avatar_host()
+    if bind_host in {"0.0.0.0", "::"}:
+        return _detect_lan_ipv4()
+    return "127.0.0.1" if bind_host == "localhost" else bind_host
+
+
+def _avatar_url(port: int, public_host: str | None = None) -> str:
+    host = public_host or _plugin_avatar_public_host()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}/"
 
 
 def _plugin_tts_provider(explicit: Any = None) -> str:
@@ -782,6 +1136,289 @@ def _child_process_env(extra: dict[str, Any] | None = None) -> dict[str, str]:
         if value is not None:
             env[str(key)] = str(value)
     return env
+
+
+def _hermes_env_file_values() -> dict[str, str]:
+    path = get_hermes_home() / ".env"
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return values
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#") or "=" not in text:
+            continue
+        key, value = text.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip().strip('"').strip("'")
+        values[key] = value
+    return values
+
+
+def _env_lookup(name: str) -> tuple[bool, str, str]:
+    value = os.environ.get(name)
+    if value:
+        return True, "process", value
+    env_file = _hermes_env_file_values()
+    value = env_file.get(name, "")
+    if value:
+        return True, "hermes_env_file", value
+    return False, "", ""
+
+
+def _safe_public_env_value(name: str) -> str:
+    if name not in PUBLIC_ENV_VALUE_KEYS:
+        return ""
+    present, _source, value = _env_lookup(name)
+    return value.strip() if present else ""
+
+
+def _contains_sensitive_text(text: str) -> bool:
+    return any(pattern.search(text or "") for pattern in SENSITIVE_TEXT_PATTERNS)
+
+
+def _memory_context_status() -> dict[str, Any]:
+    cfg = _load_config_readonly()
+    memory_cfg = cfg.get("memory", {}) if isinstance(cfg.get("memory"), dict) else {}
+    home = get_hermes_home()
+    memory_db = home / "ebbinghaus_memory.db"
+    state_db = home / "state.db"
+    return {
+        "memory_enabled": _coerce_bool(memory_cfg.get("memory_enabled"), False),
+        "user_profile_enabled": _coerce_bool(
+            memory_cfg.get("user_profile_enabled"), False
+        ),
+        "provider": str(memory_cfg.get("provider") or "builtin"),
+        "memory_db_exists": memory_db.is_file(),
+        "session_state_exists": state_db.is_file(),
+        "spoken_policy": "Do not speak raw personal data, file contents, tokens, or environment variable values.",
+    }
+
+
+def _env_validation_status() -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    for name, secret, purpose in ENV_VALIDATION_KEYS:
+        present, source, value = _env_lookup(name)
+        item: dict[str, Any] = {
+            "name": name,
+            "present": present,
+            "source": source,
+            "secret": secret,
+            "purpose": purpose,
+        }
+        if present and not secret and name in PUBLIC_ENV_VALUE_KEYS:
+            item["value"] = value
+        checks.append(item)
+    return checks
+
+
+def _youtube_live_url_from_id(live_id: str) -> str:
+    live_id = _youtube_live_id(live_id)
+    return f"https://www.youtube.com/watch?v={live_id}" if live_id else ""
+
+
+def _configured_stream_url(explicit: Any = None) -> str:
+    explicit_text = _path_text(explicit)
+    if explicit_text:
+        return explicit_text
+    cfg = _plugin_config()
+    configured = _path_text(cfg.get("stream_url"))
+    if configured:
+        return configured
+    env_url = _safe_public_env_value("AITUBER_ONAIR_STREAM_URL")
+    if env_url:
+        return env_url
+    live_id = _youtube_live_id(
+        cfg.get("youtube_live_id")
+        or _safe_public_env_value("AITUBER_ONAIR_YOUTUBE_LIVE_ID")
+        or _safe_public_env_value("YOUTUBE_LIVE_ID")
+    )
+    if live_id:
+        return _youtube_live_url_from_id(live_id)
+    active = _active_status()
+    return str(active.get("url") or "")
+
+
+def _url_publicity(url: str) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    result: dict[str, Any] = {
+        "url": url,
+        "valid": parsed.scheme in {"http", "https"} and bool(host),
+        "host": host,
+        "public": False,
+        "reason": "",
+    }
+    if not result["valid"]:
+        result["reason"] = "URL must be http(s) with a host."
+        return result
+    if host.lower() in {"localhost", "local", "127.0.0.1", "::1"}:
+        result["reason"] = "local loopback URL"
+        return result
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        result["public"] = not host.endswith(".local")
+        if not result["public"]:
+            result["reason"] = "local network hostname"
+        return result
+    if not ip.is_global:
+        result["reason"] = "non-public IP address"
+        return result
+    result["public"] = True
+    return result
+
+
+def context_status(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    prompt = str(values.get("prompt") or "")
+    stream_url = _configured_stream_url(values.get("url"))
+    env_checks = _env_validation_status()
+    present = {item["name"]: item["present"] for item in env_checks}
+    x_ready = bool(
+        present.get("LM_TWITTERER_BOT_SCREEN_NAME")
+        and present.get("LM_TWITTERER_AUTH_TOKEN")
+        and present.get("LM_TWITTERER_CT0")
+    )
+    youtube_ready = bool(
+        present.get("AITUBER_ONAIR_YOUTUBE_API_KEY")
+        or present.get("YOUTUBE_API_KEY")
+        or present.get("GOOGLE_API_KEY")
+    )
+    return {
+        "ok": True,
+        "checked_at": _now_utc(),
+        "memory": _memory_context_status(),
+        "environment": env_checks,
+        "privacy": {
+            "input_contains_sensitive_text": _contains_sensitive_text(prompt),
+            "speaks_secret_values": False,
+            "speaks_raw_personal_memory": False,
+        },
+        "stream": {
+            "url": stream_url,
+            "url_validation": _url_publicity(stream_url) if stream_url else {},
+        },
+        "readiness": {
+            "lm_twitterer_ready": x_ready,
+            "youtube_api_ready": youtube_ready,
+        },
+    }
+
+
+def _safe_speech_context(values: dict[str, Any], prompt: str) -> str:
+    status_payload = context_status({"prompt": prompt, "url": values.get("url")})
+    memory = cast(dict[str, Any], status_payload.get("memory") or {})
+    readiness = cast(dict[str, Any], status_payload.get("readiness") or {})
+    stream = cast(dict[str, Any], status_payload.get("stream") or {})
+    privacy = cast(dict[str, Any], status_payload.get("privacy") or {})
+    url = str(stream.get("url") or "")
+    url_validation = cast(dict[str, Any], stream.get("url_validation") or {})
+    lines = [
+        "安全な実行文脈:",
+        f"- Hermes memory: {'enabled' if memory.get('memory_enabled') else 'disabled'}; user profile: {'enabled' if memory.get('user_profile_enabled') else 'disabled'}; provider: {memory.get('provider')}",
+        f"- Environment readiness: lm-twitterer={'ready' if readiness.get('lm_twitterer_ready') else 'not ready'}; youtube_api={'ready' if readiness.get('youtube_api_ready') else 'not ready'}",
+    ]
+    if url:
+        visibility = "public" if url_validation.get("public") else "local_or_unverified"
+        lines.append(f"- Stream URL: {url} ({visibility})")
+    if privacy.get("input_contains_sensitive_text"):
+        lines.append(
+            "- Incoming text may contain personal or secret-looking data. Do not repeat it literally."
+        )
+    lines.append("- Do not speak raw environment variable values, tokens, cookies, file contents, or private memory.")
+    return "\n".join(lines)
+
+
+def _prompt_with_runtime_context(prompt: str, values: dict[str, Any]) -> str:
+    if not _plugin_runtime_context_enabled(values.get("with_runtime_context")):
+        return prompt
+    return f"{_safe_speech_context(values, prompt)}\n\nUser input:\n{prompt}"
+
+
+def _compose_stream_start_tweet(values: dict[str, Any], url: str) -> str:
+    text = str(values.get("text") or "").strip()
+    if text and url not in text:
+        text = f"{text.rstrip()}\n{url}"
+    if not text:
+        topic = str(values.get("topic") or "").strip()
+        if topic:
+            text = f"配信を開始しました。\n{topic}\n{url}\n#hermesagent"
+        else:
+            text = f"配信を開始しました。\n{url}\n#hermesagent"
+    if "#hermesagent" not in text.lower():
+        text = f"{text.rstrip()}\n#hermesagent"
+    if len(text) > 280:
+        budget = max(0, 280 - len(url) - len("\n#hermesagent\n") - 1)
+        lead = text.replace(url, "").replace("#hermesagent", "").strip()
+        text = f"{lead[:budget].rstrip()}\n{url}\n#hermesagent".strip()
+    return text
+
+
+def stream_start_tweet(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    url = _configured_stream_url(values.get("url"))
+    if not url:
+        return {
+            "ok": False,
+            "error": "stream URL is required. Set stream_url, youtube_live_id, AITUBER_ONAIR_STREAM_URL, or pass --url.",
+        }
+    url_validation = _url_publicity(url)
+    live = bool(values.get("live"))
+    allow_private = bool(values.get("allow_private_url"))
+    if live and not allow_private and not url_validation.get("public"):
+        return {
+            "ok": False,
+            "error": "refusing to live-post a local or unverified stream URL",
+            "url": url,
+            "url_validation": url_validation,
+            "hint": "Use a public YouTube/X/website URL, or pass allow_private_url only for deliberate testing.",
+        }
+    tweet_text = _compose_stream_start_tweet(values, url)
+    if _contains_sensitive_text(tweet_text):
+        return {
+            "ok": False,
+            "error": "tweet text appears to contain personal or secret-looking data",
+        }
+    context = context_status({"url": url})
+    readiness = cast(dict[str, Any], context.get("readiness") or {})
+    if live and not readiness.get("lm_twitterer_ready"):
+        return {
+            "ok": False,
+            "error": "lm-twitterer is not ready for live posting",
+            "tweet_text": tweet_text,
+            "context": context,
+        }
+    try:
+        lm_core = importlib.import_module("plugins.lm-twitterer.core")
+        post_result = lm_core.post(
+            str(values.get("topic") or "AITuber stream start"),
+            dry_run=not live,
+            provider=str(values.get("provider") or "") or None,
+            model=str(values.get("model") or "") or None,
+            text=tweet_text,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"lm-twitterer post failed: {exc}",
+            "tweet_text": tweet_text,
+            "context": context,
+        }
+    return {
+        "ok": bool(post_result.get("ok")),
+        "live": live,
+        "url": url,
+        "tweet_text": tweet_text,
+        "url_validation": url_validation,
+        "lm_twitterer": post_result,
+        "context": context,
+    }
 
 
 def _run_command(
@@ -1813,6 +2450,184 @@ def stop_youtube_comments(values: dict[str, Any] | None = None) -> dict[str, Any
     }
 
 
+def _loop_active_status(path: Path, reason: str) -> dict[str, Any]:
+    active = _read_json_file(path)
+    if not active:
+        return {"ok": False, "reason": reason}
+    pid = int(active.get("pid") or 0)
+    return {**active, "ok": True, "alive": _pid_alive(pid), "pid": pid}
+
+
+def loops_status(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "autonomous": _loop_active_status(
+            _autonomous_talk_active_file(), "no active autonomous talk loop"
+        ),
+        "comments": _loop_active_status(
+            _comment_reactions_active_file(), "no active comment reaction loop"
+        ),
+        "queue_file": str(_local_comment_queue_file()),
+        "processed_file": str(_local_comment_processed_file()),
+    }
+
+
+def _start_local_loop(
+    *,
+    active_file: Path,
+    mode: str,
+    log_name: str,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    existing = _loop_active_status(active_file, f"no active {mode} loop")
+    if existing.get("alive") and not values.get("force"):
+        return {"ok": True, "already_running": True, "active": existing}
+    if existing.get("alive") and values.get("force"):
+        _stop_loop_file(active_file, force=True)
+
+    play = values.get("play")
+    if play is None:
+        play = True
+    log_path = _log_file(log_name)
+    cmd = [
+        _hermes_python_exe(),
+        "-m",
+        "plugins.aituber_onair.local_loops_worker",
+        "--mode",
+        mode,
+    ]
+    if mode == "autonomous":
+        interval = max(10.0, min(3600.0, float(values.get("interval_seconds") or 60.0)))
+        cmd.extend(["--interval-seconds", str(interval)])
+        topic = str(values.get("topic") or "").strip()
+        if topic:
+            cmd.extend(["--topic", topic])
+        poll_seconds = None
+    else:
+        poll_seconds = max(1.0, min(120.0, float(values.get("poll_seconds") or 2.0)))
+        cmd.extend(["--poll-seconds", str(poll_seconds)])
+        cmd.extend(["--queue-file", str(_local_comment_queue_file())])
+        cmd.extend(["--processed-file", str(_local_comment_processed_file())])
+        interval = None
+        topic = ""
+    if play:
+        cmd.append("--play")
+
+    env = _child_process_env(
+        {
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+        }
+    )
+    with log_path.open("ab") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+    record = {
+        "pid": proc.pid,
+        "mode": mode,
+        "play": bool(play),
+        "log_path": str(log_path),
+        "started_at": time.time(),
+        "command": cmd,
+    }
+    if interval is not None:
+        record["interval_seconds"] = interval
+    if poll_seconds is not None:
+        record["poll_seconds"] = poll_seconds
+        record["queue_file"] = str(_local_comment_queue_file())
+        record["processed_file"] = str(_local_comment_processed_file())
+    if topic:
+        record["topic"] = topic
+    _write_json_file(active_file, record)
+    return {"ok": True, "active": record}
+
+
+def start_autonomous_talk_loop(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _start_local_loop(
+        active_file=_autonomous_talk_active_file(),
+        mode="autonomous",
+        log_name="autonomous-talk.log",
+        values=values or {},
+    )
+
+
+def start_comment_reaction_loop(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _start_local_loop(
+        active_file=_comment_reactions_active_file(),
+        mode="comments",
+        log_name="comment-reactions.log",
+        values=values or {},
+    )
+
+
+def enqueue_comment(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    text = str(values.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "text is required."}
+    item = {
+        "id": f"local-{int(time.time() * 1000)}",
+        "author": str(values.get("author") or "viewer").strip() or "viewer",
+        "text": text,
+        "source": str(values.get("source") or "local").strip() or "local",
+        "created_at": _now_utc(),
+    }
+    queue_file = _local_comment_queue_file()
+    with queue_file.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+    return {"ok": True, "comment": item, "queue_file": str(queue_file)}
+
+
+def _stop_loop_file(path: Path, *, force: bool = False) -> dict[str, Any]:
+    active = _loop_active_status(path, f"no active loop at {path.name}")
+    if not active.get("ok"):
+        return active
+    pid = int(active.get("pid") or 0)
+    if active.get("alive"):
+        try:
+            from gateway.status import terminate_pid
+
+            terminate_pid(pid, force=force)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "pid": pid}
+        for _ in range(20):
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.2)
+        if _pid_alive(pid):
+            return {
+                "ok": False,
+                "error": "loop still appears alive; retry with force=true",
+                "pid": pid,
+            }
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return {"ok": True, "stopped": True, "pid": pid, "was_alive": bool(active.get("alive"))}
+
+
+def stop_loops(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    target = str(values.get("target") or "all").strip().lower()
+    force = bool(values.get("force"))
+    results: dict[str, Any] = {}
+    if target in {"all", "autonomous"}:
+        results["autonomous"] = _stop_loop_file(_autonomous_talk_active_file(), force=force)
+    if target in {"all", "comments"}:
+        results["comments"] = _stop_loop_file(_comment_reactions_active_file(), force=force)
+    if not results:
+        return {"ok": False, "error": "target must be all, autonomous, or comments."}
+    return {"ok": all(item.get("ok") for item in results.values()), "results": results}
+
+
 def youtube_ready(values: dict[str, Any] | None = None) -> dict[str, Any]:
     values = values or {}
     require_obs = values.get("require_obs")
@@ -1931,6 +2746,34 @@ def handle_stop_youtube_comments(args: dict[str, Any] | None = None) -> str:
     return _json(stop_youtube_comments(args or {}))
 
 
+def handle_loops_status(args: dict[str, Any] | None = None) -> str:
+    return _json(loops_status(args or {}))
+
+
+def handle_start_autonomous_talk(args: dict[str, Any] | None = None) -> str:
+    return _json(start_autonomous_talk_loop(args or {}))
+
+
+def handle_start_comment_reactions(args: dict[str, Any] | None = None) -> str:
+    return _json(start_comment_reaction_loop(args or {}))
+
+
+def handle_enqueue_comment(args: dict[str, Any] | None = None) -> str:
+    return _json(enqueue_comment(args or {}))
+
+
+def handle_stop_loops(args: dict[str, Any] | None = None) -> str:
+    return _json(stop_loops(args or {}))
+
+
+def handle_context_status(args: dict[str, Any] | None = None) -> str:
+    return _json(context_status(args or {}))
+
+
+def handle_stream_start_tweet(args: dict[str, Any] | None = None) -> str:
+    return _json(stream_start_tweet(args or {}))
+
+
 def status() -> dict[str, Any]:
     cfg = _plugin_config()
     repo = resolve_repo_root()
@@ -1941,7 +2784,9 @@ def status() -> dict[str, Any]:
     vrm_port = _plugin_vrm_port()
     avatar_kind = _coerce_avatar_kind(cfg.get("avatar_kind"))
     port = _plugin_avatar_port(avatar_kind)
-    url = f"http://127.0.0.1:{port}/"
+    avatar_host = _plugin_avatar_host()
+    avatar_public_host = _plugin_avatar_public_host(host=avatar_host)
+    url = _avatar_url(port, avatar_public_host)
     active = _active_status()
     active["url_ready"] = (
         _url_ready(str(active.get("url") or url)) if active.get("alive") else False
@@ -1986,10 +2831,16 @@ def status() -> dict[str, Any]:
         "config": {
             "character_name": cfg.get("character_name") or "はくあ",
             "model": cfg.get("model") or "Codex CLI default",
+            "reply_backend": cfg.get("reply_backend") or "auto",
+            "hermes_provider": cfg.get("hermes_provider") or "Hermes default",
+            "hermes_model": cfg.get("hermes_model") or "Hermes default",
+            "hermes_llm_bound": _llm_factory is not None,
             "response_length": cfg.get("response_length") or DEFAULT_RESPONSE_LENGTH,
             "avatar_kind": avatar_kind,
             "fbx_port": fbx_port,
             "vrm_port": vrm_port,
+            "avatar_host": avatar_host,
+            "avatar_public_host": avatar_public_host,
             "url": url,
             "tts_provider": cfg.get("tts_provider") or DEFAULT_TTS_PROVIDER,
             "tts_voice": _plugin_tts_voice() or "provider default",
@@ -1997,6 +2848,8 @@ def status() -> dict[str, Any]:
             "voicevox_url": _plugin_voicevox_url(),
             "voicevox_speaker": _plugin_voicevox_speaker(),
             "youtube_live_id": _youtube_live_id() or "",
+            "stream_url": _configured_stream_url(),
+            "with_runtime_context": _plugin_runtime_context_enabled(),
         },
         "paths": {
             "repo_root": str(repo) if repo else "",
@@ -2013,7 +2866,9 @@ def status() -> dict[str, Any]:
         },
         "codex_sdk": codex_sdk,
         "tts": tts,
+        "context": context_status({}),
         "youtube_comments": youtube_comments_status({}),
+        "loops": loops_status({}),
         "active": active,
         "readiness": readiness,
         "recommended_actions": recommended,
@@ -2059,6 +2914,11 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
     entry["avatar_kind"] = _coerce_avatar_kind(values.get("avatar_kind"))
     entry["fbx_port"] = _plugin_fbx_port(values.get("fbx_port"))
     entry["vrm_port"] = _plugin_vrm_port(values.get("vrm_port"))
+    entry["avatar_host"] = _plugin_avatar_host(values.get("avatar_host"))
+    public_host = _plugin_avatar_public_host(
+        values.get("avatar_public_host"), host=entry["avatar_host"]
+    )
+    entry["avatar_public_host"] = public_host
     entry["tts_provider"] = _plugin_tts_provider(values.get("tts_provider"))
     entry["voicevox_url"] = _plugin_voicevox_url(values.get("voicevox_url"))
     entry["voicevox_speaker"] = _plugin_voicevox_speaker(values.get("voicevox_speaker"))
@@ -2076,9 +2936,22 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
     youtube_live_id = _youtube_live_id(values.get("youtube_live_id"))
     if youtube_live_id:
         entry["youtube_live_id"] = youtube_live_id
+    stream_url = _path_text(values.get("stream_url"))
+    if stream_url:
+        entry["stream_url"] = stream_url
+    if values.get("with_runtime_context") is not None:
+        entry["with_runtime_context"] = _coerce_bool(
+            values.get("with_runtime_context"), False
+        )
     model = _path_text(values.get("model"))
     if model:
         entry["model"] = model
+    if values.get("reply_backend"):
+        entry["reply_backend"] = _plugin_reply_backend(values.get("reply_backend"))
+    if values.get("hermes_provider"):
+        entry["hermes_provider"] = _path_text(values.get("hermes_provider"))
+    if values.get("hermes_model"):
+        entry["hermes_model"] = _path_text(values.get("hermes_model"))
     prompt = str(values.get("system_prompt") or "").strip()
     entry["system_prompt"] = prompt or DEFAULT_HAKUA_SYSTEM_PROMPT
 
@@ -2089,9 +2962,14 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         "repo_root": str(repo) if repo else "",
         "character_name": entry["character_name"],
         "model": entry.get("model") or "Codex CLI default",
-        "fbx_url": f"http://127.0.0.1:{entry['fbx_port']}/",
-        "vrm_url": f"http://127.0.0.1:{entry['vrm_port']}/",
+        "reply_backend": entry.get("reply_backend") or "auto",
+        "hermes_provider": entry.get("hermes_provider") or "Hermes default",
+        "hermes_model": entry.get("hermes_model") or "Hermes default",
+        "fbx_url": _avatar_url(entry["fbx_port"], public_host),
+        "vrm_url": _avatar_url(entry["vrm_port"], public_host),
         "avatar_kind": entry["avatar_kind"],
+        "avatar_host": entry["avatar_host"],
+        "avatar_public_host": public_host,
         "tts_provider": entry["tts_provider"],
         "voicevox_url": entry["voicevox_url"],
         "voicevox_speaker": entry["voicevox_speaker"],
@@ -2099,6 +2977,8 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         "tts_voice": entry.get("tts_voice", ""),
         "tts_speed": entry.get("tts_speed", ""),
         "youtube_live_id": entry.get("youtube_live_id", ""),
+        "stream_url": entry.get("stream_url", ""),
+        "with_runtime_context": entry.get("with_runtime_context", False),
     }
 
 
@@ -2319,9 +3199,12 @@ def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
         values.get("vrm_port") if avatar_kind == "vrm" else values.get("fbx_port")
     )
     port = _plugin_avatar_port(avatar_kind, explicit_port)
-    url = f"http://127.0.0.1:{port}/"
+    host = _plugin_avatar_host(values.get("host"))
+    public_host = _plugin_avatar_public_host(values.get("public_host"), host=host)
+    url = _avatar_url(port, public_host)
+    readiness_url = _avatar_url(port, "127.0.0.1" if host in {"0.0.0.0", "::"} else public_host)
     log_path = _log_file(f"{avatar_kind}-vite.log")
-    cmd = [npm, "run", "dev", "--", "--host", "127.0.0.1", "--port", str(port)]
+    cmd = [npm, "run", "dev", "--", "--host", host, "--port", str(port)]
     env = _child_process_env(
         {
             "AITUBER_ONAIR_HERMES_PLUGIN": "1",
@@ -2364,7 +3247,10 @@ def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
         "avatar_kind": avatar_kind,
         "avatar_display_name": display_name,
         "url": url,
+        "readiness_url": readiness_url,
         "port": port,
+        "host": host,
+        "public_host": public_host,
         "started_at": time.time(),
         "log_path": str(log_path),
         "command": cmd,
@@ -2372,7 +3258,7 @@ def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
     _write_json_file(_active_file(), record)
     ready = False
     for _ in range(20):
-        if _url_ready(url, timeout_seconds=0.5):
+        if _url_ready(readiness_url, timeout_seconds=0.5):
             ready = True
             break
         if proc.poll() is not None:
@@ -2460,10 +3346,241 @@ def _extract_character_reply(stdout: str, character_name: str) -> str:
     return useful[-1] if useful else ""
 
 
+def _codex_provider_failed(stderr: str) -> bool:
+    text = stderr.lower()
+    return "codex-sdk provider failed" in text or "original error:" in text
+
+
+def _codex_provider_error_detail(stderr: str) -> str:
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line in {"Error", "Original error:"}:
+            continue
+        if line.startswith("[error]"):
+            continue
+        if line.startswith("at "):
+            continue
+        json_text = ""
+        if line.startswith("Error: {"):
+            json_text = line.removeprefix("Error: ").strip()
+        elif line.startswith("{"):
+            json_text = line
+        if json_text:
+            try:
+                data = json.loads(json_text)
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, dict):
+                error = data.get("error")
+                if isinstance(error, dict) and error.get("message"):
+                    return str(error["message"])
+        return line
+    return ""
+
+
+def _should_retry_codex_default(model: str, stderr: str) -> bool:
+    if not model:
+        return False
+    text = stderr.lower()
+    return "model is not supported" in text or "not supported when using codex" in text
+
+
+def _should_try_hermes_cli_fallback(payload: dict[str, Any]) -> bool:
+    detail = str(payload.get("error") or "").lower()
+    return (
+        "model is not supported" in detail
+        or "not supported when using codex" in detail
+        or "usage limit" in detail
+        or "rate limit" in detail
+    )
+
+
+def _run_hermes_llm_once(
+    *,
+    prompt: str,
+    character_name: str,
+    system_prompt: str,
+    response_length: str,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    if _llm_factory is None:
+        return {
+            "ok": False,
+            "provider": "hermes-agent",
+            "error": "Hermes Agent plugin LLM is not bound.",
+        }
+    provider = _plugin_hermes_provider(values.get("hermes_provider"))
+    model = _plugin_hermes_model(values.get("hermes_model"))
+    timeout = int(values.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
+    try:
+        llm = _llm_factory()
+        result = llm.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            provider=provider or None,
+            model=model or None,
+            max_tokens=_response_length_to_tokens(response_length),
+            temperature=0.7,
+            timeout=timeout,
+            purpose="aituber-onair.hakua",
+        )
+        reply = str(getattr(result, "text", "") or "").strip()
+        return {
+            "ok": bool(reply),
+            "character_name": character_name,
+            "provider": "hermes-agent",
+            "model": str(getattr(result, "model", "") or model or "Hermes default"),
+            "hermes_provider": str(
+                getattr(result, "provider", "") or provider or "Hermes default"
+            ),
+            "reply": reply,
+            "usage": getattr(result, "usage", None),
+            "audit": getattr(result, "audit", None),
+            "error": "" if reply else "Hermes Agent plugin LLM returned no reply.",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "character_name": character_name,
+            "provider": "hermes-agent",
+            "model": model or "Hermes default",
+            "hermes_provider": provider or "Hermes default",
+            "reply": "",
+            "error": f"Hermes Agent plugin LLM failed: {exc}",
+        }
+
+
+def _run_hermes_cli_once(
+    *,
+    prompt: str,
+    character_name: str,
+    system_prompt: str,
+    response_length: str,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    timeout = int(values.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
+    oneshot_prompt = (
+        f"{system_prompt}\n\n"
+        f"You are speaking as {character_name}. "
+        "Return only the short spoken reply. Do not call tools.\n\n"
+        f"User input:\n{prompt}"
+    )
+    cmd = [_hermes_python_exe(), "-m", "hermes_cli", "--oneshot", oneshot_prompt]
+    hermes_model = _plugin_hermes_model(values.get("hermes_model"))
+    hermes_provider = _plugin_hermes_provider(values.get("hermes_provider"))
+    if hermes_model:
+        cmd.extend(["--model", hermes_model])
+    if hermes_provider and hermes_model:
+        cmd.extend(["--provider", hermes_provider])
+    env = _child_process_env(
+        {
+            "HERMES_YOLO_MODE": "1",
+            "HERMES_ACCEPT_HOOKS": "1",
+            "HERMES_QUIET": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+        }
+    )
+    result = _run_command(
+        cmd,
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        timeout_seconds=timeout,
+    )
+    reply = str(result.get("stdout") or "").strip()
+    ok = result.get("ok") is True and bool(reply)
+    payload = {
+        "ok": ok,
+        "character_name": character_name,
+        "provider": "hermes-agent-cli",
+        "model": hermes_model or "Hermes default",
+        "hermes_provider": hermes_provider or "Hermes default",
+        "reply": reply,
+        "response_length": response_length,
+        "exit_code": result.get("exit_code"),
+        "command": result.get("command"),
+        "cwd": result.get("cwd"),
+        "stderr": result.get("stderr"),
+    }
+    if not ok:
+        payload["error"] = (
+            str(result.get("stderr") or "").strip()
+            or "Hermes Agent oneshot returned no reply."
+        )
+    return payload
+
+
 def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     prompt = str(values.get("prompt") or "").strip()
     if not prompt:
         return {"ok": False, "error": "prompt is required."}
+    spoken_prompt = _prompt_with_runtime_context(prompt, values)
+    character_name = _plugin_character_name()
+    response_length = _plugin_response_length(values.get("response_length"))
+    system_prompt = _plugin_system_prompt()
+    reply_backend = _plugin_reply_backend(values.get("reply_backend"))
+
+    if reply_backend in {"auto", "hermes"} and _llm_factory is not None:
+        payload = _run_hermes_llm_once(
+            prompt=spoken_prompt,
+            character_name=character_name,
+            system_prompt=system_prompt,
+            response_length=response_length,
+            values=values,
+        )
+        payload["reply_backend"] = "hermes"
+        if not payload.get("ok") and _should_try_hermes_cli_fallback(payload):
+            hermes_error = payload.get("error")
+            payload = _run_hermes_cli_once(
+                prompt=spoken_prompt,
+                character_name=character_name,
+                system_prompt=system_prompt,
+                response_length=response_length,
+                values=values,
+            )
+            payload["reply_backend"] = "hermes"
+            payload["hermes_facade_error"] = hermes_error
+        if values.get("speak") and payload.get("reply"):
+            payload["tts"] = synthesize_speech(
+                {
+                    "text": payload["reply"],
+                    "provider": values.get("tts_provider"),
+                    "output_path": values.get("output_path"),
+                    "format": values.get("format"),
+                    "voice": values.get("tts_voice") or values.get("voice"),
+                    "speed": values.get("tts_speed") or values.get("speed"),
+                    "play": values.get("play"),
+                }
+            )
+        return payload
+
+    if reply_backend == "hermes":
+        payload = _run_hermes_cli_once(
+            prompt=spoken_prompt,
+            character_name=character_name,
+            system_prompt=system_prompt,
+            response_length=response_length,
+            values=values,
+        )
+        payload["reply_backend"] = "hermes"
+        if values.get("speak") and payload.get("reply"):
+            payload["tts"] = synthesize_speech(
+                {
+                    "text": payload["reply"],
+                    "provider": values.get("tts_provider"),
+                    "output_path": values.get("output_path"),
+                    "format": values.get("format"),
+                    "voice": values.get("tts_voice") or values.get("voice"),
+                    "speed": values.get("tts_speed") or values.get("speed"),
+                    "play": values.get("play"),
+                }
+            )
+        return payload
+
     repo, error = _resolve_required_repo(values.get("repo_root"))
     if error:
         return error
@@ -2498,62 +3615,93 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
             "auth": auth,
         }
 
-    character_name = _plugin_character_name()
     model = _plugin_model(values.get("model"))
-    response_length = _plugin_response_length(values.get("response_length"))
     timeout = int(values.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
+    working_directory = _plugin_working_directory(repo)
     prompt_path = (
         _workspace_root() / "prompts" / f"hakua-once-{int(time.time() * 1000)}.txt"
     )
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(prompt, encoding="utf-8")
-    cmd = [
-        node,
-        str(script),
-        f"--onceFile={prompt_path}",
-        f"--name={character_name}",
-        f"--systemPrompt={_plugin_system_prompt()}",
-        f"--responseLength={response_length}",
-        f"--workingDirectory={_plugin_working_directory(repo)}",
-        "--skipGitRepoCheck=true",
-    ]
-    if model:
-        cmd.append(f"--model={model}")
-    env = _child_process_env(
-        {
-            "CODEX_CHARACTER_NAME": character_name,
-            "CODEX_CHARACTER_SYSTEM_PROMPT": _plugin_system_prompt(),
-            "CODEX_WORKING_DIRECTORY": _plugin_working_directory(repo),
-            "CODEX_SKIP_GIT_REPO_CHECK": "true",
-            "CODEX_RESPONSE_LENGTH": response_length,
-            "CODEX_SDK_MODEL": model if model else None,
-        }
-    )
+    prompt_path.write_text(spoken_prompt, encoding="utf-8")
 
-    result = _run_command(cmd, cwd=repo, env=env, timeout_seconds=timeout)
+    def run_chat_once(active_model: str) -> dict[str, Any]:
+        cmd = [
+            node,
+            str(script),
+            f"--onceFile={prompt_path}",
+            f"--name={character_name}",
+            f"--systemPrompt={system_prompt}",
+            f"--responseLength={response_length}",
+            f"--workingDirectory={working_directory}",
+            "--skipGitRepoCheck=true",
+        ]
+        if active_model:
+            cmd.append(f"--model={active_model}")
+        env = _child_process_env(
+            {
+                "CODEX_CHARACTER_NAME": character_name,
+                "CODEX_CHARACTER_SYSTEM_PROMPT": system_prompt,
+                "CODEX_WORKING_DIRECTORY": working_directory,
+                "CODEX_SKIP_GIT_REPO_CHECK": "true",
+                "CODEX_RESPONSE_LENGTH": response_length,
+                "CODEX_SDK_MODEL": active_model if active_model else None,
+            }
+        )
+        return _run_command(cmd, cwd=repo, env=env, timeout_seconds=timeout)
+
+    attempts: list[dict[str, Any]] = []
+    result = run_chat_once(model)
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
     reply = _extract_character_reply(stdout, character_name)
-    provider_failed = (
-        "codex-sdk provider failed" in stderr.lower()
-        or "original error:" in stderr.lower()
+    provider_failed = _codex_provider_failed(stderr)
+    attempts.append(
+        {
+            "model": model or "Codex CLI default",
+            "ok": result.get("ok") is True and bool(reply) and not provider_failed,
+            "provider_error": _codex_provider_error_detail(stderr),
+        }
     )
+    effective_model = model
+    fallback_from_model = ""
+    if provider_failed and _should_retry_codex_default(model, stderr):
+        fallback_from_model = model
+        result = run_chat_once("")
+        stdout = str(result.get("stdout") or "")
+        stderr = str(result.get("stderr") or "")
+        reply = _extract_character_reply(stdout, character_name)
+        provider_failed = _codex_provider_failed(stderr)
+        effective_model = ""
+        attempts.append(
+            {
+                "model": "Codex CLI default",
+                "ok": result.get("ok") is True and bool(reply) and not provider_failed,
+                "provider_error": _codex_provider_error_detail(stderr),
+            }
+        )
     ok = result.get("ok") is True and bool(reply) and not provider_failed
     payload = {
         "ok": ok,
         "character_name": character_name,
         "provider": "codex-sdk",
-        "model": model or "Codex CLI default",
+        "reply_backend": "codex",
+        "model": effective_model or "Codex CLI default",
         "reply": reply,
         "stdout": stdout,
         "stderr": stderr,
         "exit_code": result.get("exit_code"),
         "command": result.get("command"),
         "cwd": result.get("cwd"),
+        "attempts": attempts,
     }
+    if fallback_from_model:
+        payload["fallback_from_model"] = fallback_from_model
     if not ok:
         if provider_failed:
             payload["error"] = "Codex SDK provider failed."
+            detail = _codex_provider_error_detail(stderr)
+            if detail:
+                payload["provider_error"] = detail
         elif not reply:
             payload["error"] = "Codex character chat returned no reply."
         else:
@@ -2588,6 +3736,8 @@ def handle_smoke(args: dict[str, Any] | None = None) -> str:
 
 HELP = """aituber commands:
   /aituber status
+  /aituber context-status
+  /aituber stream-start-tweet <url> [--live]
   /aituber configure
   /aituber prepare
   /aituber start [fbx|vrm|vroid] [--force]
@@ -2602,6 +3752,11 @@ HELP = """aituber commands:
   /aituber comments-status
   /aituber start-comments <youtube-live-id-or-url>
   /aituber stop-comments
+  /aituber loops-status
+  /aituber start-autonomous
+  /aituber start-reactions
+  /aituber comment <text>
+  /aituber stop-loops
 """
 
 
@@ -2615,6 +3770,22 @@ def handle_slash(raw_args: str) -> str:
     command = argv[0].lower()
     if command == "status":
         return handle_status({})
+    if command in {"context-status", "runtime-context"}:
+        prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
+        return handle_context_status({"prompt": prompt})
+    if command in {"stream-start-tweet", "tweet-start", "post-start"}:
+        url = next((arg for arg in argv[1:] if not arg.startswith("--")), "")
+        topic = " ".join(
+            arg for arg in argv[1:] if not arg.startswith("--") and arg != url
+        )
+        return handle_stream_start_tweet(
+            {
+                "url": url,
+                "topic": topic,
+                "live": "--live" in argv,
+                "allow_private_url": "--allow-private-url" in argv,
+            }
+        )
     if command in {"configure", "config", "setup"}:
         return handle_configure_hakua({})
     if command == "prepare":
@@ -2652,9 +3823,34 @@ def handle_slash(raw_args: str) -> str:
         )
     if command in {"stop-comments", "comments-stop"}:
         return handle_stop_youtube_comments({"force": "--force" in argv})
+    if command in {"loops-status", "loop-status"}:
+        return handle_loops_status({})
+    if command in {"start-autonomous", "autonomous-start", "idle-talk"}:
+        topic = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
+        return handle_start_autonomous_talk(
+            {
+                "topic": topic,
+                "play": "--no-play" not in argv,
+                "force": "--force" in argv,
+            }
+        )
+    if command in {"start-reactions", "reactions-start", "start-local-comments"}:
+        return handle_start_comment_reactions(
+            {"play": "--no-play" not in argv, "force": "--force" in argv}
+        )
+    if command in {"comment", "enqueue-comment"}:
+        prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
+        return handle_enqueue_comment({"text": prompt, "source": "slash"})
+    if command in {"stop-loops", "loops-stop"}:
+        return handle_stop_loops({"target": "all", "force": "--force" in argv})
     if command == "say":
         prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
         return handle_say(
-            {"prompt": prompt, "speak": "--speak" in argv, "play": "--play" in argv}
+            {
+                "prompt": prompt,
+                "speak": "--speak" in argv,
+                "play": "--play" in argv,
+                "with_runtime_context": "--with-runtime-context" in argv,
+            }
         )
     return HELP

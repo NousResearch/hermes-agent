@@ -17,6 +17,8 @@ provides_tools:
   - aituber_onair_start_tts
   - aituber_onair_speak
   - aituber_onair_say
+  - aituber_onair_context_status
+  - aituber_onair_stream_start_tweet
   - aituber_onair_smoke
   - aituber_onair_youtube_ready
 provides_cli:

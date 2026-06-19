@@ -16,9 +16,16 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     )
     configure.add_argument("--repo-root", default="")
     configure.add_argument("--model", default="")
+    configure.add_argument(
+        "--reply-backend", choices=["auto", "hermes", "codex"], default=""
+    )
+    configure.add_argument("--hermes-provider", default="")
+    configure.add_argument("--hermes-model", default="")
     configure.add_argument("--fbx-port", type=int, default=None)
     configure.add_argument("--vrm-port", type=int, default=None)
     configure.add_argument("--avatar", choices=["fbx", "vrm", "vroid"], default="")
+    configure.add_argument("--avatar-host", default="")
+    configure.add_argument("--avatar-public-host", default="")
     configure.add_argument("--system-prompt", default="")
     configure.add_argument(
         "--tts-provider", choices=["auto", "irodori", "voicevox", "none"], default=""
@@ -29,8 +36,30 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     configure.add_argument("--tts-voice", default="")
     configure.add_argument("--tts-speed", type=float, default=None)
     configure.add_argument("--youtube-live-id", default="")
+    configure.add_argument("--stream-url", default="")
+    configure.add_argument("--with-runtime-context", action="store_true", default=None)
 
     subs.add_parser("status", help="Show AITuber OnAir bridge readiness")
+    context_status = subs.add_parser(
+        "context-status",
+        aliases=["runtime-context"],
+        help="Validate safe memory/env context for Hakua speech",
+    )
+    context_status.add_argument("--prompt", default="")
+    context_status.add_argument("--url", default="")
+
+    stream_tweet = subs.add_parser(
+        "stream-start-tweet",
+        aliases=["tweet-start", "post-start"],
+        help="Draft or publish a URL-bearing stream-start post via lm-twitterer",
+    )
+    stream_tweet.add_argument("--url", default="")
+    stream_tweet.add_argument("--text", default="")
+    stream_tweet.add_argument("--topic", default="")
+    stream_tweet.add_argument("--live", action="store_true")
+    stream_tweet.add_argument("--allow-private-url", action="store_true")
+    stream_tweet.add_argument("--provider", default="")
+    stream_tweet.add_argument("--model", default="")
 
     prepare = subs.add_parser("prepare", help="Prepare Codex SDK character chat")
     prepare.add_argument("--repo-root", default="")
@@ -45,6 +74,8 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     start.add_argument("--avatar", choices=["fbx", "vrm", "vroid"], default="")
     start.add_argument("--fbx-port", type=int, default=None)
     start.add_argument("--vrm-port", type=int, default=None)
+    start.add_argument("--host", default="")
+    start.add_argument("--public-host", default="")
     start.add_argument("--force", action="store_true")
 
     stop = subs.add_parser("stop", help="Stop the plugin-managed avatar React app")
@@ -77,10 +108,15 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     speak.add_argument("--voicevox-speaker", type=int, default=None)
     speak.add_argument("--play", action="store_true")
 
-    say = subs.add_parser("say", help="Ask Hakua to reply once through Codex Auth")
+    say = subs.add_parser("say", help="Ask Hakua to reply once")
     say.add_argument("prompt", nargs="*")
     say.add_argument("--repo-root", default="")
     say.add_argument("--model", default="")
+    say.add_argument(
+        "--reply-backend", choices=["auto", "hermes", "codex"], default=""
+    )
+    say.add_argument("--hermes-provider", default="")
+    say.add_argument("--hermes-model", default="")
     say.add_argument("--response-length", default="")
     say.add_argument("--timeout-seconds", type=int, default=None)
     say.add_argument("--speak", action="store_true")
@@ -91,9 +127,15 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     say.add_argument("--tts-speed", type=float, default=None)
     say.add_argument("--output-path", default="")
     say.add_argument("--play", action="store_true")
+    say.add_argument("--with-runtime-context", action="store_true")
 
     smoke = subs.add_parser("smoke", help="Run a short Hakua readiness prompt")
     smoke.add_argument("--repo-root", default="")
+    smoke.add_argument(
+        "--reply-backend", choices=["auto", "hermes", "codex"], default=""
+    )
+    smoke.add_argument("--hermes-provider", default="")
+    smoke.add_argument("--hermes-model", default="")
     smoke.add_argument("--timeout-seconds", type=int, default=None)
 
     youtube_ready = subs.add_parser(
@@ -129,6 +171,48 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     )
     stop_comments.add_argument("--force", action="store_true")
 
+    start_autonomous = subs.add_parser(
+        "start-autonomous",
+        aliases=["autonomous-start", "idle-talk"],
+        help="Start Hakua autonomous idle talk",
+    )
+    start_autonomous.add_argument("--interval-seconds", type=float, default=None)
+    start_autonomous.add_argument("--topic", default="")
+    start_autonomous.add_argument("--no-play", action="store_true")
+    start_autonomous.add_argument("--force", action="store_true")
+
+    start_reactions = subs.add_parser(
+        "start-reactions",
+        aliases=["reactions-start", "start-local-comments"],
+        help="Start Hakua local comment reaction loop",
+    )
+    start_reactions.add_argument("--poll-seconds", type=float, default=None)
+    start_reactions.add_argument("--no-play", action="store_true")
+    start_reactions.add_argument("--force", action="store_true")
+
+    enqueue = subs.add_parser(
+        "comment",
+        aliases=["enqueue-comment"],
+        help="Append a local comment for Hakua to react to",
+    )
+    enqueue.add_argument("text", nargs="*")
+    enqueue.add_argument("--author", default="")
+    enqueue.add_argument("--source", default="")
+
+    subs.add_parser(
+        "loops-status",
+        aliases=["loop-status"],
+        help="Show local autonomous/comment reaction loop status",
+    )
+
+    stop_loops = subs.add_parser(
+        "stop-loops",
+        aliases=["loops-stop"],
+        help="Stop local autonomous/comment reaction loops",
+    )
+    stop_loops.add_argument("--target", choices=["all", "autonomous", "comments"], default="all")
+    stop_loops.add_argument("--force", action="store_true")
+
     subparser.set_defaults(func=aituber_onair_command)
 
 
@@ -137,7 +221,7 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
     if not command:
         print(
             "usage: hermes aituber-onair "
-            "{configure,status,prepare,start,stop,tts-status,start-tts,speak,say,smoke,youtube-ready,start-comments,comments-status,stop-comments}"
+            "{configure,status,context-status,stream-start-tweet,prepare,start,stop,tts-status,start-tts,speak,say,smoke,youtube-ready,start-comments,comments-status,stop-comments,start-autonomous,start-reactions,comment,loops-status,stop-loops}"
         )
         return 2
     if command in {"configure", "setup"}:
@@ -146,9 +230,14 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                 {
                     "repo_root": getattr(args, "repo_root", ""),
                     "model": getattr(args, "model", ""),
+                    "reply_backend": getattr(args, "reply_backend", ""),
+                    "hermes_provider": getattr(args, "hermes_provider", ""),
+                    "hermes_model": getattr(args, "hermes_model", ""),
                     "fbx_port": getattr(args, "fbx_port", None),
                     "vrm_port": getattr(args, "vrm_port", None),
                     "avatar_kind": getattr(args, "avatar", ""),
+                    "avatar_host": getattr(args, "avatar_host", ""),
+                    "avatar_public_host": getattr(args, "avatar_public_host", ""),
                     "system_prompt": getattr(args, "system_prompt", ""),
                     "tts_provider": getattr(args, "tts_provider", ""),
                     "voicevox_url": getattr(args, "voicevox_url", ""),
@@ -157,11 +246,38 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "tts_voice": getattr(args, "tts_voice", ""),
                     "tts_speed": getattr(args, "tts_speed", None),
                     "youtube_live_id": getattr(args, "youtube_live_id", ""),
+                    "stream_url": getattr(args, "stream_url", ""),
+                    "with_runtime_context": getattr(
+                        args, "with_runtime_context", False
+                    ),
                 }
             )
         )
     if command == "status":
         return _print(core.status())
+    if command in {"context-status", "runtime-context"}:
+        return _print(
+            core.context_status(
+                {
+                    "prompt": getattr(args, "prompt", ""),
+                    "url": getattr(args, "url", ""),
+                }
+            )
+        )
+    if command in {"stream-start-tweet", "tweet-start", "post-start"}:
+        return _print(
+            core.stream_start_tweet(
+                {
+                    "url": getattr(args, "url", ""),
+                    "text": getattr(args, "text", ""),
+                    "topic": getattr(args, "topic", ""),
+                    "live": getattr(args, "live", False),
+                    "allow_private_url": getattr(args, "allow_private_url", False),
+                    "provider": getattr(args, "provider", ""),
+                    "model": getattr(args, "model", ""),
+                }
+            )
+        )
     if command == "prepare":
         return _print(
             core.prepare(
@@ -185,6 +301,8 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "avatar_kind": getattr(args, "avatar", ""),
                     "fbx_port": getattr(args, "fbx_port", None),
                     "vrm_port": getattr(args, "vrm_port", None),
+                    "host": getattr(args, "host", ""),
+                    "public_host": getattr(args, "public_host", ""),
                     "force": getattr(args, "force", False),
                 }
             )
@@ -227,6 +345,9 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "prompt": " ".join(getattr(args, "prompt", [])).strip(),
                     "repo_root": getattr(args, "repo_root", ""),
                     "model": getattr(args, "model", ""),
+                    "reply_backend": getattr(args, "reply_backend", ""),
+                    "hermes_provider": getattr(args, "hermes_provider", ""),
+                    "hermes_model": getattr(args, "hermes_model", ""),
                     "response_length": getattr(args, "response_length", ""),
                     "timeout_seconds": getattr(args, "timeout_seconds", None),
                     "speak": getattr(args, "speak", False),
@@ -235,6 +356,7 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "tts_speed": getattr(args, "tts_speed", None),
                     "output_path": getattr(args, "output_path", ""),
                     "play": getattr(args, "play", False),
+                    "with_runtime_context": getattr(args, "with_runtime_context", False),
                 }
             )
         )
@@ -243,6 +365,9 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
             core.handle_smoke(
                 {
                     "repo_root": getattr(args, "repo_root", ""),
+                    "reply_backend": getattr(args, "reply_backend", ""),
+                    "hermes_provider": getattr(args, "hermes_provider", ""),
+                    "hermes_model": getattr(args, "hermes_model", ""),
                     "timeout_seconds": getattr(args, "timeout_seconds", None),
                 }
             )
@@ -275,6 +400,48 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
     if command in {"stop-comments", "comments-stop"}:
         return _print(
             core.stop_youtube_comments({"force": getattr(args, "force", False)})
+        )
+    if command in {"start-autonomous", "autonomous-start", "idle-talk"}:
+        return _print(
+            core.start_autonomous_talk_loop(
+                {
+                    "interval_seconds": getattr(args, "interval_seconds", None),
+                    "topic": getattr(args, "topic", ""),
+                    "play": not getattr(args, "no_play", False),
+                    "force": getattr(args, "force", False),
+                }
+            )
+        )
+    if command in {"start-reactions", "reactions-start", "start-local-comments"}:
+        return _print(
+            core.start_comment_reaction_loop(
+                {
+                    "poll_seconds": getattr(args, "poll_seconds", None),
+                    "play": not getattr(args, "no_play", False),
+                    "force": getattr(args, "force", False),
+                }
+            )
+        )
+    if command in {"comment", "enqueue-comment"}:
+        return _print(
+            core.enqueue_comment(
+                {
+                    "text": " ".join(getattr(args, "text", [])).strip(),
+                    "author": getattr(args, "author", ""),
+                    "source": getattr(args, "source", ""),
+                }
+            )
+        )
+    if command in {"loops-status", "loop-status"}:
+        return _print(core.loops_status({}))
+    if command in {"stop-loops", "loops-stop"}:
+        return _print(
+            core.stop_loops(
+                {
+                    "target": getattr(args, "target", "all"),
+                    "force": getattr(args, "force", False),
+                }
+            )
         )
     print("unknown aituber-onair command")
     return 2

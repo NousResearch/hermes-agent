@@ -120,13 +120,11 @@ jobs:
       - name: Install Python dependencies (for docker tests)
         if: github.event_name != 'pull_request'
         run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
           # ``dev`` extra pulls in pytest, pytest-asyncio —
           # everything tests/docker/ needs.  We deliberately avoid ``all``
           # here because the docker tests only drive the container via
           # subprocess and don't import hermes_agent's optional deps.
-          uv pip install -e ".[dev]"
+          uv sync --locked --python 3.11 --extra dev
 
       - name: Run docker integration tests
         if: github.event_name != 'pull_request'

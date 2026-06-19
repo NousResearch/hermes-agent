@@ -553,6 +553,13 @@ def _read_logging_config():
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
+            # Managed scope: an administrator can pin logging.* too. Overlay via
+            # the shared helper (fail-open) since this reads config.yaml directly.
+            try:
+                from hermes_cli import managed_scope
+                cfg = managed_scope.apply_managed_overlay(cfg)
+            except Exception:
+                pass
             log_cfg = cfg.get("logging", {})
             if isinstance(log_cfg, dict):
                 return (

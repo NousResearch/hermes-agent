@@ -2179,6 +2179,11 @@ def run_doctor(args):
         if _mem_cfg_path.exists():
             with open(_mem_cfg_path, encoding="utf-8") as _f:
                 _raw_cfg = _yaml.safe_load(_f) or {}
+            try:
+                from hermes_cli import managed_scope
+                _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
+            except Exception:
+                pass
             _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:
         pass

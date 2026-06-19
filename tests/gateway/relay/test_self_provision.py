@@ -1,9 +1,13 @@
-"""Unit tests for managed-boot relay self-provisioning.
+"""Unit tests for boot-time relay self-provisioning.
 
-Covers gateway.relay.self_provision_if_managed() + the relay_endpoint() /
+Covers gateway.relay.self_provision_relay() + the relay_endpoint() /
 relay_route_keys() config readers. The connector HTTP POST is monkeypatched
 (the cross-repo E2E exercises the real /relay/provision); these prove the
 TRIGGER logic, in-process env wiring, and fail-soft boot behaviour.
+
+The trigger is deliberately NOT is_managed() (that means NixOS/package-manager-
+managed, which is False on a NAS-hosted Fly agent). The real gate is
+"relay_url set + no pinned secret + a resolvable NAS token".
 """
 
 from __future__ import annotations
@@ -48,8 +52,13 @@ def _stub_post(captured: dict):
     return _fake
 
 
-def _arm(monkeypatch, *, managed=True, url="wss://connector.example/relay", token="nas-token"):
-    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: managed)
+def _arm(monkeypatch, *, url="wss://connector.example/relay", token="nas-token"):
+    """Arm the real trigger: a relay URL + a resolvable NAS token.
+
+    Note there is intentionally no `managed` knob — self-provision no longer
+    consults is_managed(). A test that wants the "no NAS identity" branch
+    monkeypatches resolve_nous_access_token to raise instead.
+    """
     monkeypatch.setattr(relay, "relay_url", lambda: url)
     monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: token)
 
@@ -82,29 +91,37 @@ def test_provision_url_maps_ws_to_http():
 
 # ─────────────────────────── trigger logic ───────────────────────────
 
-def test_skips_when_not_managed(monkeypatch):
-    _arm(monkeypatch, managed=False)
-    called = {"n": 0}
-    monkeypatch.setattr(relay, "_post_provision", lambda **k: called.__setitem__("n", called["n"] + 1) or {})
-    assert relay.self_provision_if_managed() is False
-    assert called["n"] == 0
+def test_provisions_on_nas_host_that_is_NOT_is_managed(monkeypatch):
+    """Regression: a NAS-hosted Fly agent sets neither HERMES_MANAGED nor a
+    .managed marker, so is_managed() is False. Self-provision must STILL fire —
+    the old is_managed() gate silently no-oped exactly this case in staging.
+    """
+    # Force is_managed() False to model a real hosted agent; it must be irrelevant.
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    _arm(monkeypatch)
+    captured: dict = {}
+    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
+
+    assert relay.self_provision_relay() is True
+    assert relay.relay_connection_auth()[1] == "a" * 64
 
 
 def test_skips_when_relay_not_configured(monkeypatch):
     _arm(monkeypatch, url=None)
     called = {"n": 0}
     monkeypatch.setattr(relay, "_post_provision", lambda **k: called.__setitem__("n", called["n"] + 1) or {})
-    assert relay.self_provision_if_managed() is False
+    assert relay.self_provision_relay() is False
     assert called["n"] == 0
 
 
 def test_skips_when_secret_already_pinned(monkeypatch):
+    """A self-hosted, enrolled gateway has a pinned secret -> never self-provisions."""
     _arm(monkeypatch)
     monkeypatch.setenv("GATEWAY_RELAY_ID", "gw-pinned")
     monkeypatch.setenv("GATEWAY_RELAY_SECRET", "deadbeef")
     called = {"n": 0}
     monkeypatch.setattr(relay, "_post_provision", lambda **k: called.__setitem__("n", called["n"] + 1) or {})
-    assert relay.self_provision_if_managed() is False
+    assert relay.self_provision_relay() is False
     assert called["n"] == 0
     # The pinned secret is untouched.
     assert relay.relay_connection_auth() == ("gw-pinned", "deadbeef")
@@ -119,7 +136,7 @@ def test_provisions_and_sets_env_in_process(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
 
-    assert relay.self_provision_if_managed() is True
+    assert relay.self_provision_relay() is True
     # The connector POST carried the gateway-asserted endpoint + route keys.
     assert captured["provision_url"] == "https://connector.example/relay/provision"
     assert captured["access_token"] == "nas-token"
@@ -138,7 +155,7 @@ def test_outbound_only_when_no_endpoint(monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
 
-    assert relay.self_provision_if_managed() is True
+    assert relay.self_provision_relay() is True
     assert captured["gateway_endpoint"] is None
     assert captured["route_keys"] == []
     assert relay.relay_connection_auth()[1] == "a" * 64
@@ -146,15 +163,18 @@ def test_outbound_only_when_no_endpoint(monkeypatch):
 
 # ─────────────────────────── fail-soft ───────────────────────────
 
-def test_token_failure_is_non_fatal(monkeypatch):
-    _arm(monkeypatch)
+def test_no_nas_token_is_non_fatal(monkeypatch):
+    """A self-hosted box with a relay URL but no resolvable NAS identity skips
+    quietly (this is the branch that replaces the old is_managed() gate for the
+    non-NAS case)."""
+    monkeypatch.setattr(relay, "relay_url", lambda: "wss://connector.example/relay")
 
     def _boom():
         raise RuntimeError("no token")
 
     monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", _boom)
     # Must not raise; returns False; no creds set.
-    assert relay.self_provision_if_managed() is False
+    assert relay.self_provision_relay() is False
     assert relay.relay_connection_auth() == (None, None)
 
 
@@ -165,5 +185,5 @@ def test_connector_failure_is_non_fatal(monkeypatch):
         raise RuntimeError("connector returned HTTP 503")
 
     monkeypatch.setattr(relay, "_post_provision", _boom)
-    assert relay.self_provision_if_managed() is False
+    assert relay.self_provision_relay() is False
     assert relay.relay_connection_auth() == (None, None)

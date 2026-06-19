@@ -26,6 +26,91 @@ _skill_commands_platform: Optional[str] = None
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
+# ---------------------------------------------------------------------------
+# Skill-scaffolding markers and the canonical extractor.
+#
+# When a user invokes a /skill (or /bundle), Hermes expands the turn into a
+# model-facing message that embeds the full skill body plus scaffolding. That
+# expanded text is what flows into the agent loop — and into memory providers
+# via MemoryManager. Providers that store or embed the raw user turn (mem0,
+# openviking, hindsight, retaindb, byterover, honcho, supermemory) would
+# otherwise capture the entire skill body instead of what the user actually
+# asked. ``extract_user_instruction_from_skill_message`` recovers just the
+# user's instruction so memory stays clean.
+#
+# These markers MUST stay byte-identical to the builders below
+# (``_build_skill_message`` here, ``build_bundle_invocation_message`` in
+# agent/skill_bundles.py). They are co-located with the single-skill builder
+# on purpose, and the bundle markers are asserted against the bundle builder in
+# tests/openviking_plugin/test_openviking.py::test_skill_markers_match_hermes_scaffolding.
+# ---------------------------------------------------------------------------
+_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
+_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
+_SINGLE_SKILL_INSTRUCTION = (
+    "The user has provided the following instruction alongside the skill invocation: "
+)
+_RUNTIME_NOTE = "\n\n[Runtime note:"
+_BUNDLE_MARKER = " skill bundle,"
+_BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
+_BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
+
+
+def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
+    """Recover the user's instruction from a slash-skill-expanded turn.
+
+    Returns:
+        - The original string unchanged when it is NOT skill scaffolding
+          (a normal user message passes straight through).
+        - The extracted user instruction when the scaffolding carried one.
+        - ``None`` when the content is skill scaffolding with no user
+          instruction (i.e. a bare ``/skill`` invocation). Callers that feed
+          memory providers should skip the turn in that case — there is no
+          user content worth storing.
+    """
+    if not isinstance(content, str):
+        return None
+
+    if not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return content
+
+    if _BUNDLE_MARKER in content:
+        return _extract_bundle_user_instruction(content)
+
+    if _SINGLE_SKILL_MARKER in content:
+        return _extract_single_skill_user_instruction(content)
+
+    return None
+
+
+def _extract_single_skill_user_instruction(message: str) -> Optional[str]:
+    # Single-skill format appends the user instruction after the skill body, so
+    # the last occurrence is the user-provided one; the body may quote this text.
+    marker_idx = message.rfind(_SINGLE_SKILL_INSTRUCTION)
+    if marker_idx < 0:
+        return None
+
+    instruction = message[marker_idx + len(_SINGLE_SKILL_INSTRUCTION):]
+    runtime_idx = instruction.find(_RUNTIME_NOTE)
+    if runtime_idx >= 0:
+        instruction = instruction[:runtime_idx]
+    instruction = instruction.strip()
+    return instruction or None
+
+
+def _extract_bundle_user_instruction(message: str) -> Optional[str]:
+    # Bundle format puts the user instruction before the loaded skills, so the
+    # first occurrence is the user-provided one.
+    marker_idx = message.find(_BUNDLE_USER_INSTRUCTION)
+    if marker_idx < 0:
+        return None
+
+    instruction = message[marker_idx + len(_BUNDLE_USER_INSTRUCTION):]
+    first_skill_idx = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
+    if first_skill_idx >= 0:
+        instruction = instruction[:first_skill_idx]
+    instruction = instruction.strip()
+    return instruction or None
+
 
 def _resolve_skill_commands_platform() -> Optional[str]:
     """Return the current platform scope used for disabled-skill filtering.
@@ -270,7 +355,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     _skill_commands_platform = _resolve_skill_commands_platform()
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
+        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
@@ -290,6 +375,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     frontmatter, body = _parse_frontmatter(content)
                     # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):
+                        continue
+                    # Skip skills not relevant to the current runtime env
+                    # (kanban/docker/s6). Offer-time only; explicit load bypasses.
+                    if not skill_matches_environment(frontmatter):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:

@@ -1,16 +1,23 @@
 """Tests for hermes_logging — centralized logging setup."""
-
+import io
 import logging
 import os
 import stat
+import sys
 import threading
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import hermes_logging
+# Use whatever RotatingFileHandler class hermes_logging actually resolved so
+# the autouse fixture's isinstance checks (which strip rotating handlers
+# between tests) match the real handlers on every platform. hermes_logging
+# aliases concurrent-log-handler's ConcurrentRotatingFileHandler on Windows
+# (the #44873 fix) but keeps stdlib RotatingFileHandler on POSIX, so importing
+# the name from the module under test keeps the two in lockstep.
+from hermes_logging import RotatingFileHandler
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +32,8 @@ def _reset_logging_state():
     """
     hermes_logging._logging_initialized = False
     root = logging.getLogger()
+    prev_root_level = root.level
+    root.setLevel(logging.NOTSET)
     # Strip ALL RotatingFileHandlers — not just the ones we added — so that
     # handlers leaked from other test modules in the same xdist worker don't
     # pollute our counts.
@@ -43,6 +52,7 @@ def _reset_logging_state():
         if h not in pre_existing:
             root.removeHandler(h)
             h.close()
+    root.setLevel(prev_root_level)
     hermes_logging._logging_initialized = False
     hermes_logging.clear_session_context()
 
@@ -355,6 +365,50 @@ class TestGatewayMode:
         assert "file msg" in content
 
 
+class TestGuiMode:
+    """setup_logging(mode='gui') creates a filtered gui.log."""
+
+    def test_gui_log_created(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+        root = logging.getLogger()
+
+        gui_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui_handlers) == 1
+
+    def test_gui_log_created_after_cli_init(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+
+        root = logging.getLogger()
+        gui_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui_handlers) == 1
+
+    def test_gui_log_receives_only_gui_components(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+
+        logging.getLogger("hermes_cli.web_server").info("dashboard online")
+        logging.getLogger("tui_gateway.ws").info("ws connected")
+        logging.getLogger("gateway.run").info("gateway event")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        gui_log = hermes_home / "logs" / "gui.log"
+        assert gui_log.exists()
+        content = gui_log.read_text()
+        assert "dashboard online" in content
+        assert "ws connected" in content
+        assert "gateway event" not in content
+
+
 class TestSessionContext:
     """set_session_context / clear_session_context + _SessionFilter."""
 
@@ -559,6 +613,11 @@ class TestComponentPrefixes:
 
     def test_cron_prefix(self):
         assert ("cron",) == hermes_logging.COMPONENT_PREFIXES["cron"]
+
+    def test_gui_prefix(self):
+        prefixes = hermes_logging.COMPONENT_PREFIXES["gui"]
+        assert "hermes_cli.web_server" in prefixes
+        assert "tui_gateway" in prefixes
 
 
 class TestSetupVerboseLogging:
@@ -945,3 +1004,74 @@ class TestExternalRotationRecovery:
         assert gw_path.exists(), "gateway.log was never recreated"
         assert "AFTER rotation" in gw_path.read_text()
         assert "AFTER rotation" not in rotated.read_text()
+
+
+class TestSafeStderr:
+    """Tests for _safe_stderr() — Unicode tolerance on Windows console."""
+
+    def test_returns_stderr_on_utf8_system(self, monkeypatch):
+        """On UTF-8 systems, _safe_stderr() returns sys.stderr unchanged."""
+        import io
+        fake_stderr = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", fake_stderr)
+        # On Linux/macOS, encoding is typically utf-8
+        result = hermes_logging._safe_stderr()
+        # Should return the same object (or a equivalent stream)
+        assert result is fake_stderr or getattr(result, "encoding", "").lower().startswith("utf")
+
+    def test_wraps_non_utf8_stderr(self, monkeypatch):
+        """On non-UTF-8 systems (e.g. Windows cp949), wraps stderr with UTF-8."""
+        import io
+
+        class FakeStderr:
+            """Simulates a Windows stderr with legacy encoding."""
+            encoding = "cp949"
+            buffer = io.BytesIO()
+
+            def write(self, s):
+                pass
+
+            def flush(self):
+                pass
+
+        fake = FakeStderr()
+        monkeypatch.setattr(sys, "stderr", fake)
+        result = hermes_logging._safe_stderr()
+        # Should be a TextIOWrapper, not the original FakeStderr
+        assert isinstance(result, io.TextIOWrapper)
+        assert result.encoding == "utf-8"
+        assert result.errors == "replace"
+
+    def test_handler_emits_unicode_without_crash(self, tmp_path):
+        """StreamHandler with _safe_stderr can emit Unicode messages."""
+        import io
+
+        # Create a stderr-like stream with ASCII encoding
+        class AsciiStream:
+            encoding = "ascii"
+            buffer = io.BytesIO()
+
+            def write(self, s):
+                self.buffer.write(s.encode("ascii", errors="replace"))
+
+            def flush(self):
+                pass
+
+        # Without the fix, this would crash on cp949/ASCII stderr.
+        # With the wrapper, the em-dash is replaced with '?'
+        handler = logging.StreamHandler(
+            io.TextIOWrapper(
+                io.BytesIO(),
+                encoding="utf-8",
+                errors="replace",
+            )
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger = logging.getLogger("_test_unicode")
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        try:
+            # Em-dash U+2014 — the exact character from the bug report
+            logger.info("Session hygiene: 400 messages — auto-compressing")
+        finally:
+            logger.removeHandler(handler)

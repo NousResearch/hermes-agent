@@ -161,7 +161,15 @@ class WeComAdapter(BasePlatformAdapter):
         ).strip() or DEFAULT_WS_URL
 
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WECOM_DM_POLICY", "open")).strip().lower()
-        self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
+        # dm_policy already honors WECOM_DM_POLICY, so the allowlist must honor
+        # WECOM_ALLOWED_USERS too. Without the env fallback an env-only setup
+        # (dm_policy=allowlist via env, no config extra) runs with an empty
+        # allowlist and drops every authorized DM at intake.
+        self._allow_from = _coerce_list(
+            extra.get("allow_from")
+            or extra.get("allowFrom")
+            or os.getenv("WECOM_ALLOWED_USERS", "")
+        )
 
         self._group_policy = str(extra.get("group_policy") or os.getenv("WECOM_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))

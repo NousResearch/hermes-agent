@@ -48,12 +48,123 @@ def test_stamp_file_takes_precedence(tmp_path):
         assert detect_install_method(project_root=tmp_path) == "docker"
 
 
-def test_docker_detected_via_dockerenv(tmp_path):
+def test_code_scoped_stamp_wins_over_home_stamp(tmp_path):
+    """The stamp next to the running code is authoritative over $HERMES_HOME.
+
+    Models a host git install whose $HERMES_HOME is shared with (and stamped
+    'docker' by) a co-located container. The code-scoped stamp must win so the
+    host install is correctly identified as 'git' and 'hermes update' works.
+    """
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    (code / ".install_method").write_text("git\n")
+    (home / ".install_method").write_text("docker\n")  # container contamination
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=home):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=code) == "git"
+
+
+def test_home_docker_stamp_ignored_when_not_containerized(tmp_path):
+    """A 'docker' home stamp is ignored on a host (non-container) install.
+
+    Self-heal path for homes already poisoned by an older image that wrote
+    'docker' into the shared $HERMES_HOME. With no code-scoped stamp, a host
+    git checkout must fall through to '.git' detection rather than honour the
+    contaminating 'docker' value and refuse to update.
+    """
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    (code / ".git").mkdir()
+    (home / ".install_method").write_text("docker\n")
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=home), \
+         patch("hermes_cli.config._running_in_container", return_value=False):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=code) == "git"
+
+
+def test_home_docker_stamp_honored_inside_container(tmp_path):
+    """A 'docker' home stamp is still honoured when genuinely containerized.
+
+    Back-compat: an older published image that only ever wrote the home-scoped
+    stamp (no baked code stamp) must still resolve to 'docker' so the update
+    path keeps directing the user to ``docker pull``.
+    """
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    (home / ".install_method").write_text("docker\n")
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=home), \
+         patch("hermes_cli.config._running_in_container", return_value=True):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=code) == "docker"
+
+
+def test_home_non_docker_stamp_still_honored_for_backcompat(tmp_path):
+    """Legacy non-'docker' home stamps (e.g. 'git') are still respected.
+
+    Only the 'docker' value carries the cross-contamination risk, so a host
+    install that historically stamped 'git'/'pip' into $HERMES_HOME keeps
+    resolving from there when no code-scoped stamp exists yet.
+    """
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    (home / ".install_method").write_text("git\n")
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=home), \
+         patch("hermes_cli.config._running_in_container", return_value=False):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=code) == "git"
+
+
+def test_stamp_install_method_writes_code_scoped(tmp_path):
+    """stamp_install_method writes next to the code, not into $HERMES_HOME."""
+    code = tmp_path / "code"
+    home = tmp_path / "home"
+    code.mkdir()
+    home.mkdir()
+    with patch("hermes_cli.config.get_hermes_home", return_value=home):
+        from hermes_cli.config import stamp_install_method
+        stamp_install_method("pip", project_root=code)
+    assert (code / ".install_method").read_text().strip() == "pip"
+    assert not (home / ".install_method").exists()
+
+
+def test_container_without_stamp_is_not_docker(tmp_path):
+    """An unstamped install in a generic container must NOT be flagged as docker.
+
+    Regression for issue #34397. The two supported installs both stamp
+    ``.install_method`` (the curl installer -> ``git``, covered by
+    ``test_stamp_file_takes_precedence``; the published image -> ``docker``),
+    so neither hits this path. An unsupported manual install dropped into a
+    container has no stamp and was wrongly classified as the published Docker
+    image, so ``hermes update`` refused to run. With a ``.git`` checkout it
+    must resolve to ``git``.
+    """
+    (tmp_path / ".git").mkdir()
     with patch("hermes_cli.config.get_managed_system", return_value=None), \
          patch("hermes_cli.config.get_hermes_home", return_value=tmp_path), \
          patch("hermes_constants.is_container", return_value=True):
         from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=tmp_path) == "docker"
+        assert detect_install_method(project_root=tmp_path) == "git"
+
+
+def test_container_pip_install_without_stamp_is_pip(tmp_path):
+    """Container + no .git + no stamp -> pip, not docker (issue #34397)."""
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path), \
+         patch("hermes_constants.is_container", return_value=True):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=tmp_path) == "pip"
 
 
 def test_recommended_update_command_docker():

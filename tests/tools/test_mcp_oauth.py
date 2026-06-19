@@ -26,6 +26,12 @@ from tools.mcp_oauth import (
 )
 
 
+def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = is_tty
+    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+
 # ---------------------------------------------------------------------------
 # HermesTokenStorage
 # ---------------------------------------------------------------------------
@@ -164,6 +170,7 @@ class TestBuildOAuthAuth:
             pytest.skip("MCP SDK auth not available")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
         auth = build_oauth_auth("test", "https://example.com/mcp")
         assert isinstance(auth, OAuthClientProvider)
 
@@ -180,6 +187,7 @@ class TestBuildOAuthAuth:
             pytest.skip("MCP SDK auth not available")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
         build_oauth_auth("slack", "https://slack.example.com/mcp", {
             "client_id": "my-app-id",
             "client_secret": "my-secret",
@@ -199,6 +207,7 @@ class TestBuildOAuthAuth:
             pytest.skip("MCP SDK auth not available")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
         provider = build_oauth_auth("scoped", "https://example.com/mcp", {
             "scope": "read write admin",
         })
@@ -403,6 +412,7 @@ class TestOAuthPortSharing:
             pytest.skip("MCP SDK auth not available")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
         build_oauth_auth("test-port", "https://example.com/mcp")
         assert mod._oauth_port is not None
         assert isinstance(mod._oauth_port, int)
@@ -479,32 +489,21 @@ class TestWaitForCallbackNoBlocking:
 class TestBuildOAuthAuthNonInteractive:
     """build_oauth_auth() in non-interactive mode."""
 
-    def test_noninteractive_without_cached_tokens_warns(self, tmp_path, monkeypatch, caplog):
-        """Without cached tokens, non-interactive mode logs a clear warning."""
-        try:
-            from mcp.client.auth import OAuthClientProvider
-        except ImportError:
-            pytest.skip("MCP SDK auth not available")
+    def test_noninteractive_without_cached_tokens_fails_fast(self, tmp_path, monkeypatch):
+        """Without cached tokens, non-interactive mode skips browser auth."""
+        pytest.importorskip("mcp.client.auth")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = False
         monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
-        import logging
-        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
-            auth = build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
-
-        assert auth is not None
-        assert "no cached tokens found" in caplog.text.lower()
-        assert "non-interactive" in caplog.text.lower()
+        with pytest.raises(OAuthNonInteractiveError, match="non-interactive"):
+            build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
 
     def test_noninteractive_with_cached_tokens_no_warning(self, tmp_path, monkeypatch, caplog):
         """With cached tokens, non-interactive mode logs no 'no cached tokens' warning."""
-        try:
-            from mcp.client.auth import OAuthClientProvider
-        except ImportError:
-            pytest.skip("MCP SDK auth not available")
+        pytest.importorskip("mcp.client.auth")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         mock_stdin = MagicMock()

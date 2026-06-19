@@ -55,6 +55,16 @@ class InvalidCodeError(Exception):
     """
 
 
+class InvalidCredentialsError(Exception):
+    """A username/password pair was rejected by a password provider.
+
+    Raised by :meth:`DashboardAuthProvider.complete_password_login`. The
+    ``/auth/password-login`` route translates this to HTTP 401 with a
+    deliberately generic detail (never distinguishing "unknown user" from
+    "wrong password") so the endpoint can't be used as a username oracle.
+    """
+
+
 class RefreshExpiredError(Exception):
     """The refresh token is dead.
 
@@ -94,10 +104,32 @@ class DashboardAuthProvider(ABC):
 
     Subclasses MUST set ``name`` (lowercase identifier, stable forever)
     and ``display_name`` (user-facing label on the login page).
+
+    Password (non-redirect) providers:
+      A provider that authenticates with a username + password instead of
+      an OAuth redirect sets ``supports_password = True`` and implements
+      ``complete_password_login``. The login page then renders a
+      credential form (POSTing to ``/auth/password-login``) instead of a
+      "Log in with X" redirect button. Everything downstream of login —
+      ``verify_session`` / ``refresh_session`` / ``revoke_session``, the
+      session cookies, the WS-ticket mint — is identical to the OAuth
+      path, because a password session is just a :class:`Session` with
+      provider-minted opaque tokens. The OAuth methods (``start_login`` /
+      ``complete_login``) remain abstract; a pure-password provider that
+      will never be reached via the redirect flow may implement them as
+      stubs that raise ``NotImplementedError``.
     """
 
     name: str = ""
     display_name: str = ""
+
+    # When True, this provider authenticates via username + password
+    # (``complete_password_login``) rather than (or in addition to) the
+    # OAuth redirect flow. The login page renders a credential form for
+    # such providers; the ``/auth/password-login`` route dispatches to
+    # ``complete_password_login``. OAuth-only providers leave this False
+    # and are completely unaffected.
+    supports_password: bool = False
 
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
@@ -120,6 +152,36 @@ class DashboardAuthProvider(ABC):
 
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
+
+    def complete_password_login(
+        self, *, username: str, password: str
+    ) -> "Session":
+        """Verify a username/password pair and mint a :class:`Session`.
+
+        Only called when ``supports_password`` is True (the
+        ``/auth/password-login`` route guards on the flag). The default
+        raises ``NotImplementedError`` so an OAuth-only provider that
+        forgets to set the flag fails loudly rather than silently
+        accepting credentials.
+
+        The returned ``Session`` carries provider-minted opaque
+        ``access_token`` / ``refresh_token`` exactly like the OAuth path,
+        so all downstream session handling (cookies, verify, refresh,
+        ws-tickets, logout) is identical.
+
+        Failure semantics:
+          * ``InvalidCredentialsError`` — username/password rejected. The
+            route surfaces a generic 401 (no user-vs-password
+            distinction). Implementations SHOULD spend constant time on
+            unknown users (dummy hash verify) to avoid a timing oracle.
+          * ``ProviderError`` — the backing credential store is
+            unreachable (LDAP/DB down); the route surfaces 503.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support password login "
+            "(set supports_password = True and override "
+            "complete_password_login)"
+        )
 
 
 def assert_protocol_compliance(cls: type) -> None:

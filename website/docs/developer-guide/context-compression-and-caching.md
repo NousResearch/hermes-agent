@@ -84,6 +84,7 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -101,6 +102,22 @@ auxiliary:
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+
+### Codex gpt-5.5 threshold autoraise
+
+The ChatGPT Codex OAuth backend hard-caps gpt-5.5 at a **272K** context window
+(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
+GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
+half the window the model can actually use. When the active route is Codex
+OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
+trigger to **85%** (~231K) and prints a one-time notice with the opt-out
+command. Only this exact route is affected; gpt-5.5 on any other provider keeps
+your global `threshold`. To opt back down to the global value:
+
+```bash
+hermes config set compression.codex_gpt55_autoraise false
+```
 
 ### Computed Values (for a 200K context model at defaults)
 
@@ -110,6 +127,17 @@ threshold_tokens     = 200,000 × 0.50 = 100,000
 tail_token_budget    = 100,000 × 0.20 = 20,000
 max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
+
+:::note Threshold is derived from the MAIN model's context window
+`threshold_tokens` is always `threshold × context_length`, where `context_length`
+is the **main agent model's** context window — never the auxiliary/summary
+model's. On a 262,144-token model at the default `0.50`, the threshold is
+`262,144 × 0.50 = 131,072`. That number being close to a common "128K context"
+is a coincidence of the percentage, not a sign that the auxiliary model's window
+is the trigger. The auxiliary model's context window is a separate concern — see
+the "Summary model context length" warning below for how it affects whether a
+summary can be produced, not when compression fires.
+:::
 
 
 ## Compression Algorithm

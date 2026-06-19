@@ -38,8 +38,25 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # below and falls through to channel-name resolution, which has no way to
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
-_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# WhatsApp JIDs: group chats (<digits>@g.us), individual users
+# (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
+# newsletter chats. These are explicit native targets the bridge accepts
+# verbatim — they must NOT fall through to home-channel resolution.
+_WHATSAPP_JID_RE = re.compile(
+    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
+    re.IGNORECASE,
+)
+# Email addresses — a valid email like "user@domain.com" should be treated as
+# an explicit target for the email platform, not fall through to channel-name
+# resolution which has no way to resolve a raw address.
+_EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
+# Most platforms read their home channel from "<PLATFORM>_HOME_CHANNEL", but a
+# few diverge. Email reads EMAIL_HOME_ADDRESS (see gateway/config.py), so the
+# generic "<PLATFORM>_HOME_CHANNEL" hint would point users at a variable that is
+# never read. Map the exceptions so the error guidance is actually actionable.
+_HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -129,16 +146,24 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "react", "unreact"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "emoji": {
+                "type": "string",
+                "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
             }
         },
         "required": []
@@ -153,6 +178,12 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
+    if action == "react":
+        return _handle_react(args)
+
+    if action == "unreact":
+        return _handle_react(args, remove=True)
+
     return _handle_send(args)
 
 
@@ -163,6 +194,98 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+def _handle_react(args, remove=False):
+    """Attach (or with ``remove=True`` retract) an emoji reaction on a message
+    via a live gateway adapter.
+
+    Only adapters that expose ``add_reaction(chat_id, emoji, message_id)`` /
+    ``remove_reaction(chat_id, message_id)`` coroutines support this (e.g.
+    photon/iMessage tapbacks). Requires the gateway to be running in this
+    process — there is no standalone fallback, since reacting needs the
+    adapter's live message-id state.
+    """
+    target = args.get("target", "")
+    emoji = (args.get("emoji") or "").strip()
+    message_id = (args.get("message_id") or "").strip() or None
+    if not target or (not remove and not emoji):
+        return tool_error(
+            "Both 'target' and 'emoji' are required when action='react'"
+            if not remove
+            else "'target' is required when action='unreact'"
+        )
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    if target_ref:
+        chat_id, _thread_id, _ = _parse_target_ref(platform_name, target_ref)
+        if not chat_id:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, target_ref)
+            except Exception:
+                resolved = None
+            # Opaque platform-native ids (e.g. photon space GUIDs like
+            # 'any;-;+1555...') match no parser pattern and no directory
+            # entry — pass them through verbatim; the adapter validates.
+            chat_id = resolved or target_ref
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    if not chat_id:
+        try:
+            config = load_gateway_config()
+            home = config.get_home_channel(platform)
+        except Exception:
+            home = None
+        if not home:
+            return tool_error(
+                f"No chat specified and no home channel set for {platform_name}. "
+                f"Use '{platform_name}:chat_id'."
+            )
+        chat_id = home.chat_id
+
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    adapter = runner.adapters.get(platform) if runner is not None else None
+    if adapter is None:
+        return tool_error(
+            f"Reactions require a live {platform_name} adapter in the running "
+            "gateway (not available from cron/standalone contexts)."
+        )
+    fn_name = "remove_reaction" if remove else "add_reaction"
+    react_fn = getattr(adapter, fn_name, None)
+    if not callable(react_fn):
+        return tool_error(
+            f"Platform '{platform_name}' does not support message reactions."
+        )
+
+    try:
+        from model_tools import _run_async
+        if remove:
+            result = _run_async(
+                react_fn(chat_id=chat_id, message_id=message_id)
+            )
+        else:
+            result = _run_async(
+                react_fn(chat_id=chat_id, emoji=emoji, message_id=message_id)
+            )
+    except Exception as e:
+        return json.dumps(_error(f"Reaction failed: {e}"))
+    if isinstance(result, dict):
+        return json.dumps(result)
+    return json.dumps({"success": bool(result)})
 
 
 def _handle_send(args):
@@ -265,10 +388,13 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
+            home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
+                platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
+            )
             return json.dumps({
                 "error": f"No home channel set for {platform_name} to determine where to send the message. "
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                f"or set a home channel via: hermes config set {home_env} <channel_id>"
             })
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
@@ -383,6 +509,20 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "ntfy":
+        topic = target_ref.strip()
+        if topic:
+            return topic, None, True
+    if platform_name == "email":
+        match = _EMAIL_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
+        # are explicit targets — pass through verbatim. E.164 '+' numbers fall
+        # through to the _PHONE_PLATFORMS handler below.
+        if _WHATSAPP_JID_RE.fullmatch(target_ref):
+            return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -486,6 +626,7 @@ async def _send_via_adapter(
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
     """
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -500,7 +641,13 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {"thread_id": thread_id} if thread_id else None
+                metadata = {}
+                if thread_id:
+                    metadata["thread_id"] = thread_id
+                if platform_name == "ntfy" and chat_id:
+                    metadata["publish_topic"] = chat_id
+                if not metadata:
+                    metadata = None
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise
@@ -510,7 +657,6 @@ async def _send_via_adapter(
                 return {"success": True, "message_id": result.message_id}
             return {"error": f"Adapter send failed: {result.error}"}
 
-    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     entry = None
     try:
         from gateway.platform_registry import platform_registry
@@ -562,6 +708,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+
+    media_files = media_files or []
+
+    # Weixin handles text/media delivery inside its native helper and does not
+    # need the optional platform adapter imports below. Keep this branch early
+    # so a Weixin send is not blocked by unrelated optional dependencies (for
+    # example lark-oapi's heavy Feishu import path).
+    if platform == Platform.WEIXIN:
+        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
+
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
     from gateway.platforms.slack import SlackAdapter
 
@@ -578,8 +734,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _feishu_available = True
     except ImportError:
         _feishu_available = False
-
-    media_files = media_files or []
 
     if platform == Platform.SLACK and message:
         try:
@@ -636,10 +790,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
-
-    # --- Weixin: use the native one-shot adapter helper for text + media ---
-    if platform == Platform.WEIXIN:
-        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
     # The plugin's ``_standalone_send`` (registered in
@@ -751,7 +901,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_ts=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -762,8 +912,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
-        elif platform == Platform.HOMEASSISTANT:
-            result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
@@ -1033,7 +1181,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_ts=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -1047,6 +1195,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_ts:
+                payload["thread_ts"] = thread_ts
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
@@ -1458,29 +1608,6 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             pass
 
 
-async def _send_homeassistant(token, extra, chat_id, message):
-    """Send via Home Assistant notify service."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-        token = token or os.getenv("HASS_TOKEN", "")
-        if not hass_url or not token:
-            return {"error": "Home Assistant not configured (HASS_URL, HASS_TOKEN required)"}
-        url = f"{hass_url}/api/services/notify/notify"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"message": message, "target": chat_id}) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Home Assistant API error ({resp.status}): {body}")
-        return {"success": True, "platform": "homeassistant", "chat_id": chat_id}
-    except Exception as e:
-        return _error(f"Home Assistant send failed: {e}")
-
-
 async def _send_dingtalk(extra, chat_id, message):
     """Send via DingTalk robot webhook.
 
@@ -1772,13 +1899,16 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import tool_error
 
-registry.register(
-    name="send_message",
-    toolset="messaging",
-    schema=SEND_MESSAGE_SCHEMA,
-    handler=send_message_tool,
-    check_fn=_check_send_message,
-    emoji="📨",
-)
+# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable
+# model tool. The agent should not decide on its own to fire off cross-platform
+# messages or reactions. The send engine in this module (``_send_to_platform``,
+# ``_send_via_adapter``, ``_parse_target_ref``, the per-platform ``_send_*``
+# helpers) remains the shared transport used by:
+#   - cron delivery (cron/scheduler.py)
+#   - the ``hermes send`` CLI command (hermes_cli/send_cmd.py)
+#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
+#   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
+# Those callers import the helpers directly; none of them need the registry
+# entry.

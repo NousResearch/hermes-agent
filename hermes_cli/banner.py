@@ -11,15 +11,18 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
-from prompt_toolkit import print_formatted_text as _pt_print
-from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+# rich and prompt_toolkit are imported lazily (inside the functions that use
+# them) rather than at module level.  Importing this module is on the TUI
+# gateway's critical startup path purely to reach the lightweight update-check
+# helpers (``prefetch_update_check``); pulling rich.console + prompt_toolkit
+# eagerly added ~50ms of wasted imports before ``gateway.ready`` could fire.
+# Keep the type-only reference available to checkers without the runtime cost.
+if TYPE_CHECKING:
+    from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,8 @@ _RST = "\033[0m"
 
 def cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's renderer."""
+    from prompt_toolkit import print_formatted_text as _pt_print
+    from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
     _pt_print(_PT_ANSI(text))
 
 
@@ -117,6 +122,53 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+
+
+def _canonical_github_remote(url: str | None) -> str:
+    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
+    if not url:
+        return ""
+    value = url.strip()
+    if value.startswith("git@github.com:"):
+        value = "github.com/" + value[len("git@github.com:"):]
+    elif value.startswith("ssh://git@github.com/"):
+        value = "github.com/" + value[len("ssh://git@github.com/"):]
+    else:
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            value = f"{parsed.netloc}{parsed.path}"
+    value = value.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.lower()
+
+
+def _is_ssh_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    value = url.strip().lower()
+    return value.startswith("git@") or value.startswith("ssh://")
+
+
+def _is_official_ssh_remote(url: str | None) -> bool:
+    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip()
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -142,6 +194,11 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        return _check_via_rev(head_rev) if head_rev else None
+
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
@@ -220,6 +277,25 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+
+    # Docker images have no working tree to count commits against — the
+    # published image excludes `.git` (see .dockerignore) and sets no
+    # HERMES_REVISION (that's nix-only). Without this guard the checks below
+    # fall through to `check_via_pypi()`, whose PyPI-version mismatch flag (1)
+    # then gets rendered by the CLI banner and the TUI badge as a phantom
+    # "1 commit behind" — even though no git repo or commit math is involved,
+    # and `hermes update` correctly refuses to run in-place inside the
+    # container anyway. The dashboard's REST `/api/hermes/update/check`
+    # endpoint already short-circuits docker the same way (web_server.py);
+    # mirror that here so the banner/TUI surfaces agree. Returning None makes
+    # both the Rich banner (build_welcome_banner) and the Ink badge
+    # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    try:
+        from hermes_cli.config import detect_install_method
+        if detect_install_method() == "docker":
+            return None
+    except Exception:
+        pass
 
     # Read cache — invalidate if the embedded rev OR installed version has
     # changed since the last check. The version guard matters for pip installs:
@@ -471,7 +547,7 @@ def _display_toolset_name(toolset_name: str) -> str:
     )
 
 
-def build_welcome_banner(console: Console, model: str, cwd: str,
+def build_welcome_banner(console: "Console", model: str, cwd: str,
                          tools: List[dict] = None,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
@@ -490,6 +566,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         context_length: Model's context window size in tokens.
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    from rich.panel import Panel
+    from rich.table import Table
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -615,10 +693,26 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append("")
         right_lines.append(f"[bold {accent}]MCP Servers[/]")
         for srv in mcp_status:
+            status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
                     f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                )
+            elif srv.get("disabled") or status == "disabled":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— disabled[/]"
+                )
+            elif status == "connecting":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[yellow]— connecting[/]"
+                )
+            elif status == "configured":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— configured[/]"
                 )
             else:
                 right_lines.append(

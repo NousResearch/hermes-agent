@@ -97,40 +97,37 @@ describe('mouse wheel modifier decoding', () => {
   })
 })
 
-describe('fragmented SGR mouse recovery', () => {
-  it('re-synthesizes bracket-only SGR mouse tails as mouse events', () => {
-    const [[mouse]] = parseMultipleKeypresses(INITIAL_STATE, '[<35;159;11M')
+describe('flush-boundary SGR mouse reassembly', () => {
+  it('reassembles a report split by a mid-sequence watchdog flush into one mouse event', () => {
+    // chunk 1: heavy render stalls the loop, only the prefix is read
+    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
+    expect(keys).toEqual([])
 
-    expect(mouse).toMatchObject({ kind: 'mouse', button: 35, col: 159, row: 11, action: 'press' })
+    // App's 50ms watchdog flushes (input=null) — must NOT emit the partial
+    ;[keys, state] = parseMultipleKeypresses(state, null)
+    expect(keys).toEqual([])
+
+    // continuation arrives; the whole report reassembles, nothing leaks
+    ;[keys, state] = parseMultipleKeypresses(state, '46M')
+    expect(keys).toEqual([expect.objectContaining({ kind: 'mouse', button: 0, col: 35, row: 46, action: 'press' })])
   })
 
-  it('re-synthesizes angle-only SGR mouse tails as mouse events', () => {
-    const [[mouse]] = parseMultipleKeypresses(INITIAL_STATE, '<35;159;11M')
+  it('drops a truncated mouse prefix after a second flush instead of leaking it', () => {
+    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
 
-    expect(mouse).toMatchObject({ kind: 'mouse', button: 35, col: 159, row: 11, action: 'press' })
+    ;[keys, state] = parseMultipleKeypresses(state, null) // first flush keeps it
+    ;[keys, state] = parseMultipleKeypresses(state, null) // second flush drops it
+
+    expect(keys).toEqual([])
+    expect(state.incomplete).toBe('')
   })
 
-  it('re-synthesizes degraded SGR mouse bursts without leaking prompt text', () => {
-    const [events] = parseMultipleKeypresses(INITIAL_STATE, '5;142;11M<35;159;11M35;124;26M35;119;26Mtyped')
+  it('re-synthesizes an orphaned X10 wheel tail (legacy mouse) into a scroll key', () => {
+    // X10 wheel-up = ESC[M + (0x40+32) + col + row. If the ESC was flushed as a
+    // lone Escape and the `[M…` payload arrives as text, resynthesize it.
+    const tail = '[M' + String.fromCharCode(0x60) + '!!'
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, tail)
 
-    expect(events.slice(0, 4)).toEqual([
-      expect.objectContaining({ kind: 'mouse', button: 5, col: 142, row: 11 }),
-      expect.objectContaining({ kind: 'mouse', button: 35, col: 159, row: 11 }),
-      expect.objectContaining({ kind: 'mouse', button: 35, col: 124, row: 26 }),
-      expect.objectContaining({ kind: 'mouse', button: 35, col: 119, row: 26 })
-    ])
-    expect(events[4]).toMatchObject({ kind: 'key', sequence: 'typed' })
-  })
-
-  it('keeps isolated semicolon text that only resembles a prefixless mouse report', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, 'see 1;2;3M for details')
-
-    expect(key).toMatchObject({ kind: 'key', sequence: 'see 1;2;3M for details' })
-  })
-
-  it('does not match prefixless fragments inside longer digit runs', () => {
-    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '1234;56;78M9;10;11M')
-
-    expect(key).toMatchObject({ kind: 'key', sequence: '1234;56;78M9;10;11M' })
+    expect(key).toMatchObject({ name: 'wheelup' })
   })
 })

@@ -15,6 +15,8 @@ from tools.vision_tools import (
     _determine_mime_type,
     _image_to_base64_data_url,
     _resize_image_for_vision,
+    _image_exceeds_dimension,
+    _EMBED_MAX_DIMENSION,
     _is_image_size_error,
     _MAX_BASE64_BYTES,
     _RESIZE_TARGET_BYTES,
@@ -295,7 +297,7 @@ class TestErrorLoggingExcInfo:
     async def test_analysis_error_logs_exc_info(self, caplog):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch(
                 "tools.vision_tools._download_image",
                 new_callable=AsyncMock,
@@ -327,7 +329,7 @@ class TestErrorLoggingExcInfo:
             return dest
 
         with (
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch("tools.vision_tools._download_image", side_effect=fake_download),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",
@@ -449,7 +451,7 @@ class TestVisionSafetyGuards:
 
         with (
             patch("tools.vision_tools.check_website_access", return_value=blocked),
-            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._validate_image_url_async", new_callable=AsyncMock, return_value=True),
             patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
         ):
             result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
@@ -547,7 +549,9 @@ class TestTildeExpansion:
         img = fake_home / "test_image.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
 
+        # Windows expanduser() prefers USERPROFILE over HOME; POSIX uses HOME.
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         mock_response = MagicMock()
         mock_choice = MagicMock()
@@ -578,6 +582,7 @@ class TestTildeExpansion:
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         result = await vision_analyze_tool(
             "~/nonexistent.png", "describe this", "test/model"
@@ -890,6 +895,72 @@ class TestResizeImageForVision:
 
 
 # ---------------------------------------------------------------------------
+# _image_exceeds_dimension — proactive embed-time pixel-cap detector
+# ---------------------------------------------------------------------------
+
+
+class TestImageExceedsDimension:
+    """The proactive embed path checks pixel dimensions, not just bytes.
+
+    A tall full-page screenshot can be well under the byte budget yet far
+    over Anthropic's 8000px per-side cap (e.g. 1200x12000 at 0.06 MB). The
+    byte-only embed guard let it slip into immutable history un-resized,
+    bricking the session on a non-retryable 400. This helper flags it so the
+    embed-time resize fires on dimensions too.
+    """
+
+    def test_tall_small_byte_image_flagged(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # 1200x12000 solid color: trips the pixel cap, tiny in bytes.
+        img = Image.new("RGB", (1200, 12000), (40, 40, 40))
+        path = tmp_path / "tall.png"
+        img.save(path, "PNG")
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is True
+
+    def test_small_image_not_flagged(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (800, 600), (10, 200, 10))
+        path = tmp_path / "small.png"
+        img.save(path, "PNG")
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+    def test_exactly_at_cap_not_flagged(self, tmp_path):
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (_EMBED_MAX_DIMENSION, 100), (1, 2, 3))
+        path = tmp_path / "edge.png"
+        img.save(path, "PNG")
+        # max == cap is fine; only strictly greater forces a resize.
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+    def test_missing_pillow_returns_false(self, tmp_path):
+        # Without Pillow we can't inspect dimensions — return False so the
+        # byte-based checks still apply and a missing soft dep never breaks
+        # the embed path.
+        path = tmp_path / "x.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
+            assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+    def test_corrupt_file_returns_false(self, tmp_path):
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        path = tmp_path / "corrupt.png"
+        path.write_bytes(b"not an image at all")
+        assert _image_exceeds_dimension(path, _EMBED_MAX_DIMENSION) is False
+
+
+# ---------------------------------------------------------------------------
 # _is_image_size_error — detect size-related API errors
 # ---------------------------------------------------------------------------
 
@@ -917,3 +988,84 @@ class TestIsImageSizeError:
 
     def test_empty_message(self):
         assert not _is_image_size_error(Exception(""))
+
+
+class TestDownloadRetryClassification:
+    """Error-class-aware retry: 4xx fail-fast, 429/5xx/transient retried (issue #32296)."""
+
+    @staticmethod
+    def _status_error(status_code):
+        import httpx
+
+        request = httpx.Request("GET", "https://example.com/img.jpg")
+        response = httpx.Response(status_code, request=request)
+        return httpx.HTTPStatusError(
+            f"{status_code}", request=request, response=response
+        )
+
+    def _make_client_raising_status(self, status_code):
+        """AsyncClient whose response.raise_for_status() raises HTTPStatusError."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock(
+            side_effect=self._status_error(status_code)
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
+        return mock_client
+
+    def test_is_retryable_classification(self):
+        from tools.vision_tools import _is_retryable_download_error
+
+        # Non-retryable client errors
+        for code in (400, 403, 404, 410):
+            assert _is_retryable_download_error(self._status_error(code)) is False
+        # Retryable: rate limit + server errors
+        for code in (429, 500, 502, 503):
+            assert _is_retryable_download_error(self._status_error(code)) is True
+        # Policy/SSRF/size errors are terminal
+        assert _is_retryable_download_error(PermissionError("blocked")) is False
+        assert _is_retryable_download_error(ValueError("too large")) is False
+        # Unclassified (network blip) is retryable
+        assert _is_retryable_download_error(ConnectionError("reset")) is True
+
+    @pytest.mark.asyncio
+    async def test_404_fails_fast_without_retry(self, tmp_path):
+        """A 404 must raise on the first attempt — no backoff sleep, no extra GETs."""
+        import httpx
+        from tools.vision_tools import _download_image
+
+        mock_client = self._make_client_raising_status(404)
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _download_image(
+                "https://example.com/missing.jpg", tmp_path / "x.jpg", max_retries=3
+            )
+        # Exactly one attempt, zero backoff sleeps.
+        assert mock_client.get.await_count == 1
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_503_retries_then_raises(self, tmp_path):
+        """A 5xx is retried up to max_retries, sleeping between attempts."""
+        import httpx
+        from tools.vision_tools import _download_image
+
+        mock_client = self._make_client_raising_status(503)
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _download_image(
+                "https://example.com/flaky.jpg", tmp_path / "y.jpg", max_retries=3
+            )
+        # All three attempts used, two backoff sleeps between them.
+        assert mock_client.get.await_count == 3
+        assert mock_sleep.await_count == 2

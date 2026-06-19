@@ -17,6 +17,36 @@ See also:
 - [Bundled Skills Catalog](/reference/skills-catalog)
 - [Official Optional Skills Catalog](/reference/optional-skills-catalog)
 
+## Starting with a blank slate
+
+By default every profile is seeded with the bundled skill catalog, and each `hermes update` adds any newly bundled skills. If you want a profile with **no bundled skills** — and that stays empty across updates — you have two paths:
+
+**At install time** (applies to the default `~/.hermes` profile):
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-skills
+```
+
+**At profile-create time** (named profiles):
+
+```bash
+hermes profile create research --no-skills
+```
+
+**On an already-installed profile** (default or named), toggle it at runtime:
+
+```bash
+hermes skills opt-out            # stop future seeding — nothing on disk is touched
+hermes skills opt-out --remove   # also delete UNMODIFIED bundled skills (confirms first)
+hermes skills opt-in --sync      # undo: remove the marker and re-seed now
+```
+
+All three paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
+
+:::note Safe by default
+`hermes skills opt-out` only stops *future* seeding — it never deletes anything already on disk. The optional `--remove` flag deletes bundled skills **only** when they are unmodified (byte-identical to the version Hermes installed). Skills you have edited, skills installed from the hub, and skills you wrote yourself are always kept.
+:::
+
 ## Using Skills
 
 Every installed skill is automatically available as a slash command:
@@ -370,6 +400,43 @@ The agent can create, update, and delete its own skills via the `skill_manage` t
 :::tip
 The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
 :::
+
+### Gating agent skill writes (`skills.write_approval`)
+
+By default the agent writes skills freely — including from the [background
+self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
+that runs after a turn. If you'd rather approve every skill write first
+(small models that misjudge what they learned, secure environments, or just
+wanting eyes on the self-improvement loop), turn on the write-approval gate:
+
+```yaml
+skills:
+  write_approval: false     # false = write freely (default) | true = require approval
+```
+
+When `write_approval: true`, every `skill_manage` write (create / edit /
+patch / delete / write_file / remove_file) is **staged** instead of committed —
+a SKILL.md is too large to review inline, so staging applies regardless of
+whether the write came from a foreground turn or the background review.
+Staged writes survive restarts under `~/.hermes/pending/skills/` and are
+reviewed with the same familiar approve/deny flow as dangerous commands:
+
+```
+/skills pending             # list staged skill writes + a one-line gist each
+/skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
+/skills approve <id>        # apply it (or 'all')
+/skills reject <id>         # drop it (or 'all')
+/skills approval on         # turn the gate on (or 'off') and persist it
+```
+
+The review surface works in the interactive CLI and on messaging platforms
+(diff output is truncated for chat bubbles — read the full diff on the CLI or
+in the pending JSON file). Memory writes have the same gate under
+`memory.write_approval` — see [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+> The separate `skills.guard_agent_created` setting is a content scanner
+> (dangerous-pattern heuristics), not an approval gate — the two are
+> independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
 
 ## Skills Hub
 

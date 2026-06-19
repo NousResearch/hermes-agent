@@ -228,6 +228,31 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert blocked.code == "idempotent_no_progress_block"
 
 
+def test_skill_tools_are_idempotent_for_loop_guardrail():
+    """skills_list and skill_view are read-only tools that should be
+    covered by the idempotent no-progress guardrail (issue #49075)."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"name": "some-skill"}
+    result = '{"success": true, "content": "skill body"}'
+
+    assert controller.before_call("skill_view", args).action == "allow"
+    assert controller.after_call("skill_view", args, result, failed=False).action == "allow"
+    assert controller.before_call("skill_view", args).action == "allow"
+    warn = controller.after_call("skill_view", args, result, failed=False)
+    assert warn.action == "warn"
+    assert warn.code == "idempotent_no_progress_warning"
+
+    blocked = controller.before_call("skill_view", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

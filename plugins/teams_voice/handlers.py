@@ -138,6 +138,11 @@ class RealtimeCallSessionHandler(CallSessionHandler):
             "If more than one person is on the call, stay silent unless someone "
             f"addresses you by name ({phrases}); in a one-on-one call respond normally."
         )
+        if getattr(self._cfg, "bilingual", False):
+            parts.append(
+                "You are bilingual in Arabic and English: detect the caller's language, "
+                "reply in that language, switch when they switch, and translate on request."
+            )
         return " ".join(parts)
 
     async def on_recording_status(self, session: CallSession, msg: protocol.RecordingStatus) -> None:
@@ -339,6 +344,8 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         try:
             if name == "hermes_agent_consult":
                 return await self._consult.ask(str(args.get("query", "")))
+            if name == "hermes_agent_task":
+                return await self._agent_task(str(args.get("query", "")))
             if name == "look_at_screen":
                 return await self._look_at_screen(
                     str(args.get("question", "")), args.get("source"), str(args.get("scope") or "live")
@@ -434,6 +441,43 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         if call_id:
             _PENDING_OUTBOUND[call_id] = message or "Here's what you asked for."
         return "Okay — I'll call you right back with that."
+
+    async def _agent_task(self, query: str) -> str:
+        """Run a long job in the background; deliver the result via a call-back."""
+        query = query.strip()
+        caller = self._caller
+        if not query:
+            return "What would you like me to work on?"
+        if self._bridge is None or caller is None or not caller.aad_id:
+            # No way to call back — fall back to an inline consult.
+            return await self._consult.ask(query)
+        asyncio.create_task(self._run_background_task(query, caller))
+        return "Got it — I'll work on that in the background and call you back with the result."
+
+    async def _run_background_task(self, query: str, caller: protocol.CallerInfo) -> None:
+        try:
+            result = await self._consult.ask(query, timeout_s=300.0)
+        except Exception:  # noqa: BLE001
+            logger.error("[teams_voice] background task failed", exc_info=True)
+            result = "I couldn't complete that task."
+        if self._bridge is None or not caller.aad_id:
+            return
+        tenant = caller.tenant_id or self._bridge.tenant_id
+        if not tenant:
+            return
+        try:
+            res = await place_call(
+                user_object_id=caller.aad_id,
+                tenant_id=tenant,
+                shared_secret=self._bridge.shared_secret,
+                worker_base_url=self._bridge.worker_base_url,
+            )
+        except OutboundError as exc:
+            logger.warning("[teams_voice] background callback failed: %s", exc)
+            return
+        cid = res.get("callId")
+        if cid:
+            _PENDING_OUTBOUND[cid] = result
 
     # ── helpers ──────────────────────────────────────────────────────────────
 

@@ -95,5 +95,30 @@ CALL_ME_BACK = {
 }
 
 
+HERMES_AGENT_TASK = {
+    "type": "function",
+    "name": "hermes_agent_task",
+    "description": (
+        "Run a long-running job in the background (multi-step work or research that "
+        "takes more than a few seconds). Acknowledge to the caller that you're on it; "
+        "the result is delivered by calling them back when it's done. Use this instead "
+        "of hermes_agent_consult when the work won't finish within the conversation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "The task to run in the background."}
+        },
+        "required": ["query"],
+    },
+}
+
+
 def default_tools() -> list[dict]:
-    return [HERMES_AGENT_CONSULT, LOOK_AT_SCREEN, SHOW_TO_CALLER, CALL_ME_BACK]
+    return [
+        HERMES_AGENT_CONSULT,
+        HERMES_AGENT_TASK,
+        LOOK_AT_SCREEN,
+        SHOW_TO_CALLER,
+        CALL_ME_BACK,
+    ]

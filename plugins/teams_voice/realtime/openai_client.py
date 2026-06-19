@@ -58,6 +58,9 @@ class RealtimeConfig:
     # Caller-audio transcription (for wake words / verbal interrupts). Empty
     # string disables it (some deployments don't support the field).
     input_transcribe_model: str = "whisper-1"
+    # Bilingual Arabic/English mode (opt-in): pin the model to detect/mirror the
+    # caller's language and translate on request.
+    bilingual: bool = False
 
     @property
     def configured(self) -> bool:
@@ -122,6 +125,7 @@ def realtime_config_from_env(block: "dict[str, Any] | None" = None) -> RealtimeC
     transcribe_model = _pick(block, "input_transcribe_model", "TEAMS_VOICE_INPUT_TRANSCRIBE_MODEL", "whisper-1")
     if transcribe_model.lower() in ("none", "off", "disabled"):
         transcribe_model = ""
+    bilingual = _pick(block, "bilingual", "TEAMS_VOICE_BILINGUAL", "").lower() in ("1", "true", "yes", "on")
     is_azure = backend == "azure" or bool(azure_endpoint) or "azure.com" in explicit_url
 
     if is_azure:
@@ -150,6 +154,7 @@ def realtime_config_from_env(block: "dict[str, Any] | None" = None) -> RealtimeC
             prefix_padding_ms=prefix_padding_ms,
             silence_duration_ms=silence_duration_ms,
             input_transcribe_model=transcribe_model,
+            bilingual=bilingual,
         )
 
     return RealtimeConfig(
@@ -164,6 +169,7 @@ def realtime_config_from_env(block: "dict[str, Any] | None" = None) -> RealtimeC
         prefix_padding_ms=prefix_padding_ms,
         silence_duration_ms=silence_duration_ms,
         input_transcribe_model=transcribe_model,
+        bilingual=bilingual,
     )
 
 

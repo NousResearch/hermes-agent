@@ -95,7 +95,13 @@ def test_outbound_signature_matches_userobjectid_payload():
 
 def test_default_tools_present_and_well_formed():
     names = {t["name"] for t in realtime_tools.default_tools()}
-    assert names == {"hermes_agent_consult", "look_at_screen", "show_to_caller", "call_me_back"}
+    assert names == {
+        "hermes_agent_consult",
+        "hermes_agent_task",
+        "look_at_screen",
+        "show_to_caller",
+        "call_me_back",
+    }
     for tool in realtime_tools.default_tools():
         assert tool["type"] == "function"
         assert "parameters" in tool and tool["parameters"]["type"] == "object"

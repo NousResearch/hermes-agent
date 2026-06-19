@@ -259,8 +259,6 @@ def _resolver_command(prompt: str, cfg: UpdateConflictResolverConfig) -> list[st
         "terminal,file,skills,session_search",
         "-s",
         "hermes-agent",
-        "-s",
-        "systematic-debugging",
         "--max-turns",
         str(cfg.max_turns),
     ]

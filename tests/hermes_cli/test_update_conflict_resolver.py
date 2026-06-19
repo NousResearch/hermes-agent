@@ -58,6 +58,7 @@ def test_resolver_command_uses_configured_model_provider_and_reasoning_env(monke
     assert cmd[cmd.index("--model") + 1] == "gpt-5.5"
     assert "--max-turns" in cmd
     assert cmd[cmd.index("--max-turns") + 1] == "777"
+    assert "systematic-debugging" not in cmd
 
     env = _resolver_env(cfg)
     assert env["HERMES_REASONING_EFFORT"] == "high"

@@ -2627,12 +2627,14 @@ class GatewaySlashCommandsMixin:
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
 
-                # _compress_context already calls end_session() on the old session
-                # (preserving its full transcript in SQLite) and creates a new
-                # session_id for the continuation.  Write the compressed messages
-                # into the NEW session so the original history stays searchable.
+                # _compress_context either rotated (legacy: ended the old
+                # session, created a continuation id — write compressed messages
+                # into the NEW session so the original stays searchable) or
+                # compacted in place (compression.in_place / #38763: same id,
+                # transcript replaced with the compacted set).
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
+                _in_place = bool(getattr(tmp_agent, "compression_in_place", False))
                 if rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
@@ -2640,20 +2642,27 @@ class GatewaySlashCommandsMixin:
                         source, session_entry, reason="compress-command",
                     )
 
-                # Only rewrite the transcript when rotation actually produced a
-                # NEW session id. If _compress_context could not rotate (e.g.
-                # _session_db unavailable, or the DB split raised), session_id
-                # is unchanged and rewrite_transcript() would DELETE the
-                # original messages and replace them with only the compressed
-                # summary — permanent data loss (#44794, #39704). In that case
-                # leave the original transcript intact.
-                if rotated:
-                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Rewrite the transcript when EITHER rotation produced a new id
+                # OR in-place compaction succeeded. The danger this guards
+                # against is the THIRD case: _compress_context could NOT rotate
+                # AND was not in-place (e.g. legacy mode but _session_db
+                # unavailable / the DB split raised) — there session_id is
+                # unchanged for a FAILURE reason, and rewrite_transcript() would
+                # DELETE the original messages and replace them with only the
+                # compressed summary (permanent data loss #44794, #39704). In
+                # in-place mode the unchanged id is SUCCESS, so the rewrite is
+                # exactly right (and is the durable write when the throwaway
+                # /compress agent has no _session_db of its own).
+                if rotated or _in_place:
+                    self.session_store.rewrite_transcript(
+                        new_session_id, compressed
+                    )
                 else:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "
-                        "(session_id unchanged) — preserving original transcript "
-                        "instead of overwriting it (#44794)."
+                        "(session_id unchanged) and in-place mode is off — "
+                        "preserving original transcript instead of overwriting "
+                        "it (#44794)."
                     )
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(

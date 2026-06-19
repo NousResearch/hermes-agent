@@ -53,6 +53,7 @@ import {
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
 import { notify } from '@/store/notifications'
+import { applyPlanMode } from '@/store/plan-mode'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { useTheme } from '@/themes'
@@ -1546,13 +1547,16 @@ export function ChatBar({
     setQueueEdit(null)
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
+  const dispatchSubmit = (rawText: string, attachments?: ComposerAttachment[]) => {
+    // Plan mode (when on) routes the message through the /plan skill — applied
+    // here so it covers every submit path (Enter, send button, queue drain).
+    const text = applyPlanMode(rawText)
     const submittedScope = activeQueueSessionKeyRef.current
     const submittedAttachments = attachments ?? []
 
     const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+      loadIntoComposer(rawText, submittedAttachments)
+      stashAt(activeQueueSessionKeyRef.current, rawText, submittedAttachments)
     }
 
     void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))

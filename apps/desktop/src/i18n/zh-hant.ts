@@ -1306,6 +1306,9 @@ export const zhHant = defineLocale({
       '調整或繼續'
     ],
     startVoice: '開始語音對話',
+    planMode: '計畫',
+    planModeOnHint: '計畫模式已開啟 — 訊息將路由到 /plan（撰寫計畫，不執行）。點擊關閉。',
+    planModeOffHint: '計畫模式 — 將訊息路由到 /plan，取得可執行的計畫而非直接執行。',
     queueMessage: '排隊訊息',
     stop: '停止',
     send: '傳送',

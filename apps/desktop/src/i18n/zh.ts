@@ -1410,6 +1410,9 @@ export const zh: Translations = {
       '调整或继续'
     ],
     startVoice: '开始语音对话',
+    planMode: '计划',
+    planModeOnHint: '计划模式已开启 — 消息将路由到 /plan（编写计划，不执行）。点击关闭。',
+    planModeOffHint: '计划模式 — 将消息路由到 /plan，获取可执行的计划而非直接执行。',
     queueMessage: '排队消息',
     steer: '引导当前运行',
     stop: '停止',

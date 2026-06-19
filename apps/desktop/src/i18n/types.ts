@@ -935,6 +935,9 @@ export interface Translations {
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string
+    planMode: string
+    planModeOnHint: string
+    planModeOffHint: string
     queueMessage: string
     steer: string
     stop: string

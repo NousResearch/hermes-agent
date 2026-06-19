@@ -17,6 +17,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { togglePlanMode } from '@/store/plan-mode'
 import {
   $newChatProfile,
   cycleProfile,
@@ -155,6 +156,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'view.showFiles': showFiles,
+    'view.togglePlanMode': () => togglePlanMode(),
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     'view.flipPanes': togglePanesFlipped,
 

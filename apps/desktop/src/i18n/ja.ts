@@ -1352,6 +1352,9 @@ export const ja = defineLocale({
       '調整または続行'
     ],
     startVoice: '音声会話を開始',
+    planMode: 'プラン',
+    planModeOnHint: 'プランモード オン — メッセージは /plan に送られます（実行せずプランを作成）。クリックでオフ。',
+    planModeOffHint: 'プランモード — メッセージを /plan に送り、実行の代わりに実行可能なプランを取得します。',
     queueMessage: 'メッセージをキューに入れる',
     stop: '停止',
     send: '送信',

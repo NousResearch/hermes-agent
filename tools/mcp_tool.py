@@ -19,6 +19,10 @@ Example config::
         env: {}
         timeout: 120         # per-tool-call timeout in seconds (default: 300)
         connect_timeout: 60  # initial connection timeout (default: 60)
+        keepalive_interval: 10  # liveness ping cadence in seconds (default:
+                                # 180). Set below the server's session TTL for
+                                # servers that GC idle sessions quickly (e.g.
+                                # Unreal Engine editor MCP, ~15s). Floored at 5s.
       github:
         command: "npx"
         args: ["-y", "@modelcontextprotocol/server-github"]
@@ -276,6 +280,17 @@ _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
+# Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
+# idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
+# so a client that wants a session to survive idle periods MUST refresh faster
+# than that TTL. The default suits long LB/NAT idle windows (commonly
+# 300-600s); servers with short session TTLs (e.g. Unreal Engine's editor MCP,
+# ~15s) need a smaller ``keepalive_interval`` in their config or every idle
+# tool call lands on a dead session and pays the full reconnect path. The floor
+# stops a misconfigured tiny interval from busy-looping the keepalive.
+_DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
+_MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
+
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
@@ -380,6 +395,40 @@ def _exc_str(exc: BaseException) -> str:
     """
     text = str(exc).strip()
     return text if text else repr(exc)
+
+
+# JSON-RPC "method not found" — the error a server returns when it does not
+# implement a requested method (e.g. a tool-capable server that never wired up
+# the optional ``ping`` utility). Defined locally with a fallback so detection
+# works even on SDK builds that don't export the constant.
+try:
+    from mcp.types import METHOD_NOT_FOUND as _JSONRPC_METHOD_NOT_FOUND
+except Exception:  # pragma: no cover — older/newer SDK without the constant
+    _JSONRPC_METHOD_NOT_FOUND = -32601
+
+
+def _is_method_not_found_error(exc: BaseException) -> bool:
+    """Return True if *exc* is a JSON-RPC ``method not found`` (-32601).
+
+    ``ping`` is an *optional* MCP utility (spec: "optional ping mechanism").
+    A server that doesn't implement it answers a ping with -32601 rather than
+    an empty result. Structurally inspect ``McpError.error.code`` first, then
+    fall back to a substring match so detection survives SDK version drift and
+    servers that surface the condition as a plain message.
+    """
+    # Structural: mcp.shared.exceptions.McpError carries ErrorData.code.
+    err = getattr(exc, "error", None)
+    code = getattr(err, "code", None)
+    if code == _JSONRPC_METHOD_NOT_FOUND:
+        return True
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return (
+        str(_JSONRPC_METHOD_NOT_FOUND) in msg
+        or "method not found" in msg
+        or "not found: ping" in msg
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1362,7 +1411,7 @@ class MCPServerTask:
         "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
         "_pending_call_context",
-        "initialize_result",
+        "initialize_result", "_ping_unsupported",
     )
 
     def __init__(self, name: str):
@@ -1410,6 +1459,12 @@ class MCPServerTask:
         # ``.capabilities.prompts``) instead of assuming every ``ClientSession``
         # method attribute corresponds to a supported server method. See #18051.
         self.initialize_result: Optional[Any] = None
+        # Set True the first time a keepalive ``ping`` returns JSON-RPC
+        # -32601 (method not found): the server is tool-capable but doesn't
+        # implement the optional ``ping`` utility. Subsequent keepalives fall
+        # back to ``list_tools`` (the pre-ping probe) so we neither spam pings
+        # nor reconnect-loop. Reset on each fresh transport connection.
+        self._ping_unsupported: bool = False
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1564,6 +1619,46 @@ class MCPServerTask:
                     self.name, len(self._registered_tool_names),
                 )
 
+    async def _keepalive_probe(self) -> None:
+        """Exercise the session to detect a stale/expired connection.
+
+        Uses ``ping`` (cheap, transport-agnostic liveness) by default. ``ping``
+        is an OPTIONAL MCP utility: a server that doesn't implement it answers
+        JSON-RPC -32601. The first time that happens we latch
+        ``_ping_unsupported`` and fall back to the pre-ping probe — capability
+        permitting, ``list_tools``; otherwise ``ping`` is the only option and
+        the -32601 propagates (a server advertising neither a working ping nor
+        tools has no liveness primitive left). The latch resets on each fresh
+        transport connection so a server that gains ping support after a
+        reconnect is re-probed with the cheap path.
+
+        Raises on a genuine connection failure so the caller triggers a
+        reconnect; returns normally when the session is alive.
+        """
+        if not self._ping_unsupported:
+            try:
+                await asyncio.wait_for(self.session.send_ping(), timeout=30.0)
+                return
+            except Exception as exc:
+                # Only a "method not found" means ping is unsupported. Any
+                # other error (timeout, closed transport, session expired) is
+                # a real liveness failure — propagate so we reconnect.
+                if not _is_method_not_found_error(exc):
+                    raise
+                if not self._advertises_tools():
+                    # No ping, no tools → no cheaper probe to fall back to.
+                    raise
+                self._ping_unsupported = True
+                logger.info(
+                    "MCP server '%s': does not implement the optional 'ping' "
+                    "utility (-32601); using 'list_tools' for keepalive on "
+                    "this connection.",
+                    self.name,
+                )
+
+        # Fallback probe for servers without ping support.
+        await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.
 
@@ -1577,13 +1672,29 @@ class MCPServerTask:
 
         Shutdown takes precedence if both events are set simultaneously.
 
-        Periodically sends a lightweight keepalive (``list_tools``) to
-        prevent TCP connections from going stale during long idle
-        periods (#17003).  If the keepalive fails, triggers a reconnect.
+        Periodically sends a lightweight keepalive (``ping``, with a
+        ``list_tools`` fallback for servers that don't implement the optional
+        ping utility — see :meth:`_keepalive_probe`) to prevent TCP/session
+        state from going stale during idle periods (#17003). If the keepalive
+        fails, triggers a reconnect.
+
+        The cadence is ``keepalive_interval`` from server config (default
+        :data:`_DEFAULT_KEEPALIVE_INTERVAL`, floored at
+        :data:`_MIN_KEEPALIVE_INTERVAL`). Servers that GC idle sessions on a
+        short TTL (e.g. Unreal Engine's editor MCP, ~15s) need an interval
+        below that TTL, otherwise every idle tool call lands on an
+        already-expired session and pays the full reconnect path.
         """
-        # Keepalive interval in seconds.  Must be shorter than typical
-        # LB / NAT idle-timeout (commonly 300-600s).
-        _KEEPALIVE_INTERVAL = 180  # 3 minutes
+        # Refresh faster than the server's session TTL. ``ping`` (MCP base
+        # protocol liveness) is used rather than ``list_tools`` so the probe
+        # stays a few bytes regardless of how many tools the server exposes —
+        # a ``list_tools`` keepalive against an 830-tool server would pull
+        # ~1 MB every cycle. Tool-list changes still arrive out-of-band via
+        # ``notifications/tools/list_changed`` → ``_refresh_tools``.
+        keepalive_interval = max(
+            _MIN_KEEPALIVE_INTERVAL,
+            float(self._config.get("keepalive_interval", _DEFAULT_KEEPALIVE_INTERVAL)),
+        )
 
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
@@ -1591,30 +1702,23 @@ class MCPServerTask:
             while True:
                 done, _pending = await asyncio.wait(
                     {shutdown_task, reconnect_task},
-                    timeout=_KEEPALIVE_INTERVAL,
+                    timeout=keepalive_interval,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if done:
                     break
 
-                # Timeout — no lifecycle event fired.  Send a keepalive
-                # to exercise the connection and detect stale sockets.
-                # Prompt-only / resource-only servers don't implement
-                # ``tools/list`` (McpError -32601), so use the universal
-                # ``ping`` request for them instead — otherwise every
-                # keepalive cycle would trigger a spurious reconnect.
+                # Timeout — no lifecycle event fired.  Probe the connection
+                # to detect stale/expired sessions. Prefer ``ping`` (MCP base
+                # protocol liveness): it works uniformly and stays a few bytes
+                # regardless of tool count, unlike ``list_tools`` (~1 MB on an
+                # 830-tool server). ``ping`` is an OPTIONAL utility, so a
+                # tool-capable server that doesn't implement it answers -32601;
+                # in that case fall back to the pre-ping ``list_tools`` probe
+                # for the rest of this connection rather than reconnect-looping.
                 if self.session:
                     try:
-                        if self._advertises_tools():
-                            await asyncio.wait_for(
-                                self.session.list_tools(),
-                                timeout=30.0,
-                            )
-                        else:
-                            await asyncio.wait_for(
-                                self.session.send_ping(),
-                                timeout=30.0,
-                            )
+                        await self._keepalive_probe()
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
@@ -2040,6 +2144,10 @@ class MCPServerTask:
         server doesn't advertise the ``tools`` capability.
         (Ported from anomalyco/opencode#31271.)
         """
+        # Fresh transport connection → re-probe with the cheap ``ping`` path.
+        # Clears any latch from a prior connection in case the server gained
+        # ping support across the reconnect.
+        self._ping_unsupported = False
         if self.session is None:
             return
         if not self._advertises_tools():

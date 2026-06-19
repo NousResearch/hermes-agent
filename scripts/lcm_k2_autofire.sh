@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # PRD-8.3 autofire: wait for the in-flight Arm A re-run (pid passed as $1) to
 # exit, then launch the staged K=2 disambiguation campaign DETACHED with its own
-# logfile. Avoids the nohup-from-cron output-sever bug: uses setsid + explicit
+# logfile. macOS has no setsid; use nohup + explicit
 # redirection to a tracked file, and double-forks so it survives this shell.
 set -u
-cd ~/.hermes/hermes-agent
+cd ~/.hermes/hermes-agent || exit 0
 
 ARMA_PID="${1:?usage: autofire <arma_pid>}"
 HB_CHANNEL=1516341560118345738
@@ -27,7 +27,7 @@ sleep 90
 hb "🟢 **K=2 autofire firing** · Arm A (pid $ARMA_PID) exited. Launching staged K=2 campaign (reset → baseline-repro → shakedown → powered → K=1 re-cert). Log: $LOG"
 
 # fully detach the campaign so it outlives this watchdog
-setsid bash scripts/lcm_k2_disambig_campaign.sh > "$LOG" 2>&1 < /dev/null &
+nohup bash ~/.hermes/hermes-agent/scripts/lcm_k2_disambig_campaign.sh > "$LOG" 2>&1 < /dev/null &
 disown 2>/dev/null || true
 
 echo "[autofire] launched K=2 campaign, log=$LOG"

@@ -39,12 +39,12 @@ fi
 ARMA_PID=$(pgrep -f "lcm_live_recovery.py .*--profile aegis" | head -1)
 if [ -n "${ARMA_PID:-}" ]; then
   hb "♻️ **K=2 net** · watchdog was absent while Arm A (pid $ARMA_PID) still runs — re-arming."
-  setsid bash scripts/lcm_k2_autofire.sh "$ARMA_PID" > /tmp/lcm-k2-autofire.out 2>&1 < /dev/null &
+  nohup bash ~/.hermes/scripts/lcm_k2_autofire.sh "$ARMA_PID" > /tmp/lcm-k2-autofire.out 2>&1 < /dev/null &
   echo "[k2-net] re-armed watchdog on Arm A pid $ARMA_PID."; exit 0
 fi
 
 # nothing alive, no powered report -> Arm A is gone; fire on sentinel pid 1
 hb "♻️ **K=2 net** · no Arm A, no watchdog, no powered report after reboot/loss — gateway free, arming campaign now."
-setsid bash scripts/lcm_k2_autofire.sh 1 > /tmp/lcm-k2-autofire.out 2>&1 < /dev/null &
+nohup bash ~/.hermes/scripts/lcm_k2_autofire.sh 1 > /tmp/lcm-k2-autofire.out 2>&1 < /dev/null &
 echo "[k2-net] armed watchdog on sentinel pid 1 (immediate fire)."
 exit 0

@@ -244,13 +244,7 @@ openclaw-voice = [
   "numpy==2.4.3",
   "soundfile==0.13.1",
 ]
-rl = [
-  "atroposlib @ git+https://github.com/NousResearch/atropos.git@c20c85256e5a45ad31edf8b7276e9c5ee1995a30",
-  "tinker @ git+https://github.com/thinking-machines-lab/tinker.git@c3f917b7f4a730cc190f4a200b11c27b5bfed09b",
-  "fastapi==0.133.1",
-  "uvicorn[standard]==0.41.0",
-  "wandb==0.23.1",
-]
+rl = []  # Temporarily empty: atroposlib pulls unpatched nltk (CVE-2026-54293).
 bedrock = ["boto3==1.42.89"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [

@@ -607,7 +607,13 @@ def _build_fal_payload(
                 payload[k] = v
 
     supports = meta["supports"]
-    return {k: v for k, v in payload.items() if k in supports}
+    # ``prompt`` is required by every FAL text-to-image endpoint; keep it even
+    # if a model's ``supports`` whitelist omits it, so a missing whitelist entry
+    # can't silently strip the prompt and send an empty request.
+    return {
+        k: v for k, v in payload.items()
+        if k in supports or k == "prompt"
+    }
 
 
 def _build_fal_edit_payload(
@@ -656,7 +662,15 @@ def _build_fal_edit_payload(
             if v is not None:
                 payload[k] = v
 
-    return {k: v for k, v in payload.items() if k in edit_supports}
+    # ``prompt`` and ``image_urls`` are required by every FAL edit endpoint;
+    # keep them even if a model's ``edit_supports`` whitelist omits them, so a
+    # missing whitelist entry can't silently drop the prompt or the source
+    # images and send a broken edit request.
+    _required = {"prompt", "image_urls"}
+    return {
+        k: v for k, v in payload.items()
+        if k in edit_supports or k in _required
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -317,6 +317,18 @@ class _StreamErrorEvent(Exception):
         }
 
 
+def _safe_float_env(var_name: str, default: float) -> float:
+    """Read env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid %s=%r, using default %s", var_name, raw, default)
+        return default
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1096,7 +1108,7 @@ class AIAgent:
         cfg = get_provider_request_timeout(self.provider, self.model)
         if cfg is not None:
             return cfg
-        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        return _safe_float_env("HERMES_API_TIMEOUT", 1800.0)
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.
@@ -1122,7 +1134,7 @@ class AIAgent:
 
         env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
         if env_timeout is not None:
-            return float(env_timeout), False
+            return _safe_float_env("HERMES_API_CALL_STALE_TIMEOUT", 300.0), False
 
         return 90.0, True
 

@@ -15258,18 +15258,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 self._cleanup_agent_resources(_ev_agent)
                         else:
                             agent = cached[0]
-                            # Refresh LRU order so the cap enforcement evicts
-                            # truly-oldest entries, not the one we just used.
-                            if hasattr(_cache, "move_to_end"):
-                                try:
-                                    _cache.move_to_end(session_key)
-                                except KeyError:
-                                    pass
-                            self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                            # Refresh agent max_iterations from current config
-                            # (cached agent may have been created with old config)
-                            agent.max_iterations = max_iterations
-                            logger.debug("Reusing cached agent for session %s", session_key)
+                            _cached_sid = getattr(agent, "session_id", None)
+                            # /new, compression split, or /resume rotate session_id
+                            # while session_key stays the same. Reusing a cached
+                            # agent with a stale session_id caused turns after /new
+                            # to inherit the wrong DB row / compressor state.
+                            if _cached_sid and _cached_sid != session_id:
+                                logger.info(
+                                    "Agent cache invalidated for session %s: "
+                                    "session_id changed (%s -> %s)",
+                                    session_key, _cached_sid, session_id,
+                                )
+                                self._cleanup_agent_resources(agent)
+                                agent = None
+                            else:
+                                # Refresh LRU order so the cap enforcement evicts
+                                # truly-oldest entries, not the one we just used.
+                                if hasattr(_cache, "move_to_end"):
+                                    try:
+                                        _cache.move_to_end(session_key)
+                                    except KeyError:
+                                        pass
+                                self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                                # Refresh agent max_iterations from current config
+                                # (cached agent may have been created with old config)
+                                agent.max_iterations = max_iterations
+                                logger.debug("Reusing cached agent for session %s", session_key)
+                            if agent is None:
+                                self._agent_cache.pop(session_key, None)
 
             if agent is None:
                 # Config changed or first message — create fresh agent

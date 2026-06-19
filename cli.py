@@ -531,6 +531,10 @@ def load_cli_config() -> Dict[str, Any]:
 
     defaults = _expand_env_vars(defaults)
 
+    from hermes_cli import managed_scope
+
+    defaults = managed_scope.apply_managed_overlay(defaults)
+
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
 

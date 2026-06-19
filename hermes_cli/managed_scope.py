@@ -134,6 +134,49 @@ def load_managed_env() -> Dict[str, str]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def apply_managed_overlay(config: dict) -> dict:
+    """Overlay administrator-pinned config values on top of an already-built dict.
+
+    The single, shared way for any config loader that builds its own dict
+    (rather than going through hermes_cli.config.load_config) to honor managed
+    scope. Mirrors hermes_cli.config._load_config_impl's managed merge exactly:
+
+      * expand the managed config's ``${VAR}`` refs against the PROCESS env only
+        (never user-config-defined refs), so a user cannot shadow a managed
+        literal via a ${VAR} they control;
+      * normalize the managed config's root ``model`` key (a bare ``model: x/y``
+        string is promoted to ``model.default``) so it can't clobber the dict
+        shape callers expect;
+      * leaf-level deep-merge managed ON TOP, so managed wins per-leaf while
+        sibling keys stay user-controlled.
+
+    Fail-open: returns ``config`` unchanged if no managed scope is present or on
+    any error — managed scope must never break a caller's startup. Mutates and
+    returns ``config`` (callers pass a dict they own).
+    """
+    try:
+        managed = load_managed_config()
+        if not managed:
+            return config
+        # Imported lazily to avoid an import cycle (config imports managed_scope).
+        from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
+
+        managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed))
+        # A bare ``model: x/y`` string in the managed file must merge as
+        # ``model.default`` — otherwise _deep_merge would replace the caller's
+        # ``model`` dict with a string and break every ``cfg["model"]["..."]``
+        # read. _normalize_root_model_keys only promotes the string when there
+        # are root provider/base_url keys to migrate, so handle the bare case
+        # here (matches cli.py's own string-model handling).
+        if isinstance(managed_expanded.get("model"), str):
+            managed_expanded = dict(managed_expanded)
+            managed_expanded["model"] = {"default": managed_expanded["model"]}
+        return _deep_merge(config, managed_expanded)
+    except Exception:  # noqa: BLE001 — overlay must never break a caller
+        logger.warning("managed scope: failed to apply config overlay", exc_info=True)
+        return config
+
+
 def _parse_env(f) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for line in f:

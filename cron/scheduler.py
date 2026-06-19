@@ -1676,6 +1676,15 @@ def _run_job_unscoped(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if os.path.exists(_cfg_path):
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
+                # Managed scope: a scheduled job must honor administrator-pinned
+                # model / reasoning / toolsets / provider_routing too. This loader
+                # builds its own dict, so overlay managed values via the shared
+                # helper (fail-open, no-op when no managed scope).
+                try:
+                    from hermes_cli import managed_scope
+                    _cfg = managed_scope.apply_managed_overlay(_cfg)
+                except Exception:
+                    pass
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):

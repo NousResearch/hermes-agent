@@ -184,6 +184,37 @@ class TestMattermostConfigLoading:
 
 
 # ---------------------------------------------------------------------------
+# Mattermost-safe control aliases
+# ---------------------------------------------------------------------------
+
+class TestMattermostControlAliases:
+    def test_model_options_becomes_slash_model(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("model options") == "/model"
+
+    def test_use_model_number_becomes_numbered_model_command(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("use model 3") == "/model 3"
+
+    def test_reasoning_level_becomes_reasoning_command(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("reasoning high") == "/reasoning high"
+
+    def test_permissions_session_becomes_permissions_command(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("permissions session") == "/permissions session"
+
+    def test_non_control_message_is_unchanged(self):
+        from plugins.platforms.mattermost.adapter import _mattermost_control_command
+
+        assert _mattermost_control_command("summarize the model docs") == "summarize the model docs"
+
+
+# ---------------------------------------------------------------------------
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
 

@@ -1269,16 +1269,27 @@ class GatewaySlashCommandsMixin:
                     custom_providers=custom_provs,
                     max_models=5,
                 )
+                pick_options = []
+                pick_index = 1
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""
                     lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
                     if p["models"]:
-                        model_strs = ", ".join(f"`{m}`" for m in p["models"])
+                        model_strs = []
+                        for m in p["models"]:
+                            pick_options.append({"index": pick_index, "model": m, "provider": p["slug"]})
+                            model_strs.append(f"`{pick_index}.` `{m}`")
+                            pick_index += 1
                         extra = t("gateway.model.more_models_suffix", count=p["total_models"] - len(p["models"])) if p["total_models"] > len(p["models"]) else ""
-                        lines.append(f"  {model_strs}{extra}")
+                        lines.append(f"  {', '.join(model_strs)}{extra}")
                     elif p.get("api_url"):
                         lines.append(f"  `{p['api_url']}`")
                     lines.append("")
+                if pick_options:
+                    if not hasattr(self, "_session_model_pick_options"):
+                        self._session_model_pick_options = {}
+                    self._session_model_pick_options[session_key] = pick_options
+                    lines.append("Pick by number: `/model 3` or, in Mattermost, `use model 3`.")
             except Exception:
                 pass
 
@@ -1286,6 +1297,22 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.model.usage_switch_provider"))
             lines.append(t("gateway.model.usage_persist"))
             return "\n".join(lines)
+
+        # Numbered text fallback: after `/model` lists options, allow `/model 3`
+        # (or Mattermost's natural `use model 3`) without requiring exact IDs.
+        _numbered = re.fullmatch(r"(?:use\s+)?(?:model\s+)?#?(\d+)", model_input.strip().lower()) if model_input else None
+        if _numbered:
+            pick_index = int(_numbered.group(1))
+            pick_options = getattr(self, "_session_model_pick_options", {}) or {}
+            choices = pick_options.get(session_key, [])
+            selected = next((c for c in choices if int(c.get("index", -1)) == pick_index), None)
+            if not selected:
+                return (
+                    "No numbered model choice is cached for this session. "
+                    "Run `/model` first, then pick one of the numbers shown."
+                )
+            model_input = str(selected.get("model") or "").strip()
+            explicit_provider = str(selected.get("provider") or explicit_provider or "").strip()
 
         # Perform the switch
         result = _switch_model(
@@ -2317,6 +2344,117 @@ class GatewaySlashCommandsMixin:
         if _save_config_key("agent.service_tier", saved_value):
             return t("gateway.fast.saved", label=label)
         return t("gateway.fast.session_only", label=label)
+
+    def _format_session_reasoning_status(self, event: MessageEvent, session_key: str) -> tuple[str, str]:
+        """Return (level, scope) for a gateway session's effective reasoning config."""
+        rc = self._resolve_session_reasoning_config(
+            source=event.source,
+            session_key=session_key,
+        )
+        if rc is None:
+            level = "default"
+        elif rc.get("enabled") is False:
+            level = "none"
+        else:
+            level = str(rc.get("effort") or "medium")
+        scope = "session" if session_key in (getattr(self, "_session_reasoning_overrides", {}) or {}) else "global"
+        return level, scope
+
+    def _format_session_permissions_status(self, session_key: str) -> tuple[str, str, bool]:
+        """Return (effective_mode, configured_mode, has_pending) for approval controls."""
+        from gateway.run import _load_gateway_config
+        from tools.approval import has_blocking_approval, is_session_yolo_enabled
+
+        try:
+            cfg = _load_gateway_config()
+        except Exception:
+            cfg = {}
+        configured = str(cfg_get(cfg, "approvals", "mode", default="manual") or "manual").strip() or "manual"
+        session_yolo = is_session_yolo_enabled(session_key)
+        effective = "session-yolo" if session_yolo else configured
+        return effective, configured, has_blocking_approval(session_key)
+
+    async def _handle_permissions_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Show or change session-scoped command approval bypass state."""
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+        )
+
+        session_key = self._session_key_for_source(
+            self._normalize_source_for_session_key(event.source)
+        )
+        raw_args = (event.get_command_args() or "").strip().lower()
+        args = set(raw_args.replace("-", " ").split())
+
+        if args & {"session", "yolo", "full", "allow", "bypass", "on"}:
+            enable_session_yolo(session_key)
+            effective, configured, pending = self._format_session_permissions_status(session_key)
+            return EphemeralReply(
+                "✅ Permissions: session approval bypass enabled.\n"
+                f"Effective: `{effective}` · configured default: `{configured}`"
+                + (" · pending approval waiting" if pending else "")
+            )
+
+        if args & {"manual", "normal", "safe", "off", "disable"}:
+            disable_session_yolo(session_key)
+            effective, configured, pending = self._format_session_permissions_status(session_key)
+            return EphemeralReply(
+                "✅ Permissions: session approval bypass disabled.\n"
+                f"Effective: `{effective}` · configured default: `{configured}`"
+                + (" · pending approval waiting" if pending else "")
+            )
+
+        effective, configured, pending = self._format_session_permissions_status(session_key)
+        lines = [
+            "**Permissions / approvals**",
+            f"- Effective: `{effective}`",
+            f"- Configured default: `{configured}`",
+            f"- Pending approval: `{'yes' if pending else 'no'}`",
+            "",
+            "Commands:",
+            "- `permissions session` — bypass dangerous-command prompts for this session only",
+            "- `permissions manual` — disable the session bypass and return to configured default",
+            "- `approve`, `approve session`, `approve always`, or `deny` — resolve an actual pending prompt",
+        ]
+        return "\n".join(lines)
+
+    async def _handle_controls_command(self, event: MessageEvent) -> str:
+        """Show a compact Mattermost-friendly control panel for the current session."""
+        from gateway.run import _load_gateway_config, _resolve_gateway_model
+
+        source = self._normalize_source_for_session_key(event.source)
+        session_key = self._session_key_for_source(source)
+        try:
+            cfg = _load_gateway_config()
+        except Exception:
+            cfg = {}
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {"default": str(model_cfg)} if model_cfg else {}
+        override = (getattr(self, "_session_model_overrides", {}) or {}).get(session_key, {})
+        model_name = override.get("model") or _resolve_gateway_model(cfg)
+        provider_name = override.get("provider") or str(model_cfg.get("provider") or "").strip() or "unknown"
+        model_scope = "session" if override else "global"
+        reasoning_level, reasoning_scope = self._format_session_reasoning_status(event, session_key)
+        permissions_effective, permissions_configured, pending = self._format_session_permissions_status(session_key)
+
+        lines = [
+            "**Hermes runtime controls**",
+            f"- Model: `{model_name or 'unknown'}` via `{provider_name}` ({model_scope})",
+            f"- Reasoning: `{reasoning_level}` ({reasoning_scope})",
+            f"- Permissions: `{permissions_effective}` (configured `{permissions_configured}`; pending `{'yes' if pending else 'no'}`)",
+            "",
+            "Mattermost-safe commands:",
+            "- `model options` — list numbered model choices",
+            "- `use model 3` — switch to a numbered model choice from the last options list",
+            "- `reasoning options` — show reasoning state and valid levels",
+            "- `reasoning high` / `reasoning medium` / `reasoning none` — set this session's effort",
+            "- `permissions session` — session-only approval bypass",
+            "- `permissions manual` — return to configured approval behavior",
+            "- `controls` — show this panel again",
+        ]
+        return "\n".join(lines)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""

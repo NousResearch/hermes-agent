@@ -50,6 +50,47 @@ _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
 
+_REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh", "reset", "show", "hide", "on", "off"}
+_PERMISSIONS_ARGS = {"status", "session", "yolo", "full", "allow", "bypass", "on", "manual", "normal", "safe", "off", "disable"}
+
+
+def _mattermost_control_command(text: str) -> str:
+    """Translate Mattermost-safe control phrases into Hermes slash commands.
+
+    Mattermost clients/server-side slash command handling can swallow messages
+    that start with `/`.  These natural phrases are only applied after the
+    Mattermost adapter has already accepted a message for Hermes, so they do not
+    affect normal channel traffic that was not addressed to the bot.
+    """
+    raw = (text or "").strip()
+    if not raw or raw.startswith("/"):
+        return raw
+    compact = re.sub(r"\s+", " ", raw).strip()
+    lower = compact.lower().strip(" .?!")
+
+    if lower in {"control", "controls", "agent controls", "runtime", "runtime status", "agent status"}:
+        return "/controls"
+
+    if lower in {"model", "models", "model options", "models options", "show models", "list models", "switch model"}:
+        return "/model"
+    m = re.fullmatch(r"(?:use|select|switch to|switch) model #?(\d+)", lower)
+    if m:
+        return f"/model {m.group(1)}"
+
+    if lower in {"reasoning", "reasoning options", "show reasoning", "reasoning status"}:
+        return "/reasoning"
+    parts = lower.split()
+    if len(parts) == 2 and parts[0] in {"reasoning", "think", "thinking"} and parts[1] in _REASONING_LEVELS:
+        return f"/reasoning {parts[1]}"
+
+    if lower in {"permission", "permissions", "approval", "approvals", "permission status", "permissions status", "approval status"}:
+        return "/permissions"
+    if len(parts) == 2 and parts[0] in {"permission", "permissions", "approval", "approvals"} and parts[1] in _PERMISSIONS_ARGS:
+        return f"/permissions {parts[1]}"
+
+    return raw
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter can be used."""
     token = os.getenv("MATTERMOST_TOKEN", "")
@@ -848,6 +889,12 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
+
+        # Mattermost-safe control aliases.  These let users type natural
+        # addressed messages such as `@bot model options` or `@bot use model 3`
+        # instead of memorizing slash syntax that the Mattermost client may
+        # intercept before Hermes sees it.
+        message_text = _mattermost_control_command(message_text)
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")

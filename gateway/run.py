@@ -7606,6 +7606,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "footer":
             return await self._handle_footer_command(event)
 
+        if canonical == "controls":
+            return await self._handle_controls_command(event)
+
+        if canonical == "permissions":
+            return await self._handle_permissions_command(event)
+
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 
@@ -9177,13 +9183,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                _footer_cfg = _load_gateway_config()
+                _footer_reasoning = ""
+                _footer_permissions = ""
+                try:
+                    _footer_session_key = self._session_key_for_source(source)
+                    _rc = self._resolve_session_reasoning_config(
+                        source=source,
+                        session_key=_footer_session_key,
+                    )
+                    if _rc is None:
+                        _footer_reasoning = "default"
+                    elif _rc.get("enabled") is False:
+                        _footer_reasoning = "none"
+                    else:
+                        _footer_reasoning = str(_rc.get("effort") or "medium")
+                    from tools.approval import is_session_yolo_enabled
+                    if is_session_yolo_enabled(_footer_session_key):
+                        _footer_permissions = "session-yolo"
+                    else:
+                        _footer_permissions = str(
+                            cfg_get(_footer_cfg, "approvals", "mode", default="manual") or "manual"
+                        )
+                except Exception:
+                    _footer_reasoning = ""
+                    _footer_permissions = ""
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
+                    user_config=_footer_cfg,
                     platform_key=_platform_config_key(source.platform),
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    reasoning=_footer_reasoning,
+                    permissions=_footer_permissions,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

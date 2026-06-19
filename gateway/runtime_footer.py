@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
-_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_FIELDS: tuple[str, ...] = ("model", "reasoning", "permissions", "context_pct", "cwd")
 _SEP = " · "
 
 
@@ -94,6 +94,8 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    permissions: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -107,6 +109,14 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "reasoning":
+            r = str(reasoning or "").strip()
+            if r:
+                parts.append(f"reasoning:{r}")
+        elif field == "permissions":
+            p = str(permissions or "").strip()
+            if p:
+                parts.append(f"perms:{p}")
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -130,6 +140,8 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    permissions: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -145,5 +157,7 @@ def build_footer_line(
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        reasoning=reasoning,
+        permissions=permissions,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

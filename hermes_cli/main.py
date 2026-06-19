@@ -6639,6 +6639,230 @@ def _load_installable_optional_extras(group: str = "all") -> list[str]:
     return referenced
 
 
+def _python_dependency_stamp_path() -> Path:
+    """Return the source-tree stamp for successful Python dependency installs."""
+    return PROJECT_ROOT / ".update-python-deps.json"
+
+
+def _python_dependency_input_files() -> list[Path]:
+    """Files whose contents determine the Python dependency environment."""
+    names = {
+        "pyproject.toml",
+        "uv.lock",
+        "constraints.txt",
+        "constraints-termux.txt",
+        "requirements.txt",
+        "requirements-dev.txt",
+    }
+    return [
+        PROJECT_ROOT / name
+        for name in sorted(names)
+        if (PROJECT_ROOT / name).is_file()
+    ]
+
+
+def _python_dependency_target_identity(
+    install_cmd_prefix: list[str],
+    env: dict[str, str] | None,
+) -> dict | None:
+    """Return the target interpreter identity for dependency stamp matching."""
+    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None:
+        return None
+    try:
+        target_python = str(venv_python.resolve())
+    except OSError:
+        target_python = str(venv_python)
+
+    virtual_env = ""
+    if env and env.get("VIRTUAL_ENV"):
+        try:
+            virtual_env = str(Path(env["VIRTUAL_ENV"]).resolve())
+        except OSError:
+            virtual_env = str(env["VIRTUAL_ENV"])
+
+    return {
+        "target_python": target_python,
+        "virtual_env": virtual_env,
+    }
+
+
+def _python_dependency_fingerprint(group: str, target: dict | None = None) -> dict:
+    """Build a deterministic fingerprint for the dependency install inputs."""
+    try:
+        import platform as _platform
+
+        machine = _platform.machine()
+    except Exception:
+        machine = ""
+
+    inputs = []
+    for path in _python_dependency_input_files():
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        try:
+            rel = path.relative_to(PROJECT_ROOT).as_posix()
+        except ValueError:
+            rel = path.name
+        inputs.append(
+            {
+                "path": rel,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+        )
+
+    payload = {
+        "schema": 1,
+        "group": group,
+        "python_version": ".".join(str(p) for p in sys.version_info[:3]),
+        "sys_platform": sys.platform,
+        "machine": machine,
+        "target": target or {},
+        "inputs": inputs,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload["fingerprint"] = hashlib.sha256(encoded).hexdigest()
+    return payload
+
+
+def _write_python_dependency_stamp(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    group: str = "all",
+) -> None:
+    """Remember that the current dependency inputs installed successfully."""
+    try:
+        target = _python_dependency_target_identity(install_cmd_prefix, env)
+        if target is None:
+            return
+        stamp = _python_dependency_fingerprint(group, target)
+        stamp["written_at"] = _time.time()
+        _python_dependency_stamp_path().write_text(
+            json.dumps(stamp, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.debug("Could not write Python dependency stamp: %s", exc)
+
+
+def _python_dependency_stamp_matches(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    group: str = "all",
+) -> bool:
+    try:
+        saved = json.loads(_python_dependency_stamp_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    target = _python_dependency_target_identity(install_cmd_prefix, env)
+    if target is None:
+        return False
+    current = _python_dependency_fingerprint(group, target)
+    return (
+        saved.get("schema") == current.get("schema")
+        and saved.get("group") == current.get("group")
+        and saved.get("python_version") == current.get("python_version")
+        and saved.get("sys_platform") == current.get("sys_platform")
+        and saved.get("machine") == current.get("machine")
+        and saved.get("target") == current.get("target")
+        and saved.get("fingerprint") == current.get("fingerprint")
+    )
+
+
+def _editable_install_points_at_checkout(
+    install_cmd_prefix: list[str],
+    env: dict[str, str] | None,
+) -> bool:
+    """Return True when the target env has this checkout installed editable."""
+    venv_python = _resolve_install_target_python(install_cmd_prefix, env)
+    if venv_python is None:
+        return False
+
+    check_script = (
+        "import importlib.metadata as md, json, pathlib, sys, urllib.parse\n"
+        "from urllib.request import url2pathname\n"
+        "try:\n"
+        "    dist = md.distribution('hermes-agent')\n"
+        "except md.PackageNotFoundError:\n"
+        "    sys.exit(2)\n"
+        "raw = dist.read_text('direct_url.json')\n"
+        "if not raw:\n"
+        "    sys.exit(3)\n"
+        "data = json.loads(raw)\n"
+        "if not data.get('dir_info', {}).get('editable'):\n"
+        "    sys.exit(4)\n"
+        "url = data.get('url') or ''\n"
+        "parts = urllib.parse.urlparse(url)\n"
+        "if parts.scheme != 'file':\n"
+        "    sys.exit(5)\n"
+        "installed = pathlib.Path(url2pathname(parts.path)).resolve()\n"
+        "expected = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.exit(0 if installed == expected else 6)\n"
+    )
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", check_script, str(PROJECT_ROOT)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except Exception as exc:
+        logger.debug("dep stamp: editable install probe failed: %s", exc)
+        return False
+    return result.returncode == 0
+
+
+def _python_dependency_install_can_be_skipped(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    group: str = "all",
+) -> bool:
+    """Return True when the full editable dependency install can be skipped.
+
+    This is intentionally fail-closed. Any missing stamp, dependency input
+    change, non-editable install, or inconclusive probe falls back to the
+    existing install path.
+    """
+    if not _python_dependency_stamp_matches(install_cmd_prefix, env=env, group=group):
+        return False
+    if not _editable_install_points_at_checkout(install_cmd_prefix, env):
+        return False
+
+    print("  → Python dependency inputs unchanged; verifying installed state...")
+    return _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
+
+
+def _refresh_python_dependencies_for_update(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    group: str = "all",
+) -> None:
+    """Install Python deps unless the last successful install is still valid."""
+    if _python_dependency_install_can_be_skipped(
+        install_cmd_prefix,
+        env=env,
+        group=group,
+    ):
+        print("  ✓ Python dependencies unchanged; skipped reinstall")
+        return
+
+    install_ok = _install_python_dependencies_with_optional_fallback(
+        install_cmd_prefix,
+        env=env,
+        group=group,
+    )
+    if install_ok:
+        _write_python_dependency_stamp(install_cmd_prefix, env=env, group=group)
+
+
 # Install-scoped breadcrumb dropped right before ``hermes update`` mutates the
 # venv and cleared only after the dependency install verifies clean.  If a user
 # kills the update mid-install (Ctrl-C, terminal close, WSL OOM), the marker
@@ -6764,16 +6988,27 @@ def _recover_from_interrupted_install() -> None:
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
-                _install_python_dependencies_with_optional_fallback(
+                install_group = "termux-all" if _is_termux_env(uv_env) else "all"
+                install_ok = _install_python_dependencies_with_optional_fallback(
                     [uv_bin, "pip"],
                     env=uv_env,
-                    group="termux-all" if _is_termux_env(uv_env) else "all",
+                    group=install_group,
                 )
+                if install_ok:
+                    _write_python_dependency_stamp(
+                        [uv_bin, "pip"],
+                        env=uv_env,
+                        group=install_group,
+                    )
             else:
-                _install_python_dependencies_with_optional_fallback(
-                    [sys.executable, "-m", "pip"],
-                    group="termux-all" if _is_termux_env() else "all",
+                install_group = "termux-all" if _is_termux_env() else "all"
+                pip_cmd = [sys.executable, "-m", "pip"]
+                install_ok = _install_python_dependencies_with_optional_fallback(
+                    pip_cmd,
+                    group=install_group,
                 )
+                if install_ok:
+                    _write_python_dependency_stamp(pip_cmd, group=install_group)
 
             _clear_update_incomplete_marker()
             print("✓ Dependency installation recovered — your install is healthy again.")
@@ -7288,7 +7523,7 @@ def _install_python_dependencies_with_optional_fallback(
     *,
     env: dict[str, str] | None = None,
     group: str = "all",
-) -> None:
+) -> bool:
     """Install base deps plus as many optional extras as the environment supports.
 
     By default this targets ``.[all]``; Termux callers can pass
@@ -7308,7 +7543,11 @@ def _install_python_dependencies_with_optional_fallback(
 
     try:
         _install(["install", "-e", f".[{group}]"])
-        return
+        return _verify_core_dependencies_installed(
+            install_cmd_prefix,
+            env=env,
+            group=group,
+        )
     except subprocess.CalledProcessError:
         print(
             "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
@@ -7344,7 +7583,12 @@ def _install_python_dependencies_with_optional_fallback(
     # stage. Reinstall with --reinstall to force resolution if anything is
     # missing, then re-verify so the failure surfaces here instead of
     # downstream.
-    _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
+    core_ok = _verify_core_dependencies_installed(
+        install_cmd_prefix,
+        env=env,
+        group=group,
+    )
+    return core_ok and not failed_extras
 
 
 def _verify_core_dependencies_installed(
@@ -7352,7 +7596,7 @@ def _verify_core_dependencies_installed(
     *,
     env: dict[str, str] | None = None,
     group: str = "all",
-) -> None:
+) -> bool:
     """Check that every base dep from pyproject.toml is importable; if not, retry.
 
     Reads ``pyproject.toml`` directly (so we don't trust the venv's stale
@@ -7364,15 +7608,20 @@ def _verify_core_dependencies_installed(
     so a single broken-on-PyPI dep can't block an otherwise-successful
     update — but the warning makes the partial install visible at the spot
     that caused it, instead of hours later in a downstream subprocess.
+
+    Returns ``True`` only when verification completes and all applicable core
+    dependencies are present. Regular update installs ignore the return value
+    to preserve the existing non-fatal repair behavior; the dependency-stamp
+    skip path uses it to fail closed when the environment is inconclusive.
     """
     try:
         import tomllib  # Python 3.11+
     except ImportError:  # pragma: no cover — Python < 3.11 unsupported but be safe
-        return
+        return False
 
     pyproject = PROJECT_ROOT / "pyproject.toml"
     if not pyproject.is_file():
-        return
+        return False
 
     try:
         with open(pyproject, "rb") as f:
@@ -7380,7 +7629,7 @@ def _verify_core_dependencies_installed(
         raw_deps = data.get("project", {}).get("dependencies", []) or []
     except Exception as e:
         logger.debug("dep verification: failed to read pyproject.toml: %s", e)
-        return
+        return False
 
     # Parse each "name OP version ; marker" string into (dist_name, marker_obj).
     # We use packaging.requirements when available (it ships with pip/uv envs),
@@ -7422,7 +7671,7 @@ def _verify_core_dependencies_installed(
             applicable.append(name)
 
     if not applicable:
-        return
+        return True
 
     # Run the check inside the venv Python — sys.executable here may be the
     # outer Python that drove ``hermes update``, not the venv we just wrote
@@ -7432,9 +7681,9 @@ def _verify_core_dependencies_installed(
     # right interpreter for the verification.
     venv_python = _resolve_install_target_python(install_cmd_prefix, env)
     if venv_python is None:
-        return
+        return False
 
-    def _missing_deps() -> list[str]:
+    def _missing_deps() -> list[str] | None:
         check_script = (
             "import importlib.metadata as md, sys\n"
             "missing=[]\n"
@@ -7453,12 +7702,21 @@ def _verify_core_dependencies_installed(
             )
         except Exception as e:
             logger.debug("dep verification: subprocess failed: %s", e)
-            return []
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "dep verification: probe exited %s: %s",
+                result.returncode,
+                (result.stderr or "").strip(),
+            )
+            return None
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     missing = _missing_deps()
+    if missing is None:
+        return False
     if not missing:
-        return
+        return True
 
     print(
         f"  ⚠ Verification: {len(missing)} declared dep(s) missing after install: "
@@ -7484,12 +7742,14 @@ def _verify_core_dependencies_installed(
     except subprocess.CalledProcessError as e:
         logger.warning("dep verification: repair install failed: %s", e)
         print("  ⚠ Repair install failed; check `hermes update` output above.")
-        return
+        return False
 
     still_missing = _missing_deps()
+    if still_missing is None:
+        return False
     if not still_missing:
         print("  ✓ All declared core dependencies now installed")
-        return
+        return True
 
     # Last-ditch: install each remaining missing dep with its pin directly.
     # Useful when uv's resolver thinks the env is satisfied but the on-disk
@@ -7518,16 +7778,20 @@ def _verify_core_dependencies_installed(
             f"  ⚠ Could not install: {', '.join(still_missing)}. "
             "Run `hermes update --force` after closing other hermes processes."
         )
-        return
+        return False
 
     final_missing = _missing_deps()
+    if final_missing is None:
+        return False
     if final_missing:
         print(
             f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "
             "Run `hermes update --force` after closing other hermes processes."
         )
+        return False
     else:
         print("  ✓ All declared core dependencies now installed")
+        return True
 
 
 def _resolve_install_target_python(
@@ -8962,7 +9226,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env(uv_env) and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _install_python_dependencies_with_optional_fallback(
+            _refresh_python_dependencies_for_update(
                 [uv_bin, "pip"], env=uv_env, group=install_group
             )
         else:
@@ -8990,7 +9254,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env() and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)
-            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            _refresh_python_dependencies_for_update(pip_cmd, group=install_group)
 
         # Core Python deps installed AND verified (the fallback helper runs
         # _verify_core_dependencies_installed). Clear the interrupted-install

@@ -396,6 +396,222 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)
 
 
+def test_python_dependency_skip_requires_matching_stamp_and_editable_install(
+    monkeypatch, tmp_path
+):
+    """The dependency-install skip is fail-closed on input changes."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[project]\nname = 'hermes-agent'\ndependencies = []\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    target = {
+        "target_python": str(tmp_path / "venv" / "bin" / "python"),
+        "virtual_env": str(tmp_path / "venv"),
+    }
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        hermes_main,
+        "_python_dependency_target_identity",
+        lambda *args, **kwargs: target,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_editable_install_points_at_checkout",
+        lambda *args, **kwargs: True,
+    )
+    verified = []
+
+    def record_verified(*args, **kwargs):
+        verified.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_verify_core_dependencies_installed",
+        record_verified,
+    )
+
+    hermes_main._write_python_dependency_stamp(
+        ["/usr/bin/uv", "pip"],
+        env={"VIRTUAL_ENV": target["virtual_env"]},
+        group="all",
+    )
+
+    assert hermes_main._python_dependency_install_can_be_skipped(
+        ["/usr/bin/uv", "pip"],
+        group="all",
+    )
+    assert verified, "matching stamp should still verify the installed env"
+
+    verified.clear()
+    pyproject.write_text(
+        "[project]\nname = 'hermes-agent'\ndependencies = ['pathspec==1.1.1']\n",
+        encoding="utf-8",
+    )
+
+    assert not hermes_main._python_dependency_install_can_be_skipped(
+        ["/usr/bin/uv", "pip"],
+        group="all",
+    )
+    assert not verified, "changed inputs must fall back before verification"
+
+
+def test_python_dependency_skip_falls_back_when_verification_is_inconclusive(
+    monkeypatch, tmp_path
+):
+    """A matching stamp is not enough; the target env must verify cleanly."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'hermes-agent'\ndependencies = ['pathspec==1.1.1']\n",
+        encoding="utf-8",
+    )
+    target = {
+        "target_python": str(tmp_path / "venv" / "bin" / "python"),
+        "virtual_env": str(tmp_path / "venv"),
+    }
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        hermes_main,
+        "_python_dependency_target_identity",
+        lambda *args, **kwargs: target,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_editable_install_points_at_checkout",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_verify_core_dependencies_installed",
+        lambda *args, **kwargs: False,
+    )
+
+    hermes_main._write_python_dependency_stamp(
+        ["/usr/bin/uv", "pip"],
+        env={"VIRTUAL_ENV": target["virtual_env"]},
+        group="all",
+    )
+
+    assert not hermes_main._python_dependency_install_can_be_skipped(
+        ["/usr/bin/uv", "pip"],
+        env={"VIRTUAL_ENV": target["virtual_env"]},
+        group="all",
+    )
+
+
+def test_python_dependency_stamp_is_target_environment_scoped(monkeypatch, tmp_path):
+    """A stamp from one venv must not allow another venv to skip install."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'hermes-agent'\ndependencies = []\n",
+        encoding="utf-8",
+    )
+    first_target = {
+        "target_python": str(tmp_path / "venv-a" / "bin" / "python"),
+        "virtual_env": str(tmp_path / "venv-a"),
+    }
+    second_target = {
+        "target_python": str(tmp_path / "venv-b" / "bin" / "python"),
+        "virtual_env": str(tmp_path / "venv-b"),
+    }
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        hermes_main,
+        "_python_dependency_target_identity",
+        lambda *args, **kwargs: first_target,
+    )
+    hermes_main._write_python_dependency_stamp(
+        ["/usr/bin/uv", "pip"],
+        env={"VIRTUAL_ENV": first_target["virtual_env"]},
+        group="all",
+    )
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_python_dependency_target_identity",
+        lambda *args, **kwargs: second_target,
+    )
+
+    assert not hermes_main._python_dependency_stamp_matches(
+        ["/usr/bin/uv", "pip"],
+        env={"VIRTUAL_ENV": second_target["virtual_env"]},
+        group="all",
+    )
+
+
+def test_cmd_update_skips_python_install_when_dependency_stamp_matches(
+    monkeypatch, tmp_path, capsys
+):
+    """A code-only update should not reinstall Python deps when inputs match."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'hermes-agent'\ndependencies = []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/uv" if name == "uv" else None,
+    )
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(
+        hermes_main,
+        "_python_dependency_install_can_be_skipped",
+        lambda *args, **kwargs: True,
+    )
+
+    def fail_install(*args, **kwargs):
+        raise AssertionError("Python dependency install should be skipped")
+
+    monkeypatch.setattr(
+        hermes_main,
+        "_install_python_dependencies_with_optional_fallback",
+        fail_install,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "origin", "main"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert "Python dependencies unchanged; skipped reinstall" in capsys.readouterr().out
+
+
+def test_python_dependency_refresh_does_not_stamp_partial_optional_install(
+    monkeypatch,
+):
+    """If optional extras failed, retry on the next update instead of stamping."""
+    stamped = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_python_dependency_install_can_be_skipped",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_write_python_dependency_stamp",
+        lambda *args, **kwargs: stamped.append((args, kwargs)),
+    )
+
+    hermes_main._refresh_python_dependencies_for_update(["/usr/bin/uv", "pip"])
+
+    assert stamped == []
+
+
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)

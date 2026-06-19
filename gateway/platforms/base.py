@@ -2320,7 +2320,8 @@ class BasePlatformAdapter(ABC):
         Raises:
             SendGateDisabledException: If send_gate is set to "disabled"
         """
-        send_gate_mode = self.config.extra.get("send_gate", "enabled")
+        extra = self.config.extra or {}
+        send_gate_mode = extra.get("send_gate", "enabled")
         if send_gate_mode == "disabled":
             platform_name = getattr(self.platform, "value", str(self.platform))
             raise SendGateDisabledException(

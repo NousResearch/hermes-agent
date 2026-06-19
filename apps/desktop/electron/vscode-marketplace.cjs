@@ -22,6 +22,9 @@ const VSIX_ASSET_TYPE = 'Microsoft.VisualStudio.Services.VSIXPackage'
 const MAX_VSIX_BYTES = 40 * 1024 * 1024 // 40 MB — themes are tiny; this is paranoia.
 const MAX_REDIRECTS = 5
 const REQUEST_TIMEOUT_MS = 20_000
+const MAX_THEME_ENTRY_BYTES = 2 * 1024 * 1024
+const MAX_THEME_TOTAL_BYTES = 8 * 1024 * 1024
+const MAX_THEME_COUNT = 25
 
 const ID_RE = /^[\w-]+\.[\w-]+$/
 
@@ -224,13 +227,14 @@ function readCentralDirectory(buf) {
 
     const method = buf.readUInt16LE(offset + 10)
     const compressedSize = buf.readUInt32LE(offset + 20)
+    const uncompressedSize = buf.readUInt32LE(offset + 24)
     const nameLen = buf.readUInt16LE(offset + 28)
     const extraLen = buf.readUInt16LE(offset + 30)
     const commentLen = buf.readUInt16LE(offset + 32)
     const localOffset = buf.readUInt32LE(offset + 42)
     const name = buf.toString('utf8', offset + 46, offset + 46 + nameLen)
 
-    records.set(name, { method, compressedSize, localOffset })
+    records.set(name, { method, compressedSize, uncompressedSize, localOffset })
     offset += 46 + nameLen + extraLen + commentLen
   }
 
@@ -239,6 +243,12 @@ function readCentralDirectory(buf) {
 
 /** Inflate a single entry to a string. */
 function extractEntry(buf, record) {
+  if (record.method !== 0 && record.method !== 8) {
+    throw new Error('Unsupported zip compression method.')
+  }
+  if (record.uncompressedSize > MAX_THEME_ENTRY_BYTES) {
+    throw new Error('Zip entry exceeds the uncompressed size limit.')
+  }
   // The local header's name/extra lengths can differ from the central record,
   // so re-read them here to locate the compressed payload.
   if (buf.readUInt32LE(record.localOffset) !== 0x04034b50) {
@@ -248,10 +258,15 @@ function extractEntry(buf, record) {
   const nameLen = buf.readUInt16LE(record.localOffset + 26)
   const extraLen = buf.readUInt16LE(record.localOffset + 28)
   const dataStart = record.localOffset + 30 + nameLen + extraLen
+  if (dataStart + record.compressedSize > buf.length) {
+    throw new Error('Corrupt zip: entry exceeds archive bounds.')
+  }
   const data = buf.subarray(dataStart, dataStart + record.compressedSize)
 
   // 0 = stored, 8 = deflate. Theme files are one or the other.
-  return record.method === 0 ? data.toString('utf8') : zlib.inflateRawSync(data).toString('utf8')
+  return record.method === 0
+    ? data.toString('utf8')
+    : zlib.inflateRawSync(data, { maxOutputLength: MAX_THEME_ENTRY_BYTES }).toString('utf8')
 }
 
 /** Normalize a package.json theme path to its zip entry name. */
@@ -279,7 +294,9 @@ function extractThemes(vsixBuffer) {
 
   const themes = []
 
-  for (const entry of contributed) {
+  let totalBytes = 0
+
+  for (const entry of contributed.slice(0, MAX_THEME_COUNT)) {
     if (!entry?.path) {
       continue
     }
@@ -291,10 +308,15 @@ function extractThemes(vsixBuffer) {
     }
 
     try {
+      const contents = extractEntry(vsixBuffer, record)
+      totalBytes += Buffer.byteLength(contents, 'utf8')
+      if (totalBytes > MAX_THEME_TOTAL_BYTES) {
+        break
+      }
       themes.push({
         label: entry.label || entry.id || pkg.displayName || pkg.name || 'VS Code Theme',
         uiTheme: entry.uiTheme,
-        contents: extractEntry(vsixBuffer, record)
+        contents
       })
     } catch {
       // Skip an entry we can't inflate rather than failing the whole install.

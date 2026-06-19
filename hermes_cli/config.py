@@ -1271,6 +1271,21 @@ DEFAULT_CONFIG = {
                                       # global threshold regardless.
     },
 
+    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
+    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
+    # implementations. Per-platform notification opt-out is handled by the
+    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
+    "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
@@ -2177,6 +2192,22 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
+
+    # Per-platform system-prompt hint overrides. Lets an admin append to or
+    # replace Hermes' built-in platform hint for a single messaging platform
+    # (WhatsApp, Slack, Telegram, ...) without affecting other platforms.
+    # Useful for enterprise/managed profiles that ship platform-aware skills.
+    # Each key is a platform name; the value is either:
+    #   { "append": "extra text" }   — keep the default hint, append text
+    #   { "replace": "full text" }   — substitute the default hint entirely
+    #   "extra text"                 — shorthand for { "append": ... }
+    # `replace` wins over `append` if both are given. Example:
+    #   platform_hints:
+    #     whatsapp:
+    #       append: >
+    #         When tabular output would be useful, invoke the
+    #         table_formatting skill instead of emitting a Markdown table.
+    "platform_hints": {},
 
     # Shell-script hooks — declarative bridge that invokes shell scripts
     # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,

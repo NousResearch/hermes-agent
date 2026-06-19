@@ -13,15 +13,16 @@ function makeZip(entries) {
   const centrals = []
   let offset = 0
 
-  for (const { name, data } of entries) {
+  for (const { name, data, uncompressedSize } of entries) {
     const nameBuf = Buffer.from(name, 'utf8')
     const body = Buffer.from(data, 'utf8')
+    const declaredSize = uncompressedSize ?? body.length
 
     const local = Buffer.alloc(30 + nameBuf.length)
     local.writeUInt32LE(0x04034b50, 0)
     local.writeUInt16LE(0, 8) // method: stored
     local.writeUInt32LE(body.length, 18) // compressed size
-    local.writeUInt32LE(body.length, 22) // uncompressed size
+    local.writeUInt32LE(declaredSize, 22) // uncompressed size
     local.writeUInt16LE(nameBuf.length, 26)
     nameBuf.copy(local, 30)
 
@@ -31,7 +32,7 @@ function makeZip(entries) {
     central.writeUInt32LE(0x02014b50, 0)
     central.writeUInt16LE(0, 10) // method: stored
     central.writeUInt32LE(body.length, 20)
-    central.writeUInt32LE(body.length, 24)
+    central.writeUInt32LE(declaredSize, 24)
     central.writeUInt16LE(nameBuf.length, 28)
     central.writeUInt32LE(offset, 42) // local header offset
     nameBuf.copy(central, 46)
@@ -84,6 +85,22 @@ test('extractThemes reads contributed color themes (resolving ./ paths)', () => 
   assert.strictEqual(themes[0].label, 'Dracula')
   assert.strictEqual(themes[0].uiTheme, 'vs-dark')
   assert.match(themes[0].contents, /editor\.background/)
+})
+
+test('extractThemes skips entries above the uncompressed size cap', () => {
+  const pkg = JSON.stringify({
+    name: 'oversized-theme',
+    contributes: {
+      themes: [{ label: 'Huge', uiTheme: 'vs-dark', path: './themes/huge.json' }]
+    }
+  })
+
+  const zip = makeZip([
+    { name: 'extension/package.json', data: pkg },
+    { name: 'extension/themes/huge.json', data: '{}', uncompressedSize: 3 * 1024 * 1024 }
+  ])
+
+  assert.deepStrictEqual(extractThemes(zip), [])
 })
 
 test('extractThemes returns empty when the extension contributes no themes', () => {

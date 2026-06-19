@@ -149,14 +149,16 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
 // per reason beats 40 identical object literals.
 const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
   terminal: [
+    '/billing',
     '/busy', '/clear', '/compact', '/config', '/copy', '/cron', '/details',
+    '/credits',
     '/exit', '/footer', '/gateway', '/gquota', '/history', '/image', '/indicator', '/logs',
     '/mouse', '/paste', '/platforms', '/plugins', '/quit', '/redraw', '/reload', '/restart',
     '/sb', '/set-home', '/sethome', '/snap', '/snapshot', '/statusbar', '/toolsets', '/update', '/verbose'
   ],
   messaging: ['/approve', '/deny'],
-  settings: ['/skills'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
+  settings: ['/auth', '/skills'],
+  advanced: ['/bundles', '/codex-runtime', '/curator', '/fast', '/insights', '/kanban', '/memory', '/reasoning', '/subgoal', '/voice', '/whoami']
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [

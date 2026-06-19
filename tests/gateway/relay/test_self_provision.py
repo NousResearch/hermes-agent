@@ -8,6 +8,8 @@ TRIGGER logic, in-process env wiring, and fail-soft boot behaviour.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import gateway.relay as relay
@@ -126,8 +128,9 @@ def test_provisions_and_sets_env_in_process(monkeypatch):
     # Creds landed in os.environ (in-process), so register_relay_adapter() reads them.
     gid, secret = relay.relay_connection_auth()
     assert gid and secret == "a" * 64
-    key, _host, _port = relay.relay_inbound_config()
-    assert key == "b" * 64
+    # The delivery key is persisted in-process too (issued by the connector,
+    # kept for forward-compat; inbound rides the WS so it isn't consumed).
+    assert os.environ["GATEWAY_RELAY_DELIVERY_KEY"] == "b" * 64
 
 
 def test_outbound_only_when_no_endpoint(monkeypatch):

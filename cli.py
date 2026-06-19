@@ -6301,6 +6301,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
+            # Flush any un-persisted messages from the current turn to the
+            # old session *before* rotating.  /new can be called mid-turn
+            # when _flush_messages_to_session_db() has not yet run — without
+            # this, messages generated during the current turn are silently
+            # lost on session rotation (#47202).
+            if self.agent:
+                try:
+                    self.agent._flush_messages_to_session_db(
+                        self.conversation_history
+                    )
+                except Exception:
+                    pass  # best-effort
             try:
                 self._session_db.end_session(old_session_id, "new_session")
             except Exception:
@@ -7374,7 +7386,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 if ctx is None:
                     raise RuntimeError("inventory context unavailable")
-                providers = build_models_payload(ctx, max_models=50)["providers"]
+                providers = build_models_payload(ctx)["providers"]
             except Exception:
                 providers = []
 

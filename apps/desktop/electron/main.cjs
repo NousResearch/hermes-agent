@@ -17,9 +17,11 @@ const {
   systemPreferences
 } = require('electron')
 const crypto = require('node:crypto')
+const dns = require('node:dns').promises
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
+const nodeNet = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -82,6 +84,9 @@ const {
 
 let nodePty = null
 let nodePtyDir = null
+const IMAGE_URL_MAX_BYTES = DATA_URL_READ_MAX_BYTES
+const IMAGE_URL_MAX_REDIRECTS = 3
+const IMAGE_MIME_RE = /^image\/(?:avif|bmp|gif|jpeg|jpg|png|svg\+xml|webp)$/i
 
 try {
   nodePty = require('node-pty')
@@ -3046,42 +3051,129 @@ function fetchLinkTitle(rawUrl) {
   return pending
 }
 
-async function resourceBufferFromUrl(rawUrl) {
+function assertImageBufferLimit(buffer) {
+  if (buffer.length > IMAGE_URL_MAX_BYTES) throw new Error('Image exceeds the size limit')
+}
+
+function isPrivateAddress(address) {
+  const family = nodeNet.isIP(address)
+  if (family === 4) {
+    const parts = address.split('.').map(part => Number(part))
+    const [a, b] = parts
+
+    return (
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      a === 0
+    )
+  }
+  if (family === 6) {
+    const lower = address.toLowerCase()
+
+    return lower === '::1' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80:')
+  }
+
+  return false
+}
+
+async function assertPublicHttpTarget(parsed) {
+  if (parsed.username || parsed.password) throw new Error('Image URL credentials are not allowed')
+  if (isPrivateAddress(parsed.hostname)) throw new Error('Private network image URLs are not allowed')
+  const records = await dns.lookup(parsed.hostname, { all: true })
+  if (records.some(record => isPrivateAddress(record.address))) {
+    throw new Error('Private network image URLs are not allowed')
+  }
+}
+
+async function resourceBufferFromUrl(rawUrl, redirectsLeft = IMAGE_URL_MAX_REDIRECTS) {
   if (!rawUrl) throw new Error('Missing URL')
   if (rawUrl.startsWith('data:')) {
     const match = rawUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
     if (!match) throw new Error('Invalid data URL')
     const mimeType = match[1] || 'application/octet-stream'
+    if (!IMAGE_MIME_RE.test(mimeType)) throw new Error('Only image data URLs are supported')
     const encoded = match[3] || ''
+    if (encoded.length > IMAGE_URL_MAX_BYTES * 2) throw new Error('Image exceeds the size limit')
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
+    assertImageBufferLimit(buffer)
     return { buffer, mimeType }
   }
   if (/^file:/i.test(rawUrl)) {
-    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
+    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, {
+      maxBytes: IMAGE_URL_MAX_BYTES,
+      purpose: 'Image file'
+    })
     const buffer = await fs.promises.readFile(resolvedPath)
-    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
+    assertImageBufferLimit(buffer)
+    const mimeType = mimeTypeForPath(resolvedPath)
+    if (!IMAGE_MIME_RE.test(mimeType)) throw new Error('Only image files are supported')
+    return { buffer, mimeType }
   }
 
   const parsed = new URL(rawUrl)
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Only http, https, file, and data image URLs are supported')
+  }
+  await assertPublicHttpTarget(parsed)
   const client = parsed.protocol === 'https:' ? https : http
   return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = error => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
     const req = client.get(parsed, res => {
+      const location = res.headers.location
+      if ((res.statusCode || 0) >= 300 && (res.statusCode || 0) < 400 && location) {
+        res.resume()
+        if (redirectsLeft <= 0) {
+          fail(new Error('Too many image URL redirects'))
+          return
+        }
+        const nextUrl = new URL(location, parsed).toString()
+        resourceBufferFromUrl(nextUrl, redirectsLeft - 1).then(resolve, fail)
+        return
+      }
       if ((res.statusCode || 500) >= 400) {
-        reject(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
+        fail(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
+        res.resume()
+        return
+      }
+      const mimeType = String(res.headers['content-type'] || 'application/octet-stream').split(';')[0].trim()
+      if (!IMAGE_MIME_RE.test(mimeType)) {
+        fail(new Error('Remote URL did not return an image'))
         res.resume()
         return
       }
       const chunks = []
-      res.on('error', reject)
-      res.on('data', chunk => chunks.push(chunk))
+      let total = 0
+      res.on('error', fail)
+      res.on('data', chunk => {
+        total += chunk.length
+        if (total > IMAGE_URL_MAX_BYTES) {
+          req.destroy(new Error('Image exceeds the size limit'))
+          return
+        }
+        chunks.push(chunk)
+      })
       res.on('end', () => {
+        if (settled) return
+        settled = true
         resolve({
           buffer: Buffer.concat(chunks),
-          mimeType: res.headers['content-type'] || 'application/octet-stream'
+          mimeType
         })
       })
     })
-    req.on('error', reject)
+    req.setTimeout(resolveTimeoutMs(undefined, DEFAULT_FETCH_TIMEOUT_MS), () => {
+      req.destroy(new Error('Image fetch timed out'))
+    })
+    req.on('error', fail)
   })
 }
 

@@ -186,7 +186,7 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
 
-        app = web.Application()
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
 
@@ -397,6 +397,14 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
+    async def _read_limited_body(self, request: "web.Request") -> bytes:
+        body = bytearray()
+        async for chunk in request.content.iter_chunked(64 * 1024):
+            body.extend(chunk)
+            if len(body) > self._max_body_bytes:
+                raise ValueError("payload too large")
+        return bytes(body)
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -421,15 +429,18 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # ── Auth-before-body ─────────────────────────────────────
         # Check Content-Length before reading the full payload.
-        content_length = request.content_length or 0
-        if content_length > self._max_body_bytes:
+        content_length = request.content_length
+        if content_length is not None and content_length > self._max_body_bytes:
             return web.json_response(
                 {"error": "Payload too large"}, status=413
             )
 
-        # Read body (must be done before any validation)
+        # Read body with a streaming cap. Chunked requests may omit
+        # Content-Length, so the header check above is only an early reject.
         try:
-            raw_body = await request.read()
+            raw_body = await self._read_limited_body(request)
+        except ValueError:
+            return web.json_response({"error": "Payload too large"}, status=413)
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)

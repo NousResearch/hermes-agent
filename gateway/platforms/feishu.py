@@ -160,6 +160,9 @@ _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+_TABLE_SEPARATOR_RE = re.compile(
+    r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$"
+)
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -390,6 +393,7 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    render_mode: str = "auto"  # "auto" | "raw" | "card"
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -543,13 +547,18 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     return default if parsed is None else parsed
 
 
+def _normalize_render_mode(value: Any, default: str = "auto") -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"auto", "raw", "card"} else default
+
+
 # ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
 
 
 def _build_markdown_post_payload(content: str) -> str:
-    rows = _build_markdown_post_rows(content)
+    rows = _build_markdown_post_rows(_wrap_markdown_tables(content))
     return json.dumps(
         {
             "zh_cn": {
@@ -558,6 +567,81 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _build_markdown_card_payload(content: str) -> str:
+    return json.dumps(
+        {
+            "schema": "2.0",
+            "config": {
+                "width_mode": "fill",
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": content,
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def _is_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and "|" in stripped
+
+
+def _wrap_markdown_tables(text: str) -> str:
+    """Wrap GFM pipe tables in fenced code blocks for Feishu rendering.
+
+    Feishu post markdown does not reliably render GFM tables.  A fenced block
+    gives users a stable, monospace table while preserving the original cells.
+    Existing fenced code blocks are left unchanged.
+    """
+    if "|" not in text or "-" not in text:
+        return text
+
+    lines = text.split("\n")
+    out: List[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        if (
+            "|" in line
+            and i + 1 < len(lines)
+            and _TABLE_SEPARATOR_RE.match(lines[i + 1])
+        ):
+            table_block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and _is_table_row(lines[j]):
+                table_block.append(lines[j])
+                j += 1
+            out.append("```")
+            out.extend(table_block)
+            out.append("```")
+            i = j
+            continue
+
+        out.append(line)
+        i += 1
+
+    return "\n".join(out)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -581,7 +665,7 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         nonlocal current
         if not current:
             return
-        segment = "\n".join(current)
+        segment = "\n".join(current).strip("\n")
         if segment.strip():
             rows.append([{"tag": "md", "text": segment}])
         current = []
@@ -1414,6 +1498,7 @@ class FeishuAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
+    STREAM_SEGMENTS_IN_SINGLE_MESSAGE = False
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1568,6 +1653,9 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            render_mode=_normalize_render_mode(
+                extra.get("render_mode") or os.getenv("HERMES_FEISHU_RENDER_MODE", "auto")
+            ),
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
@@ -1605,6 +1693,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._render_mode = settings.render_mode
+        self.STREAM_SEGMENTS_IN_SINGLE_MESSAGE = settings.render_mode == "card"
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
 
@@ -4374,14 +4464,13 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+        if self._render_mode == "card":
+            return "interactive", _build_markdown_card_payload(content)
+        if self._render_mode == "raw":
+            return "text", json.dumps({"text": content}, ensure_ascii=False)
+        markdown_content = _wrap_markdown_tables(content)
+        if markdown_content != content or _MARKDOWN_HINT_RE.search(markdown_content):
+            return "post", _build_markdown_post_payload(markdown_content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

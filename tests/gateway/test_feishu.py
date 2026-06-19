@@ -417,6 +417,47 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_updates_card_when_render_mode_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"render_mode": "card"}))
+        captured = {}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_card",
+                    content="更新后的 **卡片** 回复",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["schema"], "2.0")
+        self.assertEqual(payload["body"]["elements"][0]["tag"], "markdown")
+        self.assertEqual(payload["body"]["elements"][0]["content"], "更新后的 **卡片** 回复")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -503,6 +544,20 @@ class TestAdapterModule(unittest.TestCase):
 
         self.assertIsNone(settings.ws_ping_interval)
         self.assertIsNone(settings.ws_ping_timeout)
+
+    def test_load_settings_accepts_card_render_mode(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings({"render_mode": "card"})
+
+        self.assertEqual(settings.render_mode, "card")
+
+    def test_load_settings_defaults_invalid_render_mode_to_auto(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings({"render_mode": "sparkles"})
+
+        self.assertEqual(settings.render_mode, "auto")
 
     def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
         import sys
@@ -2706,6 +2761,129 @@ class TestAdapterBehavior(unittest.TestCase):
                 [{"tag": "md", "text": "after"}],
             ],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_wraps_markdown_tables_as_code_blocks(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "结果如下：\n"
+                "| 名称 | 数量 |\n"
+                "| --- | ---: |\n"
+                "| 苹果 | 3 |\n"
+                "| 梨 | 12 |\n"
+                "\n说明结束。"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "结果如下："}],
+                [{"tag": "md", "text": "```\n| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 3 |\n| 梨 | 12 |\n```"}],
+                [{"tag": "md", "text": "说明结束。"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_leaves_tables_inside_code_blocks_unchanged(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```markdown\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```markdown\n| A | B |\n| --- | --- |\n| 1 | 2 |\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_post_for_markdown_table_only_messages(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 3 |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [[{"tag": "md", "text": "```\n| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 3 |\n```"}]],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_when_render_mode_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"render_mode": "card"}))
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content="卡片 **回复**"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["schema"], "2.0")
+        self.assertEqual(payload["config"]["width_mode"], "fill")
+        self.assertEqual(payload["body"]["elements"], [{"tag": "markdown", "content": "卡片 **回复**"}])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):

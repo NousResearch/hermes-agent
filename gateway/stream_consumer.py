@@ -178,6 +178,9 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        self._keep_segments_in_one_message: bool = (
+            getattr(adapter, "STREAM_SEGMENTS_IN_SINGLE_MESSAGE", False) is True
+        )
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -686,6 +689,8 @@ class GatewayStreamConsumer:
 
                 # Tool boundary: reset message state so the next text chunk
                 # creates a fresh message below any tool-progress messages.
+                # Card-style adapters can opt out and keep editing the same
+                # message across tool boundaries.
                 #
                 # Exception: when _message_id is "__no_edit__" the platform
                 # never returned a real message ID (e.g. Signal, webhook with
@@ -698,7 +703,7 @@ class GatewayStreamConsumer:
                 # (When editing fails mid-stream due to flood control the id is
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
-                if got_segment_break:
+                if got_segment_break and not self._keep_segments_in_one_message:
                     # If the segment-break edit failed to deliver the
                     # accumulated content (flood control that has not yet
                     # promoted to fallback mode, or fallback mode itself),

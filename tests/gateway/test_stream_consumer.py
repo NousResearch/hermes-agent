@@ -401,6 +401,32 @@ class TestSegmentBreakOnToolBoundary:
         assert "results" in second_text
 
     @pytest.mark.asyncio
+    async def test_segment_break_can_continue_editing_same_message(self):
+        """Card-style adapters can keep one editable message across tool boundaries."""
+        adapter = MagicMock()
+        adapter.STREAM_SEGMENTS_IN_SINGLE_MESSAGE = True
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Let me search for that...")
+        consumer.on_delta(None)
+        consumer.on_delta("Here are the results.")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert adapter.send.call_count == 1
+        assert adapter.edit_message.call_count >= 1
+        final_edit = adapter.edit_message.call_args_list[-1][1]
+        assert final_edit["message_id"] == "msg_1"
+        assert "search" in final_edit["content"]
+        assert "results" in final_edit["content"]
+
+    @pytest.mark.asyncio
     async def test_segment_break_no_text_before(self):
         """A None boundary with no preceding text is a no-op."""
         adapter = MagicMock()

@@ -3509,7 +3509,7 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "") -> Any:
+    def _build_keepalive_http_client(base_url: str = "", *, ssl_ca_cert: str | None = None) -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
@@ -3527,7 +3527,10 @@ class AIAgent:
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                transport=_httpx.HTTPTransport(
+                    socket_options=_sock_opts,
+                    verify=ssl_ca_cert if ssl_ca_cert else True,
+                ),
                 proxy=_proxy,
             )
         except Exception:

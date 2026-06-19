@@ -108,6 +108,26 @@ def _build_prompt(items: List[Dict[str, Any]], criteria: str) -> str:
     return "\n".join(lines)
 
 
+def _coerce_score(value: Any) -> Optional[float]:
+    """Coerce an LLM-returned score to a float for threshold comparison.
+
+    The classifier is asked for an int 0-10, but JSON ``8.0`` deserializes to a
+    float and models frequently emit ``"8"`` as a string. Accept any numeric
+    form; return None for anything non-numeric. ``bool`` is rejected explicitly
+    (it is an int subclass that must not be read as a score).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _parse_scores(content: str, n_items: int) -> Dict[int, Dict[str, Any]]:
     text = (content or "").strip()
     # Tolerate accidental markdown fences.
@@ -182,8 +202,9 @@ def main() -> int:
     surfaced = []
     for i, item in enumerate(items):
         s = scores.get(i)
-        score = s.get("score") if isinstance(s, dict) else None
-        if isinstance(score, int) and score >= args.threshold:
+        raw_score = s.get("score") if isinstance(s, dict) else None
+        score = _coerce_score(raw_score)
+        if score is not None and score >= args.threshold:
             surfaced.append((i, item, s))
 
     if not surfaced:

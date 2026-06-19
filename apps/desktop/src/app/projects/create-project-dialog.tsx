@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { selectDesktopPaths } from '@/lib/desktop-fs'
+import { projectAgentsMdPath, readDesktopFileText, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { AlertTriangle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { addProject } from '@/store/projects'
@@ -67,6 +67,25 @@ export function CreateProjectDialog({
     setError(null)
 
     try {
+      // Auto-create AGENTS.md only if it doesn't already exist in the folder.
+      // This preserves instructions in existing repos while giving new projects
+      // a ready-to-edit starter file.
+      const agentsMdPath = projectAgentsMdPath(path)
+
+      const alreadyExists = await readDesktopFileText(agentsMdPath)
+        .then(() => true)
+        .catch(() => false)
+
+      if (!alreadyExists) {
+        const starterContent = [
+          `# ${trimmedTitle}`,
+          trimmedDescription ? `\n${trimmedDescription}` : '',
+          '\n\n<!-- Add project-specific instructions for the AI agent here. -->'
+        ].join('')
+
+        await writeDesktopFileText(agentsMdPath, starterContent)
+      }
+
       const project = addProject({ title: trimmedTitle, description: trimmedDescription, path })
       onCreated(project)
       setStatus('done')

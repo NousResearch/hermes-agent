@@ -5708,6 +5708,24 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+ipcMain.handle('hermes:writeFileText', async (_event, filePath, text) => {
+  const resolvedPath = resolveRequestedPathForIpc(filePath, { purpose: 'File write' })
+  const ext = path.extname(resolvedPath).toLowerCase()
+  if (ext !== '.md') {
+    const err = new Error(`File write blocked: only .md files may be written (got ${ext || 'no extension'}).`)
+    err.code = 'forbidden-extension'
+    throw err
+  }
+  try {
+    await fs.promises.writeFile(resolvedPath, String(text), 'utf8')
+    return { path: resolvedPath }
+  } catch (error) {
+    const err = new Error(`File write failed: ${error instanceof Error ? error.message : String(error)}`)
+    err.code = error?.code || 'write-error'
+    throw err
+  }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')

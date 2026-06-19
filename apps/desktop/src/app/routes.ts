@@ -6,7 +6,7 @@ export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
-export const PROJECT_ROUTE = '/project/:id'
+export const PROJECT_ROUTE = '/project'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 
@@ -48,7 +48,7 @@ export const APP_ROUTES = [
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
-  { id: 'project', path: 'project/:id', view: 'project' as AppView },
+  { id: 'project', path: `${PROJECT_ROUTE}/:id`, view: 'project' as AppView },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' }
 ] as const satisfies readonly AppRoute[]
@@ -80,7 +80,7 @@ export function routeSessionId(pathname: string): string | null {
 }
 
 export function projectRoute(id: string): string {
-  return `/project/${id}`
+  return `${PROJECT_ROUTE}/${encodeURIComponent(id)}`
 }
 
 export function sessionRoute(sessionId: string): string {
@@ -90,6 +90,10 @@ export function sessionRoute(sessionId: string): string {
 export function appViewForPath(pathname: string): AppView {
   if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
     return 'chat'
+  }
+
+  if (pathname.startsWith(`${PROJECT_ROUTE}/`)) {
+    return 'project'
   }
 
   return APP_VIEW_BY_PATH.get(pathname) ?? 'chat'

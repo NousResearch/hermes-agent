@@ -1379,6 +1379,33 @@ def try_activate_fallback(
                     fb_provider, fb_model, _fb_reasoning_effort, _re_exc,
                 )
 
+        # Re-sync the auxiliary-routing runtime globals to the fallback tuple.
+        # ``turn_context`` set these to the PRIMARY (provider+model) at turn
+        # start; without updating them here, auxiliary tasks (context
+        # compression, web extract, etc.) whose explicit model is dropped in
+        # ``_resolve_auto`` fall back to ``_read_main_model()`` -> the stale
+        # PRIMARY model name, while the provider resolves to the fallback.
+        # That mismatch sent a Claude model name (``claude-opus-4-8``) to the
+        # Codex/ChatGPT endpoint -> ``400 ... not supported when using Codex
+        # with a ChatGPT account``. Keeping the globals in lockstep with the
+        # live runtime is exactly what they are documented to track.
+        try:
+            from agent.auxiliary_client import set_runtime_main
+            # NOTE: the fallback client's own api_key is not swapped onto the
+            # agent until further below, so pass an empty key here — aux
+            # resolution then uses the fallback PROVIDER's own credentials
+            # (e.g. the Codex OAuth token) instead of pinning the stale
+            # primary key. provider+model+base_url+api_mode are the load-
+            # bearing fields for correct routing and are all final here.
+            set_runtime_main(
+                fb_provider, fb_model,
+                base_url=fb_base_url,
+                api_key="",
+                api_mode=fb_api_mode,
+            )
+        except Exception:  # noqa: BLE001 — never let aux-routing sync break failover
+            pass
+
         # Clear the credential pool when the fallback provider doesn't match
         # the pool's provider.  The pool was seeded for the primary provider;
         # leaving it attached means downstream recovery (rate_limit / billing /

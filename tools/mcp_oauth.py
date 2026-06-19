@@ -320,7 +320,8 @@ async def _wait_for_callback() -> tuple[str, str | None]:
         OAuthNonInteractiveError: If the callback times out (no user present
             to complete the browser auth).
     """
-    assert _oauth_port is not None, "OAuth callback port not set"
+    if _oauth_port is None:
+        raise RuntimeError("OAuth callback port not set")
 
     # The callback server is already running (started in build_oauth_auth).
     # We just need to poll for the result.

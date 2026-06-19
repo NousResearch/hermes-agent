@@ -151,8 +151,11 @@ def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
     Zed may send POSIX file URIs from Linux/WSL workspaces or Windows-ish paths
-    when launched through wsl.exe. Translate the common Windows drive form to
-    /mnt/<drive>/... so Hermes running in WSL can read it.
+    when launched through wsl.exe. When Hermes itself runs inside WSL, translate
+    the common Windows drive form to /mnt/<drive>/... so it can read the file.
+    On native Windows the drive path is already usable and must be kept as-is —
+    rewriting it to /mnt/<drive> there points at a non-existent path and the
+    read fails with FileNotFoundError (#48986).
     """
     raw = (uri or "").strip()
     if not raw:
@@ -170,14 +173,21 @@ def _path_from_file_uri(uri: str) -> Path | None:
         path_text = unquote(raw)
 
     # file:///C:/Users/... or C:\Users\...
+    drive: str | None = None
+    rest = ""
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
-        drive = path_text[1].lower()
+        drive = path_text[1]
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
-    if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
-        drive = path_text[0].lower()
+    elif len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+        drive = path_text[0]
         rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+
+    if drive is not None:
+        from hermes_constants import is_wsl
+
+        if is_wsl():
+            return Path("/mnt") / drive.lower() / rest
+        return Path(f"{drive.upper()}:/{rest}")
 
     return Path(path_text)
 

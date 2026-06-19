@@ -124,3 +124,51 @@ def test_baseline_repro_records_escalation_in_run_params():
     assert '"escalation": self.cfg.escalation' in src
     assert '"run_params"' in src
 
+
+# ---- AC-5 root-cause fix: Prong-A fidelity toggle (the loop-bug fix) ----------
+# The first rerun looped forever because the identifier-fidelity prompt (Prong A)
+# was hardcoded ON, so the baseline-repro arm could not reproduce the merge bug
+# (CW=0 -> abort -> net-cron re-fire). The fix makes Prong A toggleable per
+# subprocess so the baseline runs PRE-FIX summarization on identical code.
+
+def test_fidelity_default_on_when_env_unset(monkeypatch):
+    monkeypatch.delenv("LCM_IDENTIFIER_FIDELITY", raising=False)
+    assert esc._identifier_fidelity_enabled() is True
+    p = esc._build_l1_prompt("CONTENT", token_budget=500, depth=0)
+    assert "IDENTIFIER FIDELITY" in p
+
+
+def test_fidelity_off_reproduces_prefix_prompt(monkeypatch):
+    # baseline-repro arm: env=0 -> the fidelity block is ABSENT (pre-fix prompt),
+    # which is what lets the K=2 merge bug reproduce.
+    monkeypatch.setenv("LCM_IDENTIFIER_FIDELITY", "0")
+    assert esc._identifier_fidelity_enabled() is False
+    l1 = esc._build_l1_prompt("CONTENT", token_budget=500, depth=0)
+    l2 = esc._build_l2_prompt("CONTENT", token_budget=300)
+    assert "IDENTIFIER FIDELITY" not in l1
+    assert "IDENTIFIER FIDELITY" not in l2
+    # base summarize instruction must survive in both arms
+    assert "Summarize this conversation segment" in l1
+    assert "CONTENT" in l1
+
+
+def test_fidelity_failsafe_to_on_for_garbage(monkeypatch):
+    # anything unrecognised (incl. empty string) must default to production
+    # behaviour (fidelity ON) — never silently drop fidelity in prod.
+    for v in ("1", "true", "yes", "", "garbage"):
+        monkeypatch.setenv("LCM_IDENTIFIER_FIDELITY", v)
+        assert esc._identifier_fidelity_enabled() is True, v
+    for v in ("0", "false", "no", "off", "OFF"):
+        monkeypatch.setenv("LCM_IDENTIFIER_FIDELITY", v)
+        assert esc._identifier_fidelity_enabled() is False, v
+
+
+def test_harness_sets_fidelity_env_to_match_escalation_arm():
+    # the harness _hermes() must export LCM_IDENTIFIER_FIDELITY=0 on the baseline
+    # arm (escalation OFF) and =1 on the fix arm, so the A/B is on identical code.
+    import inspect
+    src = inspect.getsource(armB.ArmBHarness._hermes)
+    assert 'LCM_IDENTIFIER_FIDELITY' in src
+    assert 'self.cfg.escalation' in src
+
+

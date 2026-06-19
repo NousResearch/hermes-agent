@@ -300,6 +300,15 @@ class ArmBHarness:
     def _hermes(self, args: list[str], prompt: str) -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env["LCM_CONTEXT_THRESHOLD"] = str(self.cfg.threshold)
+        # PRD-8.3 AC-5: the baseline-repro arm (escalation OFF) must summarize with
+        # the PRE-FIX prompt so the K=2 merge bug actually reproduces. The fix arm
+        # (escalation ON) keeps identifier-fidelity ON (production default). Setting
+        # this per-subprocess is the only way to A/B identical code; gateway reads
+        # the env fresh each summarization call.
+        if not self.cfg.escalation:
+            env["LCM_IDENTIFIER_FIDELITY"] = "0"
+        else:
+            env["LCM_IDENTIFIER_FIDELITY"] = "1"
         cmd = ["hermes", "-p", self.cfg.profile, "chat", "-Q", "-m", self.cfg.model]
         cmd.extend([*args, "-q", prompt])
         return subprocess.run(

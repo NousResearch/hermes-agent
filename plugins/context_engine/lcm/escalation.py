@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -218,6 +219,37 @@ def _invoke_summary_llm_chain(
     return None
 
 
+# PRD-8.3 Prong A — identifier-fidelity instruction. The block is ALWAYS on in
+# production (default). The ONLY reason it is toggleable is the AC-5
+# baseline-repro arm of the disambiguation campaign: to prove the K=2 bug still
+# reproduces, the baseline must run the PRE-FIX summarizer (fidelity OFF) on the
+# SAME code. Gated by an internal env var the harness sets per-subprocess; it is
+# NOT a user-facing setting. Default (unset) == on.
+_L1_IDENTIFIER_FIDELITY = (
+    "IDENTIFIER FIDELITY (do not violate): Never merge, group, range-collapse, or\n"
+    "abbreviate distinct identifier->value mappings (recovery codes, IDs, keys, file\n"
+    "paths, owner/person names). Each distinct identifier and its FULL value must\n"
+    "survive verbatim and separately, even when many look similar — similar is NOT\n"
+    "repetition. Never write a grouped/range line like \"1300/1600/1900 = Name\"; emit\n"
+    "one line per distinct identifier. Never truncate a value mid-word.\n"
+)
+_L2_IDENTIFIER_FIDELITY = (
+    "IDENTIFIER FIDELITY (do not violate): Never merge, group, range-collapse, or\n"
+    "truncate distinct identifier->value mappings (codes, IDs, keys, paths, names) —\n"
+    "one line per distinct identifier with its FULL value; \"similar\" is NOT a reason\n"
+    "to combine. No grouped/range lines like \"1300/1600/1900 = Name\".\n"
+)
+
+
+def _identifier_fidelity_enabled() -> bool:
+    """Default ON. Only the AC-5 baseline-repro arm sets this to a falsey value
+    to reproduce pre-fix (merge-prone) summarization on identical code."""
+    val = os.environ.get("LCM_IDENTIFIER_FIDELITY")
+    if val is None:
+        return True
+    return val.strip().lower() not in ("0", "false", "no", "off")
+
+
 def _build_l1_prompt(text: str, token_budget: int, depth: int,
                      focus_topic: str = "", custom_instructions: str = "") -> str:
     """Level 1: preserve details."""
@@ -234,16 +266,12 @@ def _build_l1_prompt(text: str, token_budget: int, depth: int,
     if custom_instructions:
         custom_block = f"\nAdditional instructions:\n{custom_instructions}\n"
 
+    fidelity = _L1_IDENTIFIER_FIDELITY if _identifier_fidelity_enabled() else ""
+
     return f"""Summarize this conversation segment for future turns.
 {guidance}
 Remove repetition and conversational filler.
-IDENTIFIER FIDELITY (do not violate): Never merge, group, range-collapse, or
-abbreviate distinct identifier->value mappings (recovery codes, IDs, keys, file
-paths, owner/person names). Each distinct identifier and its FULL value must
-survive verbatim and separately, even when many look similar — similar is NOT
-repetition. Never write a grouped/range line like "1300/1600/1900 = Name"; emit
-one line per distinct identifier. Never truncate a value mid-word.
-End with: "Expand for details about: <what was compressed>"
+{fidelity}End with: "Expand for details about: <what was compressed>"
 {focus_guidance}{custom_block}
 
 Target ~{token_budget} tokens.
@@ -255,20 +283,19 @@ CONTENT:
 def _build_l2_prompt(text: str, token_budget: int,
                      focus_topic: str = "", custom_instructions: str = "") -> str:
     """Level 2: aggressive bullet points."""
+
     focus_guidance = _build_l2_focus_brief(focus_topic)
 
     custom_block = ""
     if custom_instructions:
         custom_block = f"\nAdditional instructions:\n{custom_instructions}\n"
 
+    fidelity = _L2_IDENTIFIER_FIDELITY if _identifier_fidelity_enabled() else ""
+
     return f"""Compress this into bullet points. Maximum {token_budget} tokens.
 Keep only: decisions made, files changed, errors hit, current state.
 Drop all reasoning, alternatives considered, and process detail.
-IDENTIFIER FIDELITY (do not violate): Never merge, group, range-collapse, or
-truncate distinct identifier->value mappings (codes, IDs, keys, paths, names) —
-one line per distinct identifier with its FULL value; "similar" is NOT a reason
-to combine. No grouped/range lines like "1300/1600/1900 = Name".
-{focus_guidance}{custom_block}
+{fidelity}{focus_guidance}{custom_block}
 
 CONTENT:
 {text}"""

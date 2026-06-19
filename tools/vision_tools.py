@@ -1589,5 +1589,10 @@ registry.register(
     is_async=True,
     emoji="🎬",
 )
-# --- DISABLED (moved to vision-agent sub-agent) ---
-registry.deregister("vision_analyze")
+# NOTE (reverted 2026-06-19): same accidental change as the browser tools
+# (commit 2bd047e23) — vision_analyze was deregistered "moved to vision-agent
+# sub-agent" which doesn't exist here. Re-enabled; check_vision_requirements()
+# gates it, so it only advertises when a vision provider is configured (e.g.
+# the visual-analysis specialist on local-vision), staying off for profiles
+# with no vision provider.
+# registry.deregister("vision_analyze")

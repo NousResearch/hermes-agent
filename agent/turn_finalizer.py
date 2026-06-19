@@ -140,6 +140,20 @@ def finalize_turn(
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
+
+    # When the turn was interrupted and the last message is a tool result,
+    # append a synthetic assistant message to close the tool-call sequence.
+    # Without this, the session persists a tool → user alternation that
+    # strict providers (Gemini, Claude) reject, causing hallucinations on
+    # the next turn (#48879).
+    _last_role = messages[-1].get("role") if messages else None
+    if interrupted and _last_role == "tool" and messages:
+        _synthetic = {
+            "role": "assistant",
+            "content": final_response or "",
+        }
+        messages.append(_synthetic)
+
     agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────

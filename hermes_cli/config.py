@@ -925,6 +925,15 @@ DEFAULT_CONFIG = {
         # plausible-looking output when a real path is blocked.  Costs ~80
         # tokens in the cached system prompt.  Set False to disable globally.
         "task_completion_guidance": True,
+        # Universal parallel-tool-call guidance — short prompt block applied to
+        # all models that tells the model to batch independent tool calls
+        # (reads, searches, web fetches, read-only commands) into one turn
+        # instead of one call per turn.  The runtime already runs independent
+        # calls concurrently, so this just steers the model to produce the
+        # batch — cutting round-trips and the resent-context cost that
+        # compounds over a long conversation.  Costs ~70 tokens in the cached
+        # system prompt.  Set False to disable globally.
+        "parallel_tool_call_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP
@@ -1260,6 +1269,21 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+    },
+
+    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
+    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
+    # implementations. Per-platform notification opt-out is handled by the
+    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
+    "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -2146,6 +2170,22 @@ DEFAULT_CONFIG = {
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
 
+    # Per-platform system-prompt hint overrides. Lets an admin append to or
+    # replace Hermes' built-in platform hint for a single messaging platform
+    # (WhatsApp, Slack, Telegram, ...) without affecting other platforms.
+    # Useful for enterprise/managed profiles that ship platform-aware skills.
+    # Each key is a platform name; the value is either:
+    #   { "append": "extra text" }   — keep the default hint, append text
+    #   { "replace": "full text" }   — substitute the default hint entirely
+    #   "extra text"                 — shorthand for { "append": ... }
+    # `replace` wins over `append` if both are given. Example:
+    #   platform_hints:
+    #     whatsapp:
+    #       append: >
+    #         When tabular output would be useful, invoke the
+    #         table_formatting skill instead of emitting a Markdown table.
+    "platform_hints": {},
+
     # Shell-script hooks — declarative bridge that invokes shell scripts
     # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
     # subagent_stop, etc.).  Each entry maps an event name to a list of
@@ -2504,11 +2544,14 @@ DEFAULT_CONFIG = {
     "updates": {
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Off by default —
-        # on large HERMES_HOME directories the zip can add minutes to every
-        # update.  Set to true to re-enable, or pass ``--backup`` to opt in
-        # for a single update run.
-        "pre_update_backup": False,
+        # can be restored with ``hermes import <path>``.  Defaults to true
+        # after the #48200 incident: a ``hermes update --yes`` run that
+        # computed a wrong path silently wiped the user's ``.env``,
+        # ``MEMORY.md``, ``kanban.db``, custom skills, and scripts in one
+        # go.  The cost of a few minutes of zip time per update is
+        # negligible compared to the alternative.  Set to false to opt
+        # out, or pass ``--no-backup`` for a single update run.
+        "pre_update_backup": True,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.  Values below 1 are
         # floored to 1 — the backup just created is always preserved.  To

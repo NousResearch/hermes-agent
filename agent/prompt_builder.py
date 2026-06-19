@@ -1082,7 +1082,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2  # bumped from 1: entries gained the `pinned` field
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1177,7 +1177,25 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "pinned": _frontmatter_is_pinned(frontmatter),
     }
+
+
+def _frontmatter_is_pinned(frontmatter: dict) -> bool:
+    """A skill is pinned when its frontmatter sets ``pinned: true`` (or the
+    legacy alias ``always_active: true``). Pinned skills load their full body
+    into the system prompt every turn so behaviour/discipline content stays
+    in front of the model without depending on description-match retrieval.
+
+    See ``build_pinned_skills_prompt`` for rendering and the byte cap.
+    """
+    for key in ("pinned", "always_active"):
+        val = frontmatter.get(key)
+        if val is True:
+            return True
+        if isinstance(val, str) and val.strip().lower() in {"true", "yes", "1", "on"}:
+            return True
+    return False
 
 
 # =========================================================================
@@ -1508,6 +1526,136 @@ def build_skills_system_prompt(
             _SKILLS_PROMPT_CACHE.popitem(last=False)
 
     return result
+
+
+# =========================================================================
+# Pinned skills block (always-on behavior/discipline content)
+# =========================================================================
+
+#: Hard cap on combined pinned skill bodies (bytes). Pinned content rides in the
+#: stable tier of the system prompt and is sent on every API call, so the cost
+#: is paid every turn — keep it tight. The cap is intentionally well below the
+#: 20K cap on SOUL.md / context files so misuse is loud, not silent.
+PINNED_SKILLS_TOTAL_BYTES_CAP = 8 * 1024
+
+#: Per-skill body cap (bytes). Prevents one runaway skill from eating the
+#: combined budget. ``PINNED_SKILLS_TOTAL_BYTES_CAP`` is still the hard limit.
+PINNED_SKILL_BODY_BYTES_CAP = 4 * 1024
+
+
+def _read_pinned_skill_body(skill_file: Path) -> str:
+    """Read SKILL.md and return only the body (frontmatter stripped)."""
+    try:
+        raw = skill_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Pinned skill unreadable %s: %s", skill_file, exc)
+        return ""
+    _fm, body = parse_frontmatter(raw)
+    return body.strip()
+
+
+def build_pinned_skills_prompt() -> str:
+    """Build the pinned-skills section that rides in the stable system prompt
+    every turn.
+
+    Skills opt in by declaring ``pinned: true`` in their frontmatter (or the
+    legacy alias ``always_active: true``). Their full body is appended to the
+    system prompt — no description-match required.
+
+    Cache-safe by design: pinned bodies only change when a SKILL.md file
+    changes on disk. They never mutate mid-conversation. The byte caps are
+    enforced deterministically (alphabetical order) so two processes building
+    the same prompt produce byte-identical output.
+
+    Returns ``""`` when no skills are pinned, when ``HERMES_HOME`` has no
+    skills directory, or when every pinned skill is filtered by platform /
+    disabled list / environment gates (same gates ``build_skills_system_prompt``
+    applies).
+    """
+    skills_dir = get_skills_dir()
+    if not skills_dir.exists():
+        return ""
+
+    from gateway.session_context import get_session_env
+    _platform_hint = (
+        os.environ.get("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+        or ""
+    )
+    disabled = get_disabled_skill_names(_platform_hint or None)
+
+    pinned_entries: list[tuple[str, Path]] = []
+    seen_names: set[str] = set()
+
+    search_dirs = [skills_dir, *get_all_skills_dirs()[1:]]
+    for root in search_dirs:
+        if not root.exists():
+            continue
+        for skill_file in iter_skill_index_files(root, "SKILL.md"):
+            is_compatible, frontmatter, _desc = _parse_skill_file(skill_file)
+            if not is_compatible:
+                continue
+            if not _frontmatter_is_pinned(frontmatter):
+                continue
+            name = str(frontmatter.get("name", skill_file.parent.name))
+            if name in disabled or skill_file.parent.name in disabled:
+                continue
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            pinned_entries.append((name, skill_file))
+
+    if not pinned_entries:
+        return ""
+
+    # Deterministic order so cache prefix is byte-stable across processes.
+    pinned_entries.sort(key=lambda nf: nf[0])
+
+    rendered: list[str] = []
+    total = 0
+    truncated_names: list[str] = []
+    for name, skill_file in pinned_entries:
+        body = _read_pinned_skill_body(skill_file)
+        if not body:
+            continue
+        body_bytes = body.encode("utf-8")
+        if len(body_bytes) > PINNED_SKILL_BODY_BYTES_CAP:
+            body_bytes = body_bytes[:PINNED_SKILL_BODY_BYTES_CAP]
+            # Re-decode safely (drop any partial multi-byte char at the tail)
+            body = body_bytes.decode("utf-8", errors="ignore").rstrip()
+            truncated_names.append(name)
+        section = f"### {name}\n\n{body}\n"
+        section_bytes = len(section.encode("utf-8"))
+        if total + section_bytes > PINNED_SKILLS_TOTAL_BYTES_CAP:
+            truncated_names.append(name + " (omitted: total cap)")
+            continue
+        rendered.append(section)
+        total += section_bytes
+
+    if not rendered:
+        return ""
+
+    footer = ""
+    if truncated_names:
+        # Stable, alphabetical so the footer doesn't churn the cache.
+        truncated_names.sort()
+        footer = (
+            "\n_(Pinned skill content over caps was trimmed: "
+            + ", ".join(truncated_names)
+            + ". Tighten the SKILL.md bodies or raise PINNED_SKILLS_TOTAL_BYTES_CAP "
+            + "deliberately if this is hot.)_\n"
+        )
+
+    return (
+        "## Pinned Skills (always active)\n\n"
+        "The skills below are pinned by their authors with `pinned: true`. "
+        "Their full bodies appear here every turn — not because the description "
+        "router matched, but because the author wanted them in front of you "
+        "regardless. Treat them as load-bearing behavior contracts, the way "
+        "you treat SOUL.md.\n\n"
+        + "\n".join(rendered)
+        + footer
+    )
 
 
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:

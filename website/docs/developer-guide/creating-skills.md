@@ -98,6 +98,46 @@ Known failure modes and how to handle them.
 How the agent confirms it worked.
 ```
 
+### Pinned Skills (always-on bodies)
+
+Most skills load on demand — the description router decides which ones are
+relevant to the current turn and the agent calls `skill_view(name)` to pull
+the body. That model works for procedural skills (how to use the `arxiv`
+CLI, how to format a Notion page) but is weak for **behavior contracts** —
+discipline, conventions, persona shape — that should be in front of the
+agent every turn regardless of what the user just asked.
+
+For those, set `pinned: true` (or the legacy alias `always_active: true`) in
+the frontmatter. The full SKILL.md body is appended to the system prompt on
+every turn, riding in the stable tier so it stays inside the prompt cache:
+
+```yaml
+---
+name: autonomy-rung
+description: Name the autonomy rung (Tab / Plan / Auto) out loud
+pinned: true
+---
+```
+
+**Use this sparingly.** Pinned content costs tokens every turn. Hermes
+enforces hard byte caps to keep abuse loud, not silent:
+
+- Per-skill body cap: **4 KB** (`PINNED_SKILL_BODY_BYTES_CAP`)
+- Combined cap across all pinned skills: **8 KB** (`PINNED_SKILLS_TOTAL_BYTES_CAP`)
+
+When either cap is exceeded the body is truncated (per-skill) or omitted
+(combined) in deterministic alphabetical order, and a footer note names what
+got trimmed so you notice the next session. If your behavior contract needs
+more than 4 KB, split it into a "pinned core" skill that points at a
+description-routed companion skill with the full procedure.
+
+Pinned skills still honor the same gates as description-routed skills —
+platform filters, environment gates, and the disabled-skill list all apply.
+They participate in the snapshot/cache invalidation pipeline, so editing
+SKILL.md updates the prompt on the next session start (long-lived
+conversations keep the cached prefix until a fresh session — same contract
+as every other system-prompt input).
+
 ### Platform-Specific Skills
 
 Skills can restrict themselves to specific operating systems using the `platforms` field:

@@ -287,6 +287,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if skills_prompt:
         stable_parts.append(skills_prompt)
 
+    # Pinned skills (always-on behavior/discipline content). Rides in the
+    # stable tier so it's covered by the prompt cache; byte-stable per
+    # conversation because pinned bodies only change on SKILL.md edits.
+    # See ``agent/prompt_builder.py::build_pinned_skills_prompt`` for the
+    # byte cap and rendering contract.
+    try:
+        pinned_prompt = _r.build_pinned_skills_prompt()
+    except Exception:
+        # Same posture as the coding_context guards above — never fail the
+        # system prompt assembly because of an optional add-on.
+        pinned_prompt = ""
+    if pinned_prompt:
+        stable_parts.append(pinned_prompt)
+
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
     # so the agent can correctly report which model it is (workaround for API bug).

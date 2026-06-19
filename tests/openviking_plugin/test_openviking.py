@@ -330,7 +330,7 @@ class TestOpenVikingTurnConversion:
 
         batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
 
-        assert [message["role"] for message in batch] == ["user", "assistant", "user", "assistant"]
+        assert [message["role"] for message in batch] == ["user", "assistant", "assistant", "assistant"]
         assert batch[0]["parts"] == [
             {"type": "text", "text": "Please inspect the repository for assemble hooks."}
         ]
@@ -378,6 +378,7 @@ class TestOpenVikingTurnConversion:
 
         batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
 
+        assert batch[1]["role"] == "assistant"
         assert batch[1]["parts"] == [
             {
                 "type": "tool",
@@ -453,7 +454,7 @@ class TestOpenVikingTurnConversion:
 
         batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
 
-        assert [message["role"] for message in batch] == ["user", "user", "assistant"]
+        assert [message["role"] for message in batch] == ["user", "assistant", "assistant"]
         assert batch[1]["parts"] == [
             {
                 "type": "tool",
@@ -523,7 +524,7 @@ class TestOpenVikingTurnConversion:
 
             batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
 
-            assert [message["role"] for message in batch] == ["user", "user", "assistant"]
+            assert [message["role"] for message in batch] == ["user", "assistant", "assistant"]
             assert batch[1]["parts"] == [
                 {
                     "type": "tool",
@@ -537,6 +538,35 @@ class TestOpenVikingTurnConversion:
             batch_text = json.dumps(batch)
             assert recall_tool_name not in batch_text
             assert "Old OpenViking memory content" not in batch_text
+
+    def test_messages_to_openviking_batch_preserves_responses_text_parts(self):
+        turn = [
+            {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "answer"}]},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        assert batch == [
+            {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": "answer"}]},
+        ]
+
+    def test_messages_to_openviking_batch_adds_assistant_peer_id_when_requested(self):
+        turn = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "answer"},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(
+            turn,
+            assistant_peer_id="hermes",
+        )
+
+        assert batch == [
+            {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": "answer"}], "peer_id": "hermes"},
+        ]
 
 
 class TestOpenVikingRead:

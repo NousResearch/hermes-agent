@@ -2195,6 +2195,78 @@ def test_sync_turn_retries_batch_write_with_fresh_client():
     )]
 
 
+def test_sync_turn_structured_messages_include_assistant_peer_id():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-structured"
+
+    captured = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured.append((path, payload))
+            return {}
+
+    import plugins.memory.openviking as _mod
+
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    messages = [
+        {"role": "user", "content": [{"type": "input_text", "text": "u"}]},
+        {
+            "role": "assistant",
+            "content": "Looking.",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "shell_command", "arguments": json.dumps({"cmd": "pwd"})},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "name": "shell_command", "content": "ok"},
+        {"role": "assistant", "content": [{"type": "output_text", "text": "a"}]},
+    ]
+    try:
+        provider.sync_turn("u", "a", messages=messages)
+        assert provider._drain_writers("sid-structured", timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured == [(
+        "/api/v1/sessions/sid-structured/messages/batch",
+        {
+            "messages": [
+                {"role": "user", "parts": [{"type": "text", "text": "u"}]},
+                {"role": "assistant", "parts": [{"type": "text", "text": "Looking."}], "peer_id": "hermes"},
+                {
+                    "role": "assistant",
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool_id": "call-1",
+                            "tool_name": "shell_command",
+                            "tool_input": {"cmd": "pwd"},
+                            "tool_output": "ok",
+                            "tool_status": "completed",
+                        }
+                    ],
+                    "peer_id": "hermes",
+                },
+                {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
+            ]
+        },
+    )]
+
+
 def test_sync_turn_noop_when_session_id_blank():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()

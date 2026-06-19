@@ -45,6 +45,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
@@ -2313,22 +2314,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     @staticmethod
     def _message_text(content: Any) -> str:
         """Extract text from OpenAI-style string/list content."""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            chunks = []
-            for block in content:
-                if isinstance(block, str):
-                    chunks.append(block)
-                elif isinstance(block, dict):
-                    if block.get("type") == "text" and isinstance(block.get("text"), str):
-                        chunks.append(block["text"])
-                    elif isinstance(block.get("content"), str):
-                        chunks.append(block["content"])
-            return "\n".join(chunk for chunk in chunks if chunk)
-        if content is None:
-            return ""
-        return str(content)
+        return flatten_message_text(content)
 
     @classmethod
     def _message_matches_text(cls, message: Dict[str, Any], expected: Any) -> bool:
@@ -2460,8 +2446,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _messages_to_openviking_batch(
         cls,
         messages: List[Dict[str, Any]],
+        *,
+        assistant_peer_id: str = "",
     ) -> List[Dict[str, Any]]:
         """Convert Hermes canonical messages into OpenViking batch payloads."""
+        assistant_peer_id = str(assistant_peer_id or "").strip()
         tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
         completed_tool_ids: set[str] = set()
         skipped_tool_ids: set[str] = set()
@@ -2493,10 +2482,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         payload_messages: List[Dict[str, Any]] = []
         pending_tool_parts: List[Dict[str, Any]] = []
 
+        def payload_message(role: str, parts: List[Dict[str, Any]]) -> Dict[str, Any]:
+            payload: Dict[str, Any] = {"role": role, "parts": parts}
+            if role == "assistant" and assistant_peer_id:
+                payload["peer_id"] = assistant_peer_id
+            return payload
+
         def flush_tool_parts() -> None:
             nonlocal pending_tool_parts
             if pending_tool_parts:
-                payload_messages.append({"role": "user", "parts": pending_tool_parts})
+                payload_messages.append(payload_message("assistant", pending_tool_parts))
                 pending_tool_parts = []
 
         for message in messages:
@@ -2552,7 +2547,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     })
 
             if parts:
-                payload_messages.append({"role": role, "parts": parts})
+                payload_messages.append(payload_message(role, parts))
 
         flush_tool_parts()
         return payload_messages
@@ -2584,7 +2579,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 if message.get("role") == "user":
                     message["content"] = user_content
                     break
-        batch_messages = self._messages_to_openviking_batch(turn_messages)
+        batch_messages = self._messages_to_openviking_batch(
+            turn_messages,
+            assistant_peer_id=getattr(self, "_agent", _DEFAULT_AGENT),
+        )
 
         if _sync_trace_enabled():
             logger.info(

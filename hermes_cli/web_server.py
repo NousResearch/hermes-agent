@@ -12008,6 +12008,32 @@ async def set_dashboard_font(body: FontSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+def _safe_plugin_dashboard_relpath(path_field: Any, *, dashboard_dir: Path) -> Optional[str]:
+    """Validate a manifest-declared relative file path inside ``dashboard/``.
+
+    Used for backend ``api`` modules as well as browser-fetchable assets like
+    plugin-declared manifests, icons, and service-worker scripts. Returns the
+    original string when it resolves under ``dashboard_dir``; otherwise returns
+    ``None`` so the caller can ignore the unsafe field while still loading the
+    rest of the plugin manifest.
+    """
+    if not isinstance(path_field, str) or not path_field.strip():
+        return None
+    candidate = Path(path_field)
+    if candidate.is_absolute():
+        return None
+    try:
+        resolved = (dashboard_dir / candidate).resolve()
+        base = dashboard_dir.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        return None
+    return path_field
+
+
 def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
     """Validate the manifest's ``api`` field for the plugin loader.
 
@@ -12028,21 +12054,7 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     call site) otherwise so the plugin still loads its static JS/CSS
     but its backend ``api`` is rejected.
     """
-    if not isinstance(api_field, str) or not api_field.strip():
-        return None
-    candidate = Path(api_field)
-    if candidate.is_absolute():
-        return None
-    try:
-        resolved = (dashboard_dir / candidate).resolve()
-        base = dashboard_dir.resolve()
-    except (OSError, RuntimeError):
-        return None
-    try:
-        resolved.relative_to(base)
-    except ValueError:
-        return None
-    return api_field
+    return _safe_plugin_dashboard_relpath(api_field, dashboard_dir=dashboard_dir)
 
 
 def _discover_dashboard_plugins() -> list:
@@ -12117,8 +12129,8 @@ def _discover_dashboard_plugins() -> list:
                 # any absolute path or ``..`` traversal here — the
                 # web server then imports that file as a Python module
                 # (RCE, GHSA-5qr3-c538-wm9j).
-                raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
+                raw_api = data.get("api")
                 safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
                 if raw_api and safe_api is None:
                     _log.warning(
@@ -12128,6 +12140,55 @@ def _discover_dashboard_plugins() -> list:
                         "not be mounted",
                         name, raw_api,
                     )
+                raw_web_manifest = data.get("web_manifest")
+                safe_web_manifest = _safe_plugin_dashboard_relpath(
+                    raw_web_manifest, dashboard_dir=dashboard_dir
+                )
+                if raw_web_manifest and safe_web_manifest is None:
+                    _log.warning(
+                        "Plugin %s: refusing unsafe web_manifest path %r",
+                        name, raw_web_manifest,
+                    )
+
+                raw_apple_touch_icon = data.get("apple_touch_icon")
+                safe_apple_touch_icon = _safe_plugin_dashboard_relpath(
+                    raw_apple_touch_icon, dashboard_dir=dashboard_dir
+                )
+                if raw_apple_touch_icon and safe_apple_touch_icon is None:
+                    _log.warning(
+                        "Plugin %s: refusing unsafe apple_touch_icon path %r",
+                        name, raw_apple_touch_icon,
+                    )
+
+                raw_service_worker = data.get("service_worker")
+                safe_service_worker = _safe_plugin_dashboard_relpath(
+                    raw_service_worker, dashboard_dir=dashboard_dir
+                )
+                if raw_service_worker and safe_service_worker is None:
+                    _log.warning(
+                        "Plugin %s: refusing unsafe service_worker path %r",
+                        name, raw_service_worker,
+                    )
+
+                raw_theme_color = data.get("theme_color")
+                theme_color = raw_theme_color.strip() if isinstance(raw_theme_color, str) else None
+                if not theme_color:
+                    theme_color = None
+
+                raw_service_worker_scope = data.get("service_worker_scope")
+                service_worker_scope = (
+                    raw_service_worker_scope.strip()
+                    if isinstance(raw_service_worker_scope, str)
+                    else None
+                )
+                if service_worker_scope and not service_worker_scope.startswith("/"):
+                    _log.warning(
+                        "Plugin %s: refusing unsafe service_worker_scope %r "
+                        "(must start with '/')",
+                        name, raw_service_worker_scope,
+                    )
+                    service_worker_scope = None
+
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -12138,6 +12199,11 @@ def _discover_dashboard_plugins() -> list:
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),
+                    "web_manifest": safe_web_manifest,
+                    "apple_touch_icon": safe_apple_touch_icon,
+                    "theme_color": theme_color,
+                    "service_worker": safe_service_worker,
+                    "service_worker_scope": service_worker_scope,
                     "has_api": bool(safe_api),
                     "source": source,
                     "_dir": str(dashboard_dir),
@@ -12462,7 +12528,7 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     Path traversal is blocked by checking ``resolve().is_relative_to()``.
 
     Restricted to a browser-fetchable suffix allowlist (JS/CSS/JSON/HTML/
-    SVG/PNG/JPG/WOFF). The dashboard loads plugin JS via ``<script src>``
+    SVG/PNG/JPG/WOFF/webmanifest). The dashboard loads plugin JS via ``<script src>``
     and CSS via ``<link href>``, neither of which can attach a custom
     auth header — so this route stays unauthenticated to keep the SPA
     working. But user-installed plugins ship a ``plugin_api.py``
@@ -12496,6 +12562,7 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         ".mjs": "application/javascript",
         ".css": "text/css",
         ".json": "application/json",
+        ".webmanifest": "application/manifest+json",
         ".html": "text/html",
         ".svg": "image/svg+xml",
         ".png": "image/png",
@@ -12516,10 +12583,15 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
             detail="File not found",
         )
     media_type = content_types[suffix]
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate"}
+    declared_service_worker = str(plugin.get("service_worker") or "").strip()
+    declared_scope = str(plugin.get("service_worker_scope") or "").strip()
+    if declared_service_worker and declared_scope and file_path == declared_service_worker:
+        headers["Service-Worker-Allowed"] = declared_scope
     return FileResponse(
         target,
         media_type=media_type,
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        headers=headers,
     )
 
 

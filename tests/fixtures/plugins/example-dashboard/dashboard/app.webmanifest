@@ -1,0 +1,8 @@
+{
+  "name": "Example Dashboard",
+  "short_name": "Example",
+  "start_url": "/example",
+  "display": "standalone",
+  "background_color": "#101114",
+  "theme_color": "#101114"
+}

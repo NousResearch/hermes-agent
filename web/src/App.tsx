@@ -99,11 +99,55 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { api } from "@/lib/api";
+import { api, HERMES_BASE_PATH } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
+function normalizeRoutePath(path: string): string {
+  const trimmed = path.replace(/\/$/, "");
+  return trimmed || "/";
+}
+
+function pluginOwnsPath(pluginPath: string, currentPath: string): boolean {
+  const owner = normalizeRoutePath(pluginPath);
+  const current = normalizeRoutePath(currentPath);
+  return current === owner || current.startsWith(`${owner}/`);
+}
+
+function pluginAssetUrl(manifest: PluginManifest, relativePath: string): string {
+  return `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${relativePath}`;
+}
+
+function withHermesBasePath(routePath: string): string {
+  if (!routePath.startsWith("/")) return routePath;
+  if (!HERMES_BASE_PATH) return routePath;
+  if (routePath === "/") return `${HERMES_BASE_PATH}/`;
+  if (routePath.startsWith(`${HERMES_BASE_PATH}/`) || routePath === HERMES_BASE_PATH) {
+    return routePath;
+  }
+  return `${HERMES_BASE_PATH}${routePath}`;
+}
+
+function selectActivePwaManifest(
+  manifests: PluginManifest[],
+  pathname: string,
+): PluginManifest | null {
+  const active = manifests.find((manifest) =>
+    pluginOwnsPath(manifest.tab.override ?? manifest.tab.path, pathname),
+  );
+  if (!active) return null;
+  if (
+    !active.web_manifest
+    && !active.apple_touch_icon
+    && !active.theme_color
+    && !active.service_worker
+  ) {
+    return null;
+  }
+  return active;
+}
+
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to={isDashboardEmbeddedChatEnabled() ? "/chat" : "/sessions"} replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -111,7 +155,7 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
     return null;
   }
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to={isDashboardEmbeddedChatEnabled() ? "/chat" : "/sessions"} replace />;
 }
 
 const CHAT_NAV_ITEM: NavItem = {
@@ -120,6 +164,8 @@ const CHAT_NAV_ITEM: NavItem = {
   label: "Chat",
   icon: Terminal,
 };
+
+const MOBILE_PRIMARY_NAV_PATHS = ["/chat", "/sessions", "/files"] as const;
 
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
@@ -417,6 +463,11 @@ export default function App() {
     () => manifests.some((m) => m.tab.override === "/chat"),
     [manifests],
   );
+  const activePwaManifest = useMemo(
+    () => selectActivePwaManifest(manifests, pathname),
+    [manifests, pathname],
+  );
+  const registeredServiceWorkers = useRef<Set<string>>(new Set());
 
   const builtinRoutes = useMemo(
     () => ({
@@ -438,6 +489,15 @@ export default function App() {
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
+  );
+  const mobilePrimaryNav = useMemo(
+    () =>
+      builtinNav.filter((item) =>
+        MOBILE_PRIMARY_NAV_PATHS.includes(
+          item.path as (typeof MOBILE_PRIMARY_NAV_PATHS)[number],
+        ),
+      ),
+    [builtinNav],
   );
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
@@ -478,6 +538,102 @@ export default function App() {
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
+
+  useEffect(() => {
+    const head = document.head;
+    const existingManifest = head.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    const existingAppleTouch = head.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    const existingThemeColor = head.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+
+    const prevManifestHref = existingManifest?.getAttribute("href") ?? null;
+    const prevAppleTouchHref = existingAppleTouch?.getAttribute("href") ?? null;
+    const prevThemeColorContent = existingThemeColor?.getAttribute("content") ?? null;
+
+    const manifestLink = existingManifest ?? document.createElement("link");
+    const appleTouchLink = existingAppleTouch ?? document.createElement("link");
+    const themeColorMeta = existingThemeColor ?? document.createElement("meta");
+
+    let createdManifest = false;
+    let createdAppleTouch = false;
+    let createdThemeColor = false;
+
+    if (activePwaManifest?.web_manifest) {
+      manifestLink.rel = "manifest";
+      manifestLink.href = pluginAssetUrl(activePwaManifest, activePwaManifest.web_manifest);
+      if (!existingManifest) {
+        head.appendChild(manifestLink);
+        createdManifest = true;
+      }
+    }
+
+    if (activePwaManifest?.apple_touch_icon) {
+      appleTouchLink.rel = "apple-touch-icon";
+      appleTouchLink.href = pluginAssetUrl(activePwaManifest, activePwaManifest.apple_touch_icon);
+      if (!existingAppleTouch) {
+        head.appendChild(appleTouchLink);
+        createdAppleTouch = true;
+      }
+    }
+
+    if (activePwaManifest?.theme_color) {
+      themeColorMeta.setAttribute("name", "theme-color");
+      themeColorMeta.setAttribute("content", activePwaManifest.theme_color);
+      if (!existingThemeColor) {
+        head.appendChild(themeColorMeta);
+        createdThemeColor = true;
+      }
+    }
+
+    return () => {
+      if (activePwaManifest?.web_manifest) {
+        if (createdManifest) {
+          manifestLink.remove();
+        } else if (prevManifestHref !== null) {
+          manifestLink.href = prevManifestHref;
+        } else {
+          manifestLink.removeAttribute("href");
+        }
+      }
+      if (activePwaManifest?.apple_touch_icon) {
+        if (createdAppleTouch) {
+          appleTouchLink.remove();
+        } else if (prevAppleTouchHref !== null) {
+          appleTouchLink.href = prevAppleTouchHref;
+        } else {
+          appleTouchLink.removeAttribute("href");
+        }
+      }
+      if (activePwaManifest?.theme_color) {
+        if (createdThemeColor) {
+          themeColorMeta.remove();
+        } else if (prevThemeColorContent !== null) {
+          themeColorMeta.setAttribute("content", prevThemeColorContent);
+        } else {
+          themeColorMeta.removeAttribute("content");
+        }
+      }
+    };
+  }, [activePwaManifest]);
+
+  useEffect(() => {
+    if (!activePwaManifest?.service_worker) return;
+    if (!("serviceWorker" in navigator)) return;
+
+    const serviceWorkerUrl = pluginAssetUrl(activePwaManifest, activePwaManifest.service_worker);
+    const serviceWorkerScope = activePwaManifest.service_worker_scope
+      ? withHermesBasePath(activePwaManifest.service_worker_scope)
+      : undefined;
+    const registrationKey = `${serviceWorkerUrl}::${serviceWorkerScope ?? ""}`;
+    if (registeredServiceWorkers.current.has(registrationKey)) return;
+    registeredServiceWorkers.current.add(registrationKey);
+
+    void navigator.serviceWorker
+      .register(serviceWorkerUrl, serviceWorkerScope ? { scope: serviceWorkerScope } : undefined)
+      .catch((error) => {
+        registeredServiceWorkers.current.delete(registrationKey);
+        console.warn(`[plugins] Failed to register service worker for ${activePwaManifest.name}`, error);
+      });
+  }, [activePwaManifest]);
 
   return (
     <ProfileProvider>
@@ -731,8 +887,11 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute &&
-                    "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
+                  isMobile
+                    ? "pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))]"
+                    : !isChatRoute
+                      ? "lg:pb-8"
+                      : "",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
@@ -784,6 +943,65 @@ export default function App() {
           </PageHeaderProvider>
         </div>
       </div>
+
+      {isMobile && mobilePrimaryNav.length > 0 && (
+        <div
+          className={cn(
+            "lg:hidden fixed inset-x-0 bottom-0 z-40",
+            "border-t border-current/20 bg-background-base/95 backdrop-blur-md",
+            "px-2 pb-[max(env(safe-area-inset-bottom,0px),0.35rem)] pt-2",
+          )}
+          style={{
+            background: "var(--component-header-background)",
+            borderImage: "var(--component-header-border-image)",
+          }}
+        >
+          <div className="mx-auto grid max-w-screen-sm grid-cols-4 gap-1">
+            {mobilePrimaryNav.map((item) => {
+              const Icon = item.icon;
+              const navLabel = item.labelKey
+                ? ((t.app.nav as Record<string, string>)[item.labelKey] ?? item.label)
+                : item.label;
+              return (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  end={item.path === "/sessions"}
+                  onClick={closeMobile}
+                  className={({ isActive }) =>
+                    cn(
+                      "flex min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1 py-2",
+                      "text-[0.65rem] font-medium uppercase tracking-[0.08em]",
+                      isActive
+                        ? "text-midground bg-midground/10"
+                        : "text-text-secondary hover:text-midground hover:bg-midground/5",
+                    )
+                  }
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{navLabel}</span>
+                </NavLink>
+              );
+            })}
+
+            <Button
+              ghost
+              onClick={() => setMobileOpen(true)}
+              aria-label={t.app.openNavigation}
+              aria-expanded={mobileOpen}
+              aria-controls="app-sidebar"
+              className={cn(
+                "flex h-auto min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1 py-2",
+                "text-[0.65rem] font-medium uppercase tracking-[0.08em] text-text-secondary",
+                "hover:text-midground hover:bg-midground/5",
+              )}
+            >
+              <Menu className="h-4 w-4 shrink-0" />
+              <span className="truncate">More</span>
+            </Button>
+          </div>
+        </div>
+      )}
 
       <PluginSlot name="overlay" />
     </div>

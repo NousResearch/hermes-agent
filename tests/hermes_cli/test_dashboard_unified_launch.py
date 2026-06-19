@@ -232,3 +232,48 @@ class TestUnifiedDashboardRouting:
                 "thread_name": "dashboard-mcp-discovery",
             }
         ]
+
+    def test_dashboard_ignores_leaked_desktop_web_dist_without_session_token(self, main_mod, monkeypatch):
+        """Launching `hermes dashboard` from a desktop-managed shell must not
+        accidentally serve the packaged Electron bundle unless the real desktop
+        session token is also present."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.setenv("HERMES_WEB_DIST", "/tmp/desktop-bundle-dist")
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+        build_calls = []
+        monkeypatch.setattr(
+            main_mod,
+            "_build_web_ui",
+            lambda *_a, **_k: build_calls.append(True) or True,
+        )
+        monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
+        monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_logging",
+            types.SimpleNamespace(setup_logging=lambda **_k: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.plugins",
+            types.SimpleNamespace(discover_plugins=lambda: None),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.start_background_mcp_discovery",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.web_server",
+            types.SimpleNamespace(start_server=lambda **_kwargs: None),
+        )
+
+        main_mod.cmd_dashboard(_args())
+
+        assert build_calls == [True]
+        assert "HERMES_WEB_DIST" not in main_mod.os.environ
+        assert "HERMES_DESKTOP" not in main_mod.os.environ

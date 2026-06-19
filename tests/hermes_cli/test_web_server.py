@@ -5144,6 +5144,76 @@ class TestDashboardPluginManifestExtensions:
             "chat:top",
         ]
 
+    def test_pwa_fields_round_trip_when_safe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "mobilepilot-ish", {
+            "name": "mobilepilot-ish",
+            "label": "MobilePilot-ish",
+            "tab": {"path": "/chat", "override": "/chat"},
+            "entry": "dist/index.js",
+            "web_manifest": "mobilepilot.webmanifest",
+            "apple_touch_icon": "pwa-icons/apple-touch-icon.png",
+            "theme_color": "#101114",
+            "service_worker": "sw.js",
+            "service_worker_scope": "/chat",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "mobilepilot-ish")
+        assert entry["web_manifest"] == "mobilepilot.webmanifest"
+        assert entry["apple_touch_icon"] == "pwa-icons/apple-touch-icon.png"
+        assert entry["theme_color"] == "#101114"
+        assert entry["service_worker"] == "sw.js"
+        assert entry["service_worker_scope"] == "/chat"
+
+    def test_pwa_fields_drop_unsafe_paths_and_bad_scope(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "unsafe-mobilepilot-ish", {
+            "name": "unsafe-mobilepilot-ish",
+            "label": "Unsafe MobilePilot-ish",
+            "tab": {"path": "/chat"},
+            "entry": "dist/index.js",
+            "web_manifest": "../../outside.webmanifest",
+            "apple_touch_icon": "/tmp/icon.png",
+            "service_worker": "../sw.js",
+            "service_worker_scope": "chat",
+            "theme_color": "   ",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "unsafe-mobilepilot-ish")
+        assert entry["web_manifest"] is None
+        assert entry["apple_touch_icon"] is None
+        assert entry["service_worker"] is None
+        assert entry["service_worker_scope"] is None
+        assert entry["theme_color"] is None
+
+    def test_service_worker_asset_emits_allowed_scope_header(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "mobilepilot-ish", {
+            "name": "mobilepilot-ish",
+            "label": "MobilePilot-ish",
+            "tab": {"path": "/chat", "override": "/chat"},
+            "entry": "dist/index.js",
+            "service_worker": "sw.js",
+            "service_worker_scope": "/chat",
+        })
+        sw_path = tmp_path / "plugins" / "mobilepilot-ish" / "dashboard" / "sw.js"
+        sw_path.write_text("self.addEventListener('fetch', () => {});", encoding="utf-8")
+
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        ws._dashboard_plugins_cache = None
+        client = TestClient(ws.app)
+        resp = client.get("/dashboard-plugins/mobilepilot-ish/sw.js")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/javascript")
+        assert resp.headers["service-worker-allowed"] == "/chat"
+
 
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
@@ -5686,6 +5756,15 @@ class TestDashboardPluginStaticAssetAllowlist:
         # And the body is actually the manifest, not the SPA fallback.
         body = resp.json()
         assert body.get("name") == "example"
+
+    def test_webmanifest_still_served(self):
+        """PWA manifests use the dedicated ``.webmanifest`` suffix and must be
+        browser-fetchable just like ``manifest.json``."""
+        resp = self.client.get("/dashboard-plugins/example/app.webmanifest")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/manifest+json")
+        body = resp.json()
+        assert body.get("name") == "Example Dashboard"
 
     def test_unknown_plugin_is_404(self):
         """Existing behaviour preserved: nonexistent plugin name → 404."""

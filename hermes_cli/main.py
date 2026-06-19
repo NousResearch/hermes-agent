@@ -10955,6 +10955,21 @@ def cmd_dashboard(args):
     # backend is the desktop's primary entrypoint and needs the same.
     _sync_bundled_skills_quietly()
 
+    # The packaged Hermes Desktop app launches its own backend with
+    # HERMES_DESKTOP=1 + HERMES_WEB_DIST=<asar-unpacked dist> and also injects
+    # HERMES_DASHBOARD_SESSION_TOKEN so the backend trusts the renderer. When a
+    # user launches `hermes dashboard` from inside a desktop-managed shell (or,
+    # as here, from the Hermes desktop chat's terminal tool environment), those
+    # desktop-only env vars can leak into an ordinary browser dashboard launch.
+    # The result is a poisoned server that serves the packaged desktop bundle
+    # instead of hermes_cli/web_dist, booting into "Desktop IPC bridge is
+    # unavailable" because the browser has no Electron bridge. Only honor the
+    # desktop bundle override when the caller also provided the desktop session
+    # token — that is the reliable marker for a real Electron-managed backend.
+    if os.environ.get("HERMES_WEB_DIST") and not os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"):
+        os.environ.pop("HERMES_WEB_DIST", None)
+        os.environ.pop("HERMES_DESKTOP", None)
+
     if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)

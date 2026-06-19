@@ -1,15 +1,23 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
-appends it to the FINAL message of an agent turn when enabled.  Off by default
-to keep replies minimal.
+Renders a compact footer showing runtime state (provider/model, context
+footprint, cwd) and appends it to the FINAL message of an agent turn when
+enabled.  Off by default to keep replies minimal.
 
 Config (``~/.hermes/config.yaml``)::
 
     display:
       runtime_footer:
-        enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        enabled: true                            # off by default
+        fields: [provider_model, context_full, reasoning, cwd]   # order shown; drop any to hide
+
+Available fields:
+    model           — bare model id, vendor prefix dropped (``claude-opus-4-8``)
+    provider_model  — ``provider/model`` (``claude-bridge-f3/claude-opus-4-8``)
+    context_pct     — last-call occupancy as a percent (``5%``)
+    context_full    — ``used/window (pct)``, both humanized (``50.2k/1M (5%)``)
+    reasoning       — model reasoning-effort level, ``r:<level>`` (``r:xhigh``)
+    cwd             — home-relative working dir (``~``)
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -28,8 +36,8 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
-_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
-_SEP = " · "
+_DEFAULT_FIELDS: tuple[str, ...] = ("provider_model", "context_full", "reasoning", "cwd")
+_SEP = " \u00b7 "
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -47,10 +55,43 @@ def _home_relative_cwd(cwd: str) -> str:
 
 
 def _model_short(model: Optional[str]) -> str:
-    """Drop ``vendor/`` prefix for readability (``openai/gpt-5.4`` → ``gpt-5.4``)."""
+    """Drop ``vendor/`` prefix for readability (``openai/gpt-5.4`` -> ``gpt-5.4``)."""
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _split_provider_model(
+    provider: Optional[str], model: Optional[str]
+) -> tuple[str, str]:
+    """Resolve a clean ``(provider, model)`` pair.
+
+    Mirrors the blackbox-inspect ``/context`` logic: when ``provider`` is unset
+    but ``model`` carries a ``provider/model`` prefix, split it so the footer
+    reads cleanly (``provider/model``, not ``unset/a/b``).
+    """
+    prov = (provider or "").strip()
+    mdl = (model or "").strip()
+    if not prov and "/" in mdl:
+        prov, _, mdl = mdl.partition("/")
+    return prov, mdl
+
+
+def _humanize_tok(n: Any) -> str:
+    """Token count -> compact string (``50k``, ``1.5k``, ``1M``, ``1.0M``).
+
+    Byte-identical to the blackbox-inspect plugin's ``_humanize_tok`` so the
+    footer and ``/context`` agree on formatting.
+    """
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if abs(n) >= 1_000_000:
+        return f"{n // 1_000_000}M" if n % 1_000_000 == 0 else f"{n / 1_000_000:.1f}M"
+    if abs(n) >= 1000:
+        return f"{n // 1000}k" if n % 1000 == 0 else f"{n / 1000:.1f}k"
+    return str(n)
 
 
 def resolve_footer_config(
@@ -94,6 +135,8 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
+    reasoning: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -107,10 +150,30 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "provider_model":
+            prov, mdl = _split_provider_model(provider, model)
+            if prov and mdl:
+                parts.append(f"{prov}/{mdl}")
+            elif mdl:
+                parts.append(mdl)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
+        elif field == "context_full":
+            # Both used and window humanized (50.2k/1M); pct from raw values.
+            if context_length and context_length > 0 and context_tokens >= 0:
+                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+                parts.append(
+                    f"{_humanize_tok(context_tokens)}/{_humanize_tok(context_length)} ({pct}%)"
+                )
+            elif context_tokens and context_tokens > 0:
+                parts.append(_humanize_tok(context_tokens))
+        elif field == "reasoning":
+            # Model reasoning-effort level (none/minimal/low/medium/high/xhigh).
+            r = (reasoning or "").strip()
+            if r:
+                parts.append(f"r:{r}")
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
@@ -122,6 +185,18 @@ def format_runtime_footer(
     return _SEP.join(parts)
 
 
+def _reasoning_from_config(user_config: dict[str, Any] | None) -> str:
+    """Read ``agent.reasoning_effort`` from the user config (the canonical source
+    `/reasoning <level>` writes to). Empty string when unset."""
+    try:
+        agent_cfg = (user_config or {}).get("agent") or {}
+        if isinstance(agent_cfg, dict):
+            return str(agent_cfg.get("reasoning_effort", "") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def build_footer_line(
     *,
     user_config: dict[str, Any] | None,
@@ -130,6 +205,8 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
+    reasoning: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -140,10 +217,16 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+    # Reasoning effort comes from config (agent.reasoning_effort); caller may
+    # override with a live value if it ever has one.
+    if reasoning is None:
+        reasoning = _reasoning_from_config(user_config)
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        provider=provider,
+        reasoning=reasoning,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

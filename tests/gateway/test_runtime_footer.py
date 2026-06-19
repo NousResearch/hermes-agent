@@ -9,7 +9,9 @@ import pytest
 
 from gateway.runtime_footer import (
     _home_relative_cwd,
+    _humanize_tok,
     _model_short,
+    _split_provider_model,
     build_footer_line,
     format_runtime_footer,
     resolve_footer_config,
@@ -148,19 +150,208 @@ def test_format_footer_unknown_field_silently_ignored():
 
 
 # ---------------------------------------------------------------------------
+# provider_model + context_full (new fields)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "provider,model,expected",
+    [
+        ("claude-bridge-f3", "claude-opus-4-8", ("claude-bridge-f3", "claude-opus-4-8")),
+        # provider unset, model carries the prefix -> split it
+        ("", "claude-bridge-f3/claude-opus-4-8", ("claude-bridge-f3", "claude-opus-4-8")),
+        (None, "openai/gpt-5.4", ("openai", "gpt-5.4")),
+        # bare model, no provider anywhere
+        ("", "gpt-5.4", ("", "gpt-5.4")),
+        (None, None, ("", "")),
+    ],
+)
+def test_split_provider_model(provider, model, expected):
+    assert _split_provider_model(provider, model) == expected
+
+
+@pytest.mark.parametrize(
+    "n,expected",
+    [
+        (50_000, "50k"),
+        (1_500, "1.5k"),
+        (1_000_000, "1M"),
+        (1_048_576, "1.0M"),
+        (500, "500"),
+        (0, "0"),
+        (None, "0"),
+    ],
+)
+def test_humanize_tok(n, expected):
+    assert _humanize_tok(n) == expected
+
+
+def test_format_footer_provider_model_explicit():
+    out = format_runtime_footer(
+        model="claude-opus-4-8",
+        provider="claude-bridge-f3",
+        context_tokens=0, context_length=None,
+        cwd="",
+        fields=("provider_model",),
+    )
+    assert out == "claude-bridge-f3/claude-opus-4-8"
+
+
+def test_format_footer_provider_model_split_from_prefixed_model():
+    # provider unset; model carries the prefix
+    out = format_runtime_footer(
+        model="claude-bridge-f3/claude-opus-4-8",
+        provider=None,
+        context_tokens=0, context_length=None,
+        cwd="",
+        fields=("provider_model",),
+    )
+    assert out == "claude-bridge-f3/claude-opus-4-8"
+
+
+def test_format_footer_provider_model_bare_model_only():
+    # no provider anywhere -> just the model, no leading slash
+    out = format_runtime_footer(
+        model="gpt-5.4",
+        provider="",
+        context_tokens=0, context_length=None,
+        cwd="",
+        fields=("provider_model",),
+    )
+    assert out == "gpt-5.4"
+
+
+def test_format_footer_context_full():
+    # both used and window humanized (50.2k/1M)
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=50_247,
+        context_length=1_000_000,
+        cwd="",
+        fields=("context_full",),
+    )
+    assert out == "50.2k/1M (5%)"
+
+
+def test_format_footer_context_full_no_window_shows_used_only():
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=50_247,
+        context_length=None,
+        cwd="",
+        fields=("context_full",),
+    )
+    assert out == "50.2k"
+
+
+def test_format_footer_context_full_no_data_dropped():
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        fields=("context_full",),
+    )
+    assert out == ""
+
+
+def test_format_footer_aces_target_layout(monkeypatch, tmp_path):
+    # The exact footer Ace asked for — both counts humanized:
+    #   claude-bridge-f3/claude-opus-4-8 · 50.2k/1M (5%) · ~
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = format_runtime_footer(
+        model="claude-opus-4-8",
+        provider="claude-bridge-f3",
+        context_tokens=50_247,
+        context_length=1_000_000,
+        cwd=str(tmp_path),
+        fields=("provider_model", "context_full", "cwd"),
+    )
+    assert out == "claude-bridge-f3/claude-opus-4-8 · 50.2k/1M (5%) · ~"
+
+
+# ---------------------------------------------------------------------------
+# reasoning field
+# ---------------------------------------------------------------------------
+
+def test_format_footer_reasoning_renders_with_prefix():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning="xhigh",
+        fields=("reasoning",),
+    )
+    assert out == "r:xhigh"
+
+
+def test_format_footer_reasoning_skipped_when_empty():
+    out = format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="",
+        reasoning="",
+        fields=("reasoning",),
+    )
+    assert out == ""
+
+
+def test_build_footer_reasoning_resolved_from_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # agent.reasoning_effort is the canonical source /reasoning writes to
+    out = build_footer_line(
+        user_config={
+            "display": {"runtime_footer": {"enabled": True, "fields": ["reasoning"]}},
+            "agent": {"reasoning_effort": "high"},
+        },
+        platform_key="discord",
+        model="claude-opus-4-8",
+        provider="claude-bridge-f3",
+        context_tokens=0, context_length=None,
+        cwd="",
+    )
+    assert out == "r:high"
+
+
+def test_build_footer_reasoning_absent_config_drops_field(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["reasoning"]}}},
+        platform_key="discord",
+        model="m",
+        context_tokens=0, context_length=None,
+        cwd="",
+    )
+    # no agent.reasoning_effort -> field silently dropped -> empty footer
+    assert out == ""
+
+
+def test_format_footer_full_layout_with_reasoning(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = format_runtime_footer(
+        model="claude-opus-4-8",
+        provider="claude-bridge-f3",
+        context_tokens=50_247,
+        context_length=1_000_000,
+        cwd=str(tmp_path),
+        reasoning="xhigh",
+        fields=("provider_model", "context_full", "reasoning", "cwd"),
+    )
+    assert out == "claude-bridge-f3/claude-opus-4-8 · 50.2k/1M (5%) · r:xhigh · ~"
+
+
+# ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {
+        "enabled": False,
+        "fields": ["provider_model", "context_full", "reasoning", "cwd"],
+    }
 
 
 def test_resolve_global_enable():
     user = {"display": {"runtime_footer": {"enabled": True}}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
-    assert cfg["fields"] == ["model", "context_pct", "cwd"]
+    assert cfg["fields"] == ["provider_model", "context_full", "reasoning", "cwd"]
 
 
 def test_resolve_platform_override_wins():
@@ -189,7 +380,7 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
+    assert tg["fields"] == ["provider_model", "context_full", "reasoning", "cwd"]
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]

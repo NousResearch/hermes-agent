@@ -69,7 +69,14 @@ def remove_path_from_shell_configs():
                 if '# Hermes Agent' in line or '# hermes-agent' in line:
                     skip_next = True
                     continue
-                if skip_next and ('hermes' in line.lower() and 'PATH' in line):
+                # The "# Hermes Agent" comment guarantees the next line is the
+                # PATH entry the installer wrote directly beneath it. install.sh
+                # writes a GENERIC `export PATH="$HOME/.local/bin:$PATH"` (or the
+                # `/usr/local/bin` / fish `fish_add_path` variant) with no
+                # `hermes` substring, so the old `'hermes' in line` guard left it
+                # orphaned on every uninstall. Drop a PATH-setting line directly
+                # under our comment without requiring a `hermes` substring.
+                if skip_next and (('PATH=' in line) or ('fish_add_path' in line)):
                     skip_next = False
                     continue
                 skip_next = False

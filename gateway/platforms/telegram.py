@@ -106,9 +106,6 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 }
 
 
-MAX_COMMANDS_PER_SCOPE = 30
-
-
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -413,6 +410,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
+        raw_max_commands = self.config.extra.get("max_commands_per_scope", 30)
+        try:
+            if isinstance(raw_max_commands, bool) or not isinstance(raw_max_commands, (int, str)):
+                raise TypeError
+            max_commands = int(raw_max_commands)
+        except (TypeError, ValueError):
+            max_commands = 30
+        self._max_commands_per_scope = min(max_commands, 100) if max_commands > 0 else 30
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
@@ -2209,10 +2214,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeDefault,
                 )
                 from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Limit to 30 core commands
-                # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                menu_commands, hidden_count = telegram_menu_commands(
+                    max_commands=self._max_commands_per_scope
+                )
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
@@ -2231,7 +2235,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if hidden_count:
                     logger.info(
                         "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count, 30,
+                        self.name, len(menu_commands), hidden_count, self._max_commands_per_scope,
                     )
             except Exception as e:
                 logger.warning(
@@ -5879,7 +5883,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands import telegram_menu_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                menu_commands, _ = telegram_menu_commands(
+                    max_commands=self._max_commands_per_scope
+                )
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)

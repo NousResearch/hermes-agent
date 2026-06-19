@@ -9,7 +9,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 
 
-def _make_test_adapter():
+def _make_test_adapter(max_commands_per_scope=30):
     """Build a TelegramAdapter without running __init__."""
     from gateway.platforms.telegram import TelegramAdapter
 
@@ -21,6 +21,7 @@ def _make_test_adapter():
     adapter._bot.set_my_commands = AsyncMock()
     adapter._forum_command_registered = set()
     adapter._forum_lock = asyncio.Lock()
+    adapter._max_commands_per_scope = max_commands_per_scope
     return adapter
 
 
@@ -49,7 +50,7 @@ async def test_ensure_forum_commands_skips_already_registered():
 
 @pytest.mark.asyncio
 async def test_ensure_forum_commands_registers_once():
-    adapter = _make_test_adapter()
+    adapter = _make_test_adapter(max_commands_per_scope=31)
     msg = _forum_message(chat_id=-123, is_forum=True)
 
     with patch("hermes_cli.commands.telegram_menu_commands") as mock_menu:
@@ -82,6 +83,30 @@ async def test_ensure_forum_commands_registers_once():
     assert kwargs["scope"] is not None
     assert isinstance(kwargs["scope"].chat_id, int)
     assert kwargs["scope"].chat_id == -123
+    mock_menu.assert_called_once_with(max_commands=31)
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({}, 30),
+        ({"max_commands_per_scope": 31}, 31),
+        ({"max_commands_per_scope": "31"}, 31),
+        ({"max_commands_per_scope": "invalid"}, 30),
+        ({"max_commands_per_scope": None}, 30),
+        ({"max_commands_per_scope": 31.0}, 30),
+        ({"max_commands_per_scope": 0}, 30),
+        ({"max_commands_per_scope": -1}, 30),
+        ({"max_commands_per_scope": 101}, 100),
+        ({"max_commands_per_scope": True}, 30),
+    ],
+)
+def test_max_commands_per_scope_config(extra, expected):
+    from gateway.platforms.telegram import TelegramAdapter
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra=extra))
+
+    assert adapter._max_commands_per_scope == expected
 
 
 @pytest.mark.asyncio

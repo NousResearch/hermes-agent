@@ -1035,7 +1035,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ),
+            env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()

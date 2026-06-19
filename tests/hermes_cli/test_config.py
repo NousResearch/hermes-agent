@@ -955,6 +955,16 @@ class TestInterimAssistantMessageConfig:
         assert raw["display"]["interim_assistant_messages"] is True
 
 
+class TestCliRefreshIntervalConfig:
+    """Test the CLI refresh_interval config default (#48309)."""
+
+    def test_default_config_disables_cli_refresh_interval(self):
+        """cli_refresh_interval defaults to 0 (disabled) to avoid
+        background redraws that fight terminal auto-scroll-on-output
+        in non-fullscreen mode (Xshell, iTerm2, Windows Terminal)."""
+        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 0
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}

@@ -57,6 +57,8 @@ class TeamsVoiceConfig:
     session_scope: str = "per-call"
     # Group-call wake phrases (speak only when addressed).
     wake_phrases: tuple[str, ...] = ("assistant", "hermes")
+    # Post end-of-call meeting minutes to the Teams chat (opt-in).
+    meeting_recap: bool = False
 
     @property
     def configured(self) -> bool:
@@ -139,6 +141,9 @@ def resolve_config(extra: Mapping[str, Any] | None = None) -> TeamsVoiceConfig:
         or "per-call"
     )
     wake = _coerce_list(extra.get("wake_phrases"), os.getenv("TEAMS_VOICE_WAKE_PHRASES", ""))
+    meeting_recap = str(
+        extra.get("meeting_recap", "") or os.getenv("TEAMS_VOICE_MEETING_RECAP", "")
+    ).strip().lower() in ("1", "true", "yes", "on")
 
     return TeamsVoiceConfig(
         shared_secret=shared_secret,
@@ -152,6 +157,7 @@ def resolve_config(extra: Mapping[str, Any] | None = None) -> TeamsVoiceConfig:
         max_vision_per_minute=max_vision,
         session_scope=session_scope,
         wake_phrases=wake or ("assistant", "hermes"),
+        meeting_recap=meeting_recap,
     )
 
 

@@ -101,6 +101,7 @@ def test_default_tools_present_and_well_formed():
         "look_at_screen",
         "show_to_caller",
         "call_me_back",
+        "post_meeting_minutes",
     }
     for tool in realtime_tools.default_tools():
         assert tool["type"] == "function"

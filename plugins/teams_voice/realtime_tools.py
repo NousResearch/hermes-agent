@@ -118,6 +118,18 @@ HERMES_AGENT_TASK = {
 }
 
 
+POST_MEETING_MINUTES = {
+    "type": "function",
+    "name": "post_meeting_minutes",
+    "description": (
+        "Summarize the meeting so far and post the minutes (key points, decisions, "
+        "action items) to the Teams chat. Use when the caller asks to 'summarize the "
+        "meeting' or send notes."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+
 def default_tools() -> list[dict]:
     return [
         HERMES_AGENT_CONSULT,
@@ -125,4 +137,5 @@ def default_tools() -> list[dict]:
         LOOK_AT_SCREEN,
         SHOW_TO_CALLER,
         CALL_ME_BACK,
+        POST_MEETING_MINUTES,
     ]

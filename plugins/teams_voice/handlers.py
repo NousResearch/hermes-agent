@@ -22,8 +22,9 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
-from . import audio, expression, group_call_gate, protocol, realtime_tools, verbal_interrupts, viseme_estimate
+from . import audio, expression, group_call_gate, meeting, protocol, realtime_tools, verbal_interrupts, viseme_estimate
 from .agent_consult import AgentConsult
+from .meeting import MeetingTranscript
 from .bridge_server import CallSession, CallSessionHandler
 from .config import BYTES_PER_FRAME, FRAME_DURATION_MS, PCM_SAMPLE_RATE_HZ, TeamsVoiceConfig
 from .echo_guard import EchoGuard
@@ -100,6 +101,9 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         self._ambient_interval_s = 6.0
         self._ambient_last_ts: dict[str, int] = {}
         self._vision_budget = VisionBudget(bridge_config.max_vision_per_minute if bridge_config else 30)
+        self._meeting = MeetingTranscript()
+        self._thread_id = ""
+        self._last_speaker = ""  # from unmixed-audio speaker_name, for attribution
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -107,6 +111,7 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         await super().on_session_start(session, msg)
         self._session = session
         self._caller = msg.caller
+        self._thread_id = msg.thread_id
         self._outbound = (msg.direction or "").lower() == "outbound"
         # If this is the delivery leg of a call-back, fetch the pending result.
         if self._outbound:
@@ -195,6 +200,8 @@ class RealtimeCallSessionHandler(CallSessionHandler):
     async def on_audio_frame(self, session: CallSession, msg: protocol.AudioFrame) -> None:
         if not session.recording_active or self._rt is None:
             return
+        if msg.speaker_name:  # unmixed-audio attribution for the meeting transcript
+            self._last_speaker = msg.speaker_name
         pcm16 = base64.b64decode(msg.payload_base64)
         if not self._echo.allow_input(audio.pcm16_rms(pcm16)):  # echo guard
             return
@@ -226,6 +233,11 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         if self._ambient_task is not None:
             self._ambient_task.cancel()
             self._ambient_task = None
+        # End-of-meeting recap (opt-in) — run detached so teardown isn't blocked.
+        if self._bridge and self._bridge.meeting_recap and not self._meeting.is_empty():
+            asyncio.create_task(
+                meeting.post_minutes(self._consult, self._meeting, self._thread_id)
+            )
         self._vision.clear()
         if self._rt is not None:
             await self._rt.close()
@@ -316,6 +328,7 @@ class RealtimeCallSessionHandler(CallSessionHandler):
     async def _on_input_transcript(self, text: str) -> None:
         """Caller's finished turn — drive verbal interrupts and the group gate."""
         self._echo.mark_caller_turn()
+        self._meeting.add(self._last_speaker or self._first_name() or "Caller", text)
         # 1) Deterministic verbal interrupt ("stop" / "توقف" / "⟨name⟩, stop").
         if verbal_interrupts.is_verbal_interrupt(text, self._gate_cfg.wake_phrases):
             self._drop_response = True  # suppress any reply to the interrupt itself
@@ -353,6 +366,8 @@ class RealtimeCallSessionHandler(CallSessionHandler):
             except Exception:  # noqa: BLE001
                 pass
         self._out_residual = b""
+        if self._transcript.strip():
+            self._meeting.add("Assistant", self._transcript)
         self._transcript = ""
         self._last_emotion = None
         self._drop_response = False  # next turn starts fresh
@@ -384,6 +399,8 @@ class RealtimeCallSessionHandler(CallSessionHandler):
                 return await self._show_to_caller(str(args.get("prompt", "")), args.get("count", 1))
             if name == "call_me_back":
                 return await self._call_me_back(str(args.get("message", "")))
+            if name == "post_meeting_minutes":
+                return await meeting.post_minutes(self._consult, self._meeting, self._thread_id)
         except Exception:  # noqa: BLE001 — a tool fault must not break the call
             logger.error("[teams_voice] tool %s failed", name, exc_info=True)
             return "Sorry, that didn't work."
@@ -561,15 +578,25 @@ class StreamingCallSessionHandler(CallSessionHandler):
         self._out_seq = 0
         self._out_ts = 0
         self._processing = False  # half-duplex: one utterance at a time
+        self._meeting = MeetingTranscript()
+        self._thread_id = ""
 
     async def on_session_start(self, session: CallSession, msg: protocol.SessionStart) -> None:
         await super().on_session_start(session, msg)
         self._session = session
         self._caller = msg.caller
+        self._thread_id = msg.thread_id
         scope = self._bridge.session_scope if self._bridge else "per-call"
         key = msg.thread_id if scope == "per-thread" else (msg.caller.aad_id if scope == "per-aad" else msg.call_id)
         self._consult = AgentConsult(session_id=f"teams:{key or msg.call_id}")
         await self._safe_expression(expression.NEUTRAL)
+
+    async def on_session_end(self, session: CallSession, msg: protocol.SessionEnd) -> None:
+        await super().on_session_end(session, msg)
+        if self._bridge and self._bridge.meeting_recap and not self._meeting.is_empty():
+            asyncio.create_task(
+                meeting.post_minutes(self._consult, self._meeting, self._thread_id)
+            )
 
     async def on_audio_frame(self, session: CallSession, msg: protocol.AudioFrame) -> None:
         if not session.recording_active or self._processing:
@@ -597,8 +624,15 @@ class StreamingCallSessionHandler(CallSessionHandler):
                 return
             if decision.addressed:
                 self._last_addressed_ms = now
+            caller_name = (self._caller.display_name.split(" ")[0] if self._caller and self._caller.display_name else "Caller")
+            self._meeting.add(caller_name, transcript)
+            # On-demand "summarize the meeting" → post minutes instead of a normal reply.
+            if meeting.is_summary_request(transcript):
+                await self._speak(await meeting.post_minutes(self._consult, self._meeting, self._thread_id))
+                return
             await self._safe_expression(expression.THINKING)
             reply = await self._consult.ask(transcript)
+            self._meeting.add("Assistant", reply)
             await self._speak(reply)
         except Exception:  # noqa: BLE001 — never let a turn crash the call
             logger.error("[teams_voice] streaming turn failed", exc_info=True)

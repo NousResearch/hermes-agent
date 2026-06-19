@@ -1889,6 +1889,18 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
     model_path = _resolve_piper_voice_path(voice_name, download_dir)
 
+    # Tolerant speaker_id parse: drop bad input (non-int strings, lists, dicts)
+    # to 0 (Piper's own default). Booleans are rejected outright — True/False
+    # would silently coerce to 1/0 and hide a config mistake.
+    _raw_speaker = piper_config.get("speaker_id", 0)
+    if isinstance(_raw_speaker, bool) or not isinstance(_raw_speaker, int):
+        speaker_id = 0
+    else:
+        speaker_id = _raw_speaker
+
+    # speaker_id is applied per-call via syn_config.speaker_id — the same
+    # PiperVoice instance serves all speakers, so it stays out of the cache
+    # key. Multi-speaker workflows share one model load.
     cache_key = f"{model_path}::cuda={use_cuda}"
     global _piper_voice_cache
     if cache_key not in _piper_voice_cache:
@@ -1903,7 +1915,14 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
     syn_config = None
     has_advanced = any(
         k in piper_config
-        for k in ("length_scale", "noise_scale", "noise_w_scale", "volume", "normalize_audio")
+        for k in (
+            "length_scale",
+            "noise_scale",
+            "noise_w_scale",
+            "volume",
+            "normalize_audio",
+            "speaker_id",
+        )
     )
     if has_advanced:
         try:
@@ -1914,6 +1933,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
                 noise_w_scale=float(piper_config.get("noise_w_scale", 0.8)),
                 volume=float(piper_config.get("volume", 1.0)),
                 normalize_audio=bool(piper_config.get("normalize_audio", True)),
+                speaker_id=speaker_id,
             )
         except ImportError:
             logger.warning(

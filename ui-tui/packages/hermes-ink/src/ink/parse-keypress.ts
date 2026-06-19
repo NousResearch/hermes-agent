@@ -44,11 +44,14 @@ const DA2_RE = /^\x1b\[>([\d;]*)c$/
 // (private ? marker distinguishes from CSI u key events)
 // eslint-disable-next-line no-control-regex
 const KITTY_FLAGS_RE = /^\x1b\[\?(\d+)u$/
-// DECXCPR cursor position: CSI ? row ; col R
-// The ? marker disambiguates from modified F3 keys (Shift+F3 = CSI 1;2 R,
-// Ctrl+F3 = CSI 1;5 R, etc.) — plain CSI row;col R is genuinely ambiguous.
+// Cursor position report: CSI [?] row ; col R
+// DECXCPR (CSI ? row;col R) is unambiguous and always matched.
+// Standard DSR (CSI row;col R, no ?) is also matched, but only when
+// row > 1 — modified F3 keys use CSI 1;modifier R (Shift+F3 = CSI 1;2 R,
+// Ctrl+F3 = CSI 1;5 R, etc.), and F3 always has row 1. Reports at row 1
+// without the ? marker fall through to parseKeypress to preserve F3.
 // eslint-disable-next-line no-control-regex
-const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)R$/
+const CURSOR_POSITION_RE = /^\x1b\[(\??)(\d+);(\d+)R$/
 // OSC response: OSC code ; data (BEL|ST)
 // eslint-disable-next-line no-control-regex
 const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s
@@ -145,10 +148,21 @@ function parseTerminalResponse(s: string): TerminalResponse | null {
     }
 
     if ((m = CURSOR_POSITION_RE.exec(s))) {
+      const hasPrivateMarker = m[1] === '?'
+      const row = parseInt(m[2]!, 10)
+
+      // Without the DEC-private '?' marker, CSI row;col R is ambiguous with
+      // modified F3 keys (Shift+F3 = CSI 1;2 R, etc.). F3 always uses row 1,
+      // so only treat the standard form as a cursor position report when
+      // row > 1. Row-1 reports without '?' fall through to parseKeypress.
+      if (!hasPrivateMarker && row === 1) {
+        return null
+      }
+
       return {
         type: 'cursorPosition',
-        row: parseInt(m[1]!, 10),
-        col: parseInt(m[2]!, 10)
+        row,
+        col: parseInt(m[3]!, 10)
       }
     }
 

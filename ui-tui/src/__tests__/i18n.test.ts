@@ -115,6 +115,14 @@ describe('TranslationKey coverage', () => {
 // ─── Fallback chain ────────────────────────────────────────────
 
 describe('fallback chain', () => {
+  it('translate: every registered locale resolves known keys through the public API', () => {
+    for (const locale of LOCALES) {
+      const value = translate(locale, 'branding.tagline')
+      expect(typeof value, `${locale} value type`).toBe('string')
+      expect(value, `${locale} unresolved key`).not.toBe('branding.tagline')
+    }
+  })
+
   it('translate: unknown key returns the key itself', () => {
     for (const locale of [...FULL_PACKS, 'ja'] as const) {
       expect(translate(locale, 'this.key.does.not.exist' as TranslationKey)).toBe(

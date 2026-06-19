@@ -1,7 +1,21 @@
 import { createContext, type ReactNode, useContext, useMemo } from 'react'
 
+import { en as af } from './af.js'
+import { en as de } from './de.js'
 import { en, type TranslationKey } from './en.js'
+import { en as es } from './es.js'
+import { en as fr } from './fr.js'
+import { en as ga } from './ga.js'
+import { en as hu } from './hu.js'
+import { en as it } from './it.js'
+import { en as ja } from './ja.js'
+import { en as ko } from './ko.js'
+import { en as pt } from './pt.js'
+import { en as ru } from './ru.js'
+import { en as tr } from './tr.js'
+import { en as uk } from './uk.js'
 import { zh } from './zh.js'
+import { en as zhHant } from './zh-hant.js'
 import { LOCALES, type LangPack, type Locale } from './types.js'
 
 // ── Re-export the public type surface ──────────────────────────
@@ -9,7 +23,24 @@ export { LOCALES }
 export type { Locale, TranslationKey }
 
 // ── Language pack catalog (add new locales here) ───────────────
-const CATALOGS: Partial<Record<Locale, LangPack>> = { en, zh }
+const CATALOGS: Record<Locale, LangPack> = {
+  en,
+  zh,
+  'zh-hant': zhHant,
+  ja,
+  de,
+  es,
+  fr,
+  tr,
+  uk,
+  af,
+  ko,
+  it,
+  ga,
+  pt,
+  ru,
+  hu,
+}
 
 const getPack = (locale: Locale): LangPack => CATALOGS[locale] ?? en
 

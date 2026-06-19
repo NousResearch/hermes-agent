@@ -35,6 +35,8 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "mcp_filesystem_directory_tree",
         "mcp_filesystem_get_file_info",
         "mcp_filesystem_search_files",
+        "skills_list",
+        "skill_view",
     }
 )
 

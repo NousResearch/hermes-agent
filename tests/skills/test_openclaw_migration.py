@@ -185,6 +185,38 @@ def test_migrator_optionally_imports_supported_secrets_and_messaging_settings(tm
     assert "TELEGRAM_BOT_TOKEN=123:abc" in env_text
 
 
+def test_migrator_imports_ollama_and_mem0_keys_from_openclaw_env_sources(tmp_path: Path):
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+
+    source.mkdir()
+    (source / ".env").write_text("MEM0_API_KEY=memzero_dummy\n", encoding="utf-8")
+    (source / "openclaw.json").write_text(
+        json.dumps({"env": {"vars": {"OLLAMA_API_KEY": "ollama_dummy"}}}),
+        encoding="utf-8",
+    )
+    target.mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=target / "migration-report",
+        selected_options={"provider-keys"},
+    )
+    report = migrator.migrate()
+
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    assert "OLLAMA_API_KEY=ollama_dummy" in env_text
+    assert "MEM0_API_KEY=memzero_dummy" in env_text
+    provider_item = next(item for item in report["items"] if item["kind"] == "provider-keys")
+    assert provider_item["status"] == "migrated"
+
+
 def test_messaging_cwd_skipped_when_inside_source(tmp_path: Path):
     """MESSAGING_CWD pointing inside the OpenClaw source dir should be skipped."""
     mod = load_module()

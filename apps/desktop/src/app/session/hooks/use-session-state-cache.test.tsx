@@ -11,6 +11,7 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  $workingSessionIds,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
@@ -66,6 +67,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    $workingSessionIds.set([])
   })
 
   afterEach(() => {
@@ -77,6 +79,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    $workingSessionIds.set([])
   })
 
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
@@ -98,6 +101,8 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
     // The background session's own cache entry holds the clock...
     expect(cache.sessionStateByRuntimeIdRef.current.get('bg-runtime')?.turnStartedAt).toBe(startedAt)
+    // ...and the sidebar/statusbar working set is keyed by the stored session id.
+    expect($workingSessionIds.get()).toContain('bg-stored')
     // ...but the global atom (statusbar timer) is untouched — a background turn
     // must not drive the foreground timer.
     expect($turnStartedAt.get()).toBeNull()

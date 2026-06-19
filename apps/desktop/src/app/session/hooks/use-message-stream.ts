@@ -868,63 +868,66 @@ export function useMessageStream({
           }))
         }
 
-        if (apply) {
-          if (runningChanged && sessionId) {
-            updateSessionState(sessionId, state => {
-              const busy = Boolean(payload!.running)
+        if (runningChanged && sessionId) {
+          // `session.info.running` is per-session state, not foreground-only
+          // chrome metadata. Background turns must update their cached busy flag
+          // so sidebar/statusbar activity indicators (blue dot / arc) can track
+          // multiple chats and models concurrently. Foreground atoms such as the
+          // current model/provider/usage remain gated by `apply` above/below.
+          updateSessionState(sessionId, state => {
+            const busy = Boolean(payload!.running)
 
-              if (state.busy === busy && (busy || !state.awaitingResponse)) {
-                return state
-              }
+            if (state.busy === busy && (busy || !state.awaitingResponse)) {
+              return state
+            }
 
-              if (busy) {
-                return {
-                  ...state,
-                  busy,
-                  turnStartedAt: state.turnStartedAt ?? Date.now()
-                }
-              }
-
-              if (state.awaitingResponse && !state.sawAssistantPayload) {
-                // Recovery path for dropped/missed terminal stream events. The
-                // backend is authoritative here: running=false means the turn is
-                // over, so leaving the composer busy would permanently lock the
-                // chat until the Desktop app is restarted. Surface a visible
-                // inline error instead of silently spinning forever.
-                return {
-                  ...state,
-                  messages: [
-                    ...state.messages,
-                    {
-                      id: `assistant-missing-complete-${Date.now()}`,
-                      role: 'assistant' as const,
-                      parts: [],
-                      error:
-                        'Hermes finished this turn without delivering a response event. The chat was unlocked; please retry the message or switch models if this repeats.',
-                      pending: false,
-                      branchGroupId: state.pendingBranchGroup ?? undefined
-                    }
-                  ],
-                  awaitingResponse: false,
-                  busy: false,
-                  pendingBranchGroup: null,
-                  streamId: null,
-                  sawAssistantPayload: true,
-                  needsInput: false,
-                  turnStartedAt: null
-                }
-              }
-
+            if (busy) {
               return {
                 ...state,
-                awaitingResponse: false,
                 busy,
+                turnStartedAt: state.turnStartedAt ?? Date.now()
+              }
+            }
+
+            if (state.awaitingResponse && !state.sawAssistantPayload) {
+              // Recovery path for dropped/missed terminal stream events. The
+              // backend is authoritative here: running=false means the turn is
+              // over, so leaving the composer busy would permanently lock the
+              // chat until the Desktop app is restarted. Surface a visible
+              // inline error instead of silently spinning forever.
+              return {
+                ...state,
+                messages: [
+                  ...state.messages,
+                  {
+                    id: `assistant-missing-complete-${Date.now()}`,
+                    role: 'assistant' as const,
+                    parts: [],
+                    error:
+                      'Hermes finished this turn without delivering a response event. The chat was unlocked; please retry the message or switch models if this repeats.',
+                    pending: false,
+                    branchGroupId: state.pendingBranchGroup ?? undefined
+                  }
+                ],
+                awaitingResponse: false,
+                busy: false,
                 pendingBranchGroup: null,
                 streamId: null,
+                sawAssistantPayload: true,
+                needsInput: false,
                 turnStartedAt: null
               }
-            })
-          }
+            }
+
+            return {
+              ...state,
+              awaitingResponse: false,
+              busy,
+              pendingBranchGroup: null,
+              streamId: null,
+              turnStartedAt: null
+            }
+          })
         }
 
         if (payload?.usage && (!explicitSid || isActiveEvent)) {

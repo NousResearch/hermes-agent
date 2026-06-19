@@ -149,7 +149,15 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+    advance_next_run,
+    schedule_delivery_retry,
+    mark_delivery_retry_attempt,
+    get_due_delivery_retries,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -654,6 +662,84 @@ def _send_media_via_adapter(
                 )
         except Exception as e:
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+
+
+def _drain_due_delivery_retries(adapters=None, loop=None, verbose: bool = False) -> int:
+    """Process any pending delivery retries that are due now.
+
+    For each job with a due `last_delivery_retry`, read the cached output
+    file and replay the delivery via `_deliver_result`. The agent is never
+    re-run - this is the whole point of the retry envelope.
+
+    Returns the number of retry attempts processed (whether they succeeded
+    or failed). Errors are swallowed per-job so a single bad envelope
+    cannot break the rest of the tick.
+    """
+    try:
+        due_retries = get_due_delivery_retries()
+    except Exception as exc:
+        logger.error("Could not load delivery retries: %s", exc)
+        return 0
+
+    if not due_retries:
+        return 0
+
+    if verbose:
+        logger.info("Processing %d delivery retry/retries", len(due_retries))
+
+    processed = 0
+    for job in due_retries:
+        envelope = job.get("last_delivery_retry") or {}
+        output_file = envelope.get("output_file")
+        if not output_file:
+            continue
+        path = Path(output_file)
+        if not path.is_file():
+            # Output file was deleted out from under us - surrender, don't
+            # spin forever.
+            logger.warning(
+                "Job '%s': delivery retry output file missing (%s) - giving up",
+                job["id"], output_file,
+            )
+            mark_delivery_retry_attempt(
+                job["id"], f"output file missing: {output_file}",
+            )
+            # Force-exhaust the budget so we don't keep trying.
+            for _ in range(10):
+                still = mark_delivery_retry_attempt(
+                    job["id"], f"output file missing: {output_file}",
+                )
+                if not still:
+                    break
+            processed += 1
+            continue
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.error(
+                "Job '%s': could not read cached output for retry: %s",
+                job["id"], exc,
+            )
+            mark_delivery_retry_attempt(job["id"], f"read failed: {exc}")
+            processed += 1
+            continue
+
+        try:
+            err = _deliver_result(job, content, adapters=adapters, loop=loop)
+        except Exception as exc:
+            err = str(exc)
+
+        if err is None:
+            logger.info("Job '%s': delivery retry succeeded", job["id"])
+        else:
+            logger.warning(
+                "Job '%s': delivery retry failed (%s)", job["id"], err,
+            )
+        mark_delivery_retry_attempt(job["id"], err)
+        processed += 1
+
+    return processed
 
 
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
@@ -2000,11 +2086,17 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        # Drain due delivery retries first (issue #8846). These are cheap
+        # (no agent run, just a re-send from the cached output file) so
+        # they always run before the regular due-job pass.
+        retry_count = _drain_due_delivery_retries(adapters=adapters, loop=loop, verbose=verbose)
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
-            logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
-            return 0
+            if retry_count == 0:
+                logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            return retry_count
 
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
@@ -2081,6 +2173,24 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+
+                # Schedule a delivery-only retry when the task itself succeeded
+                # but delivery failed (issue #8846). The cached output_file is
+                # the source of truth - we never re-run the agent on retry.
+                if (
+                    success
+                    and should_deliver
+                    and delivery_error is not None
+                    and output_file is not None
+                ):
+                    scheduled = schedule_delivery_retry(
+                        job["id"], str(output_file), delivery_error,
+                    )
+                    if scheduled:
+                        logger.info(
+                            "Job '%s': scheduled delivery retry from %s (initial error: %s)",
+                            job["id"], output_file, delivery_error,
+                        )
                 return True
 
             except Exception as e:
@@ -2194,7 +2304,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             # Nothing dispatched (all skipped / no due jobs) — sweep inline.
             _sweep_mcp_orphans()
 
-        return sum(_results)
+        return sum(_results) + retry_count
     finally:
         if fcntl:
             try:

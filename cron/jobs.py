@@ -752,6 +752,7 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
+        "last_delivery_retry": None,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -1159,13 +1160,165 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     return due
 
 
+# =============================================================================
+# Delivery retry (issue #8846)
+# =============================================================================
+#
+# When a cron job's task succeeds but delivery to the messaging platform
+# fails (Telegram 502, Slack rate-limit, schema validation hiccup, etc.),
+# we don't want to either:
+#   (a) flip task_status to "error" - the task itself ran fine, and
+#       (b) re-execute the agent on retry - that costs LLM tokens and may
+#           produce a different answer for a time-sensitive prompt.
+#
+# Instead we record a small retry envelope on the job pointing at the
+# already-saved output file under ~/.hermes/cron/output/<job_id>/, and
+# the scheduler's tick loop drains due retries on each pass, replaying
+# only the delivery step from the cached payload.
+#
+# Backoff: 60s, 300s, 1800s. After 3 failed attempts we surrender, leaving
+# `last_delivery_error` populated so the user can see what went wrong via
+# `hermes cron list`.
+
+DELIVERY_RETRY_BACKOFF_SECONDS: List[int] = [60, 300, 1800]
+DELIVERY_RETRY_MAX_ATTEMPTS: int = len(DELIVERY_RETRY_BACKOFF_SECONDS)
+
+
+def _next_retry_at(attempts_so_far: int) -> Optional[str]:
+    """Return ISO timestamp for the next retry, or None if budget exhausted.
+
+    `attempts_so_far` is the number of attempts already made (0 means the
+    initial delivery just failed and we're scheduling attempt #1).
+    """
+    if attempts_so_far >= DELIVERY_RETRY_MAX_ATTEMPTS:
+        return None
+    delay = DELIVERY_RETRY_BACKOFF_SECONDS[attempts_so_far]
+    return (_hermes_now() + timedelta(seconds=delay)).isoformat()
+
+
+def schedule_delivery_retry(
+    job_id: str,
+    output_file: str,
+    delivery_error: str,
+) -> bool:
+    """Persist a pending delivery retry on the job.
+
+    Called by the scheduler after the *initial* delivery attempt fails.
+    The cached output file is the source of truth for the next attempt -
+    we never re-run the agent.
+
+    Returns True if a retry was scheduled, False if the retry budget is
+    already exhausted (caller should treat the failure as terminal).
+    """
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] != job_id:
+                continue
+            existing = job.get("last_delivery_retry") or {}
+            attempts = int(existing.get("attempts", 0))
+            next_at = _next_retry_at(attempts)
+            if next_at is None:
+                # Budget exhausted - clear envelope, leave error visible.
+                job["last_delivery_retry"] = None
+                save_jobs(jobs)
+                return False
+            job["last_delivery_retry"] = {
+                "output_file": output_file,
+                "attempts": attempts,
+                "next_attempt_at": next_at,
+                "last_error": delivery_error,
+            }
+            save_jobs(jobs)
+            return True
+        return False
+
+
+def clear_delivery_retry(job_id: str) -> None:
+    """Drop the retry envelope after a successful redelivery."""
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        changed = False
+        for job in jobs:
+            if job["id"] == job_id and job.get("last_delivery_retry"):
+                job["last_delivery_retry"] = None
+                job["last_delivery_error"] = None
+                changed = True
+                break
+        if changed:
+            save_jobs(jobs)
+
+
+def mark_delivery_retry_attempt(job_id: str, delivery_error: Optional[str]) -> bool:
+    """Record one retry attempt outcome.
+
+    On success (delivery_error is None) the envelope is cleared.
+    On failure, the attempt count is bumped and `next_attempt_at` is
+    pushed out via the backoff schedule. Returns True if the job is still
+    inside the retry budget after this call, False if exhausted (the
+    envelope is then cleared so the job stops being picked up).
+    """
+    if delivery_error is None:
+        clear_delivery_retry(job_id)
+        return False
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] != job_id:
+                continue
+            envelope = job.get("last_delivery_retry") or {}
+            attempts = int(envelope.get("attempts", 0)) + 1
+            next_at = _next_retry_at(attempts)
+            job["last_delivery_error"] = delivery_error
+            if next_at is None:
+                job["last_delivery_retry"] = None
+                save_jobs(jobs)
+                return False
+            envelope["attempts"] = attempts
+            envelope["next_attempt_at"] = next_at
+            envelope["last_error"] = delivery_error
+            job["last_delivery_retry"] = envelope
+            save_jobs(jobs)
+            return True
+        return False
+
+
+def get_due_delivery_retries() -> List[Dict[str, Any]]:
+    """Return jobs whose pending retry is due to fire now.
+
+    Each returned dict is a *copy* of the job with its envelope intact;
+    callers should treat it as read-only for selection and use the
+    `mark_delivery_retry_attempt` / `clear_delivery_retry` helpers to
+    persist outcomes.
+    """
+    now = _hermes_now()
+    due: List[Dict[str, Any]] = []
+    for job in load_jobs():
+        envelope = job.get("last_delivery_retry")
+        if not envelope:
+            continue
+        next_at = envelope.get("next_attempt_at")
+        if not next_at:
+            continue
+        try:
+            scheduled = datetime.fromisoformat(next_at)
+        except (TypeError, ValueError):
+            continue
+        # Treat naive timestamps as UTC for back-compat.
+        if scheduled.tzinfo is None and now.tzinfo is not None:
+            scheduled = scheduled.replace(tzinfo=now.tzinfo)
+        if scheduled <= now:
+            due.append(_apply_skill_fields(job))
+    return due
+
+
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
-    
+
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
     

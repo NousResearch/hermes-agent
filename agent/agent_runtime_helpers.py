@@ -23,6 +23,7 @@ Methods covered:
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import re
@@ -1180,6 +1181,10 @@ def dump_api_request_debug(
             "timestamp": datetime.now().isoformat(),
             "session_id": agent.session_id,
             "reason": reason,
+            "provider": getattr(agent, "provider", "") or "",
+            "model": getattr(agent, "model", "") or "",
+            "api_mode": getattr(agent, "api_mode", "") or "",
+            "base_url": getattr(agent, "base_url", "") or "",
             "request": {
                 "method": "POST",
                 "url": f"{agent.base_url.rstrip('/')}{'/responses' if agent.api_mode == 'codex_responses' else '/chat/completions'}",
@@ -1241,6 +1246,113 @@ def dump_api_request_debug(
             logger.warning(f"Failed to dump API request debug payload: {dump_error}")
         return None
 
+
+
+def _stable_json(value: Any) -> str:
+    if value is None or not isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if isinstance(value, list):
+        return "[" + ",".join(_stable_json(v) for v in value) + "]"
+    return "{" + ",".join(
+        json.dumps(k, ensure_ascii=False) + ":" + _stable_json(value[k])
+        for k in sorted(value)
+    ) + "}"
+
+
+def _request_fingerprint(agent, api_kwargs: Dict[str, Any], *, status_code: Optional[int] = None) -> str:
+    body = copy.deepcopy(api_kwargs or {})
+    body.pop("timeout", None)
+    body = {k: v for k, v in body.items() if v is not None}
+    normalized = {
+        "provider": getattr(agent, "provider", "") or "",
+        "model": body.get("model") or getattr(agent, "model", "") or "",
+        "api_mode": getattr(agent, "api_mode", "") or "",
+        "base_url": str(getattr(agent, "base_url", "") or "").rstrip("/"),
+        "status_code": status_code,
+        "body": body.get("messages") or body.get("input") or body.get("prompt") or body,
+    }
+    return hashlib.sha1(_stable_json(normalized).encode("utf-8")).hexdigest()[:16]
+
+
+def _fingerprint_cache(agent) -> Dict[str, Dict[str, Any]]:
+    cache = getattr(agent, "_non_retryable_request_fingerprints", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(agent, "_non_retryable_request_fingerprints", cache)
+    return cache
+
+
+def check_non_retryable_request_fingerprint(
+    agent,
+    api_kwargs: Dict[str, Any],
+    *,
+    ttl_seconds: float = 3600.0,
+) -> Dict[str, Any]:
+    """Return prior non-retryable match for this request, if still fresh."""
+    now = time.time()
+    cache = _fingerprint_cache(agent)
+    body_fp = _request_fingerprint(agent, api_kwargs, status_code=None)
+    for key, value in list(cache.items()):
+        if now - float(value.get("last_seen", 0.0) or 0.0) > ttl_seconds:
+            cache.pop(key, None)
+    for value in cache.values():
+        if value.get("body_fingerprint") == body_fp:
+            return {
+                "blocked": True,
+                "fingerprint": value.get("fingerprint"),
+                "body_fingerprint": body_fp,
+                "count": int(value.get("count", 1)),
+                "status_code": value.get("status_code"),
+                "first_seen": value.get("first_seen"),
+                "last_seen": value.get("last_seen"),
+            }
+    return {"blocked": False, "body_fingerprint": body_fp}
+
+
+def record_non_retryable_request_fingerprint(
+    agent,
+    api_kwargs: Dict[str, Any],
+    *,
+    status_code: Optional[int],
+    ttl_seconds: float = 3600.0,
+) -> Dict[str, Any]:
+    """Remember a 400/401/403/404 request fingerprint and report duplicates."""
+    if status_code not in {400, 401, 403, 404}:
+        return {"blocked": False, "status_code": status_code, "fingerprint": ""}
+    now = time.time()
+    cache = _fingerprint_cache(agent)
+    body_fp = _request_fingerprint(agent, api_kwargs, status_code=None)
+    fingerprint = _request_fingerprint(agent, api_kwargs, status_code=status_code)
+    existing = cache.get(fingerprint)
+    if existing and now - float(existing.get("last_seen", 0.0) or 0.0) <= ttl_seconds:
+        existing["count"] = int(existing.get("count", 1)) + 1
+        existing["last_seen"] = now
+        return {
+            "blocked": True,
+            "fingerprint": fingerprint,
+            "body_fingerprint": body_fp,
+            "count": existing["count"],
+            "status_code": status_code,
+            "first_seen": existing.get("first_seen"),
+            "last_seen": now,
+        }
+    cache[fingerprint] = {
+        "fingerprint": fingerprint,
+        "body_fingerprint": body_fp,
+        "status_code": status_code,
+        "count": 1,
+        "first_seen": now,
+        "last_seen": now,
+    }
+    return {
+        "blocked": False,
+        "fingerprint": fingerprint,
+        "body_fingerprint": body_fp,
+        "count": 1,
+        "status_code": status_code,
+        "first_seen": now,
+        "last_seen": now,
+    }
 
 
 def anthropic_prompt_cache_policy(
@@ -2604,6 +2716,8 @@ __all__ = [
     "restore_primary_runtime",
     "extract_reasoning",
     "dump_api_request_debug",
+    "check_non_retryable_request_fingerprint",
+    "record_non_retryable_request_fingerprint",
     "anthropic_prompt_cache_policy",
     "create_openai_client",
     "switch_model",

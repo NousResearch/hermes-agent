@@ -2234,6 +2234,16 @@ class AIAgent:
         from agent.agent_runtime_helpers import dump_api_request_debug
         return dump_api_request_debug(self, api_kwargs, reason=reason, error=error)
 
+    def _check_non_retryable_request_fingerprint(self, api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Forwarder — see ``agent.agent_runtime_helpers.check_non_retryable_request_fingerprint``."""
+        from agent.agent_runtime_helpers import check_non_retryable_request_fingerprint
+        return check_non_retryable_request_fingerprint(self, api_kwargs)
+
+    def _record_non_retryable_request_fingerprint(self, api_kwargs: Dict[str, Any], *, status_code: Optional[int]) -> Dict[str, Any]:
+        """Forwarder — see ``agent.agent_runtime_helpers.record_non_retryable_request_fingerprint``."""
+        from agent.agent_runtime_helpers import record_non_retryable_request_fingerprint
+        return record_non_retryable_request_fingerprint(self, api_kwargs, status_code=status_code)
+
     @staticmethod
     def _clean_session_content(content: str) -> str:
         """Convert REASONING_SCRATCHPAD to think tags and clean up whitespace."""

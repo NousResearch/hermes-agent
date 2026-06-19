@@ -54,6 +54,54 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_request_debug_dump_includes_runtime_routing_metadata(agent, tmp_path):
+    """Request dumps must identify provider/model/api_mode/base_url.
+
+    URL-only dumps made provider-routing forensics ambiguous: native
+    Anthropic failures and Codex chat-completions failures could only be
+    inferred from the request URL.  Future dumps should carry the runtime
+    routing decision explicitly.
+    """
+    agent.logs_dir = tmp_path
+    agent.provider = "openai-codex"
+    agent.model = "gpt-5.5"
+    agent.api_mode = "codex_responses"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.session_id = "routing-meta"
+    agent.client = MagicMock(api_key="***")
+
+    dump_path = agent._dump_api_request_debug(
+        {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]},
+        reason="unit_test",
+    )
+
+    payload = json.loads(Path(dump_path).read_text(encoding="utf-8"))
+    assert payload["provider"] == "openai-codex"
+    assert payload["model"] == "gpt-5.5"
+    assert payload["api_mode"] == "codex_responses"
+    assert payload["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_non_retryable_fingerprint_blocks_repeated_request(agent):
+    """Repeated 400/401/403/404 fingerprints should be blocked locally."""
+    agent.provider = "openai-codex"
+    agent.model = "gpt-5.5"
+    agent.api_mode = "codex_responses"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    api_kwargs = {
+        "model": "gpt-5.5",
+        "messages": [{"role": "user", "content": "same failing payload"}],
+    }
+
+    first = agent._record_non_retryable_request_fingerprint(api_kwargs, status_code=403)
+    second = agent._record_non_retryable_request_fingerprint(api_kwargs, status_code=403)
+
+    assert first["blocked"] is False
+    assert second["blocked"] is True
+    assert second["count"] == 2
+    assert second["status_code"] == 403
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""

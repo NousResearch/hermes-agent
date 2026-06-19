@@ -931,6 +931,33 @@ class _CodexChatShim:
         self.completions = adapter
 
 
+class _BlockedCodexChatCompletions:
+    """Local guard for raw Codex clients.
+
+    Raw Codex clients are allowed only for callers that use the Responses API
+    directly (for example the main agent streaming loop). If a side path calls
+    chat.completions on chatgpt.com/backend-api/codex, the backend returns the
+    forbidden legacy endpoint (/chat/completions). Block locally instead.
+    """
+
+    def create(self, **kwargs) -> Any:
+        raise RuntimeError(
+            "OpenAI Codex OAuth backend requires the Responses API; "
+            "chat.completions is blocked for chatgpt.com/backend-api/codex."
+        )
+
+
+class _RawCodexResponsesOnlyClient:
+    """Proxy a raw OpenAI client while disabling chat.completions."""
+
+    def __init__(self, real_client: Any):
+        self._client = real_client
+        self.chat = SimpleNamespace(completions=_BlockedCodexChatCompletions())
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
 class CodexAuxiliaryClient:
     """OpenAI-client-compatible wrapper that routes through Codex Responses API.
 
@@ -3646,7 +3673,7 @@ def resolve_provider_client(
                 base_url=_CODEX_AUX_BASE_URL,
                 default_headers=_codex_cloudflare_headers(codex_token),
             )
-            return (raw_client, final_model)
+            return (_RawCodexResponsesOnlyClient(raw_client), final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
         client, default = _build_codex_client(model)
         if client is None:

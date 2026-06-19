@@ -347,6 +347,12 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    def test_statusless_overloaded_message(self):
+        e = Exception("Our servers are currently overloaded. Please try again later.")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are
@@ -416,14 +422,22 @@ class TestClassifyApiError:
 
     def test_404_generic(self):
         # Generic 404 with no "model not found" signal — common for local
-        # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat
-        # as unknown (retryable) so the real error surfaces, rather than
-        # claiming the model is missing and silently falling back.
+        # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths, or for
+        # missing proxy routes that only report "Error code: 404". Retrying
+        # the identical POST will not repair a missing route, but a configured
+        # fallback provider may still handle the turn.
         e = MockAPIError("Not Found", status_code=404)
         result = classify_api_error(e)
-        assert result.reason == FailoverReason.unknown
-        assert result.retryable is True
-        assert result.should_fallback is False
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_404_status_only_is_non_retryable(self):
+        e = MockAPIError("Error code: 404", status_code=404)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
 
     # ── Provider policy-block (OpenRouter privacy/guardrail) ──
 

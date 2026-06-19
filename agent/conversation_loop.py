@@ -1064,6 +1064,33 @@ def run_conversation(
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
 
+                _dedupe_hit = agent._check_non_retryable_request_fingerprint(api_kwargs)
+                if _dedupe_hit.get("blocked"):
+                    _status = _dedupe_hit.get("status_code") or "unknown"
+                    _fp = _dedupe_hit.get("fingerprint") or "unknown"
+                    _count = _dedupe_hit.get("count") or 1
+                    agent._emit_status(
+                        f"⛔ Duplicate non-retryable request blocked locally "
+                        f"(HTTP {_status}, fingerprint {_fp}, seen {_count}×)."
+                    )
+                    agent._dump_api_request_debug(
+                        api_kwargs,
+                        reason="duplicate_non_retryable_blocked",
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": (
+                            "Duplicate non-retryable provider request blocked locally "
+                            f"(HTTP {_status}, fingerprint {_fp})."
+                        ),
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": "duplicate_non_retryable_blocked",
+                        "failure_reason": "non_retryable_client_error",
+                    }
+
                 # Always prefer the streaming path — even without stream
                 # consumers.  Streaming gives us fine-grained health
                 # checking (90s stale-stream detection, 60s read timeout)
@@ -2261,6 +2288,61 @@ def run_conversation(
                 if recovered_with_pool:
                     continue
 
+                # Reset-aware usage-limit gate.
+                #
+                # Some providers (notably chatgpt.com/backend-api/codex) return
+                # HTTP 429 bodies with a durable quota wall (`usage_limit_reached`
+                # plus reset metadata). Retrying those immediately just burns the
+                # same request two more times before `max_retries_exhausted` and
+                # creates noisy request_dump artifacts. If no credential-pool
+                # rotation recovered above, try fallback once; otherwise stop with
+                # an actionable reset/backoff message instead of short-loop retrying.
+                _rate_limit_reason = str((error_context or {}).get("reason") or "").lower()
+                _rate_limit_message = str((error_context or {}).get("message") or api_error or "").lower()
+                _has_usage_limit_wall = (
+                    classified.reason == FailoverReason.rate_limit
+                    and (
+                        "usage_limit_reached" in _rate_limit_reason
+                        or "gousagelimit" in _rate_limit_reason
+                        or "usage limit reached" in _rate_limit_message
+                        or "usage limit has been reached" in _rate_limit_message
+                    )
+                )
+                if _has_usage_limit_wall:
+                    if agent._has_pending_fallback():
+                        agent._buffer_status("⏱️ Usage limit reached — trying fallback instead of retrying same provider...")
+                    if agent._try_activate_fallback():
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
+                    _reset_at = (error_context or {}).get("reset_at")
+                    _reset_hint = ""
+                    if _reset_at not in {None, ""}:
+                        _reset_hint = f" Reset/backoff signal: {_reset_at}."
+                    if api_kwargs is not None:
+                        agent._dump_api_request_debug(
+                            api_kwargs, reason="rate_limit_reset_backoff", error=api_error,
+                        )
+                    agent._flush_status_buffer()
+                    _final_summary = agent._summarize_api_error(api_error)
+                    agent._emit_status(f"❌ Usage limit reached — not retrying until reset. {_final_summary}")
+                    agent._vprint(
+                        f"{agent.log_prefix}⏱️ Usage limit wall detected; suppressed immediate retries."
+                        f"{_reset_hint}",
+                        force=True,
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": f"Usage limit reached; retry paused until reset/backoff window. {_final_summary}{_reset_hint}",
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": _final_summary,
+                        "failure_reason": classified.reason.value,
+                    }
+
                 # Image-too-large recovery: shrink oversized native image
                 # parts in-place and retry once.  Triggered by Anthropic's
                 # per-image 5 MB ceiling (400 with "image exceeds 5 MB
@@ -3191,6 +3273,10 @@ def run_conversation(
                         _retry.primary_recovery_attempted = False
                         continue
                     if api_kwargs is not None:
+                        _dedupe_record = agent._record_non_retryable_request_fingerprint(
+                            api_kwargs,
+                            status_code=status_code,
+                        )
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )

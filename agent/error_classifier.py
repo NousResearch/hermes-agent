@@ -141,6 +141,17 @@ _USAGE_LIMIT_PATTERNS = [
     "key limit exceeded",
 ]
 
+# Status-less provider overload / transient server-side capacity messages.
+# Some SDKs and streaming transports surface these as plain Exceptions without
+# HTTP 503/529, so status-based classification never runs.
+_OVERLOADED_PATTERNS = [
+    "currently overloaded",
+    "server is overloaded",
+    "servers are overloaded",
+    "service is overloaded",
+    "overloaded. please try again later",
+]
+
 # Patterns confirming usage limit is transient (not billing)
 _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "try again",
@@ -823,16 +834,17 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
-        # Generic 404 with no "model not found" signal — could be a wrong
+        # Generic 404 with no "model not found" signal — usually a wrong
         # endpoint path (common with local llama.cpp / Ollama / vLLM when
-        # the URL is slightly misconfigured), a proxy routing glitch, or
-        # a transient backend issue.  Classifying these as model_not_found
-        # silently falls back to a different provider and tells the model
-        # the model is missing, which is wrong and wastes a turn.  Treat
-        # as unknown so the retry loop surfaces the real error instead.
+        # the URL is slightly misconfigured) or an unavailable route. It is
+        # not safely a model_not_found diagnosis, but retrying the identical
+        # POST will not repair a missing route. Fail fast as a non-retryable
+        # format/config error, while still allowing a configured fallback
+        # provider to handle the turn.
         return result_fn(
-            FailoverReason.unknown,
-            retryable=True,
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
         )
 
     if status_code == 413:
@@ -1211,6 +1223,12 @@ def _classify_by_message(
             should_rotate_credential=True,
             should_fallback=True,
         )
+
+    # Status-less overload/capacity errors — retryable, but classify distinctly
+    # from unknown so diagnostics and dashboards can separate provider overload
+    # from unclassified failures.
+    if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+        return result_fn(FailoverReason.overloaded, retryable=True)
 
     # Context overflow patterns
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):

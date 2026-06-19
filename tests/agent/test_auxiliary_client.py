@@ -3987,3 +3987,71 @@ class TestAuxiliaryMaxTokensParam:
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
+
+
+class TestProviderRoutingRegression:
+    def test_runtime_pool_entry_routes_codex_and_anthropic_to_native_modes(self):
+        """Provider runtime resolution must not regress to chat_completions."""
+        from hermes_cli.runtime_provider import _resolve_runtime_from_pool_entry
+
+        codex_entry = SimpleNamespace(
+            runtime_base_url="https://chatgpt.com/backend-api/codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            runtime_api_key="codex-token",
+            access_token="codex-token",
+            source="unit",
+        )
+        anthropic_entry = SimpleNamespace(
+            runtime_base_url="https://api.anthropic.com",
+            base_url="https://api.anthropic.com",
+            runtime_api_key="anthropic-key",
+            access_token="anthropic-key",
+            source="unit",
+        )
+
+        codex = _resolve_runtime_from_pool_entry(
+            provider="openai-codex",
+            entry=codex_entry,
+            requested_provider="openai-codex",
+            model_cfg={"provider": "openai-codex", "default": "gpt-5.5"},
+            target_model="gpt-5.5",
+        )
+        anthropic = _resolve_runtime_from_pool_entry(
+            provider="anthropic",
+            entry=anthropic_entry,
+            requested_provider="anthropic",
+            model_cfg={"provider": "anthropic", "default": "claude-sonnet-4-6"},
+            target_model="claude-sonnet-4-6",
+        )
+
+        assert codex["api_mode"] == "codex_responses"
+        assert codex["base_url"] == "https://chatgpt.com/backend-api/codex"
+        assert anthropic["api_mode"] == "anthropic_messages"
+        assert anthropic["base_url"] == "https://api.anthropic.com"
+
+    def test_raw_codex_client_blocks_chat_completions_before_network(self, monkeypatch):
+        """raw_codex=True may expose responses.*, but never chat.completions."""
+        import agent.auxiliary_client as aux
+
+        class FakeChatCompletions:
+            def create(self, **kwargs):
+                return "network would have happened"
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                self.api_key = kwargs.get("api_key")
+                self.base_url = kwargs.get("base_url")
+                self.chat = SimpleNamespace(completions=FakeChatCompletions())
+                self.responses = SimpleNamespace(create=MagicMock(name="responses_create"))
+
+        monkeypatch.setattr(aux, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(aux, "OpenAI", FakeOpenAI)
+
+        client, model = resolve_provider_client(
+            "openai-codex", model="gpt-5.5", raw_codex=True,
+        )
+
+        assert model == "gpt-5.5"
+        assert client.responses is not None
+        with pytest.raises(RuntimeError, match="Responses API"):
+            client.chat.completions.create(model="gpt-5.5", messages=[])

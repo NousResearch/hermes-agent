@@ -635,6 +635,39 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             lobby_waiting=False,
                             joined_at=now,
                         )
+                        # Now in-call: enable captions + mute A/V.
+                        try:
+                            page.wait_for_timeout(2000)
+                            # Captions: click the toggle button. The 'c'
+                            # keyboard shortcut is unreliable in headless; the
+                            # button's aria-label is stable across Meet DOM
+                            # rewrites, so this is both reliable and durable.
+                            try:
+                                cc = page.get_by_role(
+                                    "button", name=re.compile(r"Turn on captions", re.I)
+                                ).first
+                                cc.wait_for(state="visible", timeout=8_000)
+                                cc.click(timeout=3_000)
+                            except Exception:
+                                pass
+                            # Caption transcription language (e.g. "French").
+                            # The UI/hl language does NOT control this; without
+                            # it a French speaker is transcribed as English
+                            # gibberish. Configurable via env.
+                            _caplang = os.environ.get(
+                                "HERMES_MEET_CAPTION_LANG", ""
+                            ).strip()
+                            if _caplang:
+                                page.wait_for_timeout(1_500)
+                                _set_caption_language(page, _caplang)
+                            # Camera + mic off (these shortcuts work in-call).
+                            for _key in ("Control+e", "Control+d"):
+                                try:
+                                    page.keyboard.press(_key)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
                     elif now > lobby_deadline:
                         state.set(
                             error=(
@@ -819,12 +852,78 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
     return True
 
 
+def _mute_local_av(page) -> None:
+    """Best-effort: turn the mic and camera off on Meet's green room.
+
+    The bot joins listen-only, so its synthetic media devices should be
+    muted before joining — otherwise participants see a placeholder camera
+    feed. Meet exposes toggle buttons whose accessible name reads
+    "Turn off microphone" / "Turn off camera" while they are on.
+    """
+    for pattern in (r"Turn off microphone", r"Turn off camera"):
+        try:
+            btn = page.get_by_role("button", name=re.compile(pattern, re.I)).first
+            if btn.count() and btn.is_visible():
+                btn.click(timeout=2_000)
+        except Exception:
+            continue
+
+
+def _set_caption_language(page, lang: str) -> None:
+    """Set Meet's caption 'Meeting language' to *lang* (e.g. 'French').
+
+    Meet transcribes with the model for this language, NOT the UI language —
+    leaving it on English while a French speaker talks yields phonetic
+    garbage. Best-effort with retries: the 'Open caption settings' control is
+    only reliably clickable after hovering the caption region in headless.
+    """
+    for _ in range(4):
+        try:
+            reg = page.query_selector('[role="region"][aria-label*="aption" i]')
+            if reg:
+                reg.hover()
+        except Exception:
+            pass
+        try:
+            page.get_by_role(
+                "button", name=re.compile(r"Open caption settings", re.I)
+            ).first.click(timeout=3_000, force=True)
+        except Exception:
+            pass
+        page.wait_for_timeout(1_000)
+        combo = page.get_by_role(
+            "combobox", name=re.compile(r"Meeting language", re.I)
+        ).first
+        if combo.count() and combo.is_visible():
+            try:
+                combo.click(timeout=3_000, force=True)
+                page.wait_for_timeout(1_000)
+                page.get_by_role("option", name=lang, exact=True).first.click(
+                    timeout=3_000, force=True
+                )
+                return
+            except Exception:
+                pass
+        page.wait_for_timeout(1_000)
+
+
 def _click_join(page, state: _BotState) -> None:
     """Click 'Join now' or 'Ask to join' if either button is visible.
 
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
+    # Meet renders the join control a few seconds after domcontentloaded;
+    # a one-shot check runs too early and misses it (the bot then sits
+    # forever without ever asking to join). Wait for either label first.
+    try:
+        page.get_by_role(
+            "button", name=re.compile(r"Join now|Ask to join")
+        ).first.wait_for(state="visible", timeout=20_000)
+    except Exception:
+        pass
+    # Join listen-only: mute mic + camera before entering.
+    _mute_local_av(page)
     for label in ("Join now", "Ask to join"):
         try:
             btn = page.get_by_role("button", name=label, exact=False).first

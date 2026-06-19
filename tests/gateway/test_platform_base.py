@@ -12,9 +12,27 @@ from gateway.platforms.base import (
     MessageEvent,
     safe_url_for_log,
     utf16_len,
+    utf16_slice,
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+
+
+class TestUtf16Slice:
+    def test_bmp_only_matches_plain_slice(self):
+        s = "hey @hermes_bot there"
+        off = s.index("@hermes_bot")
+        assert utf16_slice(s, off, len("@hermes_bot")) == "@hermes_bot"
+
+    def test_non_bmp_prefix_keeps_alignment(self):
+        # "😀 " is 3 UTF-16 code units (emoji = 2, space = 1).
+        s = "😀 @hermes_bot hi"
+        assert utf16_slice(s, 3, utf16_len("@hermes_bot")) == "@hermes_bot"
+
+    def test_extracts_span_with_emoji_inside(self):
+        s = "a😀b"
+        # full string: a(1) + 😀(2) + b(1) = 4 UTF-16 units
+        assert utf16_slice(s, 0, 4) == "a😀b"
 
 
 class TestSecretCaptureGuidance:

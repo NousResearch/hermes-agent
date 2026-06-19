@@ -1,5 +1,6 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
+import asyncio
 import os
 import json
 import shutil
@@ -5493,6 +5494,107 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
+
+    def test_resolve_chat_argv_async_uses_worker_thread(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["node", "dist/entry.js"], "/tmp/ui-tui", {"NODE_ENV": "production"})
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            captured["thread_fn"] = fn
+            captured["thread_args"] = args
+            captured["thread_kwargs"] = kwargs
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+        monkeypatch.setattr(self.ws_module.asyncio, "to_thread", fake_to_thread)
+
+        argv, cwd, env = asyncio.run(
+            self.ws_module._resolve_chat_argv_async(
+                resume="sess-42",
+                sidecar_url="ws://127.0.0.1:9119/api/pub?channel=abc",
+                profile="worker",
+            )
+        )
+
+        assert callable(captured["thread_fn"])
+        assert captured["thread_args"] == ()
+        assert captured["thread_kwargs"] == {
+            "resume": "sess-42",
+            "sidecar_url": "ws://127.0.0.1:9119/api/pub?channel=abc",
+            "profile": "worker",
+        }
+        assert argv == ["node", "dist/entry.js"]
+        assert cwd == "/tmp/ui-tui"
+        assert env == {"NODE_ENV": "production"}
+        assert captured["resume"] == "sess-42"
+        assert captured["sidecar_url"] == "ws://127.0.0.1:9119/api/pub?channel=abc"
+        assert captured["profile"] == "worker"
+
+    def test_pty_ws_resolves_argv_through_async_wrapper(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_resolve_async(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["/bin/sh", "-c", "printf async-resolve-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv_async", fake_resolve_async)
+
+        with self.client.websocket_connect(self._url(resume="sess-99")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured["resume"] == "sess-99"
+
+    def _assert_pty_propagates(self, monkeypatch, raising_resolver, *, profile=None, expect_detail=None):
+        """Drive /api/pty with a resolver that raises, and assert the error
+        propagates through the real _resolve_chat_argv_async -> asyncio.to_thread
+        -> lock -> re-raise chain into pty_ws's handler: the "Chat unavailable"
+        notice is sent and the socket closes with code 1011 (the stable
+        contract — we assert the close code, not the exact notice wording)."""
+        from starlette.websockets import WebSocketDisconnect
+
+        # Patch the REAL resolver so the whole wrapper/to_thread/lock chain runs.
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", raising_resolver)
+
+        url = self._url(profile=profile) if profile else self._url()
+        with self.client.websocket_connect(url) as conn:
+            notice = conn.receive_text()
+            with pytest.raises(WebSocketDisconnect) as exc:
+                conn.receive_text()
+        assert "Chat unavailable" in notice
+        assert exc.value.code == 1011
+        if expect_detail is not None:
+            assert expect_detail in notice
+
+    def test_pty_ws_propagates_systemexit_through_async_wrapper(self, monkeypatch):
+        """SystemExit from _make_tui_argv (node/npm missing) propagates through
+        the async wrapper and is caught by pty_ws's ``except SystemExit``."""
+
+        def boom(resume=None, sidecar_url=None, profile=None):
+            raise SystemExit("node not found")
+
+        self._assert_pty_propagates(monkeypatch, boom)
+
+    def test_pty_ws_propagates_httpexception_through_async_wrapper(self, monkeypatch):
+        """An invalid-profile HTTPException raised inside the threaded resolver
+        propagates through the wrapper and hits pty_ws's ``except HTTPException``."""
+        from fastapi import HTTPException
+
+        def bad_profile(resume=None, sidecar_url=None, profile=None):
+            raise HTTPException(status_code=404, detail="unknown profile")
+
+        self._assert_pty_propagates(
+            monkeypatch, bad_profile, profile="ghost", expect_detail="unknown profile"
+        )
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(

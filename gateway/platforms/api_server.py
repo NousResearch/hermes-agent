@@ -2084,6 +2084,18 @@ class APIServerAdapter(BasePlatformAdapter):
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
+        # Strict OpenAI-compatible clients (the `openai` SDK, LiveKit's voice
+        # plugin, etc.) parse every SSE frame as a `chat.completion.chunk` and
+        # crash on our custom `event: hermes.tool.progress` frames — they have no
+        # `choices` field, so `chunk.choices` is None and iterating it raises
+        # "NoneType object is not iterable". Such clients can opt out by sending
+        # `X-Hermes-Tool-Progress: off`; the tools still run server-side and the
+        # full answer still streams, only the UI-only progress frames are skipped.
+        # Default keeps progress frames (chat frontends rely on them).
+        suppress_tool_progress = request.headers.get(
+            "X-Hermes-Tool-Progress", ""
+        ).strip().lower() in ("off", "false", "0", "none", "no")
+
         try:
             last_activity = time.monotonic()
 
@@ -2108,6 +2120,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
+                    if suppress_tool_progress:
+                        # Client opted out (strict OpenAI parser) — skip the
+                        # UI-only frame; the tool already ran server-side.
+                        return time.monotonic()
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()

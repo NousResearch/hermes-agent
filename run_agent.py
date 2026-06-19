@@ -1360,6 +1360,12 @@ class AIAgent:
             return False
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             return True
+        # CLIProxy local ports proxy cloud APIs (Aliyun, OpenRouter, etc.), not
+        # Ollama backends.  Treating every local GLM-compatible endpoint as
+        # Ollama causes legitimate `finish_reason=stop` responses to be
+        # rewritten to `length` on CLIProxy and can trigger needless retries.
+        if ":8317" in self._base_url_lower or ":8327" in self._base_url_lower:
+            return False
         return bool(self.base_url and is_local_endpoint(self.base_url))
 
     def _should_treat_stop_as_truncated(

@@ -102,7 +102,8 @@ class MissionControlCore:
                 orphan_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts WHERE task_id IS NOT NULL AND task_id != '' AND task_id NOT IN (SELECT id FROM tasks)").fetchone()[0]
             dashboard_path = self.paths.vault_root / "00-command-center" / "RUNTIME-DASHBOARD.md"
             mirror_ok = dashboard_path.exists()
-            policy_ok = str(self.paths.root).startswith(str(self.paths.home)) and ".hermes-marija" not in str(self.paths.root) and ".openclaw" not in str(self.paths.root)
+            root_text = str(self.paths.root).lower()
+            policy_ok = str(self.paths.root).startswith(str(self.paths.home)) and not any(marker in root_text for marker in ("separate-profile", "external-runtime", "shared-runtime"))
             return [
                 {"id": "doctor", "status": "ok" if policy_ok and orphan_artifacts == 0 else "attention", "schema_version": schema, "pending_approvals": pending, "orphan_artifacts": orphan_artifacts, "policy_home_isolated": policy_ok},
                 {"id": "mirror", "status": "ok" if mirror_ok else "attention", "dashboard_path": str(dashboard_path), "exists": mirror_ok},

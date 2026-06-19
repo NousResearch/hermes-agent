@@ -307,7 +307,7 @@ def test_agents_os_policy_blocks_credential_paths_and_bad_home(tmp_path, monkeyp
     assert invalid["valid"] is False
     assert "credential_path:allowed_paths" in invalid["errors"]
 
-    monkeypatch.setenv("AGENTS_OS_HOME", str(tmp_path / ".openclaw" / "agents_os"))
+    monkeypatch.setenv("AGENTS_OS_HOME", str(tmp_path / "external-runtime" / "agents_os"))
     assert agents_os.main(["--vault-root", str(vault), "doctor", "--json"]) == 1
     doctor = _json_out(capsys)
     assert doctor["checks"]["policy_home_isolated"] is False

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${AGENTS_OS_REPO_DIR:-/mnt/d/HermesAgent/app}"
-HERMES_HOME="${HERMES_HOME:-/home/goran/.hermes-doni-clean}"
+REPO_DIR="${AGENTS_OS_REPO_DIR:-$PWD}"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HOST="${AGENTS_OS_HOST:-127.0.0.1}"
 PORT="${AGENTS_OS_PORT:-18790}"
 URL="http://${HOST}:${PORT}"
@@ -15,7 +15,7 @@ mkdir -p "$LOG_DIR"
 cd "$REPO_DIR"
 
 if [[ ! -x "$PY" ]]; then
-  echo "ERROR: venv python nije nađen: $PY" >&2
+  echo "ERROR: venv python not found: $PY" >&2
   exit 2
 fi
 
@@ -32,9 +32,9 @@ PY
 }
 
 if health_ok; then
-  echo "Mission Control već radi: $URL"
+  echo "Mission Control is already running: $URL"
 else
-  echo "Pokrećem Mission Control local-only: $URL"
+  echo "Starting Mission Control local-only: $URL"
   HERMES_HOME="$HERMES_HOME" nohup "$PY" -m hermes_cli.agents_os web --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   for _ in $(seq 1 30); do
@@ -44,7 +44,7 @@ else
     sleep 1
   done
   if ! health_ok; then
-    echo "ERROR: Mission Control nije postao healthy. Log: $LOG_FILE" >&2
+    echo "ERROR: Mission Control did not become healthy. Log: $LOG_FILE" >&2
     exit 1
   fi
 fi
@@ -55,5 +55,5 @@ if command -v wslview >/dev/null 2>&1; then
 elif command -v xdg-open >/dev/null 2>&1; then
   xdg-open "$URL" >/dev/null 2>&1 || true
 else
-  echo "Otvori ručno: $URL"
+  echo "Open manually: $URL"
 fi

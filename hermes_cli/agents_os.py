@@ -983,7 +983,8 @@ def doctor(args: argparse.Namespace) -> int:
         orphan_runs = conn.execute("SELECT COUNT(*) FROM runs WHERE task_id IS NOT NULL AND task_id != '' AND task_id NOT IN (SELECT id FROM tasks)").fetchone()[0]
     required_tables = ["meta", "tasks", "approvals", "artifacts", "events", "runs", "agents", "workflows", "routing_rules", "reviews", "state_snapshots"]
     orphan_records = orphan_artifacts + orphan_events + orphan_runs
-    policy_home_isolated = str(paths.root).startswith(str(paths.home)) and ".hermes-marija" not in str(paths.root) and ".openclaw" not in str(paths.root) and "/marija" not in str(paths.root).lower()
+    root_text = str(paths.root).lower()
+    policy_home_isolated = str(paths.root).startswith(str(paths.home)) and not any(marker in root_text for marker in ("separate-profile", "external-runtime", "shared-runtime"))
     checks = {
         "state_db_exists": paths.db.exists(),
         "schema_version": schema_version,

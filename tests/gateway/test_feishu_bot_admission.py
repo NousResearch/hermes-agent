@@ -536,8 +536,28 @@ def test_resolve_sender_profile_uses_open_id_for_bot_name_lookup():
     )
 
     assert seen_ids == ["ou_peer"]
-    assert profile["user_id"] == "u_peer"
+    assert profile["user_id"] == "ou_peer"
     assert profile["user_name"] == "Peer Bot"
+
+
+def test_resolve_sender_profile_prefers_open_id_for_human_allowlist_match():
+    import asyncio
+
+    from gateway.platforms.feishu import FeishuAdapter
+
+    adapter = object.__new__(FeishuAdapter)
+    adapter._client = None
+    adapter._sender_name_cache = {}
+
+    profile = asyncio.run(
+        adapter._resolve_sender_profile(
+            SimpleNamespace(open_id="ou_human", user_id="u_human", union_id="on_human"),
+            is_bot=False,
+        )
+    )
+
+    assert profile["user_id"] == "ou_human"
+    assert profile["user_id_alt"] == "on_human"
 
 
 # --- _allow_group_message matrix -------------------------------------------

@@ -301,6 +301,7 @@ def finalize_turn(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                agent=agent,
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)

@@ -19,14 +19,14 @@ def test_drafts_safe_youtube_intake_as_local_research():
     assert draft["classification"] == "research_intake"
     assert draft["risk_class"] == "safe_local"
     assert draft["approval_required"] is False
-    assert draft["suggested_agent"] == "doni-local"
+    assert draft["suggested_agent"] == "local-agent"
     assert draft["recommended_lane"] == "youtube-content-intake"
     assert draft["plan_steps"]
     assert draft["acceptance_criteria"]
 
 
 def test_drafts_agent_os_build_as_local_write_approval():
-    draft = draft_idea("Dodaj Memory Galaxy u Doni dashboard")
+    draft = draft_idea("Dodaj Memory Galaxy u operator dashboard")
 
     assert draft["classification"] == "agent_os_build"
     assert draft["risk_class"] == "approval_local_write"

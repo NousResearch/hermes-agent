@@ -66,6 +66,8 @@ def test_root_html_contains_operator_tabs_and_bootstrap_payload(agents_home):
     assert "showTaskDetail(tasks.items[0].id)" in html
     assert "showApprovalDetail(approvals.items[0].id)" in html
     assert "vault/reference graph, not runtime memory merge" in html
+    assert "Local-only operator cockpit" in html
+    assert "Doni" not in html
 
 
 def test_idea_factory_schema_and_draft_payloads_are_local_only(agents_home):
@@ -104,10 +106,18 @@ def test_agent_registry_payload_includes_boundaries(agents_home):
     payload = agents_registry_payload(resolve_paths(None))
     ids = {agent["id"] for agent in payload["agents"]}
 
-    assert {"doni-local", "kodi-codex", "marija-profile", "ero-openclaw"}.issubset(ids)
-    doni = next(agent for agent in payload["agents"] if agent["id"] == "doni-local")
-    assert doni["memory_boundary"] == "Doni Hermes home only"
-    assert "gateway restart" in " ".join(doni["approval_gates"])
+    assert {"local-agent", "coding-delegate", "separate-profile", "external-reference-runtime"}.issubset(ids)
+    local_agent = next(agent for agent in payload["agents"] if agent["id"] == "local-agent")
+    assert local_agent["memory_boundary"] == "profile-local Hermes home only"
+    assert "gateway restart" in " ".join(local_agent["approval_gates"])
+    dumped = json.dumps(payload, ensure_ascii=False)
+    assert "Doni" not in dumped
+    assert "Goran" not in dumped
+    assert "Marija" not in dumped
+    assert "ERO" not in dumped
+    assert "OpenClaw" not in dumped
+    assert "/home/goran" not in dumped
+    assert "/mnt/d" not in dumped
 
 
 def test_knowledge_index_is_non_empty_and_links_video_sources(agents_home, tmp_path, monkeypatch):

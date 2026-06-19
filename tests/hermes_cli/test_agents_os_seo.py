@@ -44,7 +44,7 @@ def test_seo_payload_groups_local_tasks_and_artifacts(agents_home, tmp_path):
     with connect(paths) as conn:
         conn.execute(
             "INSERT INTO tasks(id,title,status,workflow,priority,created_at,updated_at,notes,route,approval_required) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            ("seo-task", "GoranMikac SEO Goal", "pending", "seo-goal", 2, now, now, "draft only", "local:direct", 0),
+            ("seo-task", "Example SEO Goal", "pending", "seo-goal", 2, now, now, "draft only", "local:direct", 0),
         )
         for artifact_id, kind, title, path, workflow in [
             ("seo-goal-art", "seo_goal", "SEO Goal", goal, "seo-goal"),

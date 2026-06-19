@@ -37,15 +37,18 @@ from hermes_cli.agents_os_seo import seo_mission_control_payload
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 SOURCE_DEFAULTS = {
     "video:q13OqknCh-c": "https://youtu.be/q13OqknCh-c",
-    "transcript:q13OqknCh-c": "/mnt/d/HermesAgent/home/transcripts/q13OqknCh-c_transcript.txt",
-    "youtube-note:q13OqknCh-c": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/01-INBOX/YouTube/2026-06-08-q13OqknCh-c-claude-agent-operating-system.md",
-    "plan:parity-q13OqknCh-c": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/08-OPERATIONS/ACTIVE-WORK/2026-06-08-agent-os-parity-build-plan-q13OqknCh-c.md",
-    "plan:full-product": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/08-OPERATIONS/ACTIVE-WORK/2026-06-08-agent-os-full-product-plan.md",
-    "contract:idea-factory-v0": "/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni/08-OPERATIONS/ACTIVE-WORK/2026-06-08-idea-factory-v0-contract.md",
+    "transcript:q13OqknCh-c": "sources/transcripts/q13OqknCh-c_transcript.txt",
+    "youtube-note:q13OqknCh-c": "sources/youtube/2026-06-08-q13OqknCh-c-agent-operating-system.md",
+    "plan:parity-q13OqknCh-c": "sources/plans/agent-os-parity-build-plan-q13OqknCh-c.md",
+    "plan:full-product": "sources/plans/agent-os-full-product-plan.md",
+    "contract:idea-factory-v0": "sources/contracts/idea-factory-v0-contract.md",
 }
 SOURCE_ENV = {
     "transcript:q13OqknCh-c": "AGENTS_OS_SOURCE_TRANSCRIPT",
+    "youtube-note:q13OqknCh-c": "AGENTS_OS_SOURCE_YOUTUBE_NOTE",
+    "plan:parity-q13OqknCh-c": "AGENTS_OS_SOURCE_PARITY_PLAN",
     "plan:full-product": "AGENTS_OS_SOURCE_FULL_PLAN",
+    "contract:idea-factory-v0": "AGENTS_OS_SOURCE_IDEA_FACTORY_CONTRACT",
 }
 MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".wav", ".ogg", ".mp4", ".webm", ".mov"}
 ARTIFACT_SUFFIXES = {".md", ".txt", ".json", ".log", ".html", ".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mp3", ".wav", ".ogg"}
@@ -107,35 +110,35 @@ def _path_info(path: str) -> dict[str, Any]:
 def _default_agent_cards(paths: AgentsOSPaths) -> list[dict[str, Any]]:
     return [
         {
-            "id": "doni-local",
-            "name": "Doni Local",
+            "id": "local-agent",
+            "name": "Local Agent",
             "status": "available",
             "capabilities": ["local planning", "TDD", "reports", "Mission Control"],
             "runtime_home": str(paths.home),
             "reference_home": str(paths.root),
-            "memory_boundary": "Doni Hermes home only",
-            "auth_boundary": "Doni auth only; credentials are never displayed",
+            "memory_boundary": "profile-local Hermes home only",
+            "auth_boundary": "profile-local auth only; credentials are never displayed",
             "allowed_actions": ["safe local files", "tests", "local API smoke", "local reports"],
             "approval_gates": ["deploy", "public send", "credential use", "gateway restart", "destructive changes"],
         },
         {
-            "id": "kodi-codex",
-            "name": "Kodi/Codex",
+            "id": "coding-delegate",
+            "name": "Coding delegate",
             "status": "reference",
             "capabilities": ["coding delegate", "review", "patch suggestions"],
             "runtime_home": "external/approval-gated",
             "reference_home": "repo-local only when explicitly invoked",
-            "memory_boundary": "no Doni memory merge",
-            "auth_boundary": "no credential sharing from Doni",
+            "memory_boundary": "no profile memory merge",
+            "auth_boundary": "no credential sharing from the active profile",
             "allowed_actions": ["local branch work after explicit routing"],
             "approval_gates": ["push", "PR", "public GitHub action", "credential use"],
         },
         {
-            "id": "marija-profile",
-            "name": "Marija profile",
+            "id": "separate-profile",
+            "name": "Separate profile",
             "status": "separate_profile",
             "capabilities": ["separate Hermes profile"],
-            "runtime_home": "/home/goran/.hermes-marija-clean",
+            "runtime_home": "separate-profile-home",
             "reference_home": "read-only boundary reference",
             "memory_boundary": "separate personal memory; no merge",
             "auth_boundary": "separate profile auth; no cross-copy",
@@ -143,12 +146,12 @@ def _default_agent_cards(paths: AgentsOSPaths) -> list[dict[str, Any]]:
             "approval_gates": ["any profile write", "auth change", "gateway lifecycle"],
         },
         {
-            "id": "ero-openclaw",
-            "name": "ERO/OpenClaw reference layer",
+            "id": "external-reference-runtime",
+            "name": "External reference runtime",
             "status": "separate_runtime",
             "capabilities": ["reference bridge", "source artefacts"],
-            "runtime_home": "/home/goran/.openclaw/workspace",
-            "reference_home": "/mnt/d/AI_Memory/communication",
+            "runtime_home": "external-runtime-home",
+            "reference_home": "external-reference-home",
             "memory_boundary": "separate runtime memory; reference only",
             "auth_boundary": "no auth/session sharing",
             "allowed_actions": ["read-only reference when useful"],
@@ -271,8 +274,17 @@ def _table_rows(paths: AgentsOSPaths, table: str, *, order: str = "created_at DE
     allowed = {"tasks", "approvals", "runs", "events", "artifacts", "reviews", "state_snapshots"}
     if table not in allowed:
         raise ValueError(f"unsupported table: {table}")
+    allowed_orders = {
+        "created_at DESC",
+        "CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC",
+        "CASE status WHEN 'ready' THEN 0 WHEN 'pending' THEN 1 WHEN 'needs_approval' THEN 2 WHEN 'review' THEN 3 WHEN 'blocked' THEN 4 WHEN 'completed' THEN 8 ELSE 7 END, priority ASC, created_at DESC",
+    }
+    if order not in allowed_orders:
+        raise ValueError(f"unsupported order: {order}")
+    quoted_table = '"' + table.replace('"', '""') + '"'
+    query = "SELECT * FROM " + quoted_table + " ORDER BY " + order + " LIMIT ?"
     with connect(paths) as conn:
-        rows = [row_to_dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY {order} LIMIT ?", (limit,)).fetchall()]
+        rows = [row_to_dict(row) for row in conn.execute(query, (limit,)).fetchall()]
     return rows
 
 
@@ -321,7 +333,7 @@ def cron_readiness_payload(paths: AgentsOSPaths) -> dict[str, Any]:
     launchers = paths.root / "launchers"
     launcher = launchers / "start_agents_os_mission_control.sh"
     watchdog = launchers / "watch_agents_os_mission_control.sh"
-    desktop_launcher = Path("/mnt/c/Users/goran/Desktop/Agents OS Mission Control.bat")
+    desktop_launcher = Path(os.environ["AGENTS_OS_DESKTOP_LAUNCHER"]) if os.environ.get("AGENTS_OS_DESKTOP_LAUNCHER") else None
     return {
         "local_only": True,
         "read_only": True,
@@ -329,7 +341,7 @@ def cron_readiness_payload(paths: AgentsOSPaths) -> dict[str, Any]:
         "startup_mutation_enabled": False,
         "watchdog": {"path": str(watchdog), "exists": watchdog.exists()},
         "launcher": {"path": str(launcher), "exists": launcher.exists()},
-        "desktop_launcher": {"path": str(desktop_launcher), "exists": desktop_launcher.exists()},
+        "desktop_launcher": {"path": str(desktop_launcher) if desktop_launcher else None, "exists": desktop_launcher.exists() if desktop_launcher else False},
         "logs": {"mission_control": str(agents_log), "exists": agents_log.exists()},
         "cron_dir": {"path": str(cron_dir), "exists": cron_dir.exists()},
         "scripts_dir": {"path": str(scripts_dir), "exists": scripts_dir.exists()},
@@ -514,7 +526,7 @@ def _jarvis_preview_from_text(transcript_text: str) -> dict[str, Any]:
         draft["plan_steps"] = [
             "Prikazati namjeru i rizičnu radnju u command preview kartici.",
             "Ne izvršiti javnu, deploy, push ili outbound akciju iz glasa.",
-            "Čekati eksplicitno Goranovo odobrenje prije side-effecta.",
+            "Čekati eksplicitno operator odobrenje prije side-effecta.",
         ]
     return draft
 
@@ -932,7 +944,7 @@ def approval_detail_payload(paths: AgentsOSPaths, approval_id: str) -> dict[str,
         "stale_warning": item.get("status") == "pending",
         "blocked_actions": ["approve", "deny", "resolve", "execute"],
         "allowed_now": False,
-        "next_required_human_decision": "Explicit Goran approval is required before any approve/deny/resolve action.",
+        "next_required_human_decision": "Explicit operator approval is required before any approve/deny/resolve action.",
     }
 
 
@@ -954,7 +966,10 @@ def _artifact_credential_like_path(value: str) -> bool:
 
 
 def _artifact_allowed(path: Path, paths: AgentsOSPaths) -> bool:
-    allowed_roots = [paths.artifacts, paths.vault_root, Path("/mnt/d/Obsidian_Vault_v2/Hermes-Agent-Doni")]
+    allowed_roots = [paths.artifacts, paths.vault_root]
+    extra_root = os.environ.get("AGENTS_OS_ARTIFACT_PREVIEW_ROOT")
+    if extra_root:
+        allowed_roots.append(Path(extra_root))
     try:
         resolved = path.resolve()
     except OSError:
@@ -1030,7 +1045,7 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 </style>
 </head>
 <body>
-<header><h1>Agents OS Mission Control</h1><div class=\"sub\">Local-only Doni operator cockpit · gateway restart: false · vault/reference graph, not runtime memory merge</div></header>
+<header><h1>Agents OS Mission Control</h1><div class=\"sub\">Local-only operator cockpit · gateway restart: false · vault/reference graph, not runtime memory merge</div></header>
 <nav class=\"tabs\">
 <button data-tab=\"overview\" class=\"active\">Overview</button><button data-tab=\"tasks\">Task board</button><button data-tab=\"approvals\">Approvals</button><button data-tab=\"runs\">Runs</button><button data-tab=\"events\">Events / Logs</button><button data-tab=\"idea\">Idea Factory</button><button data-tab=\"agents\">Agent Registry</button><button data-tab=\"knowledge\">Knowledge Galaxy</button><button data-tab=\"artifacts\">Artifact Library</button><button data-tab=\"seo\">SEO Mission Control</button><button data-tab=\"operator\">Operator Loop</button><button data-tab=\"media\">Media Studio</button><button data-tab=\"skills\">Skills</button><button data-tab=\"sessions\">Sessions</button><button data-tab=\"manage\">Manage / Status</button><button data-tab=\"voice\">Voice / Jarvis</button>
 </nav>
@@ -1067,8 +1082,8 @@ async function showApprovalDetail(id) {{ showPre('#approvalDetail', await j('/ap
 async function showRunDetail(id) {{ showPre('#runDetail', await j('/api/runs/' + encodeURIComponent(id))); }}
 async function showArtifactDetail(id) {{ showPre('#artifactDetail', await j('/api/artifacts/' + encodeURIComponent(id))); }}
 async function loadAll() {{
- const boot = JSON.parse($('#bootstrap').textContent); showPre('#queueSummary', boot.dashboard.queue_summary || {{}});
- const tasks = await j('/api/tasks'); showPre('#tasksPayload', tasks); $('#tasksList').innerHTML = tasks.items.slice(0,30).map(t => asCard(t.title || t.id, '<div class="kv">' + escapeHtml(t.id) + ' · ' + escapeHtml(t.status) + ' · ' + escapeHtml(t.workflow) + '</div><div class="kv">priority=' + escapeHtml(t.priority) + ' approval_required=' + escapeHtml(t.approval_required) + '</div><p><button data-detail-id="' + escapeHtml(t.id) + '" onclick="showTaskDetail(this.dataset.detailId)">Open task detail</button></p>')).join('') || '<div class="card kv">No tasks.</div>';
+ const dashboard = await j('/api/dashboard'); showPre('#queueSummary', dashboard.queue_summary || {{}});
+ const tasks = await j('/api/tasks'); showPre('#tasksPayload', tasks); $('#tasksList').innerHTML = tasks.items.slice(0,30).map(t => asCard(t.title || t.id, '<div class="kv">' + escapeHtml(t.id) + ' · ' + escapeHtml(t.status) + ' · ' + escapeHtml(t.workflow) + '</div><div class="kv">priority=' + escapeHtml(t.priority) + ' approval_required=' + escapeHtml(t.approval_required) + '</div><p><button data-detail-id="' + escapeHtml(t.id) + '" onclick="showTaskDetail(this.dataset.detailId)">Open task detail</button></p>')).join('');
  const approvals = await j('/api/approvals'); showPre('#approvalsPayload', approvals); $('#approvalsList').innerHTML = approvals.items.slice(0,30).map(a => asCard(a.title || a.id, '<div class="kv">' + escapeHtml(a.id) + ' · ' + escapeHtml(a.status) + ' · risk=' + escapeHtml(a.risk) + '</div><div class="kv">resolution enabled: ' + escapeHtml(a.resolution_enabled) + '</div><p><button data-detail-id="' + escapeHtml(a.id) + '" onclick="showApprovalDetail(this.dataset.detailId)">Open approval detail</button></p>')).join('') || '<div class="card kv">No approvals.</div>';
  const runs = await j('/api/runs'); showPre('#runsPayload', runs); $('#runsList').innerHTML = runs.items.slice(0,30).map(r => asCard(r.id, '<div class="kv">' + escapeHtml(r.status) + ' · ' + escapeHtml(r.workflow) + '</div><div class="kv">task=' + escapeHtml(r.task_id) + '</div><p><button data-detail-id="' + escapeHtml(r.id) + '" onclick="showRunDetail(this.dataset.detailId)">Open run detail</button></p>')).join('') || '<div class="card kv">No runs.</div>';
  const events = await j('/api/events'); showPre('#eventsPayload', events); $('#eventsList').innerHTML = events.items.slice(0,30).map(e => asCard(e.event_type || e.id, '<div class="kv">' + escapeHtml(e.id) + ' · ' + escapeHtml(e.created_at) + '</div><div class="kv">task=' + escapeHtml(e.task_id) + ' run=' + escapeHtml(e.run_id) + '</div>')).join('') || '<div class="card kv">No events.</div>';
@@ -1085,7 +1100,8 @@ async function loadAll() {{
  showPre('#managePayload', await j('/api/manage/status')); showPre('#voicePayload', await j('/api/voice/status')); showPre('#jarvisPayload', await j('/api/jarvis/briefing'));
 }}
 $('#draftIdea').addEventListener('click', async () => showPre('#ideaResult', await j('/api/idea-factory/draft', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})));
-$('#createIdea').addEventListener('click', async () => showPre('#ideaResult', await j('/api/idea-factory/action', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})));
+$('#createIdea').addEventListener('click', async () => {{ showPre('#ideaResult', await j('/api/idea-factory/action', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})); await loadAll(); }});
+let refreshTimer = setInterval(() => loadAll().catch(e => showPre('#queueSummary', {{error:String(e), refresh:'poll_failed'}})), 5000);
 let jarvisRecorder = null; let jarvisChunks = [];
 async function previewJarvisCommand() {{ showPre('#jarvisCommandCard', await j('/api/jarvis/preview', {{method:'POST', body:JSON.stringify({{transcript_text:$('#jarvisTranscript').value}})}})); }}
 async function replyJarvisCommand() {{ const payload = await j('/api/jarvis/reply', {{method:'POST', body:JSON.stringify({{text:$('#jarvisTranscript').value}})}}); showPre('#jarvisReply', payload); if (payload.audio_artifact_path) $('#jarvisAudio').src = payload.audio_artifact_path; }}
@@ -1145,7 +1161,7 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, self.service.idea_factory_schema_payload())
             elif path == "/api/agents":
                 _send_json(self, agents_registry_payload(self.service.paths))
-            elif path == "/api/knowledge/index":
+            elif path in {"/api/knowledge", "/api/knowledge/index"}:
                 _send_json(self, knowledge_index_payload(self.service.paths))
             elif path == "/api/artifacts":
                 _send_json(self, artifacts_payload(self.service.paths))
@@ -1165,8 +1181,19 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, media_assets_payload(self.service.paths))
             elif path == "/api/manage/status":
                 _send_json(self, redacted_manage_status_payload(self.service.paths))
-            elif path == "/api/voice/status":
-                _send_json(self, voice_status_payload(self.service.paths))
+            elif path in {"/api/voice", "/api/voice/status"}:
+                payload = voice_status_payload(self.service.paths)
+                if path == "/api/voice":
+                    briefing = jarvis_briefing_payload(self.service.paths)
+                    payload = {
+                        **payload,
+                        "execution_created": False,
+                        "always_on_microphone": False,
+                        "wake_word_enabled": False,
+                        "computer_control": "approval_gated_unexecuted",
+                        "briefing": briefing,
+                    }
+                _send_json(self, payload)
             elif path == "/api/jarvis/briefing":
                 _send_json(self, jarvis_briefing_payload(self.service.paths))
             else:

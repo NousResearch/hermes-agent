@@ -79,7 +79,7 @@ def _classify(text: str) -> tuple[str, str, str]:
         return "memory_skill_ops", "destructive_gated", "destructive-action-gate"
     if _contains(normalized, "youtube", "video", "transcript", "vault", "sažmi", "sazmi", "obradi"):
         return "research_intake", "safe_local", "youtube-content-intake"
-    if _contains(normalized, "memory galaxy", "mission control", "agent os", "doni dashboard", "dashboard", "jarvis", "voice"):
+    if _contains(normalized, "memory galaxy", "mission control", "agent os", "operator dashboard", "dashboard", "jarvis", "voice"):
         return "agent_os_build", "approval_local_write", "mission-control-build"
     if _contains(normalized, "landing", "web", "seo", "revenue audit", "ponud", "offer", "stranic"):
         return "web_seo_offer", "safe_local", "web-seo-offer"
@@ -96,7 +96,7 @@ def _plan_for(classification: str, risk_class: str) -> list[str]:
         return [
             "Sažeti namjeru i izdvojiti rizične radnje.",
             "Napraviti approval draft bez izvršavanja rizične akcije.",
-            "Čekati eksplicitno Goranovo odobrenje prije bilo kakvog side-effecta.",
+            "Čekati eksplicitno operator odobrenje prije bilo kakvog side-effecta.",
         ]
     if classification == "agent_os_build":
         return [
@@ -139,7 +139,7 @@ def draft_idea(
         "recommended_lane": lane,
         "plan_steps": _plan_for(classification, risk_class),
         "approval_required": approval_required,
-        "suggested_agent": "doni-local",
+        "suggested_agent": "local-agent",
         "expected_artifacts": ["idea_draft", "plan", "verification_note"],
         "acceptance_criteria": [
             "classification and risk class are explicit",

@@ -3,6 +3,13 @@
 from unittest.mock import patch, MagicMock
 
 
+def _write_hermes_config(tmp_path, monkeypatch, text):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(text)
+
+
 def test_vision_call_uses_resolved_provider_args():
     """Resolved provider/model/key/url from config must reach resolve_vision_provider_client."""
     from agent.auxiliary_client import call_llm
@@ -35,6 +42,48 @@ def test_vision_call_uses_resolved_provider_args():
     assert call_args.kwargs["model"] == "my-resolved-model"
     assert call_args.kwargs["base_url"] == "http://resolved"
     assert call_args.kwargs["api_key"] == "resolved-key"
+
+
+def test_vision_call_preserves_provider_for_base_url_env_fallback(tmp_path, monkeypatch):
+    """Config provider+base_url without api_key must keep provider env fallback."""
+    _write_hermes_config(
+        tmp_path,
+        monkeypatch,
+        """
+model:
+  default: deepseek-chat
+  provider: deepseek
+auxiliary:
+  vision:
+    provider: gemini
+    model: gemini-3.1-flash-lite
+    base_url: https://generativelanguage.googleapis.com/v1beta
+""",
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-env-key")
+
+    from agent.auxiliary_client import call_llm
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="description"))],
+        usage=MagicMock(prompt_tokens=10, completion_tokens=5),
+    )
+
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(fake_client, "gemini-3.1-flash-lite"),
+    ) as mock_resolve:
+        call_llm(
+            "vision",
+            messages=[{"role": "user", "content": "describe this"}],
+        )
+
+    assert mock_resolve.call_args.args[0] == "gemini"
+    assert mock_resolve.call_args.kwargs["explicit_base_url"] == (
+        "https://generativelanguage.googleapis.com/v1beta"
+    )
+    assert mock_resolve.call_args.kwargs["explicit_api_key"] is None
 
 
 def test_vision_base_url_override_keeps_explicit_provider():

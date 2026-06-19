@@ -14,6 +14,18 @@ __pycache__/
 .env.production.local
 .env.development
 .env.test
+*.env
+auth.json
+credentials.json
+.codex/
+*.sqlite
+*.sqlite3
+*.db
+**/hindsight-compose/.env
+**/hermes-backups/
+**/hermes-restore-tests/
+rendered-production-configs/
+production-artifacts/
 .hermes-docker/
 .notebooklm-home/
 .notebooklm-cli-venv/
@@ -96,7 +108,6 @@ website/static/api/automation-blueprints-index.json
 models-dev-upstream/
 
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)
-.codex/
 .cursor/
 .gemini/
 .zed/

@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${HINDSIGHT_POSTGRES_DB:-hindsight}
+      POSTGRES_USER: ${HINDSIGHT_POSTGRES_USER:-hindsight}
+      POSTGRES_PASSWORD: ${HINDSIGHT_POSTGRES_PASSWORD:?set in .env with mode 0600}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ${HINDSIGHT_API_IMAGE:-ghcr.io/hindsight-ai/hindsight-api:latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${HINDSIGHT_DATABASE_URL:?set in .env with mode 0600}
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:?set in .env with mode 0600}
+      HINDSIGHT_LOG_LEVEL: ${HINDSIGHT_LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${HINDSIGHT_API_PORT:-18080}:8080"
+    volumes:
+      - ./data/api:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12

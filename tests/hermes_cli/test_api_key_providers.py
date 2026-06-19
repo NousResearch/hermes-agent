@@ -6,7 +6,6 @@ import pytest
 
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
-    ProviderConfig,
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
@@ -1280,6 +1279,20 @@ class TestMinimaxOAuthProvider:
         assert len(models) >= 1
 
     def test_minimax_oauth_aux_model_registered(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert "minimax-oauth" in _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["minimax-oauth"]  # non-empty
+        # Aux model for the minimax-oauth provider now lives on the
+        # ProviderProfile (plugins/model-providers/minimax/__init__.py),
+        # not the legacy _API_KEY_PROVIDER_AUX_MODELS dict in
+        # agent/auxiliary_client.py. The profile layer is the source
+        # of truth; _get_aux_model_for_provider() reads from it first
+        # and only falls back to the dict when no profile is registered.
+        import model_tools  # noqa: F401  -- triggers plugin discovery
+        import providers
+
+        profile = providers.get_provider_profile("minimax-oauth")
+        assert profile is not None, "minimax-oauth provider profile must be registered"
+        assert profile.default_aux_model, (
+            "minimax-oauth profile must advertise a non-empty default_aux_model "
+            "so the auxiliary client (compression / vision / session-search) "
+            "doesn't fire the 'No auxiliary LLM provider configured' warning "
+            "for every minimax-oauth session."
+        )

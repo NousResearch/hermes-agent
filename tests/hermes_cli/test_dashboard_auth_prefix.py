@@ -177,7 +177,7 @@ class TestOAuthRedirectUriRespectsPrefix:
         # The stub IDP's redirect_url echoes the redirect_uri back. The
         # real IDP would consume it and later use it to redirect the
         # user, so the byte-exact value MUST include the prefix.
-        from urllib.parse import urlparse, parse_qs, unquote
+        from urllib.parse import urlparse
         # Stub returns ``{redirect_uri}?code=stub_code&state=...`` — so
         # we read up to the first ``?``.
         redirect_uri = location.split("?", 1)[0]
@@ -386,6 +386,90 @@ class TestPublicUrlOverride:
         patch_config("https://from-config.example")
         redirect_uri = self._redirect_uri(gated_app_direct)
         assert redirect_uri == "https://from-config.example/auth/callback"
+
+    def test_scheme_less_public_url_env_warns_operator(
+        self, patch_config, monkeypatch, caplog
+    ):
+        """A non-empty env var that's missing its scheme (the #1 cause
+        of "I set HERMES_DASHBOARD_PUBLIC_URL but the callback is still
+        http://") must emit an operator-facing WARNING rather than being
+        silently discarded. Regression for #42780."""
+        import logging
+
+        from hermes_cli.dashboard_auth import prefix as prefix_mod
+
+        # Reset the per-value dedup cache so the warning fires in-test
+        # regardless of test ordering.
+        prefix_mod._warned_malformed_public_urls.clear()
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "hermes.domain.com")
+
+        with caplog.at_level(logging.WARNING, logger=prefix_mod.__name__):
+            result = prefix_mod.resolve_public_url()
+
+        assert result == ""  # scheme-less value is still rejected
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        ]
+        assert any(
+            "HERMES_DASHBOARD_PUBLIC_URL" in m
+            and "hermes.domain.com" in m
+            and "scheme" in m
+            for m in warnings
+        ), f"expected a scheme warning, got: {warnings!r}"
+
+    def test_scheme_less_public_url_warning_is_deduplicated(
+        self, patch_config, monkeypatch, caplog
+    ):
+        """resolve_public_url runs per-request; the malformed-value
+        warning must fire at most once per distinct value so a
+        misconfigured deploy doesn't flood the logs."""
+        import logging
+
+        from hermes_cli.dashboard_auth import prefix as prefix_mod
+
+        prefix_mod._warned_malformed_public_urls.clear()
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "hermes.domain.com")
+
+        with caplog.at_level(logging.WARNING, logger=prefix_mod.__name__):
+            for _ in range(5):
+                prefix_mod.resolve_public_url()
+
+        scheme_warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "hermes.domain.com" in r.getMessage()
+        ]
+        assert len(scheme_warnings) == 1, (
+            f"expected exactly one warning across 5 calls, "
+            f"got {len(scheme_warnings)}"
+        )
+
+    def test_valid_public_url_emits_no_warning(
+        self, patch_config, monkeypatch, caplog
+    ):
+        """A correctly-formed value must not produce a spurious warning."""
+        import logging
+
+        from hermes_cli.dashboard_auth import prefix as prefix_mod
+
+        prefix_mod._warned_malformed_public_urls.clear()
+        patch_config(None)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://hermes.domain.com"
+        )
+
+        with caplog.at_level(logging.WARNING, logger=prefix_mod.__name__):
+            result = prefix_mod.resolve_public_url()
+
+        assert result == "https://hermes.domain.com"
+        assert not [
+            r for r in caplog.records if r.levelno == logging.WARNING
+        ]
 
 
 # ---------------------------------------------------------------------------

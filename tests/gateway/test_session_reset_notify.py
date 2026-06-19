@@ -8,14 +8,11 @@ Verifies that:
 """
 
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
 
-import pytest
 
 from gateway.config import (
     GatewayConfig,
     Platform,
-    PlatformConfig,
     SessionResetPolicy,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore

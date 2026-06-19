@@ -21,7 +21,6 @@ from tools.file_tools import (
     _is_blocked_device,
     _invalidate_dedup_for_path,
     _READ_DEDUP_STATUS_MESSAGE,
-    _get_max_read_chars,
     _DEFAULT_MAX_READ_CHARS,
     _read_tracker,
     notify_other_tool_call,

@@ -114,7 +114,11 @@ def build_models_payload(
     include_unconfigured: bool = False,
     picker_hints: bool = False,
     canonical_order: bool = False,
-    max_models: int = 50,
+    pricing: bool = False,
+    capabilities: bool = False,
+    force_fresh_nous_tier: bool = False,
+    refresh: bool = False,
+    max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -128,6 +132,23 @@ def build_models_payload(
     - ``canonical_order``: reorder canonical-slug rows to
       ``CANONICAL_PROVIDERS`` declaration order; truly-custom rows go
       last (TUI display order).
+    - ``pricing``: enrich each row with formatted per-model pricing and,
+      for Nous, ``free_tier``/``unavailable_models`` so the GUI picker can
+      show $/Mtok columns and gate paid models on free accounts —
+      mirroring the ``hermes model`` CLI picker. Adds network calls
+      (pricing fetch + Nous tier check); only set for interactive pickers.
+    - ``capabilities``: add a per-row ``capabilities`` map
+      ``{model: {fast, reasoning}}`` so pickers can gate the model-options
+      controls (fast toggle / reasoning) to what each model actually
+      supports, instead of offering knobs the backend would reject.
+    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
+      selecting Portal-recommended Nous models and applying tier gating. Keep
+      this false for UI picker opens; explicit auth/model flows can opt in
+      when they need freshly-purchased credits to show up immediately.
+    - ``refresh``: bust the per-provider model-id disk cache so every row
+      re-fetches its live catalog. Set only for an explicit user-triggered
+      "refresh models" action; normal picker opens leave it false to stay
+      snappy on the 1h cache.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -137,8 +158,48 @@ def build_models_payload(
         current_model=ctx.current_model,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
+        force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
+        refresh=refresh,
     )
+
+    # --- Deduplicate: remove models from aggregators that overlap with
+    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
+    # serves a model whose name also appears in an aggregator's curated
+    # catalog, the picker would show the model under both providers.
+    # Selecting it from the aggregator row sets model.provider to the
+    # aggregator (e.g. openrouter) instead of the user's proxy — silently
+    # breaking the call.  Filtering at the payload level keeps the
+    # aggregator rows honest: they only show models the user can't get
+    # from a more-specific provider.  (#45954)
+    try:
+        from hermes_cli.providers import is_aggregator as _is_aggregator
+    except Exception:
+        _is_aggregator = None  # type: ignore[assignment]
+
+    if _is_aggregator is not None:
+        user_models: set[str] = set()
+        for row in rows:
+            if row.get("is_user_defined"):
+                user_models.update(m.lower() for m in (row.get("models") or []))
+        if user_models:
+            for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_aggregator() reports True for every custom:*
+                # slug.  Without this guard the dedup strips a user-defined
+                # custom provider's entire model list (all of it lives in
+                # user_models), emptying its picker row.
+                if row.get("is_user_defined"):
+                    continue
+                slug = row.get("slug", "")
+                if not _is_aggregator(slug):
+                    continue
+                original = row.get("models") or []
+                filtered = [m for m in original if m.lower() not in user_models]
+                if len(filtered) < len(original):
+                    row["models"] = filtered
+                    row["total_models"] = len(filtered)
 
     if include_unconfigured:
         rows = list(rows) + _append_unconfigured_rows(rows, ctx)
@@ -146,12 +207,54 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
+    if pricing:
+        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+    if capabilities:
+        _apply_capabilities(rows)
 
     return {
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def _apply_capabilities(rows: list[dict]) -> None:
+    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+
+    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
+    enforces). `reasoning` comes from the models.dev catalog when known and
+    defaults to True otherwise — the effort dial is broadly accepted and a
+    no-op on models that ignore it, whereas hiding it from a capable-but-
+    uncatalogued model is the worse failure.
+    """
+    from hermes_cli.models import model_supports_fast_mode
+
+    try:
+        from agent.models_dev import get_model_capabilities
+    except Exception:
+        get_model_capabilities = None  # type: ignore[assignment]
+
+    for row in rows:
+        slug = row.get("slug") or ""
+        caps: dict[str, dict[str, bool]] = {}
+
+        for model in row.get("models") or []:
+            reasoning = True
+            if get_model_capabilities is not None and slug:
+                try:
+                    meta = get_model_capabilities(slug, model)
+                    if meta is not None:
+                        reasoning = bool(meta.supports_reasoning)
+                except Exception:
+                    reasoning = True
+
+            caps[model] = {
+                "fast": bool(model_supports_fast_mode(model)),
+                "reasoning": reasoning,
+            }
+
+        row["capabilities"] = caps
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
@@ -238,3 +341,91 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     )
     extras = [r for r in rows if r["slug"] not in order]
     return canon + extras
+
+
+def _apply_pricing(
+    rows: list[dict],
+    *,
+    force_fresh_nous_tier: bool = False,
+) -> None:
+    """Enrich each provider row with per-model pricing + Nous tier gating.
+
+    Mutates ``rows`` in-place. For every row whose provider supports live
+    pricing (openrouter / nous / novita) adds::
+
+        row["pricing"] = {model_id: {"input": "$3.00", "output": "$15.00",
+                                     "cache": "$0.30" | None, "free": bool}}
+
+    For Nous additionally adds::
+
+        row["free_tier"] = bool            # current account is free-tier
+        row["unavailable_models"] = [...]  # paid models a free user can't pick
+
+    Prices are pre-formatted via ``_format_price_per_mtok`` so the GUI just
+    renders strings — identical formatting to the CLI picker. All failures
+    are swallowed (best-effort): a row simply gets no ``pricing`` key.
+    """
+    from hermes_cli.models import (
+        _format_price_per_mtok,
+        check_nous_free_tier,
+        get_pricing_for_provider,
+        partition_nous_models_by_tier,
+    )
+
+    # Resolve Nous free-tier once (cached in models.py for the TTL window).
+    nous_free_tier: Optional[bool] = None
+
+    for row in rows:
+        slug = str(row.get("slug", "")).lower()
+        models = row.get("models") or []
+        if not models:
+            continue
+        try:
+            raw_pricing = get_pricing_for_provider(slug) or {}
+        except Exception:
+            raw_pricing = {}
+        if not raw_pricing:
+            continue
+
+        formatted: dict[str, dict] = {}
+        for mid in models:
+            p = raw_pricing.get(mid)
+            if not p:
+                continue
+            inp_raw = p.get("prompt", "")
+            out_raw = p.get("completion", "")
+            cache_raw = p.get("input_cache_read", "")
+            inp = _format_price_per_mtok(inp_raw) if inp_raw != "" else ""
+            out = _format_price_per_mtok(out_raw) if out_raw != "" else ""
+            cache = _format_price_per_mtok(cache_raw) if cache_raw else None
+            # A model is "free" when both input and output cost nothing.
+            is_free = inp == "free" and (out == "free" or out == "")
+            formatted[mid] = {
+                "input": inp,
+                "output": out,
+                "cache": cache,
+                "free": is_free,
+            }
+
+        if formatted:
+            row["pricing"] = formatted
+
+        if slug == "nous":
+            try:
+                if nous_free_tier is None:
+                    nous_free_tier = check_nous_free_tier(
+                        force_fresh=force_fresh_nous_tier
+                    )
+                row["free_tier"] = bool(nous_free_tier)
+                if nous_free_tier:
+                    _selectable, unavailable = partition_nous_models_by_tier(
+                        list(models), raw_pricing, free_tier=True
+                    )
+                    row["unavailable_models"] = unavailable
+                else:
+                    row["unavailable_models"] = []
+            except Exception:
+                # Tier detection failed — fail open (no gating) so the user
+                # is never blocked from picking a model.
+                row["free_tier"] = False
+                row["unavailable_models"] = []

@@ -1,8 +1,6 @@
 import logging
 from io import StringIO
 import subprocess
-import sys
-import types
 
 import pytest
 
@@ -46,6 +44,7 @@ def _make_dummy_env(**kwargs):
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
         env=kwargs.get("env"),
         run_as_host_user=kwargs.get("run_as_host_user", False),
+        persist_across_processes=kwargs.get("persist_across_processes", True),
     )
 
 
@@ -110,6 +109,7 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
             "capture_output": True,
             "text": True,
             "timeout": 5,
+            "stdin": subprocess.DEVNULL,
         })
     ]
 
@@ -302,6 +302,40 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
 
     assert "DATABASE_URL=value_from_shell" in args_str
     assert "value_from_dotenv" not in args_str
+
+
+def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
+    """A transient empty-string in the live env must fall back to .env, not win.
+
+    Regression: the disk fallback used to fire only on `value is None`, so a
+    present-but-empty `MY_SECRET=""` skipped it and was forwarded as `-e
+    MY_SECRET=`, clobbering the correct value sitting in ~/.hermes/.env.
+    """
+    env = _make_execute_only_env(["MY_SECRET"])
+
+    monkeypatch.setenv("MY_SECRET", "")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"MY_SECRET": "value_from_dotenv"})
+
+    args = env._build_init_env_args()
+
+    # Assert on the resolved value, not the printed -e flag: the disk value
+    # must win and a blank "MY_SECRET=" flag must never be emitted.
+    assert "MY_SECRET=value_from_dotenv" in args
+    assert "MY_SECRET=" not in args
+
+
+def test_init_env_args_never_forwards_blank_secret(monkeypatch):
+    """A legitimately-empty key with no disk value is not forwarded as -e KEY=."""
+    env = _make_execute_only_env(["MY_SECRET"])
+
+    monkeypatch.setenv("MY_SECRET", "")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+
+    args = env._build_init_env_args()
+
+    # The key must not appear at all — not even as an empty -e MY_SECRET= flag.
+    assert not any(a.startswith("MY_SECRET=") for a in args)
+    assert "MY_SECRET" not in " ".join(args)
 
 
 # ── docker_env tests ──────────────────────────────────────────────
@@ -752,6 +786,84 @@ def test_reuse_falls_back_to_fresh_run_when_start_fails(monkeypatch):
     )
     run_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
     assert run_invocations, "fallback to fresh docker run must happen on start failure"
+
+
+def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
+    """When ``docker run`` fails (e.g. exit 125), the partially-created
+    container must be removed by name.
+
+    Docker can create the container object before failing to start it,
+    leaving a stale ``Created`` container. The exited-only orphan reaper
+    (``reap_orphan_containers``, ``status=exited``) never catches a
+    ``Created`` orphan, so without this cleanup it leaks permanently.
+    Regression for #7439. Salvage of #7440 (@Tranquil-Flow).
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    cleanup_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                # No reusable container -> fall through to a fresh `docker run`.
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                raise subprocess.CalledProcessError(
+                    125, cmd, output="", stderr="docker: Error response from daemon"
+                )
+            if sub == "rm":
+                cleanup_calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _make_dummy_env()
+
+    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
+    rm_cmd = cleanup_calls[0]
+    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
+    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
+
+
+def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
+    """When ``docker run`` times out (e.g. slow image pull), the
+    partially-created container must be removed. Salvage of #7440
+    (@Tranquil-Flow); regression for #7439.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    cleanup_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                raise subprocess.TimeoutExpired(cmd, 120)
+            if sub == "rm":
+                cleanup_calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _make_dummy_env()
+
+    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
+    rm_cmd = cleanup_calls[0]
+    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
+    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
 
 
 def test_no_reuse_when_persist_across_processes_disabled(monkeypatch):
@@ -1485,3 +1597,240 @@ def test_credential_mount_works_when_source_is_valid_file(monkeypatch, tmp_path)
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert "token.json" in run_args_str
+
+
+# ── s6-overlay /init image handling (issue #34628) ────────────────
+
+
+def _mock_subprocess_run_with_entrypoint(monkeypatch, entrypoint_json):
+    """Like _mock_subprocess_run, but `docker image inspect` returns the given
+    entrypoint JSON so _image_uses_init_entrypoint can be exercised end-to-end.
+    """
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "image" and len(cmd) >= 3 and cmd[2] == "inspect":
+                return subprocess.CompletedProcess(cmd, 0, stdout=entrypoint_json + "\n", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return calls
+
+
+def test_image_uses_init_entrypoint_detects_s6_init(monkeypatch):
+    """An image whose entrypoint is /init is detected as an s6-overlay image."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout='["/init"]', stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "hermes-agent:latest") is True
+
+
+def test_image_uses_init_entrypoint_false_for_plain_image(monkeypatch):
+    """A normal image (no /init entrypoint) is not treated as s6-overlay."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout='["/bin/sh","-c"]', stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "python:3.11") is False
+
+
+def test_image_uses_init_entrypoint_false_for_null_entrypoint(monkeypatch):
+    """Images with no declared entrypoint (null) keep hardened defaults."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="null", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "alpine") is False
+
+
+def test_image_uses_init_entrypoint_false_on_inspect_failure(monkeypatch):
+    """An inspect failure (e.g. image not pulled) is best-effort -> defaults kept."""
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="No such image")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "missing:tag") is False
+
+
+def test_image_uses_init_entrypoint_false_on_exception(monkeypatch):
+    """A subprocess error never raises out of detection — defaults kept."""
+    def _run(cmd, **kwargs):
+        raise OSError("docker daemon down")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    assert docker_env._image_uses_init_entrypoint("/usr/bin/docker", "x") is False
+
+
+def test_s6_image_skips_docker_init_and_mounts_run_exec(monkeypatch):
+    """For an s6-overlay /init image, docker run must omit --init and mount
+    /run with exec (issue #34628)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run_with_entrypoint(monkeypatch, '["/init"]')
+
+    _make_dummy_env(image="hermes-agent:latest")
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    assert "--init" not in run_args, "s6 /init image must not get Docker --init"
+
+    tmpfs_vals = [run_args[i + 1] for i, a in enumerate(run_args[:-1]) if a == "--tmpfs"]
+    run_mounts = [v for v in tmpfs_vals if v.startswith("/run:")]
+    assert run_mounts, f"no /run tmpfs mount found in {tmpfs_vals}"
+    assert "exec" in run_mounts[0] and "noexec" not in run_mounts[0], (
+        f"/run must be mounted exec for s6 images, got: {run_mounts[0]}"
+    )
+
+
+def test_plain_image_keeps_docker_init_and_run_noexec(monkeypatch):
+    """A non-s6 image keeps the hardened defaults: Docker --init and noexec /run."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run_with_entrypoint(monkeypatch, '["/bin/sh","-c"]')
+
+    _make_dummy_env(image="python:3.11")
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    assert "--init" in run_args, "non-s6 image must keep Docker --init"
+
+    tmpfs_vals = [run_args[i + 1] for i, a in enumerate(run_args[:-1]) if a == "--tmpfs"]
+    run_mounts = [v for v in tmpfs_vals if v.startswith("/run:")]
+    assert run_mounts, f"no /run tmpfs mount found in {tmpfs_vals}"
+    assert "noexec" in run_mounts[0], (
+        f"/run must stay noexec for non-s6 images, got: {run_mounts[0]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Out-of-band container removal recovery (issue #36266, PR #36631)
+# ---------------------------------------------------------------------------
+
+
+def test_is_container_gone_matches_removal_errors(monkeypatch):
+    """``_is_container_gone`` recognizes the docker errors that mean the
+    container no longer exists, and does NOT match ordinary command failures.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env()
+
+    # Positive: the daemon's "container gone" phrasings.
+    assert env._is_container_gone(
+        "Error response from daemon: No such container: hermes-abc123"
+    )
+    assert env._is_container_gone("Error: No such container: deadbeef")
+    assert env._is_container_gone(
+        "Error response from daemon: Container abc is not running"
+    )
+
+    # Control / negative: a real command failure must NOT be misclassified as
+    # the container being gone — otherwise every non-zero exit would trigger a
+    # spurious container recreation.
+    assert not env._is_container_gone("bash: nonsuch: command not found")
+    assert not env._is_container_gone("Traceback (most recent call last): ...")
+    assert not env._is_container_gone("")
+    assert not env._is_container_gone("permission denied")
+
+
+def test_execute_recovers_from_out_of_band_removal(monkeypatch):
+    """When a persistent container is removed out-of-band, ``execute`` detects
+    the "No such container" error, recreates the container, and retries once —
+    returning success transparently.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=True,
+    )
+
+    # First execute() sees a dead container; second (post-recovery) succeeds.
+    outputs = iter([
+        {"output": "Error response from daemon: No such container: hermes-x", "returncode": 1},
+        {"output": "ok", "returncode": 0},
+    ])
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        return next(outputs)
+
+    recreate_calls = []
+
+    def _fake_recreate(self):
+        recreate_calls.append(True)
+        self._container_id = "recovered-container-id"
+        return True
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fake_recreate
+    )
+
+    result = env.execute("echo hi")
+
+    assert recreate_calls == [True], "recovery should have been attempted exactly once"
+    assert result.get("returncode") == 0, f"expected success after recovery, got {result!r}"
+    assert result.get("output") == "ok"
+
+
+def test_execute_does_not_recover_when_not_persistent(monkeypatch):
+    """A non-persistent session must NOT trigger container recreation on a
+    "No such container" error — recovery is only meaningful for the persistent,
+    cross-process container that can be removed out-of-band.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=False,
+    )
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        return {"output": "No such container: x", "returncode": 1}
+
+    def _fail_recreate(self):
+        pytest.fail("recreation must not run when persist_across_processes is False")
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fail_recreate
+    )
+
+    result = env.execute("echo hi")
+    assert result.get("returncode") == 1, "the original error must pass through unchanged"
+
+
+def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
+    """A genuine non-zero exit that is NOT a container-gone error must pass
+    through without triggering recovery (guards against over-eager recreation).
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=True,
+    )
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        return {"output": "bash: badcmd: command not found", "returncode": 127}
+
+    def _fail_recreate(self):
+        pytest.fail("recreation must not run for an ordinary command failure")
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fail_recreate
+    )
+
+    result = env.execute("badcmd")
+    assert result.get("returncode") == 127
+    assert "command not found" in result.get("output", "")

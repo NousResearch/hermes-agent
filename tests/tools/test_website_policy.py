@@ -326,7 +326,6 @@ def test_browser_navigate_returns_policy_block(monkeypatch):
 
 def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path):
     """Missing shared blocklist files are warned and skipped, not fatal."""
-    from tools import browser_tool
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -373,7 +372,10 @@ class TestWebToolPolicy:
         from plugins.web.firecrawl import provider as firecrawl_provider
 
         # Allow test URLs past SSRF check so website policy is what gets tested
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
         # The per-URL website-policy gate moved into the firecrawl plugin's
         # extract() during the web-provider migration. Patch it at the new
         # location.
@@ -407,7 +409,10 @@ class TestWebToolPolicy:
         from plugins.web.firecrawl import provider as firecrawl_provider
 
         # Allow test URLs past SSRF check so website policy is what gets tested
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
 
         def fake_check(url):
             if url == "https://allowed.test":

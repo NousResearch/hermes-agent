@@ -22,6 +22,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.profiles import _get_default_hermes_home
+from plugins.plugin_utils import SingletonSlot
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,6 +31,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOST = "hermes"
+
+
+def profile_host_key(profile: str | None) -> str:
+    """Return the safe Honcho host key for a Hermes profile."""
+    if not profile or profile in {"default", "custom"}:
+        return HOST
+    sanitized = "".join(c if c.isalnum() or c in "_-" else "_" for c in profile).strip("_")
+    return f"{HOST}_{sanitized or 'profile'}"
+
+
+def _host_block(raw: dict, host: str) -> dict:
+    """Return host config, accepting legacy dot-form profile host keys."""
+    hosts = raw.get("hosts") or {}
+    block = hosts.get(host, {})
+    if block or not host.startswith(f"{HOST}_"):
+        return block
+    legacy = f"{HOST}.{host[len(HOST) + 1:]}"
+    return hosts.get(legacy, {})
 
 
 def resolve_active_host() -> str:
@@ -47,8 +66,7 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        if profile and profile not in {"default", "custom"}:
-            return f"{HOST}.{profile}"
+        return profile_host_key(profile)
     except Exception:
         pass
     return HOST
@@ -406,7 +424,7 @@ class HonchoClientConfig:
             logger.warning("Failed to read %s: %s, falling back to env", path, e)
             return cls.from_env(host=resolved_host)
 
-        host_block = (raw.get("hosts") or {}).get(resolved_host, {})
+        host_block = _host_block(raw, resolved_host)
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
@@ -610,6 +628,7 @@ class HonchoClientConfig:
             root = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
                 capture_output=True, text=True, cwd=cwd, timeout=5,
+                stdin=subprocess.DEVNULL,
             )
             if root.returncode == 0:
                 return Path(root.stdout.strip()).name
@@ -720,7 +739,7 @@ class HonchoClientConfig:
         return self.workspace_id
 
 
-_honcho_client: Honcho | None = None
+_honcho_client_slot: SingletonSlot = SingletonSlot()
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
@@ -728,11 +747,14 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
     When no config is provided, attempts to load ~/.honcho/config.json
     first, falling back to environment variables.
-    """
-    global _honcho_client
 
-    if _honcho_client is not None:
-        return _honcho_client
+    Thread-safe: the client is built exactly once even under concurrent
+    first calls (double-checked locking via ``SingletonSlot``), so racing
+    threads can't each construct a client and leak the loser's connection.
+    """
+    cached = _honcho_client_slot.peek()
+    if cached is not None:
+        return cached
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
@@ -745,96 +767,116 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
-    # Lazy-install the honcho SDK on demand. ensure() honors
-    # security.allow_lazy_installs (default true). On failure we surface
-    # the original ImportError-shape message so existing callers still get
-    # the "go run hermes honcho setup" hint they used to.
-    try:
-        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
-        _lazy_ensure("memory.honcho", prompt=False)
-    except ImportError:
-        # lazy_deps module missing — fall through to the raw import below.
-        pass
-    except Exception:
-        # FeatureUnavailable or unexpected error. Don't crash here; let the
-        # actual import attempt produce the canonical error message.
-        pass
-
-    try:
-        from honcho import Honcho
-    except ImportError:
-        raise ImportError(
-            "honcho-ai is required for Honcho integration. "
-            "Install it with: pip install honcho-ai  "
-            "(or run `hermes honcho setup` to configure)."
-        )
-
-    # Allow config.yaml honcho.base_url to override the SDK's environment
-    # mapping, enabling remote self-hosted Honcho deployments without
-    # requiring the server to live on localhost.
-    resolved_base_url = config.base_url
-    resolved_timeout = config.timeout
-    if not resolved_base_url or resolved_timeout is None:
+    # Everything below is the expensive part the issue flags: lazy SDK
+    # install, config resolution, and client construction. Run it inside the
+    # slot's factory so it executes exactly once even when several threads
+    # race the first call — the slot's double-checked lock serializes them and
+    # the losers get the winner's client instead of building their own.
+    def _build() -> "Honcho":
+        # Lazy-install the honcho SDK on demand. ensure() honors
+        # security.allow_lazy_installs (default true). On failure we surface
+        # the original ImportError-shape message so existing callers still get
+        # the "go run hermes honcho setup" hint they used to.
         try:
-            from hermes_cli.config import load_config
-            hermes_cfg = load_config()
-            honcho_cfg = hermes_cfg.get("honcho", {})
-            if isinstance(honcho_cfg, dict):
-                if not resolved_base_url:
-                    resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
-                if resolved_timeout is None:
-                    resolved_timeout = _resolve_optional_float(
-                        honcho_cfg.get("timeout"),
-                        honcho_cfg.get("request_timeout"),
-                    )
+            from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
+            _lazy_ensure("memory.honcho", prompt=False)
+        except ImportError:
+            # lazy_deps module missing — fall through to the raw import below.
+            pass
         except Exception:
+            # FeatureUnavailable or unexpected error. Don't crash here; let the
+            # actual import attempt produce the canonical error message.
             pass
 
-    # Fall back to the default so an unconfigured install cannot hang
-    # indefinitely on a stalled Honcho request.
-    if resolved_timeout is None:
-        resolved_timeout = _DEFAULT_HTTP_TIMEOUT
+        try:
+            from honcho import Honcho
+        except ImportError:
+            raise ImportError(
+                "honcho-ai is required for Honcho integration. "
+                "Install it with: pip install honcho-ai  "
+                "(or run `hermes honcho setup` to configure)."
+            )
 
-    if resolved_base_url:
-        logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
-    else:
-        logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
+        # Allow config.yaml honcho.base_url to override the SDK's environment
+        # mapping, enabling remote self-hosted Honcho deployments without
+        # requiring the server to live on localhost.
+        resolved_base_url = config.base_url
+        resolved_timeout = config.timeout
+        if not resolved_base_url or resolved_timeout is None:
+            try:
+                from hermes_cli.config import load_config
+                hermes_cfg = load_config()
+                honcho_cfg = hermes_cfg.get("honcho", {})
+                if isinstance(honcho_cfg, dict):
+                    if not resolved_base_url:
+                        resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
+                    if resolved_timeout is None:
+                        resolved_timeout = _resolve_optional_float(
+                            honcho_cfg.get("timeout"),
+                            honcho_cfg.get("request_timeout"),
+                        )
+            except Exception:
+                pass
 
-    # Local Honcho instances don't require an API key, but the SDK
-    # expects a non-empty string.  Use a placeholder for local URLs.
-    # For local: only use config.api_key if the host block explicitly
-    # sets apiKey (meaning the user wants local auth). Otherwise skip
-    # the stored key -- it's likely a cloud key that would break local.
-    _is_local = resolved_base_url and (
-        "localhost" in resolved_base_url
-        or "127.0.0.1" in resolved_base_url
-        or "::1" in resolved_base_url
-    )
-    if _is_local:
-        # Check if the host block has its own apiKey (explicit local auth)
-        _raw = config.raw or {}
-        _host_block = (_raw.get("hosts") or {}).get(config.host, {})
-        _host_has_key = bool(_host_block.get("apiKey"))
-        effective_api_key = config.api_key if _host_has_key else "local"
-    else:
-        effective_api_key = config.api_key
+        # Fall back to the default so an unconfigured install cannot hang
+        # indefinitely on a stalled Honcho request.
+        if resolved_timeout is None:
+            resolved_timeout = _DEFAULT_HTTP_TIMEOUT
 
-    kwargs: dict = {
-        "workspace_id": config.workspace_id,
-        "api_key": effective_api_key,
-        "environment": config.environment,
-    }
-    if resolved_base_url:
-        kwargs["base_url"] = resolved_base_url
-    if resolved_timeout is not None:
-        kwargs["timeout"] = resolved_timeout
+        if resolved_base_url:
+            logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
+        else:
+            logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
 
-    _honcho_client = Honcho(**kwargs)
+        # Local Honcho instances don't require an API key, but the SDK
+        # expects a non-empty string.  Use a placeholder for local URLs.
+        # For local: only use config.api_key if the host block explicitly
+        # sets apiKey (meaning the user wants local auth). Otherwise skip
+        # the stored key -- it's likely a cloud key that would break local.
+        _is_local = resolved_base_url and (
+            "localhost" in resolved_base_url
+            or "127.0.0.1" in resolved_base_url
+            or "::1" in resolved_base_url
+        )
+        if _is_local:
+            # Check if the host block has its own apiKey (explicit local auth).
+            # Auth-skipping is loopback-only: a stored key is likely a cloud key
+            # that would break a no-auth local server, so we substitute the SDK's
+            # required-non-empty placeholder unless the host block opts in.
+            _raw = config.raw or {}
+            _host_block = (_raw.get("hosts") or {}).get(config.host, {})
+            _host_has_key = bool(_host_block.get("apiKey"))
+            effective_api_key = config.api_key if _host_has_key else "local"
+        else:
+            effective_api_key = config.api_key
 
-    return _honcho_client
+        # The Honcho SDK's route builders (e.g. routes.workspaces()) already
+        # include the version prefix (e.g. "/v3/workspaces").  When a user-supplied
+        # base_url already ends in a version segment (e.g.
+        # "http://localhost:38000/v3", "https://honcho.my.ts.net/v3"), concatenating
+        # the two produces "/v3/v3/workspaces" → 404 on every call.  This is a pure
+        # routing concern independent of host, so strip a trailing version segment
+        # from ANY base_url — loopback, LAN, custom domain, or cloud alike.  The
+        # SDK then appends its own versioned paths correctly.
+        if resolved_base_url:
+            import re as _re
+            resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
+
+        kwargs: dict = {
+            "workspace_id": config.workspace_id,
+            "api_key": effective_api_key,
+            "environment": config.environment,
+        }
+        if resolved_base_url:
+            kwargs["base_url"] = resolved_base_url
+        if resolved_timeout is not None:
+            kwargs["timeout"] = resolved_timeout
+
+        return Honcho(**kwargs)
+
+    return _honcho_client_slot.get(_build)
 
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
-    global _honcho_client
-    _honcho_client = None
+    _honcho_client_slot.reset()

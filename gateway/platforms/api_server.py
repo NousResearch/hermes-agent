@@ -1476,6 +1476,67 @@ class APIServerAdapter(BasePlatformAdapter):
         deleted = db.delete_session(session_id)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
+    async def _handle_summarize_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/summarize.
+
+        Force-regenerates the cached AI summary for a session. The
+        background scheduler (separate PR) also calls this; the endpoint
+        is exposed so clients can trigger a refresh on demand (e.g. the
+        Desktop sidebar "refresh summary" action).
+
+        Returns the freshly-generated summary plus the updated
+        ``summary_updated_at`` and ``summary_model`` timestamps. On
+        failure, returns 200 with ``summary: null`` and an error code
+        — the cached summary (if any) is left untouched.
+
+        The actual summarization is synchronous; expect 1-5 s response
+        time. Clients should not poll this endpoint.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        session, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        try:
+            new_summary = db.summarize_session(session_id, force=True)
+        except Exception as exc:
+            logger.warning("summarize_session API error for %s: %s", session_id, exc)
+            return web.json_response(
+                {
+                    "object": "hermes.session.summary",
+                    "id": session_id,
+                    "summary": None,
+                    "error": "summarization_failed",
+                },
+                status=200,
+            )
+        if new_summary is None:
+            return web.json_response(
+                {
+                    "object": "hermes.session.summary",
+                    "id": session_id,
+                    "summary": None,
+                    "summary_updated_at": session.get("summary_updated_at"),
+                    "summary_model": session.get("summary_model"),
+                    "error": "no_messages_or_provider_unavailable",
+                },
+                status=200,
+            )
+        # Re-read so the response reflects the just-written columns.
+        refreshed = db.get_session(session_id) or session
+        return web.json_response(
+            {
+                "object": "hermes.session.summary",
+                "id": session_id,
+                "summary": refreshed.get("summary"),
+                "summary_updated_at": refreshed.get("summary_updated_at"),
+                "summary_model": refreshed.get("summary_model"),
+            }
+        )
+
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions/{session_id}/messages."""
         auth_err = self._check_auth(request)
@@ -4181,6 +4242,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/summarize", self._handle_summarize_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)

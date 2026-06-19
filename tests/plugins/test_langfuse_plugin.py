@@ -264,13 +264,24 @@ class TestTurnTraceIsolation:
     def _fake_client(started):
         """A minimal Langfuse stand-in that records each root trace opened.
 
-        ``_start_root_trace`` calls ``create_trace_id`` then opens a root via
-        ``start_as_current_observation(...)`` (a context manager whose
-        ``__enter__`` returns the root span).  We record one entry per root
-        actually opened so the test can count distinct traces.
+        ``_start_root_trace`` calls ``create_trace_id`` then opens the root via
+        ``start_observation(...)`` — a plain, non-current span (no context
+        manager) — and stamps trace attributes through ``root_span._otel_span``.
+        We record one entry per root actually opened so the test can count
+        distinct traces.
         """
 
+        class _OtelSpan:
+            def is_recording(self):
+                return True
+
+            def set_attributes(self, attrs):
+                pass
+
         class _Span:
+            def __init__(self):
+                self._otel_span = _OtelSpan()
+
             def update(self, **kw):
                 pass
 
@@ -283,20 +294,13 @@ class TestTurnTraceIsolation:
             def start_observation(self, **kw):
                 return _Span()
 
-        class _RootCM:
-            def __enter__(self):
-                return _Span()
-
-            def __exit__(self, *exc):
-                return False
-
         class _Client:
             def create_trace_id(self, seed=None):
                 return f"trace::{seed}"
 
-            def start_as_current_observation(self, **kw):
+            def start_observation(self, **kw):
                 started.append(kw.get("trace_context", {}).get("trace_id"))
-                return _RootCM()
+                return _Span()
 
             def flush(self):
                 pass

@@ -39,6 +39,16 @@ except Exception:  # pragma: no cover - fail-open when optional dep is missing
     Langfuse = None
     propagate_attributes = None
 
+try:
+    # Private path, but it is the same attribute-key registry the SDK's own
+    # set_trace_io() writes through. Used to stamp trace name/tags/session on
+    # the root span directly, without the context-propagating
+    # propagate_attributes() (whose OTel token detach is unsafe across the
+    # agent's asyncio task boundaries — see _start_root_trace).
+    from langfuse._client.attributes import LangfuseOtelSpanAttributes as _LFAttr
+except Exception:  # pragma: no cover - fail-open if the private path moves
+    _LFAttr = None
+
 
 @dataclass
 class TraceState:
@@ -621,50 +631,50 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     if session_id:
         trace_ctx["session_id"] = session_id
 
-    if propagate_attributes is not None:
-        try:
-            with propagate_attributes(
-                session_id=session_id or task_key,
-                trace_name="Hermes turn",
-                tags=["hermes", "langfuse"],
-            ):
-                root_ctx = client.start_as_current_observation(
-                    trace_context=trace_ctx,
-                    name="Hermes turn",
-                    as_type="chain",
-                    input=trace_input,
-                    metadata=metadata,
-                    end_on_exit=False,
-                )
-                root_span = root_ctx.__enter__()
-        except Exception:
-            root_ctx = client.start_as_current_observation(
-                trace_context=trace_ctx,
-                name="Hermes turn",
-                as_type="chain",
-                input=trace_input,
-                metadata=metadata,
-                end_on_exit=False,
-            )
-            root_span = root_ctx.__enter__()
-    else:
-        root_ctx = client.start_as_current_observation(
-            trace_context=trace_ctx,
-            name="Hermes turn",
-            as_type="chain",
-            input=trace_input,
-            metadata=metadata,
-            end_on_exit=False,
-        )
-        root_span = root_ctx.__enter__()
+    # Create the root observation as a PLAIN (non-current) span. We deliberately
+    # avoid both start_as_current_observation() and propagate_attributes(): each
+    # attaches an OpenTelemetry context token that must be detached in the very
+    # same asyncio task it was created in. Hermes runs a single turn's hooks
+    # (pre_api_request / tool calls / finish) across different async tasks, so
+    # those tokens end up detached — or GC-finalized — in a foreign context and
+    # the SDK raises "Token was created in a different Context". That left the
+    # OTel context corrupted and dropped the root CHAIN + LLM-call generations
+    # from export, so traces had no `name="Hermes turn"` CHAIN — which is exactly
+    # what the Langfuse LLM-as-a-judge evaluators filter on, so scoring silently
+    # stopped (regression first observed 2026-06-18). Children are parented
+    # explicitly via root_span.start_observation() (the path tool spans already
+    # used — the only observations that kept exporting), so no current-span
+    # context is needed and there is nothing to detach across tasks.
+    root_span = client.start_observation(
+        trace_context=trace_ctx,
+        name="Hermes turn",
+        as_type="chain",
+        input=trace_input,
+        metadata=metadata,
+    )
 
+    # Trace-level input/output (read by the legacy LLM-as-a-judge evaluators) plus
+    # name/tags/session, written straight to the span's OTel attributes — the same
+    # low-level mechanism set_trace_io() uses internally — so we keep full trace
+    # fidelity without any context propagation. All best-effort / fail-open.
     try:
         root_span.set_trace_io(input=trace_input)
-    except Exception:
+    except Exception:  # pragma: no cover - fail-open
         pass
+    if _LFAttr is not None:
+        try:
+            trace_attrs = {
+                _LFAttr.TRACE_NAME: "Hermes turn",
+                _LFAttr.TRACE_TAGS: ["hermes", "langfuse"],
+            }
+            if session_id:
+                trace_attrs[_LFAttr.TRACE_SESSION_ID] = session_id
+            root_span._otel_span.set_attributes(trace_attrs)
+        except Exception:  # pragma: no cover - fail-open
+            pass
 
     _debug(f"started trace {trace_id} for {task_key}")
-    return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
+    return TraceState(trace_id=trace_id, root_ctx=None, root_span=root_span)
 
 
 def _start_child_observation(state: TraceState, *, client: Langfuse, name: str, as_type: str,

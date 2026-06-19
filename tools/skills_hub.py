@@ -3746,8 +3746,9 @@ _DEFAULT_ARD_REGISTRIES: List[str] = [
 
 # ARD media-type constants (IANA-style, per spec §3)
 ARD_TYPE_SKILL = "application/ai-skill"
-ARD_TYPE_MCP_SERVER = "application/mcp-server+json"
 ARD_TYPE_MCP_SERVER_CARD = "application/mcp-server-card+json"
+# Legacy transition alias accepted by older ARD/HF Discover deployments.
+ARD_TYPE_MCP_SERVER = "application/mcp-server+json"
 ARD_TYPE_A2A_AGENT = "application/a2a-agent-card+json"
 
 # All recognized MCP-type media types
@@ -3776,6 +3777,21 @@ def _get_ard_registries() -> List[str]:
         pass
     return list(_DEFAULT_ARD_REGISTRIES)
 
+
+
+
+def _ard_search_url(registry_url: str) -> str:
+    """Return a POST /search URL from a registry base URL or search endpoint."""
+    cleaned = registry_url.rstrip("/")
+    return cleaned if cleaned.endswith("/search") else cleaned + "/search"
+
+
+def _ard_catalog_url(registry_url: str) -> str:
+    """Return /.well-known/ai-catalog.json for a registry base/search URL."""
+    cleaned = registry_url.rstrip("/")
+    if cleaned.endswith("/search"):
+        cleaned = cleaned[: -len("/search")]
+    return cleaned + "/.well-known/ai-catalog.json"
 
 def _guarded_http_post_json(
     url: str, json_body: dict, *, timeout: int = 20,
@@ -3815,13 +3831,13 @@ class ArdSource(SkillSource):
 
     Implements the Agentic Resource Discovery specification (v0.9 Draft):
     - Queries ``POST /search`` on ARD registries with natural-language text
-    - Supports type filtering (application/ai-skill, application/mcp-server+json, etc.)
+    - Supports type filtering (application/ai-skill, application/mcp-server-card+json, etc.)
     - Supports federation modes (auto, referrals, none)
     - Falls back to static ``/.well-known/ai-catalog.json`` when /search is unavailable
 
     ARD entries are mapped to SkillMeta:
     - ``application/ai-skill``     → standard skill (name, description)
-    - ``application/mcp-server+json`` → stored in extra['mcp'] for auto-registration
+    - ``application/mcp-server-card+json`` → stored in extra['mcp'] for auto-registration
     - ``application/a2a-agent-card+json`` → stored in extra['a2a'] (informational)
 
     When the agent requests an ARD result of type MCP, ArdSource.fetch() triggers
@@ -3898,18 +3914,19 @@ class ArdSource(SkillSource):
 
         Parses the federation response for referral entries.
         """
-        search_url = registry_url.rstrip("/") + "/search"
+        search_url = _ard_search_url(registry_url)
         body = {
             "query": {
                 "text": query or "",
                 "filter": {
                     "type": [
                         ARD_TYPE_SKILL,
-                        ARD_TYPE_MCP_SERVER,
                         ARD_TYPE_MCP_SERVER_CARD,
+                        ARD_TYPE_MCP_SERVER,  # legacy transition alias
                     ],
                 },
             },
+            "federation": "referrals",
             "pageSize": min(limit, 20),
         }
 
@@ -3922,15 +3939,20 @@ class ArdSource(SkillSource):
         entries = data.get("results") or data.get("entries") or []
         results = [self._entry_to_meta(e, registry_url) for e in entries if e][:limit]
 
-        # Extract referrals from federation response
+        # Extract referrals from the spec-compliant root-level field.  Older
+        # prototype registries sometimes nested this under federation.referrals,
+        # so accept both shapes.
         referrals: List[str] = []
-        fed_info = data.get("federation") or {}
-        if isinstance(fed_info, dict):
-            ref_list = fed_info.get("referrals", [])
-            if isinstance(ref_list, list):
-                for ref in ref_list:
-                    if isinstance(ref, str) and ref.startswith("http"):
-                        referrals.append(ref)
+        ref_list = data.get("referrals")
+        if ref_list is None:
+            fed_info = data.get("federation") or {}
+            if isinstance(fed_info, dict):
+                ref_list = fed_info.get("referrals", [])
+        if isinstance(ref_list, list):
+            for ref in ref_list:
+                ref_url = ref.get("url") if isinstance(ref, dict) else ref
+                if isinstance(ref_url, str) and ref_url.startswith("http"):
+                    referrals.append(ref_url)
 
         return results, referrals
 
@@ -3943,18 +3965,19 @@ class ArdSource(SkillSource):
         if cached is not None:
             return cached
 
-        search_url = registry_url.rstrip("/") + "/search"
+        search_url = _ard_search_url(registry_url)
         body = {
             "query": {
                 "text": query or "",
                 "filter": {
                     "type": [
                         ARD_TYPE_SKILL,
-                        ARD_TYPE_MCP_SERVER,
                         ARD_TYPE_MCP_SERVER_CARD,
+                        ARD_TYPE_MCP_SERVER,  # legacy transition alias
                     ],
                 },
             },
+            "federation": "none",
             "pageSize": min(limit, 20),
         }
 
@@ -3977,7 +4000,7 @@ class ArdSource(SkillSource):
         if cached and (now - cached[0]) < _ARD_CACHE_TTL:
             catalog = cached[1]
         else:
-            catalog_url = registry_url.rstrip("/") + "/.well-known/ai-catalog.json"
+            catalog_url = _ard_catalog_url(registry_url)
             resp = _guarded_http_get(catalog_url, timeout=15)
             if resp is None or resp.status_code != 200:
                 return []
@@ -4021,12 +4044,14 @@ class ArdSource(SkillSource):
             else []
         )
         metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+        inline_data = entry.get("data", {}) if isinstance(entry.get("data"), dict) else {}
 
         extra: Dict[str, Any] = {
             "ard_type": entry_type,
             "ard_registry": registry_url,
             "representativeQueries": rep_queries,
             "source_url": url,
+            "ard_data": inline_data,
         }
 
         # For MCP server entries (including server cards), construct the
@@ -4034,7 +4059,8 @@ class ArdSource(SkillSource):
         #   spaceId: "user/space" → https://user-space.hf.space/gradio_api/mcp
         if entry_type in _ARD_MCP_TYPES:
             mcp_url = url
-            transport = "streamable_http"
+            command = inline_data.get("command")
+            transport = inline_data.get("transport") or ("stdio" if command else "streamable_http")
 
             # If the URL points to a server.json card file, we need to
             # either fetch it (deferred to fetch()) or construct the
@@ -4052,13 +4078,17 @@ class ArdSource(SkillSource):
                     )
                     transport = "streamable_http"
 
-            extra["mcp"] = {
+            mcp_config = {
                 "url": mcp_url,
                 "name": display_name,
                 "transport": transport,
                 "card_url": url if "server.json" in url else None,
                 "space_id": space_id or None,
             }
+            for key in ("command", "args", "env", "workdir"):
+                if key in inline_data:
+                    mcp_config[key] = inline_data[key]
+            extra["mcp"] = mcp_config
         elif entry_type == ARD_TYPE_A2A_AGENT:
             extra["a2a"] = {"url": url}
 
@@ -4112,7 +4142,7 @@ class ArdSource(SkillSource):
         if cached and (now - cached[0]) < _ARD_CACHE_TTL:
             return cached[1]
 
-        catalog_url = registry_url.rstrip("/") + "/.well-known/ai-catalog.json"
+        catalog_url = _ard_catalog_url(registry_url)
         resp = _guarded_http_get(catalog_url, timeout=15)
         if resp is None or resp.status_code != 200:
             return None
@@ -4155,6 +4185,32 @@ class ArdSource(SkillSource):
                 metadata={
                     "ard_type": ARD_TYPE_MCP_SERVER,
                     "mcp": meta.extra.get("mcp", {}),
+                },
+            )
+
+        # Standard skill: inline data entries can still be installed as a
+        # minimal SKILL.md. Remote catalogs often use inline `data` when there
+        # is no stable artifact URL.
+        inline_data = meta.extra.get("ard_data") or {}
+        if not source_url and isinstance(inline_data, dict) and inline_data:
+            name = inline_data.get("name", meta.name)
+            desc = inline_data.get("description", meta.description)
+            content = (
+                "---\n"
+                f"name: {name}\n"
+                f"description: {str(desc).replace(chr(10), ' ')}\n"
+                "---\n\n"
+                f"# {name}\n\n{desc}\n"
+            )
+            return SkillBundle(
+                name=meta.name,
+                files={"SKILL.md": content},
+                source="ard",
+                identifier=identifier,
+                trust_level="community",
+                metadata={
+                    "ard_type": ARD_TYPE_SKILL,
+                    "ard_registry": meta.extra.get("ard_registry", ""),
                 },
             )
 
@@ -4324,13 +4380,16 @@ def get_mcp_config_from_bundle(bundle: SkillBundle) -> Optional[Dict[str, Any]]:
     if not is_mcp_bundle(bundle):
         return None
     mcp = bundle.metadata.get("mcp", {})
-    if not mcp.get("url"):
+    if not (mcp.get("url") or mcp.get("command")):
         return None
-    return {
+    cfg = {
         "name": mcp.get("name", bundle.name),
-        "url": mcp["url"],
         "transport": mcp.get("transport", "streamable_http"),
     }
+    for key in ("url", "command", "args", "env", "workdir"):
+        if key in mcp and mcp.get(key) not in (None, ""):
+            cfg[key] = mcp[key]
+    return cfg
 
 
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
@@ -4515,8 +4574,15 @@ def _generate_ard_skill_entries(
             "identifier": urn,
             "displayName": name,
             "type": ARD_TYPE_SKILL,
-            "description": description[:500],  # ARD spec: description max ~500 chars
-            "url": "",  # Local skills have no external URL
+            "description": description[:500],
+            # Local skills are embedded because there is no stable public HTTP
+            # artifact URL for arbitrary profile-local SKILL.md files.
+            "data": {
+                "name": name,
+                "description": description,
+                "category": category,
+                "source": "hermes-skill",
+            },
         }
         if category:
             entry["tags"] = [category]
@@ -4535,16 +4601,22 @@ def _generate_ard_mcp_entries(
             continue
         url = cfg.get("url", "")
         if not url:
+            # Local stdio MCP servers are not externally discoverable artifacts:
+            # publishing command/env/workdir can leak workstation paths or
+            # secrets, and remote clients cannot execute them anyway.  Stdio
+            # ARD entries should be exposed by an explicit local registry
+            # (e.g. scripts/security_ard_registry.py), not by the public
+            # ai-catalog publisher.
             continue
 
         urn = f"urn:ai:{domain}:mcp:{name}"
         entry = {
             "identifier": urn,
             "displayName": f"{name} (MCP Server)",
-            "type": ARD_TYPE_MCP_SERVER,
-            "url": url,
+            "type": ARD_TYPE_MCP_SERVER_CARD,
             "description": f"MCP server: {name}",
             "tags": ["mcp-server"],
+            "url": url,
         }
         entries.append(entry)
     return entries
@@ -4622,7 +4694,7 @@ def generate_ard_catalog(
                 "type": "application/ai-skill",  # tools are callable skills
                 "description": desc[:500],
                 "tags": ["builtin-tool"],
-                "url": "",  # no external URL — tools are internal to Hermes
+                "data": {"name": tool_name, "source": "hermes-builtin-tool"},
             })
     except Exception as e:
         logger.debug("Failed to collect tools for ARD catalog: %s", e)

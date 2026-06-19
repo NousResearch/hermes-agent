@@ -190,6 +190,50 @@ class TestArdSearch:
         results = src.search("", limit=5)
         assert isinstance(results, list)
 
+    @patch("tools.skills_hub.httpx.post")
+    def test_search_request_uses_spec_federation_and_mcp_card_type(self, mock_post):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"results": []}
+        mock_post.return_value = resp
+
+        src = ArdSource(registries=["https://test.registry.com"])
+        src.search("image", limit=5)
+
+        body = mock_post.call_args.kwargs["json"]
+        assert body["federation"] == "referrals"
+        assert body["pageSize"] == 5
+        assert ARD_TYPE_MCP_SERVER_CARD in body["query"]["filter"]["type"]
+
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", return_value=True)
+    @patch("tools.skills_hub.httpx.post")
+    def test_search_follows_root_level_referrals(self, mock_post, _safe, _blocked):
+        first = MagicMock()
+        first.status_code = 200
+        first.json.return_value = {
+            "results": [],
+            "referrals": [
+                {
+                    "identifier": "urn:ai:example.com:registry:secondary",
+                    "displayName": "Secondary",
+                    "type": "application/ai-registry+json",
+                    "url": "https://example.com/search",
+                }
+            ],
+        }
+        second = MagicMock()
+        second.status_code = 200
+        second.json.return_value = MOCK_SEARCH_RESPONSE
+        mock_post.side_effect = [first, second]
+
+        src = ArdSource(registries=["https://test.registry.com"])
+        results = src.search("image", limit=5)
+
+        assert mock_post.call_count == 2
+        assert mock_post.call_args_list[1].args[0] == "https://example.com/search"
+        assert any(r.name == "Z Image Turbo MCP Server" for r in results)
+
 
 # ---------------------------------------------------------------------------
 # MCP URL construction tests
@@ -353,6 +397,29 @@ class TestMcpBundleHelpers:
         cfg = get_mcp_config_from_bundle(bundle)
         assert cfg is None
 
+    def test_get_mcp_config_stdio(self):
+        bundle = SkillBundle(
+            name="stdio-mcp", files={}, source="ard", identifier="test",
+            trust_level="community",
+            metadata={
+                "ard_type": ARD_TYPE_MCP_SERVER_CARD,
+                "mcp": {
+                    "name": "stdio-mcp",
+                    "transport": "stdio",
+                    "command": "python3",
+                    "args": ["server.py"],
+                    "workdir": "/tmp/example",
+                },
+            },
+        )
+        cfg = get_mcp_config_from_bundle(bundle)
+        assert cfg is not None
+        assert cfg["name"] == "stdio-mcp"
+        assert cfg["transport"] == "stdio"
+        assert cfg["command"] == "python3"
+        assert cfg["args"] == ["server.py"]
+        assert cfg["workdir"] == "/tmp/example"
+
 
 # ---------------------------------------------------------------------------
 # Entry-to-Meta conversion tests
@@ -437,12 +504,32 @@ class TestArdPublisher:
     def test_generate_ard_mcp_entries(self):
         servers = {
             "test-mcp": {"url": "https://example.com/mcp"},
-            "no-url": {"command": "npx"},  # no URL → skipped
+            "stdio-mcp": {
+                "command": "python3",
+                "args": ["server.py"],
+                "env": {"SECRET_TOKEN": "should-not-leak"},
+                "workdir": "/home/private/project",
+            },
+            "invalid": {},
         }
         entries = _generate_ard_mcp_entries(servers, "test.local")
         assert len(entries) == 1
         assert entries[0]["displayName"] == "test-mcp (MCP Server)"
+        assert entries[0]["type"] == ARD_TYPE_MCP_SERVER_CARD
         assert entries[0]["url"] == "https://example.com/mcp"
+        assert "should-not-leak" not in json.dumps(entries)
+        assert "/home/private" not in json.dumps(entries)
+
+    def test_generated_entries_use_url_or_data_not_empty_url(self):
+        skills = [{"name": "test-skill", "description": "A test", "category": "dev"}]
+        skill_entries = _generate_ard_skill_entries(skills, "test.local")
+        mcp_entries = _generate_ard_mcp_entries(
+            {"http-mcp": {"url": "https://example.com/mcp"}},
+            "test.local",
+        )
+        for entry in skill_entries + mcp_entries:
+            assert ("url" in entry) ^ ("data" in entry)
+            assert entry.get("url") != ""
 
     def test_publish_ard_catalog_writes_file(self, tmp_path, monkeypatch):
         # Mock hermes_home to tmp_path

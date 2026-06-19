@@ -65,11 +65,6 @@ SECURITY_CATALOG: Dict[str, Any] = {
         "displayName": "Security Tools ARD Registry",
         "identifier": f"did:web:{DOMAIN}",
     },
-    "search_endpoint": {
-        "url": "/search",
-        "method": "POST",
-        "description": "Natural language search over security tools",
-    },
     "entries": [
         # ── Hermes built-in skills (discovered locally) ──────────────
         {
@@ -137,7 +132,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:webclaw",
             "displayName": "Webclaw — Antibot Web Scraper",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:webclaw-mcp",
             "description": "Web extraction engine with Cloudflare bypass. Scrape, crawl, extract structured data.",
             "tags": ["recon", "scraping", "osint", "cloudflare-bypass"],
@@ -150,7 +145,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:nuclei",
             "displayName": "Nuclei Vulnerability Scanner (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Fast, template-based vulnerability scanner. Detects CVEs, misconfigurations, exposures.",
             "tags": ["vulnerability-scanning", "nuclei", "cve", "recon"],
@@ -163,7 +158,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:ffuf",
             "displayName": "FFUF Fuzzer (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Fast web fuzzer for directory/file discovery, vhost fuzzing, parameter discovery.",
             "tags": ["fuzzing", "recon", "directory-brute", "parameter-discovery"],
@@ -176,7 +171,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:sqlmap",
             "displayName": "SQLMap (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Automatic SQL injection detection and exploitation tool.",
             "tags": ["sqli", "injection", "database", "exploit"],
@@ -189,7 +184,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:nmap",
             "displayName": "Nmap Port Scanner (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Network discovery and security auditing. Port scanning, service detection, OS fingerprinting.",
             "tags": ["port-scanning", "network", "recon", "service-detection"],
@@ -200,9 +195,9 @@ SECURITY_CATALOG: Dict[str, Any] = {
             ],
         },
         {
-            "identifier": f"urn:ai:{DOMAIN}:mpc:subfinder",
+            "identifier": f"urn:ai:{DOMAIN}:mcp:subfinder",
             "displayName": "Subfinder Subdomain Enumeration (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Fast passive subdomain enumeration tool using online sources.",
             "tags": ["subdomain", "enumeration", "recon", "passive"],
@@ -215,7 +210,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:httpx",
             "displayName": "HTTPx Prober (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Fast multi-purpose HTTP toolkit. Probe live hosts, detect technologies, take screenshots.",
             "tags": ["http", "probing", "recon", "tech-detection"],
@@ -228,7 +223,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:naabu",
             "displayName": "Naabu Port Scanner (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Fast port scanner optimized for internet-wide scanning.",
             "tags": ["port-scanning", "network", "recon"],
@@ -240,7 +235,7 @@ SECURITY_CATALOG: Dict[str, Any] = {
         {
             "identifier": f"urn:ai:{DOMAIN}:mcp:katana",
             "displayName": "Katana Crawler (MCP)",
-            "type": "application/mcp-server+json",
+            "type": "application/mcp-server-card+json",
             "url": "stdio:security-tools-mcp",
             "description": "Next-generation crawling and spidering framework.",
             "tags": ["crawling", "spider", "recon", "endpoint-discovery"],
@@ -252,6 +247,17 @@ SECURITY_CATALOG: Dict[str, Any] = {
         },
     ],
 }
+
+
+for _entry in SECURITY_CATALOG["entries"]:
+    # ai-catalog entries must expose exactly one artifact source: url or data.
+    # Local security skills are embedded as lightweight data descriptors.
+    if "url" not in _entry and "data" not in _entry:
+        _entry["data"] = {
+            "name": _entry.get("displayName", ""),
+            "description": _entry.get("description", ""),
+            "source": "security-ard-registry",
+        }
 
 
 # ---------------------------------------------------------------------------

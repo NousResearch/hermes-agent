@@ -355,6 +355,75 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "docker not found (optional)" not in out
 
 
+def test_run_doctor_resolves_docker_backend_from_config_yaml(monkeypatch, tmp_path):
+    """doctor must honor config.yaml's `terminal.backend` when TERMINAL_ENV is unset.
+
+    Regression: the backend reachability checks keyed entirely off the
+    TERMINAL_ENV env var, so a user who selected the docker backend purely via
+    config.yaml (`terminal: {backend: docker}`) was diagnosed as the default
+    "local" backend. doctor then took the "(optional)" docker branch and never
+    emitted the required-daemon failure, silently hiding a misconfigured sandbox
+    for exactly the users it should warn. The fix bridges config.yaml into the
+    resolved backend via the canonical `apply_terminal_config_to_env` helper.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+
+    import yaml
+
+    (home / "config.yaml").write_text(
+        yaml.dump({"terminal": {"backend": "docker"}}), encoding="utf-8"
+    )
+
+    # The config bridge resolves via get_hermes_home(), which reads the
+    # HERMES_HOME env var — not the module-level doctor_mod.HERMES_HOME attr.
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    # Make docker appear absent so the docker branch resolves to a definite
+    # outcome: required-failure (after fix) vs optional-warn (before fix).
+    real_which = doctor_mod.shutil.which
+
+    def fake_which(cmd):
+        if cmd == "docker":
+            return None
+        return real_which(cmd)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+
+    # After the fix doctor resolves the docker backend from config.yaml and
+    # emits the required-daemon failure.
+    assert "docker not found" in out
+    assert "(required for TERMINAL_ENV=docker)" in out
+    # And it must NOT treat docker as merely optional.
+    assert "docker not found (optional)" not in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

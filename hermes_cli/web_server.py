@@ -5766,6 +5766,31 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "has_refresh_token": True,
                 "last_refresh": raw.get("last_refresh"),
             }
+        # No hand-written branch for this provider id: fall through to the
+        # canonical slug-driven dispatcher so accounts-tab providers derived
+        # from the unified catalog (which carry status_fn=None) still reflect
+        # real login state instead of rendering permanently logged-out. This
+        # closes the membership-auto-extends-but-status-doesn't gap: add an
+        # OAuth/account provider plugin and its card shows the right state.
+        raw = hauth.get_auth_status(provider_id)
+        if isinstance(raw, dict) and "logged_in" in raw:
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": raw.get("source") or raw.get("provider") or provider_id,
+                "source_label": (
+                    raw.get("source_label")
+                    or raw.get("auth_store")
+                    or raw.get("auth_store_path")
+                    or raw.get("base_url")
+                    or raw.get("name")
+                    or ""
+                ),
+                "token_preview": _truncate_token(
+                    raw.get("access_token") or raw.get("api_key")
+                ),
+                "expires_at": raw.get("expires_at") or raw.get("access_expires_at"),
+                "has_refresh_token": bool(raw.get("has_refresh_token")),
+            }
     except Exception as e:
         return {"logged_in": False, "error": str(e)}
     return {"logged_in": False}

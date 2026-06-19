@@ -34,6 +34,7 @@ import logging
 import os
 import platform
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -596,6 +597,15 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
+        # Wrap command with stdbuf to force line-buffered output when stdout
+        # is a pipe instead of a TTY. Background processes started via
+        # terminal(background=true) use a bash wrapper that buffers stdout,
+        # causing process(action='poll') to return empty output even though
+        # the process is running. stdbuf (GNU coreutils) disables this
+        # buffering. Falls back to existing behavior if unavailable.
+        if not _IS_WINDOWS and shutil.which("stdbuf") is not None:
+            command = f"stdbuf -oL -eL {command}"
 
         proc = subprocess.Popen(
             [user_shell, "-lic", f"set +m; {command}"],

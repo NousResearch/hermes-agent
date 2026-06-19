@@ -63,13 +63,14 @@
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  display: flex;
   gap: 0.75rem;
   align-items: start;
+  overflow-x: auto;
 }
 
 .hermes-kanban-column {
+  flex: 0 0 280px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -138,6 +139,8 @@
   gap: 0.45rem;
   overflow-y: auto;
   padding-right: 0.1rem;
+  flex: 1;
+  min-height: 0;
 }
 
 .hermes-kanban-empty {
@@ -280,6 +283,14 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+.hermes-kanban-needs-assignee {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 45%, var(--color-border));
+  color: var(--color-foreground);
+}
+
 .hermes-kanban-assignee {
   font-weight: 500;
   color: color-mix(in srgb, var(--color-foreground) 80%, var(--color-muted-foreground));
@@ -323,6 +334,11 @@
 .hermes-kanban-drawer {
   width: min(var(--hermes-kanban-drawer-width, 640px), 92vw);
   height: 100vh;
+  /* Dynamic viewport unit excludes the mobile browser's collapsing chrome
+     (URL/nav bars) so the drawer's bottom row stays reachable. Falls back to
+     100vh on browsers without dvh support. */
+  height: 100dvh;
+  max-height: 100dvh;
   background: var(--color-card);
   border-left: 1px solid var(--color-border);
   display: flex;
@@ -341,8 +357,21 @@
   align-items: center;
   justify-content: space-between;
   padding: 0.6rem 0.8rem;
+  /* Honor the top safe-area inset (notch) so the task id / close button are
+     not clipped on mobile. */
+  padding-top: max(0.6rem, env(safe-area-inset-top));
   border-bottom: 1px solid var(--color-border);
   font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* On mobile the dashboard shell renders a fixed top bar (min-h-14, hidden at
+   the lg breakpoint). The drawer is a body-level z-60 overlay starting at the
+   viewport top, so its header would sit behind that bar. Push the header down
+   by the bar height (3.5rem) plus the top safe-area inset. */
+@media (max-width: 1023px) {
+  .hermes-kanban-drawer-head {
+    padding-top: calc(3.5rem + env(safe-area-inset-top));
+  }
 }
 
 .hermes-kanban-drawer-close {
@@ -357,10 +386,33 @@
 }
 .hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
 
+/* Attachment download trigger — styled as a link, rendered as a <button>
+   so the click handler can fetch with the session token (#35338). */
+.hermes-kanban-attachment-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  color: var(--color-primary, #6ea8fe);
+  cursor: pointer;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.hermes-kanban-attachment-link:hover { text-decoration: underline; }
+
 .hermes-kanban-drawer-body {
   flex: 1;
   overflow-y: auto;
   padding: 0.9rem;
+  /* When no comment row is rendered (loading / error states), the scrolling
+     body is the bottom-most element — extend its bottom padding past the
+     mobile browser chrome so the last content stays readable. */
+  padding-bottom: max(0.9rem, calc(0.9rem + env(safe-area-inset-bottom)));
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
@@ -457,7 +509,6 @@
 .hermes-kanban-section-head {
   font-size: 0.72rem;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--color-muted-foreground);
 }
@@ -520,6 +571,9 @@
   display: flex;
   gap: 0.4rem;
   padding: 0.55rem 0.75rem;
+  /* Keep the comment input clear of the mobile browser nav bar / home
+     indicator by extending the bottom padding with the safe-area inset. */
+  padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
   border-top: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-card) 90%, transparent);
 }
@@ -603,7 +657,6 @@
 }
 .hermes-kanban-deps-label {
   font-size: 0.68rem;
-  text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--color-muted-foreground);
   min-width: 4rem;
@@ -683,7 +736,6 @@
   border: 0;
   color: var(--color-muted-foreground);
   font-size: 0.7rem;
-  text-transform: uppercase;
   letter-spacing: 0.05em;
   cursor: pointer;
   padding: 0;
@@ -861,7 +913,6 @@
 .hermes-kanban-run-outcome {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--color-foreground);
 }
@@ -921,7 +972,6 @@
 .hermes-kanban-run-meta-label {
   font-size: 0.65rem;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-muted-foreground);
   padding-bottom: 0.15rem;
@@ -1489,4 +1539,45 @@
   gap: 0.25rem;
   font-size: 0.7rem;
   cursor: pointer;
+}
+
+/* ---- Trash drop zone ------------------------------------------------- */
+
+.hermes-kanban-trash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.75rem 0.5rem;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+  min-height: 80px;
+  opacity: 0.5;
+  transition: opacity 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  user-select: none;
+  pointer-events: none;
+}
+
+.hermes-kanban-trash--active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.hermes-kanban-trash--drop {
+  border-color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 8%, var(--color-card));
+  color: var(--color-destructive, #d14a4a);
+}
+
+.hermes-kanban-trash-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.hermes-kanban-trash-label {
+  font-weight: 500;
 }

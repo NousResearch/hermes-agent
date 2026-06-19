@@ -90,6 +90,7 @@ gateway:
     nothing_to_do:         "Rien à compresser pour l'instant (la transcription est encore entièrement du contexte protégé)."
     focus_line:            "Focus : \"{topic}\""
     summary_failed:        "⚠️ Échec de la génération du résumé ({error}). {count} message(s) historique(s) ont été supprimés et remplacés par un espace réservé ; le contexte antérieur n'est plus récupérable. Vérifiez la configuration du modèle auxiliary.compression."
+    aborted:               "⚠️ Compression interrompue ({error}). Aucun message n'a été supprimé — la conversation est inchangée. Lancez /compress pour réessayer, /reset pour une nouvelle session, ou vérifiez la configuration de votre modèle auxiliary.compression."
     aux_failed:            "ℹ️ Le modèle de compression configuré `{model}` a échoué ({error}). Récupéré avec votre modèle principal — le contexte est intact — mais vous pouvez vérifier `auxiliary.compression.model` dans config.yaml."
     failed:                "Échec de la compression : {error}"
 
@@ -218,12 +219,23 @@ gateway:
 
   resume:
     db_unavailable:        "Base de données des sessions indisponible."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "Aucune session nommée trouvée.\nUtilisez `/title Ma session` pour nommer la session actuelle, puis `/resume Ma session` pour y revenir plus tard."
     list_header:           "📋 **Sessions nommées**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUsage : `/resume <nom de session>`"
+    list_footer_numbered:  "\nUtilisation : `/resume <nom de session>` ou `/resume <numéro>` (par exemple `/resume 1` pour la plus récente)"
     list_failed:           "Impossible de lister les sessions : {error}"
+    out_of_range:          "L'index de reprise {index} est hors limites.\nUtilisez `/resume` sans arguments pour voir les sessions disponibles."
     not_found:             "Aucune session correspondant à '**{name}**' trouvée.\nUtilisez `/resume` sans argument pour voir les sessions disponibles."
     already_on:            "📌 Déjà sur la session **{name}**."
     switch_failed:         "Échec du changement de session."
@@ -247,10 +259,20 @@ gateway:
 
   status:
     header:                "📊 **État de Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID de session :** `{session_id}`"
     title:                 "**Titre :** {title}"
     created:               "**Créé :** {timestamp}"
     last_activity:         "**Dernière activité :** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Jetons :** {tokens}"
     agent_running:         "**Agent en cours :** {state}"
     state_yes:             "Oui ⚡"
@@ -286,7 +308,8 @@ gateway:
 
   undo:
     nothing:               "Rien à annuler."
-    removed:               "↩️ {count} message(s) annulé(s).\nSupprimé : « {preview} »"
+    removed:               "↩️ {turns} tour(s) annulé(s) ({count} message(s)).\nSauvegardé dans : « {preview} »\nCopiez/modifiez le texte ci-dessus et envoyez-le pour relancer à partir d'ici."
+    invalid_count:         "Nombre invalide « {arg} » — utilisez /undo ou /undo N."
 
   update:
     platform_not_messaging:  "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."
@@ -315,6 +338,9 @@ gateway:
     detailed_after_first:     "_(Utilisation détaillée disponible après la première réponse de l'agent)_"
     no_data:                  "Aucune donnée d'utilisation disponible pour cette session."
 
+  credits:
+    not_logged_in:            "Non connecté à Nous Portal. Connecte-toi pour voir ton solde de crédits et recharger."
+
   verbose:
     not_enabled:           "La commande `/verbose` n'est pas activée pour les plateformes de messagerie.\n\nActivez-la dans `config.yaml` :\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progression des outils : **OFF** — aucune activité d'outil affichée."
@@ -338,6 +364,8 @@ gateway:
     label_off:             "Désactivé (texte seulement)"
     label_voice_only:      "Activé (réponse vocale aux messages vocaux)"
     label_all:             "TTS (réponse vocale à tous les messages)"
+    help:                  "{toggle}\n\n**Comment fonctionne /voice**\n• `/voice on` — réponse vocale quand vous envoyez un message vocal\n• `/voice tts` — réponse vocale à *chaque* message\n• `/voice off` — retour aux réponses texte uniquement\n• `/voice status` — afficher le mode actuel\n• `/voice` (sans argument) — bascule rapide entre activé et désactivé{channels}"
+    help_channels:         "\n\n**Salons vocaux en direct (Discord)**\n• Rejoignez d'abord un salon vocal, puis `/voice channel` — je rejoins, j'écoute et je parle mes réponses\n• `/voice leave` — se déconnecter du salon vocal"
 
   yolo:
     disabled:                   "⚠️ Mode YOLO **DÉSACTIVÉ** pour cette session — les commandes dangereuses nécessiteront une approbation."

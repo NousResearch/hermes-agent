@@ -38,6 +38,10 @@ def _make_telegram_adapter(*, allowed_chats=None, require_mention=None, guest_mo
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._message_handler = AsyncMock()
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to
+    # _should_process_message; stub it for tests that exercise the
+    # allowed-channels widening logic that runs after.
+    adapter._is_callback_user_authorized = lambda *_a, **_kw: True
     return adapter
 
 
@@ -239,7 +243,6 @@ class TestMattermostAllowedChannels:
     @staticmethod
     def _would_process(channel_id, channel_type="O", allowed_cfg=None, allowed_env=""):
         """Replicate the whitelist gate from gateway/platforms/mattermost.py."""
-        import os as _os
         if channel_type == "D":
             return True
         # config-first, env-var fallback (matching the adapter)

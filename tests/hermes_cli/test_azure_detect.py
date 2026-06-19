@@ -102,7 +102,7 @@ def test_detect_anthropic_path_wins_without_http():
 
 def test_detect_openai_models_probe_success():
     """/models probe returning a model list → chat_completions."""
-    def _fake_get(url, api_key, timeout=6.0):
+    def _fake_get(url, api_key, timeout=6.0, **kwargs):
         assert "key-abc" == api_key
         return 200, json.loads(_openai_models_body("gpt-5.4", "claude-opus-4-6"))
 
@@ -118,7 +118,7 @@ def test_detect_openai_models_probe_success():
 
 def test_detect_openai_models_probe_empty_list_still_counts():
     """Endpoint returned OpenAI shape but no models → still chat_completions."""
-    def _fake_get(url, api_key, timeout=6.0):
+    def _fake_get(url, api_key, timeout=6.0, **kwargs):
         return 200, {"object": "list", "data": []}
 
     with patch.object(azure_detect, "_http_get_json", side_effect=_fake_get):
@@ -132,7 +132,7 @@ def test_detect_openai_models_probe_empty_list_still_counts():
 
 def test_detect_falls_back_to_anthropic_probe():
     """/models fails but Anthropic Messages probe succeeds."""
-    def _fake_get(url, api_key, timeout=6.0):
+    def _fake_get(url, api_key, timeout=6.0, **kwargs):
         return 401, None  # /models forbidden
 
     with patch.object(azure_detect, "_http_get_json", side_effect=_fake_get), \
@@ -164,7 +164,7 @@ def test_probe_openai_models_tries_multiple_api_versions():
     """First call (no api-version) fails, api-version fallback succeeds."""
     calls = []
 
-    def _fake_get(url, api_key, timeout=6.0):
+    def _fake_get(url, api_key, timeout=6.0, **kwargs):
         calls.append(url)
         if "api-version" not in url:
             return 404, None

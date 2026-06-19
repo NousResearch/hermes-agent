@@ -181,6 +181,7 @@ class RealtimeSession:
         self._session: Any = None
         self._recv_task: Optional[asyncio.Task] = None
         self._closed = False
+        self._response_active = False  # True between response.created and response.done
 
         # Function tools exposed to the model (realtime shape: flat
         # {type:"function", name, description, parameters}). Set before connect().
@@ -265,8 +266,13 @@ class RealtimeSession:
         )
 
     async def cancel_response(self) -> None:
-        """Cancel the in-flight model response (barge-in)."""
-        if not self._closed:
+        """Cancel the in-flight model response (barge-in), if one is active.
+
+        Guarded on ``_response_active`` so we don't spam ``response.cancel`` when
+        nothing is playing (server-VAD fires speech_started on every utterance).
+        """
+        if not self._closed and self._response_active:
+            self._response_active = False
             await self._send({"type": "response.cancel"})
 
     async def request_say(self, instruction: str) -> None:
@@ -345,6 +351,8 @@ class RealtimeSession:
             text = evt.get("delta") or ""
             if text:
                 await self._safe(self.on_transcript_delta, text)
+        elif etype == "response.created":
+            self._response_active = True
         elif etype == "input_audio_buffer.speech_started":
             await self._safe(self.on_speech_started)
         elif etype == "conversation.item.input_audio_transcription.completed":
@@ -352,6 +360,7 @@ class RealtimeSession:
             if text:
                 await self._safe(self.on_input_transcript, text)
         elif etype == "response.done":
+            self._response_active = False
             # A response may carry function calls (no audio) and/or spoken output.
             resp = evt.get("response") or {}
             for item in resp.get("output") or []:

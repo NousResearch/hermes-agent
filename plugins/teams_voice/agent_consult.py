@@ -25,14 +25,42 @@ class AgentConsult:
         self._model = model
         self._agent = None  # run_agent.AIAgent, built on first use
 
+    def _agent_kwargs(self) -> dict:
+        """Build AIAgent kwargs from the configured ``model`` block.
+
+        A bare ``AIAgent()`` leaves the model empty → 'Missed model deployment',
+        so we pass the same provider/model/base_url/api_mode the CLI resolves from
+        config.yaml ``model:`` (e.g. provider=azure-foundry, default=gpt-5.5)."""
+        import os
+
+        kwargs: dict = {"quiet_mode": True}
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            m = cfg_get(load_config(), "model") or {}
+            if isinstance(m, dict):
+                if m.get("default"):
+                    kwargs["model"] = m["default"]
+                if m.get("provider"):
+                    kwargs["provider"] = m["provider"]
+                if m.get("base_url"):
+                    kwargs["base_url"] = m["base_url"]
+                if m.get("api_mode"):
+                    kwargs["api_mode"] = m["api_mode"]
+        except Exception:  # noqa: BLE001
+            pass
+        if self._model:
+            kwargs["model"] = self._model
+        key = os.getenv("AZURE_FOUNDRY_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+        if key and "api_key" not in kwargs:
+            kwargs["api_key"] = key
+        return kwargs
+
     def _run_sync(self, query: str) -> str:
         if self._agent is None:
             from run_agent import AIAgent  # heavy import — defer to first consult
 
-            kwargs: dict = {"quiet_mode": True}
-            if self._model:
-                kwargs["model"] = self._model
-            self._agent = AIAgent(**kwargs)
+            self._agent = AIAgent(**self._agent_kwargs())
         return self._agent.chat(query)
 
     async def ask(self, query: str, *, timeout_s: float = 45.0) -> str:

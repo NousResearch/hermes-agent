@@ -3,17 +3,22 @@ import { Link } from "react-router-dom";
 import {
   Activity,
   Brain,
+  Check,
+  Clock,
+  Copy,
   Cpu,
   Database,
   Download,
   Globe,
   HardDrive,
   KeyRound,
+  Link2,
   Play,
   Plus,
   Power,
   RotateCw,
   Server,
+  Share2,
   ShieldCheck,
   Sparkles,
   Stethoscope,
@@ -48,6 +53,7 @@ import type {
   UpdateCheckResponse,
   CuratorStatus,
   PortalStatus,
+  DebugShareResponse,
 } from "@/lib/api";
 
 function formatBytes(n: number): string {
@@ -164,6 +170,11 @@ export default function SystemPage() {
   const [addingCred, setAddingCred] = useState(false);
 
   const [importPath, setImportPath] = useState("");
+  // Restore-from-backup is destructive (overwrites the live config) and the
+  // spawned `hermes import` runs non-interactively (stdin is /dev/null), so
+  // its CLI "Continue? [y/N]" prompt would auto-abort. The dashboard owns the
+  // consent: confirm here, then call the endpoint with force=true.
+  const [importConfirmOpen, setImportConfirmOpen] = useState(false);
 
   // Create-hook modal.
   const [hookModalOpen, setHookModalOpen] = useState(false);
@@ -324,9 +335,58 @@ export default function SystemPage() {
     }
   };
 
+  // ── Debug share ────────────────────────────────────────────────────
+  // Unlike the fire-and-forget ops above, `debug share` produces shareable
+  // paste URLs that are the whole point — so we surface them as real,
+  // copyable links rather than a log tail.
+  const [shareRedact, setShareRedact] = useState(true);
+  const [sharing, setSharing] = useState(false);
+  const [shareResult, setShareResult] = useState<DebugShareResponse | null>(
+    null,
+  );
+  const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
+
+  const copyToClipboard = useCallback(
+    async (text: string, label: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopiedLabel(label);
+        setTimeout(
+          () => setCopiedLabel((cur) => (cur === label ? null : cur)),
+          1500,
+        );
+      } catch {
+        showToast("Couldn't copy to clipboard", "error");
+      }
+    },
+    [showToast],
+  );
+
+  const runDebugShare = useCallback(async () => {
+    setSharing(true);
+    setShareResult(null);
+    try {
+      const res = await api.runDebugShare({ redact: shareRedact });
+      setShareResult(res);
+      const n = Object.keys(res.urls).length;
+      showToast(
+        `Uploaded ${n} paste${n === 1 ? "" : "s"}${
+          res.redacted ? " (redacted)" : ""
+        }`,
+        "success",
+      );
+    } catch (e) {
+      showToast(`Debug share failed: ${e}`, "error");
+    } finally {
+      setSharing(false);
+    }
+  }, [shareRedact, showToast]);
+
+
   // ── Update check / apply ───────────────────────────────────────────
   const checkForUpdate = useCallback(
     async (force = false) => {
+      if (status?.can_update_hermes === false) return;
       setCheckingUpdate(true);
       try {
         const info = await api.checkHermesUpdate(force);
@@ -351,20 +411,27 @@ export default function SystemPage() {
         setCheckingUpdate(false);
       }
     },
-    [showToast],
+    [showToast, status?.can_update_hermes],
   );
 
   // Auto-check (cached) runs inside loadAll on mount; this is the
   // user-triggered forced re-check from the "Check for updates" button.
   const applyUpdate = async () => {
     setUpdateConfirmOpen(false);
+    if (status?.can_update_hermes === false) {
+      showToast(
+        "Hermes updates are managed outside this dashboard.",
+        "success",
+      );
+      return;
+    }
     try {
       const resp = await api.updateHermes();
-      if (!resp.ok && resp.error === "docker_update_unsupported") {
+      if (!resp.ok) {
         showToast(
           resp.message ??
-            "Updates don't apply inside Docker — re-pull the image instead.",
-          "error",
+            "Updates don't apply from this dashboard.",
+          "success",
         );
         return;
       }
@@ -444,6 +511,7 @@ export default function SystemPage() {
   }
 
   const gatewayRunning = status?.gateway_running;
+  const canUpdateHermes = status?.can_update_hermes !== false;
   const validEvents = hooks?.valid_events?.length
     ? hooks.valid_events
     : HOOK_EVENTS_FALLBACK;
@@ -453,7 +521,7 @@ export default function SystemPage() {
       <Toast toast={toast} />
 
       <ConfirmDialog
-        open={updateConfirmOpen}
+        open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
         title="Update Hermes?"
@@ -632,7 +700,8 @@ export default function SystemPage() {
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">Hermes</div>
                 <div className="flex items-center gap-2">
                   <span>v{stats?.hermes_version}</span>
-                  {updateInfo &&
+                  {canUpdateHermes &&
+                    updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
                         {updateInfo.behind && updateInfo.behind > 0
@@ -692,45 +761,47 @@ export default function SystemPage() {
                 CPU / memory / disk metrics.
               </p>
             )}
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-              <Button
-                size="sm"
-                ghost
-                disabled={checkingUpdate}
-                prefix={
-                  checkingUpdate ? (
-                    <Spinner className="h-3.5 w-3.5" />
-                  ) : (
-                    <RotateCw className="h-3.5 w-3.5" />
-                  )
-                }
-                onClick={() => void checkForUpdate(true)}
-              >
-                Check for updates
-              </Button>
-              {updateInfo?.update_available && updateInfo.can_apply && (
+            {canUpdateHermes && (
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
                 <Button
                   size="sm"
-                  prefix={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => setUpdateConfirmOpen(true)}
+                  ghost
+                  disabled={checkingUpdate}
+                  prefix={
+                    checkingUpdate ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : (
+                      <RotateCw className="h-3.5 w-3.5" />
+                    )
+                  }
+                  onClick={() => void checkForUpdate(true)}
                 >
-                  Update now
+                  Check for updates
                 </Button>
-              )}
-              {updateInfo &&
-                !updateInfo.can_apply &&
-                updateInfo.update_available && (
+                {updateInfo?.update_available && updateInfo.can_apply && (
+                  <Button
+                    size="sm"
+                    prefix={<Download className="h-3.5 w-3.5" />}
+                    onClick={() => setUpdateConfirmOpen(true)}
+                  >
+                    Update now
+                  </Button>
+                )}
+                {updateInfo &&
+                  !updateInfo.can_apply &&
+                  updateInfo.update_available && (
+                    <span className="text-xs text-muted-foreground">
+                      Update with{" "}
+                      <span className="font-mono">{updateInfo.update_command}</span>
+                    </span>
+                  )}
+                {updateInfo?.message && !updateInfo.update_available && (
                   <span className="text-xs text-muted-foreground">
-                    Update with{" "}
-                    <span className="font-mono">{updateInfo.update_command}</span>
+                    {updateInfo.message}
                   </span>
                 )}
-              {updateInfo?.message && !updateInfo.update_available && (
-                <span className="text-xs text-muted-foreground">
-                  {updateInfo.message}
-                </span>
-              )}
-            </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </section>
@@ -992,6 +1063,129 @@ export default function SystemPage() {
             </Button>
           </CardContent>
         </Card>
+
+        {/* Debug share — uploads a redacted report + logs, returns shareable
+            links. Separated from the buttons above because its output is
+            persistent, copyable URLs, not a fire-and-forget log tail. */}
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-start gap-2">
+                <Share2 className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium">Share debug report</span>
+                  <span className="text-xs text-muted-foreground max-w-prose">
+                    Uploads system info + logs to a public paste service and
+                    returns links to send the Hermes team. Pastes auto-delete
+                    after 6 hours.
+                  </span>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                disabled={sharing}
+                prefix={
+                  sharing ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : (
+                    <Share2 className="h-3.5 w-3.5" />
+                  )
+                }
+                onClick={() => void runDebugShare()}
+              >
+                {sharing ? "Uploading…" : "Generate share link"}
+              </Button>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs text-muted-foreground select-none">
+              <input
+                type="checkbox"
+                className="accent-current"
+                checked={shareRedact}
+                disabled={sharing}
+                onChange={(e) => setShareRedact(e.target.checked)}
+              />
+              Redact credential-shaped tokens before upload (recommended)
+            </label>
+
+            {shareResult && (
+              <div className="flex flex-col gap-2 border-t border-border pt-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Badge tone="success">uploaded</Badge>
+                    {shareResult.redacted ? (
+                      <Badge tone="outline">redacted</Badge>
+                    ) : (
+                      <Badge tone="warning">not redacted</Badge>
+                    )}
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Clock className="h-3 w-3" />
+                      auto-deletes in{" "}
+                      {Math.round(shareResult.auto_delete_seconds / 3600)}h
+                    </span>
+                  </div>
+                  {Object.keys(shareResult.urls).length > 1 && (
+                    <Button
+                      size="sm"
+                      ghost
+                      prefix={
+                        copiedLabel === "__all__" ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )
+                      }
+                      onClick={() =>
+                        void copyToClipboard(
+                          Object.entries(shareResult.urls)
+                            .map(([label, url]) => `${label}: ${url}`)
+                            .join("\n"),
+                          "__all__",
+                        )
+                      }
+                    >
+                      Copy all
+                    </Button>
+                  )}
+                </div>
+
+                {Object.entries(shareResult.urls).map(([label, url]) => (
+                  <div
+                    key={label}
+                    className="flex items-center gap-2 bg-background/50 border border-border px-3 py-2"
+                  >
+                    <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="font-mono text-xs shrink-0 w-24 truncate text-muted-foreground">
+                      {label}
+                    </span>
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-mono text-xs truncate flex-1 text-primary hover:underline"
+                    >
+                      {url}
+                    </a>
+                    <Button
+                      ghost
+                      size="icon"
+                      aria-label={`Copy ${label} link`}
+                      onClick={() => void copyToClipboard(url, label)}
+                    >
+                      {copiedLabel === label ? <Check /> : <Copy />}
+                    </Button>
+                  </div>
+                ))}
+
+                {shareResult.failures.length > 0 && (
+                  <span className="text-xs text-destructive">
+                    Some logs failed to upload: {shareResult.failures.join("; ")}
+                  </span>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
         <Card>
           <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-end">
             <div className="grid gap-2 flex-1">
@@ -1004,11 +1198,24 @@ export default function SystemPage() {
               disabled={!importPath.trim()}
               onClick={() => {
                 if (!importPath.trim()) return;
-                runOp(() => api.runImport(importPath.trim()), "Import");
+                setImportConfirmOpen(true);
               }}
             >
               Import
             </Button>
+            <ConfirmDialog
+              open={importConfirmOpen}
+              title="Restore from backup?"
+              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${importPath.trim() || "the archive"}. This cannot be undone.`}
+              destructive
+              confirmLabel="Restore"
+              cancelLabel="Cancel"
+              onCancel={() => setImportConfirmOpen(false)}
+              onConfirm={() => {
+                setImportConfirmOpen(false);
+                runOp(() => api.runImport(importPath.trim(), true), "Import");
+              }}
+            />
           </CardContent>
         </Card>
       </section>

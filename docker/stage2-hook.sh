@@ -23,6 +23,56 @@ INSTALL_DIR="/opt/hermes"
 # Drop to hermes via s6-setuidgid, but skip it when already non-root.
 as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@"; }
 
+# --- Reject the unsupported `docker run --user <uid>:<gid>` start ---
+# Detect the case where the container was launched with `--user` pinned to an
+# arbitrary host UID (the classic `--user $(id -u):$(id -g)` invocation people
+# used in the tini era to make container-written files match their host user).
+#
+# Under s6-overlay this no longer works: the bootstrap (UID remap, data-volume
+# ownership, config seeding) requires root, and it is skipped when the container
+# starts non-root. The baked install tree under /opt/hermes is intentionally
+# root-owned and non-writable; mutable runtime state must live under
+# $HERMES_HOME. An arbitrary `--user` UID therefore cannot repair or populate
+# the data volume, and startup fails with EACCES. See #34837 for the
+# supervision-tree side of this.
+#
+# The supported way to match host-side ownership is to start as root (the image
+# default) and pass HERMES_UID/HERMES_GID — or the PUID/PGID aliases — which the
+# remap block below consumes via usermod/groupmod + targeted chown. That gives
+# the exact same outcome (files owned by your host UID) without breaking s6.
+#
+# preinit runs setuid-root (euid=0) but cont-init.d hooks run with the real UID
+# the container was started as, so `id -u` here is the host UID (e.g. 1000), and
+# `id -u hermes` is the unremapped build UID (10000) because no root-only remap
+# could run. root starts (id -u = 0) and the normal supervised drop to the
+# hermes UID are both unaffected.
+cur_uid="$(id -u)"
+if [ "$cur_uid" != 0 ] && [ "$cur_uid" != "$(id -u hermes)" ]; then
+    cat >&2 <<EOF
+[stage2] ERROR: container started with --user $cur_uid (an arbitrary, non-hermes UID).
+
+This is not supported under the s6-overlay image. The container bootstrap
+(UID remap, data-volume ownership, config seeding) needs to start as root,
+and the baked /opt/hermes install tree is intentionally root-owned and
+non-writable, so a pinned --user UID cannot repair startup state — startup
+will fail.
+
+To make container-written files match your HOST user, DON'T use --user.
+Start the container as root (the default) and pass your host UID/GID instead:
+
+    docker run -e HERMES_UID=\$(id -u) -e HERMES_GID=\$(id -g) ...
+
+NAS users (Synology / unRAID / UGOS) can use the PUID/PGID aliases:
+
+    docker run -e PUID=\$(id -u) -e PGID=\$(id -g) ...
+
+The image remaps the hermes user to that UID/GID at boot and chowns the data
+volume accordingly, so files land owned by your host user — the same outcome
+--user was being used for, without breaking the supervision tree.
+EOF
+    exit 1
+fi
+
 # --- Bootstrap HERMES_HOME as root ---
 # Create the directory (and any missing parents) while we still have root
 # privileges so the chown checks below see real metadata and the later
@@ -35,11 +85,12 @@ as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@";
 # is a no-op if the dir already exists. (#18482, salvages #18488)
 mkdir -p "$HERMES_HOME"
 
-# Numeric UID/GID validation: must be digits only, 1000-65534
+# Numeric UID/GID validation: must be digits only, non-root, 1-65534.
+# NAS hosts such as Unraid commonly use low non-root IDs (99:100).
 validate_uid_gid() {
     case "$1" in
         ''|*[!0-9]*) return 1 ;;
-        *) [ "$1" -ge 1000 ] && [ "$1" -le 65534 ] ;;
+        *) [ "$1" -ge 1 ] && [ "$1" -le 65534 ] ;;
     esac
 }
 
@@ -148,7 +199,7 @@ if [ "$needs_chown" = true ]; then
     # Hermes-owned subdirs: recursive chown is safe here because these are
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
-    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles; do
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do
         if [ -e "$HERMES_HOME/$sub" ]; then
             chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
                 echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
@@ -156,44 +207,13 @@ if [ "$needs_chown" = true ]; then
     done
 fi
 
-# --- Fix ownership of build trees under $INSTALL_DIR ---
-# Hermes-owned trees under $INSTALL_DIR must be re-chowned whenever the
-# runtime hermes UID no longer owns them — otherwise:
-#   - .venv: lazy_deps.py cannot install platform packages (discord.py,
-#     telegram, slack, etc.) with EACCES (#15012, #21100)
-#   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
-#     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
-#     is set) and writes to ui-tui/dist/. Without this chown the new
-#     hermes UID can't write the build output (#28851).
-#   - node_modules: root-level dependencies (puppeteer, web tooling)
-#     that runtime code may walk/update.
-# The set mirrors the build-time `chown -R hermes:hermes` line in the
-# Dockerfile — keep them in sync if the Dockerfile chown set changes.
-# These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
-# concern doesn't apply — recursive is fine.
-#
-# This MUST be gated independently of the $HERMES_HOME ownership check
-# above. `usermod -u <new> hermes` re-chowns the hermes home dir
-# ($HERMES_HOME == /opt/data) to the new UID as a side effect, so after a
-# HERMES_UID/PUID remap `stat $HERMES_HOME` always already matches the new
-# UID and `needs_chown` is false — but the build trees under /opt/hermes
-# are NOT touched by usermod and remain owned by the build-time UID
-# (10000). Gating them on $HERMES_HOME ownership (as #35027 did) silently
-# skipped this chown on the common PUID/NAS path, regressing lazy installs
-# and TUI rebuilds. Probe the build trees directly instead: chown only
-# when the venv is not already owned by the runtime hermes UID. Idempotent
-# and skips the expensive recursive chown on every restart once ownership
-# is settled.
-venv_owner=$(stat -c %u "$INSTALL_DIR/.venv" 2>/dev/null || echo "")
-if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
-    echo "[stage2] Fixing ownership of build trees under $INSTALL_DIR to hermes ($actual_hermes_uid)"
-    chown -R hermes:hermes \
-        "$INSTALL_DIR/.venv" \
-        "$INSTALL_DIR/ui-tui" \
-        "$INSTALL_DIR/node_modules" \
-        2>/dev/null || \
-        echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"
-fi
+# --- Immutable install tree ---
+# Do not chown runtime code or dependency trees under $INSTALL_DIR back to the
+# hermes user. Hosted/container instances keep mutable state under
+# $HERMES_HOME (/opt/data) and run with PYTHONDONTWRITEBYTECODE plus
+# HERMES_DISABLE_LAZY_INSTALLS=1. Keeping /opt/hermes root-owned and
+# non-writable prevents an agent session from self-modifying the installed
+# source, venv, TUI bundle, or node_modules and bricking the gateway.
 
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
 # boot. Profile dirs and files can land owned by root when commands
@@ -204,6 +224,14 @@ fi
 # chown would fail.
 if [ -d "$HERMES_HOME/profiles" ]; then
     chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
+fi
+
+# Always reset ownership of $HERMES_HOME/cron on every boot for the same
+# docker-exec/root-write reason as profiles/. The cron scheduler state
+# (jobs.json) must stay readable by the unprivileged hermes runtime even
+# after root-context maintenance commands or scheduler writes.
+if [ -d "$HERMES_HOME/cron" ]; then
+    chown -R hermes:hermes "$HERMES_HOME/cron" 2>/dev/null || true
 fi
 
 # Reset ownership of hermes-owned top-level state files on every boot.
@@ -252,21 +280,36 @@ as_hermes mkdir -p \
     "$HERMES_HOME/cron" \
     "$HERMES_HOME/sessions" \
     "$HERMES_HOME/logs" \
+    "$HERMES_HOME/logs/gateways" \
     "$HERMES_HOME/hooks" \
     "$HERMES_HOME/memories" \
     "$HERMES_HOME/skills" \
     "$HERMES_HOME/skins" \
     "$HERMES_HOME/plans" \
     "$HERMES_HOME/workspace" \
-    "$HERMES_HOME/home"
+    "$HERMES_HOME/home" \
+    "$HERMES_HOME/pairing" \
+    "$HERMES_HOME/platforms/pairing"
 
-# --- Install-method stamp (read by detect_install_method() in hermes status) ---
-# Preserved from the tini-era entrypoint (PR #27843). Must be written as
-# the hermes user so ownership matches the file's documented owner.
-# tee is invoked directly via s6-setuidgid (no `sh -c` wrapper) for the
-# same shell-metacharacter safety described above.
-printf 'docker\n' | as_hermes tee "$HERMES_HOME/.install_method" >/dev/null \
-    || true
+# --- Install-method stamp ---
+# The 'docker' stamp is baked into the immutable install tree at
+# /opt/hermes/.install_method (see Dockerfile), NOT written here into
+# $HERMES_HOME. detect_install_method() reads the code-scoped stamp first.
+#
+# Why we no longer stamp $HERMES_HOME: it is a shared DATA volume, commonly
+# bind-mounted from the host (~/.hermes:/opt/data) and sometimes shared with a
+# host-side Desktop/CLI install. Stamping 'docker' here clobbered that host
+# install's marker, so its in-app updater read 'docker' and refused to run
+# 'hermes update'. To heal homes already poisoned by older images, remove a
+# stale 'docker' stamp from $HERMES_HOME if one is present (the host install's
+# own installer re-creates its code-scoped stamp; a genuine container relies on
+# the baked /opt/hermes stamp, so deleting the data-dir copy is safe).
+if [ -f "$HERMES_HOME/.install_method" ]; then
+    stamped="$(tr -d '[:space:]' < "$HERMES_HOME/.install_method" 2>/dev/null || true)"
+    if [ "$stamped" = "docker" ]; then
+        rm -f "$HERMES_HOME/.install_method" 2>/dev/null || true
+    fi
+fi
 
 # --- Seed config files (only on first boot) ---
 seed_one() {
@@ -286,6 +329,17 @@ seed_one "SOUL.md" "docker/SOUL.md"
 if [ -f "$HERMES_HOME/.env" ]; then
     chown hermes:hermes "$HERMES_HOME/.env" 2>/dev/null || true
     chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+fi
+
+# --- Migrate persisted config schema ---
+# Docker image upgrades replace the code under $INSTALL_DIR but preserve
+# $HERMES_HOME on the mounted volume. Run the same safe, non-interactive
+# config-schema migrations that `hermes update` runs for non-Docker installs,
+# after first-boot seeding and before supervised gateway services start.
+# Set HERMES_SKIP_CONFIG_MIGRATION=1 for controlled/manual migrations.
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
+        || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
 
 # auth.json: bootstrap from env on first boot only. Same semantics as the

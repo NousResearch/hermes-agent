@@ -271,24 +271,15 @@ Sessions are shared between the TUI and the classic CLI — both write to the sa
 
 See [Sessions](sessions.md) for lifecycle, search, compression, and export.
 
-## Attaching to a running gateway
+## How the TUI talks to its gateway
 
-By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained. If you already have a long-lived gateway running (e.g. `hermes gateway run` in tmux, or the systemd / launchd service), you can point the TUI at that gateway instead — the TUI then becomes a thin client and shares state with every other surface (messaging platforms, web dashboard, other TUI sessions) that's attached to the same gateway.
+By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained — there's nothing to configure.
 
-Set the websocket URL via env before launching:
+You may see a `HERMES_TUI_GATEWAY_URL` env var referenced in the codebase or logs. This is an **internal wiring detail of the web dashboard**, not a user-facing remote-attach knob. When you open the dashboard's "Chat" tab (`hermes dashboard` → `/chat`), the dashboard's web server spawns an embedded TUI child process and injects `HERMES_TUI_GATEWAY_URL` so that child attaches to the dashboard's own in-process `tui_gateway` over a loopback WebSocket (`/api/ws`). The `/api/ws` endpoint exists only inside the dashboard server (`hermes_cli/web_server.py`) and is bound to that process's lifetime and auth.
 
-```bash
-export HERMES_TUI_GATEWAY_URL="ws://localhost:8765/api/ws?token=<auth-token>"
-hermes --tui
-```
+There is no general "point any TUI at any standalone gateway port" mode. In particular, the OpenAI-compatible API server (`hermes gateway` / the `api_server` platform) does **not** serve `/api/ws` — it's the model-backend surface (`/v1/chat/completions`, `/v1/models`, …) and deliberately does not expose the TUI's JSON-RPC control channel. Setting `HERMES_TUI_GATEWAY_URL` to that port will 404.
 
-The token comes from the gateway's API auth configuration (see [API Server](features/api-server.md)). When the env var is set, the TUI:
-
-- Skips spawning a local gateway entirely — no duplicate platform adapters, no port conflicts.
-- Routes every action (slash commands, image attach, browser progress, voice events, …) over the websocket to the shared gateway.
-- Reconnects automatically if the gateway URL rotates (new token) between requests.
-
-This is the same channel the web dashboard's embedded TUI uses (see [Web Dashboard](features/web-dashboard.md#chat)) — one gateway, many clients.
+If you want multiple surfaces to share one set of sessions, use the shared `~/.hermes/state.db` (see [Sessions](sessions.md)) or the web dashboard's embedded chat (see [Web Dashboard](features/web-dashboard.md#chat)) — not a hand-set gateway URL.
 
 ## Reverting to the classic CLI
 

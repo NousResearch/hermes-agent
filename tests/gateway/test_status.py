@@ -636,6 +636,36 @@ class TestScopedLocks:
         assert removed == 0
         assert reused_pid_lock.exists()
 
+    def test_acquire_scoped_lock_replaces_reused_pid_even_with_matching_start_time(self, tmp_path, monkeypatch):
+        """Regression: boot-time PID+start_time collision must not block gateway startup.
+
+        On Linux, systemd assigns PIDs and jiffy start_times deterministically
+        across reboots. A core service (e.g. cron) can land on the exact same
+        PID and start_time as a previous gateway. The start_time check passes,
+        but the live process is not a gateway — the lock must be evicted.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 840,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+            "argv": ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/sbin/nginx")
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+
 
 class TestTakeoverMarker:
     """Tests for the --replace takeover marker.
@@ -1036,3 +1066,28 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+
+class TestCorruptStatusFiles:
+    """A status / pid file holding non-UTF-8 (binary) bytes must read as
+    None, not crash the gateway status path with UnicodeDecodeError."""
+
+    def test_read_json_file_returns_none_on_binary_garbage(self, tmp_path):
+        p = tmp_path / "runtime.json"
+        p.write_bytes(b"\xff\xfe\x00\x80not utf-8\x81")
+        assert status._read_json_file(p) is None
+
+    def test_read_json_file_still_parses_valid_json(self, tmp_path):
+        p = tmp_path / "runtime.json"
+        p.write_text(json.dumps({"pid": 7}), encoding="utf-8")
+        assert status._read_json_file(p) == {"pid": 7}
+
+    def test_read_pid_record_returns_none_on_binary_garbage(self, tmp_path):
+        p = tmp_path / "gateway.pid"
+        p.write_bytes(b"\xff\xfe\x00\x80\x81")
+        assert status._read_pid_record(p) is None
+
+    def test_read_pid_record_still_parses_bare_pid(self, tmp_path):
+        p = tmp_path / "gateway.pid"
+        p.write_text("4242", encoding="utf-8")
+        assert status._read_pid_record(p) == {"pid": 4242}

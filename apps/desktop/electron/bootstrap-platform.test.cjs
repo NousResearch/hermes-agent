@@ -45,11 +45,17 @@ test('detectRemoteDisplay does not treat WSLg as remote', () => {
   // WSLg renders locally via vGPU and doesn't show the flicker, so a WSL
   // session with a local DISPLAY keeps hardware acceleration on.
   assert.equal(detectRemoteDisplay({ env: { WSL_DISTRO_NAME: 'Ubuntu', DISPLAY: ':0' }, platform: 'linux' }), null)
-  assert.equal(detectRemoteDisplay({ env: { WSL_INTEROP: '/run/WSL/1_interop', DISPLAY: ':0' }, platform: 'linux' }), null)
+  assert.equal(
+    detectRemoteDisplay({ env: { WSL_INTEROP: '/run/WSL/1_interop', DISPLAY: ':0' }, platform: 'linux' }),
+    null
+  )
 })
 
 test('detectRemoteDisplay flags SSH sessions on any platform', () => {
-  assert.equal(detectRemoteDisplay({ env: { SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' }, platform: 'linux' }), 'ssh-session')
+  assert.equal(
+    detectRemoteDisplay({ env: { SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' }, platform: 'linux' }),
+    'ssh-session'
+  )
   assert.equal(detectRemoteDisplay({ env: { SSH_CLIENT: '1.2.3.4 5 22' }, platform: 'darwin' }), 'ssh-session')
   assert.equal(detectRemoteDisplay({ env: { SSH_TTY: '/dev/pts/0' }, platform: 'win32' }), 'ssh-session')
 })

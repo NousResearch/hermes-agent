@@ -58,9 +58,9 @@ Element.prototype.animate = function animate() {
   } as unknown as Animation
 }
 
-// jsdom returns 0 for offset*; the virtualizer reads those to size its
+// jsdom returns 0 for offset*; some layout code reads those to size the
 // viewport. Fall through to client* (which tests can override) or a sane
-// default so virtualized items render.
+// default so message rows render with non-zero dimensions.
 function stubOffsetDimension(
   prop: 'offsetHeight' | 'offsetWidth',
   clientProp: 'clientHeight' | 'clientWidth',
@@ -164,6 +164,27 @@ function assistantMultiReasoningMessage(texts: string[]): ThreadMessage {
   } as ThreadMessage
 }
 
+function assistantSeparatedReasoningMessage(): ThreadMessage {
+  return {
+    id: 'assistant-reasoning-separated-1',
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', text: ' Complete first thought.', status: { type: 'complete' } },
+      { type: 'text', text: 'Interim answer.' },
+      { type: 'reasoning', text: ' Streaming second thought.', status: { type: 'running' } }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function assistantTodoMessage(
   todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>,
   running = true
@@ -195,25 +216,21 @@ function assistantTodoMessage(
   } as ThreadMessage
 }
 
-function assistantReasoningTodoMessage(
-  todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>
-): ThreadMessage {
+function assistantImageMessage(running = false): ThreadMessage {
   return {
-    id: 'assistant-reasoning-todo-1',
+    id: `assistant-image-${running ? 'running' : 'done'}`,
     role: 'assistant',
     content: [
-      { type: 'reasoning', text: 'Let me make a quick todo list.' },
       {
         type: 'tool-call',
-        toolCallId: 'todo-1',
-        toolName: 'todo',
-        args: { todos },
-        argsText: JSON.stringify({ todos }),
-        result: { todos }
-      },
-      { type: 'text', text: 'Done — fake list created.' }
+        toolCallId: 'image-1',
+        toolName: 'image_generate',
+        args: { prompt: 'draw a cat' },
+        argsText: JSON.stringify({ prompt: 'draw a cat' }),
+        ...(running ? {} : { result: { image: 'https://cdn.example/cat.png', success: true } })
+      }
     ],
-    status: { type: 'complete', reason: 'stop' },
+    status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -259,20 +276,6 @@ function StreamingHarness() {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread loading={isRunning && messages.at(-1)?.role !== 'assistant' ? 'response' : undefined} />
-    </AssistantRuntimeProvider>
-  )
-}
-
-function StaticThreadHarness() {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistantMessage('complete response', false)],
-    isRunning: false,
-    onNew: async () => {}
-  })
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
     </AssistantRuntimeProvider>
   )
 }
@@ -375,6 +378,20 @@ function IntroHarness() {
   )
 }
 
+function DismissibleErrorHarness({ onDismissError }: { onDismissError: (messageId: string) => void }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [assistantErrorMessage('OpenRouter rejected the request (403).')],
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread onDismissError={onDismissError} />
+    </AssistantRuntimeProvider>
+  )
+}
+
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
@@ -418,215 +435,28 @@ describe('assistant-ui streaming renderer', () => {
     expect(screen.getByRole('alert').textContent).toContain('OpenRouter rejected the request (403).')
   })
 
-  it('does not pull the viewport back down after the user scrolls up during streaming', async () => {
-    const { container } = render(<StreamingHarness />)
+  it('omits the dismiss control when no onDismissError handler is supplied', () => {
+    render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-    await wait(0)
-
-    await act(async () => {
-      fireEvent.wheel(viewport, { deltaY: -120 })
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
+    expect(screen.queryByRole('button', { name: 'Dismiss error' })).toBeNull()
   })
 
-  it('does not auto-follow idle layout shifts', async () => {
-    const { container } = render(<StaticThreadHarness />)
+  it('invokes onDismissError with the errored message id when the dismiss control is clicked', () => {
+    const onDismissError = vi.fn()
+    render(<DismissibleErrorHarness onDismissError={onDismissError} />)
 
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
+    const dismiss = screen.getByRole('button', { name: 'Dismiss error' })
+    fireEvent.click(dismiss)
 
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
+    expect(onDismissError).toHaveBeenCalledTimes(1)
+    expect(onDismissError).toHaveBeenCalledWith('assistant-error-1')
   })
 
-  it('keeps sticky-bottom armed through viewport height changes during streaming', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let clientHeight = 200
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', {
-      configurable: true,
-      get: () => clientHeight
-    })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-
-    clientHeight = 240
-
-    await act(async () => {
-      viewport.scrollTop = 760
-      fireEvent.scroll(viewport)
-    })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(1_200)
-  })
-
-  it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-    await wait(0)
-
-    await act(async () => {
-      fireEvent.wheel(viewport, { deltaY: -120 })
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
-  })
-
-  it('keeps following final code-highlight growth when a run completes at bottom', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-
-    await wait(650)
-
-    scrollHeight = 1_700
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(1_700)
-  })
-
-  it('does not restart bottom-follow after completion when the user scrolled up', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-
-    await act(async () => {
-      fireEvent.wheel(viewport, { deltaY: -120 })
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    await wait(650)
-
-    scrollHeight = 1_700
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
-  })
+  // Scroll behavior (follow-at-bottom, escape-on-scroll-up, re-engage) is owned
+  // by the use-stick-to-bottom library and covered by its own test suite. We
+  // don't re-assert its scrollTop mechanics here — doing so in jsdom (no real
+  // layout, spring animation via rAF) only produces brittle change-detector
+  // tests. The rendering/streaming-content tests below remain the contract.
 
   it('renders an incomplete streaming fenced code block as a code card', async () => {
     const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />)
@@ -642,14 +472,19 @@ describe('assistant-ui streaming renderer', () => {
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
     const { container } = render(<RunningReasoningHarness />)
     const ui = within(container)
+    const thinkingToggle = ui.getByRole('button', { name: /thinking/i })
 
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+    if (thinkingToggle.getAttribute('aria-expanded') !== 'true') {
+      fireEvent.click(thinkingToggle)
+    }
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
     })
 
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    })
     expect(container.textContent).not.toContain('```ts')
   })
 
@@ -678,7 +513,19 @@ describe('assistant-ui streaming renderer', () => {
     expect(reasoningParts[1]?.textContent).toBe('Second thought.')
   })
 
-  it('renders live todo rows during a running turn', () => {
+  it('does not reopen an earlier completed thinking group when a later group is running', () => {
+    const { container } = render(<RunningMessageHarness message={assistantSeparatedReasoningMessage()} />)
+
+    const disclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
+    expect(disclosures.length).toBe(2)
+
+    expect(disclosures[0].querySelector('button')?.getAttribute('aria-expanded')).toBe('false')
+    expect(disclosures[1].querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
+    expect(container.textContent).not.toContain('Complete first thought.')
+    expect(container.textContent).toContain('Interim answer.')
+  })
+
+  it('does not render an inline todo panel — todos live in the composer status stack', () => {
     const { container } = render(
       <TodoHarness
         message={assistantTodoMessage([
@@ -688,52 +535,18 @@ describe('assistant-ui streaming renderer', () => {
       />
     )
 
-    const ui = within(container)
-
-    expect(container.querySelector('[data-slot="aui_todo-hoisted"]')).toBeTruthy()
-    expect(ui.getAllByText('Boil water').length).toBeGreaterThan(0)
-    expect(ui.getByText('Gather ingredients')).toBeTruthy()
-    expect(ui.queryByText(/pending/i)).toBeNull()
-    expect(ui.queryByRole('button', { name: /todo/i })).toBeNull()
+    expect(container.querySelector('[data-slot="aui_todo-hoisted"]')).toBeNull()
   })
 
-  it('renders archived todos after turn completion regardless of pending state', () => {
-    const first = render(
-      <TodoHarness message={assistantTodoMessage([{ content: 'Boil water', id: 'boil', status: 'pending' }], false)} />
-    )
+  it('renders completed image generation results in the tool slot', async () => {
+    const { container } = render(<MessageHarness message={assistantImageMessage()} />)
 
-    const ui = within(first.container)
-
-    expect(ui.getAllByText('Boil water').length).toBeGreaterThan(0)
-
-    first.unmount()
-
-    const second = render(
-      <TodoHarness
-        message={assistantTodoMessage([{ content: 'Serve latte', id: 'serve', status: 'completed' }], false)}
-      />
-    )
-
-    const archivedUi = within(second.container)
-
-    expect(archivedUi.getAllByText('Serve latte').length).toBeGreaterThan(0)
-  })
-
-  it('hoists todo outside the thinking disclosure when reasoning is present', () => {
-    const { container } = render(
-      <TodoHarness
-        message={assistantReasoningTodoMessage([
-          { content: 'Buy oats', id: 'oats', status: 'completed' },
-          { content: "Reply to Sam's email", id: 'email', status: 'in_progress' }
-        ])}
-      />
-    )
-
-    const todoPanel = container.querySelector('[data-slot="aui_todo-hoisted"]')
-    const thinkingDisclosure = container.querySelector('[data-slot="aui_thinking-disclosure"]')
-
-    expect(todoPanel).toBeTruthy()
-    expect(thinkingDisclosure).toBeTruthy()
-    expect(Boolean(thinkingDisclosure?.contains(todoPanel as Node))).toBe(false)
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: 'Generated image' }).getAttribute('src')).toBe(
+        'https://cdn.example/cat.png'
+      )
+    })
+    expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeTruthy()
+    expect(screen.queryByRole('status', { name: /rendering image/i })).toBeNull()
   })
 })

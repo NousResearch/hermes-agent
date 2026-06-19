@@ -135,7 +135,14 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
 
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     """Infer a reasonable ``type`` if this schema node has none."""
-    if "type" in node and node["type"] not in {None, ""}:
+    node_type = node.get("type")
+    if isinstance(node_type, list):
+        concrete = next(
+            (t for t in node_type if isinstance(t, str) and t not in {"", "null"}),
+            "string",
+        )
+        return {**node, "type": concrete}
+    if "type" in node and node_type not in {None, ""}:
         return node
 
     # Heuristic: presence of ``properties`` → object, ``items`` → array, ``enum``

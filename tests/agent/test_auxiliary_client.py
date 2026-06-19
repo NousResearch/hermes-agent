@@ -38,6 +38,20 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{header}.{payload}.sig"
 
 
+class _FakeAnthropicStream:
+    def __init__(self, final_message):
+        self._final_message = final_message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get_final_message(self):
+        return self._final_message
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
@@ -144,6 +158,47 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
+
+
+class TestNousTagsScoping:
+    def test_tags_injected_when_provider_is_nous(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", False)
+
+        kwargs = aux._build_call_kwargs(
+            provider="nous",
+            model="hermes-4",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert kwargs["extra_body"]["tags"] == aux._nous_portal_tags()
+
+    def test_tags_not_injected_for_gemini_when_main_is_nous(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
+
+        kwargs = aux._build_call_kwargs(
+            provider="gemini",
+            model="gemini-2.5-flash",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert "extra_body" not in kwargs
+
+    def test_tags_not_injected_for_openrouter_when_main_is_nous(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
+
+        kwargs = aux._build_call_kwargs(
+            provider="openrouter",
+            model="openai/gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert "extra_body" not in kwargs
 
 
 class TestNormalizeAuxProvider:
@@ -949,6 +1004,37 @@ class TestVisionClientFallback:
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
 
+    def test_anthropic_auxiliary_client_aggregates_stream_response(self):
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        final_message = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="streamed aux response")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=3, output_tokens=4),
+        )
+        messages_api = SimpleNamespace(
+            stream=MagicMock(return_value=_FakeAnthropicStream(final_message)),
+            create=MagicMock(return_value="raw event-stream text"),
+        )
+        real_client = SimpleNamespace(messages=messages_api)
+        client = AnthropicAuxiliaryClient(
+            real_client,
+            "claude-sonnet-4-20250514",
+            "sk-test",
+            "https://sse-only.example/v1",
+        )
+
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": "summarize"}],
+            max_tokens=16,
+        )
+
+        messages_api.stream.assert_called_once()
+        messages_api.create.assert_not_called()
+        assert response.choices[0].message.content == "streamed aux response"
+        assert response.usage.prompt_tokens == 3
+        assert response.usage.completion_tokens == 4
+
 
 class TestAuxiliaryPoolAwareness:
     def test_try_nous_uses_pool_entry(self):
@@ -1612,6 +1698,37 @@ class TestAuxiliaryFallbackLayering:
         exc.status_code = 402
         return exc
 
+    def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
+        """Auto aux call failures try per-task then top-level fallback before built-ins."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        main_chain_client = MagicMock()
+        main_chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main fallback chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "qwen/qwen3.5-122b-a10b")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_task_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(main_chain_client, "inclusionai/ring-2.6-1t:free", "openrouter")) as mock_main_chain, \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_builtin_chain:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert main_chain_client.chat.completions.create.called
+        mock_task_chain.assert_called_once_with(
+            "title_generation", "auto", reason="payment error")
+        mock_main_chain.assert_called_once_with(
+            "title_generation", "auto", reason="payment error")
+        mock_builtin_chain.assert_not_called()
+
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1792,6 +1909,108 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 # ---------------------------------------------------------------------------
 # _is_connection_error coverage
 # ---------------------------------------------------------------------------
+
+
+class TestTransientTransportRetry:
+    """call_llm retries ONCE on the same provider for a transient transport
+    blip before escalating to the fallback chain.
+
+    Salvaged from PR #16587 (@ARegalado1). The original fixed only the
+    context-compression caller; this lives in call_llm so every auxiliary
+    task (compression, memory flush, title-gen, session-search, vision)
+    gets the same same-target retry, and the gate reuses the canonical
+    _is_connection_error detector.
+    """
+
+    def _patches(self, client):
+        return (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("openrouter", "some-model", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "some-model"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda resp, _task: resp,
+            ),
+        )
+
+    def test_retries_streaming_close_once_same_provider(self):
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [
+            Exception(
+                "peer closed connection without sending complete message body "
+                "(incomplete chunked read)"
+            ),
+            {"ok": True},
+        ]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        # Same client called twice — no provider fallback needed.
+        assert client.chat.completions.create.call_count == 2
+
+    def test_retries_5xx_once_same_provider(self):
+        class _Err503(Exception):
+            status_code = 503
+
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = [_Err503("upstream"), {"ok": True}]
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3:
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+
+    def test_does_not_retry_non_transient_400(self):
+        class _Err400(Exception):
+            status_code = 400
+
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+        client.chat.completions.create.side_effect = _Err400("bad request")
+        p1, p2, p3 = self._patches(client)
+        with p1, p2, p3, pytest.raises(_Err400):
+            call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        # Non-transient: single attempt, no same-target retry.
+        assert client.chat.completions.create.call_count == 1
+
+    def test_second_transient_failure_escalates_to_fallback(self):
+        """Two transient failures in a row exhaust the same-target retry and
+        fall through to the existing connection-error provider fallback."""
+        primary = MagicMock()
+        primary.base_url = "https://openrouter.ai/api/v1"
+        primary.chat.completions.create.side_effect = Exception(
+            "peer closed connection without sending complete message body"
+        )
+
+        fb_client = MagicMock()
+        fb_client.base_url = "https://api.openai.com/v1"
+        fb_client.chat.completions.create.return_value = {"fallback": True}
+
+        p1, p2, p3 = self._patches(primary)
+        with (
+            p1, p2, p3,
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(None, None, ""),
+            ),
+            patch(
+                "agent.auxiliary_client._try_main_agent_model_fallback",
+                return_value=(fb_client, "fb-model", "openai"),
+            ),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
+        assert result == {"fallback": True}
+        # Primary tried twice (initial + same-target retry), then fallback.
+        assert primary.chat.completions.create.call_count == 2
+        assert fb_client.chat.completions.create.call_count == 1
 
 
 class TestIsConnectionError:
@@ -2177,6 +2396,61 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+    def test_base64_video_converted_to_video_block(self):
+        # MiniMax M3's Anthropic-compatible endpoint expects type="video"
+        # (not OpenAI's "video_url", not "input_video").
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What happens in this clip?"},
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        vid_block = result[0]["content"][1]
+        assert vid_block["type"] == "video"
+        assert vid_block["source"]["type"] == "base64"
+        assert vid_block["source"]["media_type"] == "video/mp4"
+        assert vid_block["source"]["data"] == "AAAA"
+
+    def test_video_media_type_parsed_from_data_uri(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": "data:video/quicktime;base64,QQ=="}}
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["source"]["media_type"] == "video/quicktime"
+
+    def test_url_video_converted_to_video_block(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": "https://example.com/clip.mp4"}}
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        vid_block = result[0]["content"][0]
+        assert vid_block["type"] == "video"
+        assert vid_block["source"] == {"type": "url", "url": "https://example.com/clip.mp4"}
+
+    def test_mixed_image_and_video_both_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}},
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["type"] == "image"
+        assert result[0]["content"][1]["type"] == "video"
 
 
 class _AuxAuth401(Exception):
@@ -2815,6 +3089,109 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+
+class TestCodexAuxiliaryToolMessageConversion:
+    """Regression for issue #5709.
+
+    The auxiliary Codex adapter used to maintain its own chat->Responses
+    conversion loop that forwarded every non-system message's ``role``
+    verbatim into Responses ``input[]``. When ``flush_memories()`` /
+    compression replayed real session history containing assistant
+    ``tool_calls`` and ``role="tool"`` results, the tool messages leaked
+    into the request and the Responses API rejected them with
+    ``HTTP 400: Invalid value: 'tool'. Supported values are: 'assistant',
+    'system', 'developer', and 'user'.``
+
+    The fix routes the auxiliary path through the SAME shared converter the
+    main agent transport uses (``_chat_messages_to_responses_input``), so
+    no Responses request ever includes a raw ``role="tool"`` input item.
+    """
+
+    def _capture_input(self, messages):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        item=SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        ),
+                    ),
+                    SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                        status="completed", id="r1", usage=None,
+                    )),
+                ])
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+        adapter.create(messages=messages, model="gpt-5.5")
+        return fake_client.responses.kwargs
+
+    def test_tool_history_never_leaks_role_tool(self):
+        messages = [
+            {"role": "system", "content": "You are a memory summarizer."},
+            {"role": "user", "content": "What files did I touch?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {"name": "search_files", "arguments": '{"pattern":"foo"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_abc123", "content": "Found 3 matches"},
+            {"role": "assistant", "content": "You touched bar.py."},
+        ]
+        kwargs = self._capture_input(messages)
+        input_items = kwargs["input"]
+
+        # No raw role="tool" item reaches the Responses API (the 400 trigger).
+        assert not any(it.get("role") == "tool" for it in input_items)
+
+        # Assistant tool call -> function_call item with a call_id.
+        function_calls = [it for it in input_items if it.get("type") == "function_call"]
+        assert function_calls, "assistant tool_call must become a function_call item"
+        assert function_calls[0]["call_id"] == "call_abc123"
+        assert function_calls[0]["name"] == "search_files"
+
+        # Tool result -> function_call_output with the matching call_id.
+        outputs = [it for it in input_items if it.get("type") == "function_call_output"]
+        assert outputs, "tool result must become a function_call_output item"
+        assert outputs[0]["call_id"] == "call_abc123"
+
+        # System message is hoisted to instructions, not left in input[].
+        assert kwargs["instructions"] == "You are a memory summarizer."
+        assert not any(it.get("role") == "system" for it in input_items)
+
+    def test_plain_text_history_still_works(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        kwargs = self._capture_input(messages)
+        input_items = kwargs["input"]
+        roles = [it.get("role") for it in input_items]
+        assert "user" in roles and "assistant" in roles
+        assert not any(it.get("role") == "tool" for it in input_items)
+        assert kwargs["instructions"] == "sys"
 
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:
@@ -3531,3 +3908,82 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+# ── auxiliary_max_tokens_param ──────────────────────────────────────────────
+
+
+class TestAuxiliaryMaxTokensParam:
+    """Verify the kwarg emitted by ``auxiliary_max_tokens_param`` across
+    URL / provider / model-name combinations. Regression cover: a custom
+    OpenAI-compatible endpoint serving ``gpt-5.x`` was silently getting
+    ``max_tokens`` and 400-ing on ``unsupported_parameter``."""
+
+    def test_direct_openai_returns_max_completion_tokens(self):
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://api.openai.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096) == {"max_completion_tokens": 4096}
+
+    def test_local_endpoint_without_model_uses_max_tokens(self):
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="http://localhost:11434/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096) == {"max_tokens": 4096}
+
+    def test_openrouter_api_key_present_keeps_max_tokens_without_model_hint(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://openrouter.ai/api/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096) == {"max_tokens": 4096}
+
+    # Model-name fallback — this is the regression guard.
+
+    def test_custom_endpoint_serving_gpt5_uses_max_completion_tokens(self):
+        """Third-party gateway + gpt-5.x: name-based detection must kick in."""
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://my-gateway.example.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="gpt-5.4") == {
+                "max_completion_tokens": 4096
+            }
+
+    def test_openrouter_serving_gpt4o_uses_max_completion_tokens(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://openrouter.ai/api/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="openai/gpt-4o-mini") == {
+                "max_completion_tokens": 4096
+            }
+
+    def test_custom_endpoint_serving_classic_llama_keeps_max_tokens(self):
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://my-gateway.example.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="llama3-70b") == {
+                "max_tokens": 4096
+            }
+
+    def test_empty_model_falls_back_to_url_only(self):
+        """No model hint → only the URL-based rule applies."""
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://my-gateway.example.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
+            assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}

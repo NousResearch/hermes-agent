@@ -173,6 +173,76 @@ class GatewayAuthorizationMixin:
             return any(str(item).strip() for item in sender_allow)
         return False
 
+    def _whatsapp_group_chat_authorized(self, source: SessionSource) -> bool:
+        """Authorize WhatsApp senders by an allowlisted group chat.
+
+        WhatsApp ``WHATSAPP_ALLOWED_USERS`` is the DM/user allowlist, while
+        ``group_policy`` / ``group_allow_from`` are chat-scoped. A participant
+        in an explicitly allowlisted group should not also need DM access.
+        """
+        if (
+            source.platform != Platform.WHATSAPP
+            or source.chat_type not in {"group", "forum"}
+            or not source.chat_id
+        ):
+            return False
+        if not self._adapter_enforces_own_access_policy(source.platform):
+            return False
+
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(source.platform)
+
+        policy = getattr(adapter, "_group_policy", None) if adapter is not None else None
+        allowed = getattr(adapter, "_group_allow_from", None) if adapter is not None else None
+
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(source.platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if isinstance(extra, dict):
+            if policy is None:
+                policy = extra.get("group_policy")
+            if allowed is None:
+                allowed = extra.get("group_allow_from") or extra.get("groupAllowFrom")
+
+        if policy is None:
+            policy = os.getenv("WHATSAPP_GROUP_POLICY", "")
+        if allowed is None:
+            allowed = os.getenv("WHATSAPP_GROUP_ALLOWED_USERS", "")
+
+        if str(policy or "").strip().lower() != "allowlist":
+            return False
+
+        is_group_allowed = getattr(adapter, "_is_group_allowed", None)
+        if callable(is_group_allowed):
+            try:
+                return bool(is_group_allowed(source.chat_id))
+            except Exception:
+                pass
+
+        if isinstance(allowed, (set, list, tuple)):
+            allowed_ids = {str(value).strip() for value in allowed if str(value).strip()}
+        else:
+            allowed_ids = {
+                part.strip()
+                for part in str(allowed or "").split(",")
+                if part.strip()
+            }
+
+        if "*" in allowed_ids:
+            return True
+        chat_id = str(source.chat_id).strip()
+        if chat_id in allowed_ids:
+            return True
+        if chat_id.endswith("@g.us") and chat_id[:-5] in allowed_ids:
+            return True
+        if not chat_id.endswith("@g.us") and f"{chat_id}@g.us" in allowed_ids:
+            return True
+        return False
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -220,6 +290,9 @@ class GatewayAuthorizationMixin:
                     }
                     if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
+
+        if self._whatsapp_group_chat_authorized(source):
+            return True
 
         if not user_id:
             return False

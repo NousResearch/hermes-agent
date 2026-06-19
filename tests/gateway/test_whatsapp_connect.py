@@ -146,6 +146,68 @@ class TestCloseBridgeLog:
 
 
 # ---------------------------------------------------------------------------
+# bridge subprocess environment
+# ---------------------------------------------------------------------------
+
+class TestBridgeEnvironment:
+    """Verify config-derived routing policy reaches the Node bridge."""
+
+    @pytest.mark.asyncio
+    async def test_passes_group_policy_to_node_bridge_env(self):
+        adapter = _make_adapter()
+        adapter._group_policy = "allowlist"
+        adapter._group_allow_from = {"120363001234567890@g.us"}
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
+
+        class _ClientSessionFactory:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self):
+                factory = self
+
+                class _Session:
+                    async def __aenter__(self):
+                        return self
+
+                    async def __aexit__(self, *exc):
+                        return False
+
+                    def get(self, *args, **kwargs):
+                        factory.calls += 1
+                        if factory.calls == 1:
+                            raise RuntimeError("no existing bridge")
+                        mock_resp = MagicMock()
+                        mock_resp.status = 200
+                        mock_resp.json = AsyncMock(return_value={"status": "connected"})
+                        return _AsyncCM(mock_resp)
+
+                return _Session()
+
+        mock_client_cls = _ClientSessionFactory()
+
+        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("builtins.open", return_value=mock_fh), \
+             patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock), \
+             patch("gateway.platforms.whatsapp.asyncio.create_task"), \
+             patch("aiohttp.ClientSession", mock_client_cls):
+            result = await adapter.connect()
+
+        assert result is True
+        bridge_env = mock_popen.call_args.kwargs["env"]
+        assert bridge_env["WHATSAPP_GROUP_POLICY"] == "allowlist"
+        assert bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
+
+
+# ---------------------------------------------------------------------------
 # data variable initialization
 # ---------------------------------------------------------------------------
 
@@ -181,6 +243,38 @@ class TestDataInitialized:
         # connect() returns True (warn-and-proceed path)
         assert result is True
         assert adapter._running is True
+
+    @pytest.mark.asyncio
+    async def test_bridge_group_env_falls_back_when_adapter_attrs_missing(self, monkeypatch):
+        """Bare adapters still forward env-only group allowlists to the bridge.
+
+        Some tests and recovery paths construct ``WhatsAppAdapter`` via
+        ``__new__`` and bypass ``__init__``. In that shape, connect() must not
+        silently downgrade group policy to open/empty when the operator supplied
+        ``WHATSAPP_GROUP_POLICY`` / ``WHATSAPP_GROUP_ALLOWED_USERS`` in env.
+        """
+        monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+        monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "group-123@g.us")
+
+        adapter = _make_adapter()
+        assert not hasattr(adapter, "_group_policy")
+        assert not hasattr(adapter, "_group_allow_from")
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        # Return non-connected health so connect() starts a fresh subprocess
+        # instead of reusing an already-running bridge before building env.
+        mock_client_cls = _mock_aiohttp(status=200, json_data={"status": "starting"})
+        mock_fh = MagicMock()
+        patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
+
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_popen,              patches[5], patches[6], patches[7], patches[8],              patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+            result = await adapter.connect()
+
+        assert result is True
+        bridge_env = mock_popen.call_args.kwargs["env"]
+        assert bridge_env["WHATSAPP_GROUP_POLICY"] == "allowlist"
+        assert bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] == "group-123@g.us"
 
 
 # ---------------------------------------------------------------------------

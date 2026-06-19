@@ -277,7 +277,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_allow_from = self._coerce_allow_list(
+            config.extra.get("group_allow_from")
+            or config.extra.get("groupAllowFrom")
+            or os.getenv("WHATSAPP_GROUP_ALLOWED_USERS")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -505,6 +509,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_IMAGE_CACHE_DIR"] = str(_get_img_dir())
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
+            group_policy = getattr(self, "_group_policy", os.getenv("WHATSAPP_GROUP_POLICY", "open"))
+            group_allow_from = getattr(
+                self,
+                "_group_allow_from",
+                self._coerce_allow_list(os.getenv("WHATSAPP_GROUP_ALLOWED_USERS", "")),
+            )
+            bridge_env["WHATSAPP_GROUP_POLICY"] = group_policy
+            bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] = ",".join(sorted(group_allow_from))
 
             self._bridge_process = subprocess.Popen(
                 [

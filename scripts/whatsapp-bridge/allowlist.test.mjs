@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
+  matchesAllowedIdentifier,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
@@ -77,4 +78,19 @@ test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () =
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }
+});
+
+test('matchesAllowedIdentifier matches explicit group identifiers only', () => {
+  const allowedGroups = parseAllowedUsers('120363001234567890@g.us');
+
+  assert.equal(matchesAllowedIdentifier('120363001234567890@g.us', allowedGroups), true);
+  assert.equal(matchesAllowedIdentifier('120363001234567890', allowedGroups), true);
+  assert.equal(matchesAllowedIdentifier('120363999999999999@g.us', allowedGroups), false);
+  assert.equal(matchesAllowedIdentifier('267383306489914@lid', allowedGroups), false);
+});
+
+test('matchesAllowedIdentifier preserves secure empty-list default and wildcard', () => {
+  assert.equal(matchesAllowedIdentifier('120363001234567890@g.us', parseAllowedUsers('')), false);
+  assert.equal(matchesAllowedIdentifier('120363001234567890@g.us', null), false);
+  assert.equal(matchesAllowedIdentifier('120363001234567890@g.us', parseAllowedUsers('*')), true);
 });

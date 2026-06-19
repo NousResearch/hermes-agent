@@ -51,6 +51,7 @@ import asyncio
 import collections
 import hashlib
 import hmac
+import inspect
 import itertools
 import json
 import logging
@@ -241,6 +242,8 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_RECALLED_MESSAGE_CACHE_SIZE = 2048
+_FEISHU_RECALLED_MESSAGE_TTL_SECONDS = 10 * 60
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1456,6 +1459,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._recalled_message_ids: "OrderedDict[str, float]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -2419,6 +2423,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message_id or self._is_duplicate(message_id):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
+        message_id = str(message_id)
+        if self._is_recalled_message_id(message_id):
+            logger.info("[Feishu] Dropping recalled inbound message: %s", message_id)
+            return
 
         reason = self._admit(sender, message)
         if reason is not None:
@@ -2460,7 +2468,165 @@ class FeishuAdapter(BasePlatformAdapter):
         logger.debug("[Feishu] User entered P2P chat with bot")
 
     def _on_message_recalled(self, data: Any) -> None:
-        logger.debug("[Feishu] Message recalled by user")
+        message_id = self._extract_recalled_message_id(data)
+        if not message_id:
+            logger.debug("[Feishu] Message recalled by user (missing message_id)")
+            return
+        self._remember_recalled_message_id(message_id)
+        self._discard_recalled_pending_message(message_id)
+        logger.info("[Feishu] Message recalled by user: %s", message_id)
+
+        if not getattr(self, "_message_recall_handler", None):
+            return
+        loop = self._loop
+        if not self._loop_accepts_callbacks(loop):
+            logger.warning("[Feishu] Dropping recall callback before adapter loop is ready: %s", message_id)
+            return
+        self._submit_on_loop(loop, self._dispatch_message_recalled(message_id))
+
+    @staticmethod
+    def _extract_recalled_message_id(data: Any) -> str:
+        event = getattr(data, "event", None)
+        message = getattr(event, "message", None)
+        return str(
+            getattr(message, "message_id", "")
+            or getattr(event, "message_id", "")
+            or getattr(data, "message_id", "")
+            or ""
+        )
+
+    async def _dispatch_message_recalled(self, message_id: str) -> None:
+        handler = getattr(self, "_message_recall_handler", None)
+        if handler is None or not message_id:
+            return
+        result = handler(self.platform, message_id)
+        if inspect.isawaitable(result):
+            await result
+
+    def _remember_recalled_message_id(self, message_id: str) -> None:
+        if not message_id:
+            return
+        now = time.time()
+        recalled = self._recalled_message_ids
+        recalled[message_id] = now
+        recalled.move_to_end(message_id)
+        self._prune_recalled_message_ids(now)
+
+    def _prune_recalled_message_ids(self, now: Optional[float] = None) -> None:
+        now = time.time() if now is None else now
+        recalled = self._recalled_message_ids
+        expired = [
+            message_id
+            for message_id, seen_at in recalled.items()
+            if now - seen_at > _FEISHU_RECALLED_MESSAGE_TTL_SECONDS
+        ]
+        for message_id in expired:
+            recalled.pop(message_id, None)
+        while len(recalled) > _FEISHU_RECALLED_MESSAGE_CACHE_SIZE:
+            recalled.popitem(last=False)
+
+    def _is_recalled_message_id(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+        self._prune_recalled_message_ids()
+        return message_id in self._recalled_message_ids
+
+    def _discard_recalled_pending_message(self, message_id: str) -> None:
+        """Remove a recalled message from not-yet-flushed Feishu batches."""
+        if not message_id:
+            return
+        for state, counts in (
+            (self._text_batch_state, self._pending_text_batch_counts),
+            (self._media_batch_state, None),
+        ):
+            for key, event in list(state.events.items()):
+                if self._remove_recalled_batch_item(event, message_id):
+                    if self._feishu_batch_items(event):
+                        if counts is not None:
+                            counts[key] = len(self._feishu_batch_items(event))
+                        logger.info("[Feishu] Removed recalled message %s from pending batch %s", message_id, key)
+                        continue
+                    state.events.pop(key, None)
+                    if counts is not None:
+                        counts.pop(key, None)
+                    task = state.tasks.pop(key, None)
+                    if task is not None and not task.done():
+                        task.cancel()
+                    logger.info("[Feishu] Dropped pending batch %s for recalled message %s", key, message_id)
+                    continue
+                if getattr(event, "message_id", None) != message_id:
+                    continue
+                state.events.pop(key, None)
+                if counts is not None:
+                    counts.pop(key, None)
+                task = state.tasks.pop(key, None)
+                if task is not None and not task.done():
+                    task.cancel()
+                logger.info("[Feishu] Dropped pending batch %s for recalled message %s", key, message_id)
+
+    @staticmethod
+    def _feishu_batch_item_from_event(event: MessageEvent) -> Dict[str, Any]:
+        return {
+            "message_id": str(getattr(event, "message_id", "") or ""),
+            "text": event.text or "",
+            "media_urls": list(event.media_urls or []),
+            "media_types": list(event.media_types or []),
+        }
+
+    @staticmethod
+    def _feishu_batch_items(event: MessageEvent) -> List[Dict[str, Any]]:
+        items = getattr(event, "_feishu_batch_items", None)
+        return items if isinstance(items, list) else []
+
+    def _ensure_feishu_batch_items(self, event: MessageEvent) -> List[Dict[str, Any]]:
+        items = self._feishu_batch_items(event)
+        if items:
+            return items
+        items = [self._feishu_batch_item_from_event(event)]
+        event._feishu_batch_items = items  # type: ignore[attr-defined]
+        return items
+
+    def _reset_feishu_batch_items(self, event: MessageEvent) -> None:
+        event._feishu_batch_items = [self._feishu_batch_item_from_event(event)]  # type: ignore[attr-defined]
+
+    def _remove_recalled_batch_item(self, event: MessageEvent, message_id: str) -> bool:
+        items = self._feishu_batch_items(event)
+        if not items:
+            return False
+        remaining = [item for item in items if item.get("message_id") != message_id]
+        if len(remaining) == len(items):
+            return False
+        if not remaining:
+            event._feishu_batch_items = []  # type: ignore[attr-defined]
+            return True
+        self._rebuild_feishu_batch_event(event, remaining)
+        return True
+
+    def _rebuild_feishu_batch_event(self, event: MessageEvent, items: List[Dict[str, Any]]) -> None:
+        event._feishu_batch_items = list(items)  # type: ignore[attr-defined]
+        event.message_id = next(
+            (str(item.get("message_id") or "") for item in reversed(items) if item.get("message_id")),
+            event.message_id,
+        )
+        texts = [str(item.get("text") or "") for item in items if item.get("text")]
+        if event.message_type == MessageType.TEXT:
+            event.text = "\n".join(texts)
+        else:
+            merged_text = ""
+            for text in texts:
+                merged_text = self._merge_caption(merged_text, text)
+            event.text = merged_text
+        event.media_urls = [
+            url
+            for item in items
+            for url in list(item.get("media_urls") or [])
+        ]
+        event.media_types = [
+            media_type
+            for item in items
+            for media_type in list(item.get("media_types") or [])
+        ]
+        event._last_chunk_len = len(str(items[-1].get("text") or ""))  # type: ignore[attr-defined]
 
     def _on_drive_comment_event(self, data: Any) -> None:
         """Handle drive document comment notification (drive.notice.comment_add_v1).
@@ -3219,14 +3385,17 @@ class FeishuAdapter(BasePlatformAdapter):
         key = self._media_batch_key(event)
         existing = self._pending_media_batches.get(key)
         if existing is None:
+            self._reset_feishu_batch_items(event)
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
         if not self._media_batch_is_compatible(existing, event):
             await self._flush_media_batch_now(key)
+            self._reset_feishu_batch_items(event)
             self._pending_media_batches[key] = event
             self._schedule_media_batch_flush(key)
             return
+        self._ensure_feishu_batch_items(existing).append(self._feishu_batch_item_from_event(event))
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         if event.text:
@@ -3510,6 +3679,7 @@ class FeishuAdapter(BasePlatformAdapter):
         existing = self._pending_text_batches.get(key)
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._reset_feishu_batch_items(event)
             self._pending_text_batches[key] = event
             self._pending_text_batch_counts[key] = 1
             self._schedule_text_batch_flush(key)
@@ -3517,6 +3687,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         if not self._text_batch_is_compatible(existing, event):
             await self._flush_text_batch_now(key)
+            self._reset_feishu_batch_items(event)
             self._pending_text_batches[key] = event
             self._pending_text_batch_counts[key] = 1
             self._schedule_text_batch_flush(key)
@@ -3528,11 +3699,13 @@ class FeishuAdapter(BasePlatformAdapter):
         next_text = f"{existing.text}\n{appended_text}" if existing.text and appended_text else (existing.text or appended_text)
         if next_count > self._text_batch_max_messages or len(next_text) > self._text_batch_max_chars:
             await self._flush_text_batch_now(key)
+            self._reset_feishu_batch_items(event)
             self._pending_text_batches[key] = event
             self._pending_text_batch_counts[key] = 1
             self._schedule_text_batch_flush(key)
             return
 
+        self._ensure_feishu_batch_items(existing).append(self._feishu_batch_item_from_event(event))
         existing.text = next_text
         existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp

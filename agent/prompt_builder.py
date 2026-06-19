@@ -346,6 +346,22 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "in doubt and the calls are independent, batch them."
 )
 
+# Universal planning gate for non-trivial plan artifacts. Keeps autonomous
+# execution pointed at the right problem by forcing clarification before a
+# plan is drafted, while exempting trivial tasks that do not need a durable
+# plan/checklist artifact.
+PLANNING_CONFIDENCE_GUIDANCE = (
+    "# Planning confidence gate\n"
+    "For any non-trivial plan or plan-like artifact, do not draft the plan until "
+    "you have >96% confidence that the objective, scope, success criteria, "
+    "constraints/preferences, and dependencies/unknowns are clear. Ask follow-up "
+    "questions first. If clarity is still insufficient, produce a questions-only "
+    "intake artifact instead of a partial plan. Apply the same standard when "
+    "reviewing a drafted plan. Every non-trivial plan must include Confidence, "
+    "Known Unknowns, and Blocking Questions Resolved. Skip the formal gate only "
+    "for trivial tasks that do not need a real plan artifact."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

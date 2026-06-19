@@ -51,7 +51,10 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
     </>
   )
 
-  const title = currentProvider ? copy.modelTitle(currentProvider, currentModel || copy.modelNone) : copy.switchModel
+  const title =
+    currentModel.trim() || currentProvider
+      ? copy.modelTitle(currentProvider || copy.modelNone, currentModel || copy.modelNone)
+      : copy.switchModel
 
   if (!model.modelMenuContent) {
     return (
@@ -60,7 +63,7 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
         className={PILL}
         disabled={disabled}
         onClick={() => setModelPickerOpen(true)}
-        title={copy.openModelPicker}
+        title={title}
         type="button"
         variant="ghost"
       >
@@ -72,7 +75,14 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
   return (
     <DropdownMenu onOpenChange={setOpen} open={open}>
       <DropdownMenuTrigger asChild>
-        <Button aria-label={title} className={PILL} disabled={disabled} title={title} type="button" variant="ghost">
+        <Button
+          aria-label={copy.openModelPicker}
+          className={PILL}
+          disabled={disabled}
+          title={title}
+          type="button"
+          variant="ghost"
+        >
           {label}
         </Button>
       </DropdownMenuTrigger>

@@ -680,6 +680,7 @@ textarea,
 [contenteditable]:not([contenteditable='false']),
 [data-slot='aui_user-message-root'],
 [data-slot='aui_assistant-message-content'],
+[data-slot='aui_system-message-root'],
 [data-selectable-text='true'],
 [data-selectable-text='true'] * {
   -webkit-user-select: text;

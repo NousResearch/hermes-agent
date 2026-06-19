@@ -86,6 +86,8 @@ class ProjectLocalState:
             signature["project.skills_manifest_hash"] = self.skills_manifest_hash
         if self.mcp_manifest_hash:
             signature["project.mcp_manifest_hash"] = self.mcp_manifest_hash
+        if self.rejected_reason:
+            signature["project.rejected_reason"] = self.rejected_reason
         return signature
 
 

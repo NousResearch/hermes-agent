@@ -423,6 +423,14 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         if stored_mcp_hash != current_mcp_hash:
             return False
 
+    current_rejected_reason = str(
+        project_signature.get("project.rejected_reason") or ""
+    ).strip()
+    stored_rejected_reason = line_value("Project rejected reason")
+    if current_rejected_reason or stored_rejected_reason:
+        if stored_rejected_reason != current_rejected_reason:
+            return False
+
     return True
 
 

@@ -169,6 +169,10 @@ def test_symlinked_hermes_directory_is_rejected(tmp_path: Path):
 
     assert state.recognized is False
     assert "symlinked .hermes" in state.rejected_reason
+    assert state.cache_signature() == {
+        "project.canonical_id": state.canonical_id,
+        "project.rejected_reason": state.rejected_reason,
+    }
 
 
 def test_project_local_state_is_immutable_and_hashes_skills(tmp_path: Path):

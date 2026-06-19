@@ -254,6 +254,33 @@ class TestAgentConfigSignature:
 
         assert sig_before != sig_after
 
+    def test_project_local_rejected_reason_change_busts_cache(self):
+        """Rejected project-local surface changes must rebuild cached agents."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m",
+            runtime,
+            ["telegram"],
+            "",
+            cache_keys={
+                "project.canonical_id": "git:abc123",
+                "project.rejected_reason": "symlinked .hermes directory is not trusted",
+            },
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m",
+            runtime,
+            ["telegram"],
+            "",
+            cache_keys={
+                "project.canonical_id": "git:abc123",
+            },
+        )
+
+        assert sig_before != sig_after
+
 
 class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of

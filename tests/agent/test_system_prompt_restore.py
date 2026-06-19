@@ -195,6 +195,44 @@ class TestStoredPromptReuse:
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
+    def test_present_row_with_stale_project_rejected_reason_rebuilds(self, caplog):
+        """A changed rejected project-local surface must not reuse old prompt bytes."""
+        stored = (
+            "Project ID: git:abc123\n"
+            "Project rejected reason: old rejection\n\n"
+            "Conversation started: Tuesday, June 16, 2026\n"
+            "Session ID: test-session-id\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(
+            session_db=db,
+            prebuilt_prompt=(
+                "Project ID: git:abc123\n"
+                "Project rejected reason: symlinked .hermes directory is not trusted\n\n"
+                "Conversation started: Tuesday, June 16, 2026\n"
+                "Session ID: test-session-id\n"
+                "Model: test-model\n"
+                "Provider: openrouter"
+            ),
+        )
+        agent.project_local_state = ProjectLocalState(
+            canonical_id="git:abc123",
+            rejected_reason="symlinked .hermes directory is not trusted",
+        )
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert "Project rejected reason: symlinked .hermes" in agent._cached_system_prompt
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, agent._cached_system_prompt
+        )
+        assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # Legitimate fresh-build paths (no history, no DB)

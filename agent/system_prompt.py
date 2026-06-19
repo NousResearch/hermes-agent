@@ -417,6 +417,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         ).strip()
         if mcp_hash:
             project_lines.append(f"Project MCP manifest: {mcp_hash}")
+        rejected_reason = str(
+            project_signature.get("project.rejected_reason") or ""
+        ).strip()
+        if rejected_reason:
+            project_lines.append(f"Project rejected reason: {rejected_reason}")
         stable_parts.append("\n".join(project_lines))
 
     # ── Context tier (cwd-dependent, may change between sessions) ─

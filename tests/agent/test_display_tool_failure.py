@@ -7,7 +7,6 @@ not a generic "[error]".
 """
 
 import json
-import pytest
 
 from agent.display import (
     _detect_tool_failure,

@@ -10,6 +10,10 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Ho
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
+:::tip
+Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
+:::
+
 ## Platform Comparison
 
 | Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |
@@ -27,7 +31,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
@@ -101,6 +105,29 @@ flowchart TB
 ```
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
+
+## Intentional Silence Tokens
+
+For group chats, hooks, and automation flows, Hermes supports explicit silence tokens. If the agent's final response is exactly one supported token, the gateway suppresses outbound delivery and sends nothing to the chat.
+
+Supported tokens:
+
+- `[SILENT]`
+- `SILENT`
+- `NO_REPLY`
+- `NO REPLY`
+
+Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+
+Silence is a delivery decision only. Hermes keeps the assistant silence turn in the session transcript, so the conversation still alternates normally:
+
+```text
+user: side-channel chatter
+assistant: [SILENT]   # stored, not delivered
+user: next message
+```
+
+Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
 ## Quick Setup
 
@@ -293,7 +320,30 @@ Control how much tool activity is displayed in `~/.hermes/config.yaml`:
 display:
   tool_progress: all    # off | new | all | verbose
   tool_progress_command: false  # set to true to enable /verbose in messaging
+  # How progress is grouped on platforms that support message editing:
+  #   accumulate (default) — edit one bubble in place as tools run
+  #   separate             — send one message per tool (pre-v0.9 style; noisier)
+  # Only applies where tool_progress is already enabled.
+  tool_progress_grouping: accumulate   # accumulate | separate
 ```
+
+### Message timestamps in model context
+
+Off by default. When enabled, Hermes prepends a human-readable timestamp
+(e.g. `[Tue 2026-04-28 13:40:53 CEST]`) onto each **user** message *in the
+model's context* so the agent knows when messages were sent — useful for
+temporal reasoning ("you asked this morning…", noticing a long gap). It is
+**not** added to assistant messages or the system prompt.
+
+```yaml
+gateway:
+  message_timestamps:
+    enabled: false   # set true to show send-times to the model
+```
+
+Persisted transcripts always stay clean — the timestamp is stored as message
+metadata regardless of this toggle, so enabling it later also surfaces
+send-times for past messages, and replay never accumulates duplicate prefixes.
 
 When enabled, the bot sends status messages as it works:
 
@@ -384,6 +434,23 @@ journalctl -u hermes-gateway -f
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
+:::tip Headless VMs: user service + linger avoids root prompts
+A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
+
+For a headless VM you never log into, a **user** service with lingering enabled gives you the same start-at-boot behavior with zero root involvement:
+
+```bash
+hermes gateway install          # user service
+sudo loginctl enable-linger $USER   # one-time: start at boot, survive logout
+```
+
+After that, `hermes update` can restart the gateway without any privileges. If you prefer to keep the system service, either run updates with `sudo hermes update`, or grant the service account passwordless sudo for systemctl, e.g. in `sudo visudo -f /etc/sudoers.d/hermes-gateway`:
+
+```
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed hermes-gateway*, /usr/bin/systemctl --no-ask-password start hermes-gateway*, /usr/bin/systemctl --no-ask-password restart hermes-gateway*
+```
+:::
+
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 :::info Multiple installations
@@ -424,6 +491,7 @@ Each platform has its own toolset:
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Google Chat | `hermes-google_chat` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
@@ -553,6 +621,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)
+- [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)

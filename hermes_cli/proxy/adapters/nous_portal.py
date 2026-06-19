@@ -1,13 +1,8 @@
 """Nous Portal upstream adapter.
 
 Reads the user's Nous OAuth state from ``~/.hermes/auth.json`` through the
-shared runtime resolver, refreshes the access token and resolves the
-``agent_key`` compatibility credential when needed, then exposes the upstream
-base URL plus bearer for the proxy server to forward to.
-
-The ``agent_key`` field may hold either a NAS invoke JWT or the legacy
-opaque session key. The refresh helper handles both — see
-:func:`hermes_cli.auth.resolve_nous_runtime_credentials`.
+shared runtime resolver, validates or refreshes the inference JWT, then exposes
+the upstream base URL plus bearer for the proxy server to forward to.
 """
 
 from __future__ import annotations
@@ -19,8 +14,6 @@ from typing import Any, Dict, FrozenSet, Optional
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
-    NOUS_INFERENCE_AUTH_MODE_AUTO,
-    NOUS_INFERENCE_AUTH_MODE_LEGACY,
     _load_auth_store,
     _auth_store_lock,
     _is_terminal_nous_refresh_error,
@@ -72,17 +65,15 @@ class NousPortalAdapter(UpstreamAdapter):
         state = self._read_state()
         if state is None:
             return False
-        # We need either a usable agent_key OR (refresh_token + access_token)
-        # to recover. The refresh helper will mint/refresh as needed.
+        # We need either a usable inference JWT OR (refresh_token + access_token)
+        # to recover. The refresh helper validates and refreshes as needed.
         return bool(
             state.get("agent_key")
             or (state.get("refresh_token") and state.get("access_token"))
         )
 
     def get_credential(self) -> UpstreamCredential:
-        return self._get_credential(
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_AUTO,
-        )
+        return self._get_credential()
 
     def get_retry_credential(
         self,
@@ -90,16 +81,19 @@ class NousPortalAdapter(UpstreamAdapter):
         failed_credential: UpstreamCredential,
         status_code: int,
     ) -> Optional[UpstreamCredential]:
+        _ = failed_credential
         if status_code != 401:
             return None
-        if failed_credential.bearer.count(".") != 2:
-            return None
-        logger.info("proxy: Nous upstream rejected bearer; retrying with legacy session key")
+        logger.info("proxy: Nous upstream rejected bearer; force-refreshing invoke JWT")
         return self._get_credential(
-            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+            force_refresh=True,
         )
 
-    def _get_credential(self, *, inference_auth_mode: str) -> UpstreamCredential:
+    def _get_credential(
+        self,
+        *,
+        force_refresh: bool = False,
+    ) -> UpstreamCredential:
         with self._lock:
             state = self._read_state()
             if state is None:
@@ -109,7 +103,7 @@ class NousPortalAdapter(UpstreamAdapter):
 
             try:
                 refreshed = resolve_nous_runtime_credentials(
-                    inference_auth_mode=inference_auth_mode,
+                    force_refresh=force_refresh,
                 )
             except AuthError as exc:
                 if _is_terminal_nous_refresh_error(exc):
@@ -131,10 +125,10 @@ class NousPortalAdapter(UpstreamAdapter):
                     f"Failed to refresh Nous Portal credentials: {exc}"
                 ) from exc
 
-            agent_key = refreshed.get("api_key")
-            if not agent_key:
+            runtime_key = refreshed.get("api_key")
+            if not runtime_key:
                 raise RuntimeError(
-                    "Nous Portal refresh did not return a usable agent_key. "
+                    "Nous Portal refresh did not return a usable inference JWT. "
                     "Try `hermes auth add nous` to re-authenticate."
                 )
 
@@ -145,7 +139,7 @@ class NousPortalAdapter(UpstreamAdapter):
             base_url = base_url.rstrip("/")
 
             return UpstreamCredential(
-                bearer=agent_key,
+                bearer=runtime_key,
                 base_url=base_url,
                 expires_at=refreshed.get("expires_at"),
             )

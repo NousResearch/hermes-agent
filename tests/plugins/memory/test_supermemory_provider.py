@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import threading
 
 import pytest
@@ -48,8 +50,8 @@ class FakeClient:
     def forget_by_query(self, query, *, container_tag=None):
         return self.forget_by_query_response
 
-    def ingest_conversation(self, session_id, messages):
-        self.ingest_calls.append({"session_id": session_id, "messages": messages})
+    def ingest_conversation(self, session_id, messages, metadata=None):
+        self.ingest_calls.append({"session_id": session_id, "messages": messages, "metadata": metadata})
 
 
 @pytest.fixture
@@ -134,23 +136,28 @@ def test_prefetch_skips_profile_between_frequency(provider):
     assert "User Profile (Persistent)" not in result
 
 
-def test_sync_turn_skips_trivial_message(provider):
+def test_sync_turn_buffers_short_messages(provider):
+    # Trivial filtering is no longer applied at sync time — every non-empty turn
+    # is buffered and only the full session is written at session boundaries.
     provider.sync_turn("ok", "sure", session_id="session-1")
+    assert provider._session_turns == [{"user": "ok", "assistant": "sure"}]
     assert provider._client.add_calls == []
 
 
-def test_sync_turn_persists_cleaned_exchange(provider):
+def test_sync_turn_buffers_cleaned_exchange(provider):
     provider.sync_turn(
         "Please remember this\n<supermemory-context>ignore</supermemory-context>",
         "Got it, storing the context",
         session_id="session-1",
     )
-    provider._sync_thread.join(timeout=1)
-    assert len(provider._client.add_calls) == 1
-    content = provider._client.add_calls[0]["content"]
-    assert "ignore" not in content
-    assert "[role: user]" in content
-    assert "[role: assistant]" in content
+    assert len(provider._session_turns) == 1
+    turn = provider._session_turns[0]
+    assert "ignore" not in turn["user"]
+    assert turn["user"].startswith("Please remember this")
+    assert turn["assistant"] == "Got it, storing the context"
+    # Buffering only — no per-turn writes to the client
+    assert provider._client.add_calls == []
+    assert provider._client.ingest_calls == []
 
 
 def test_on_session_end_ingests_clean_messages(provider):
@@ -167,6 +174,28 @@ def test_on_session_end_ingests_clean_messages(provider):
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi there"},
     ]
+    assert payload["metadata"]["type"] == "full_session"
+    assert payload["metadata"]["session_id"] == "session-1"
+    assert payload["metadata"]["message_count"] == 2
+    # Buffer is cleared after a normal session-end ingest.
+    assert provider._session_turns == []
+
+
+def test_merge_metadata_stamps_sm_source():
+    # sm_source routes Hermes writes into the "Hermes" Space in the Supermemory
+    # app (functional routing, not telemetry) — must always be present.
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    merged = client._merge_metadata({"type": "explicit_memory"})
+    assert merged["sm_source"] == "hermes"
+    assert merged["type"] == "explicit_memory"
+
+    # Legacy "source" is migrated into "type" when type is absent.
+    merged2 = client._merge_metadata({"source": "conversation_turn"})
+    assert merged2["sm_source"] == "hermes"
+    assert merged2["type"] == "conversation_turn"
+    assert "source" not in merged2
 
 
 def test_on_memory_write_tracks_thread(provider):
@@ -177,7 +206,7 @@ def test_on_memory_write_tracks_thread(provider):
     assert provider._client.add_calls[0]["metadata"]["type"] == "explicit_memory"
 
 
-def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
+def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
@@ -194,15 +223,16 @@ def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
 
     monkeypatch.setattr(provider._client, "add_memory", slow_add_memory)
 
+    # sync_turn now only buffers — no thread is spawned.
     provider.sync_turn(
         "Please remember this request in long-term memory",
         "Absolutely, I will keep that in long-term memory.",
         session_id="session-1",
     )
-    assert started.wait(timeout=1)
-    assert provider._sync_thread is not None
+    assert provider._sync_thread is None
+    assert len(provider._session_turns) == 1
 
-    started.clear()
+    # on_memory_write still runs on a background thread.
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
     assert started.wait(timeout=1)
     assert provider._write_thread is not None
@@ -210,10 +240,18 @@ def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
     release.set()
     provider.shutdown()
 
+    # All tracked threads joined and cleared.
     assert provider._sync_thread is None
     assert provider._write_thread is None
     assert provider._prefetch_thread is None
-    assert len(provider._client.add_calls) == 2
+    # Explicit memory write went through.
+    assert len(provider._client.add_calls) == 1
+    # Buffered turn was flushed as a partial full-session ingest.
+    assert len(provider._client.ingest_calls) == 1
+    payload = provider._client.ingest_calls[0]
+    assert payload["session_id"] == "session-1"
+    assert payload["metadata"]["partial"] is True
+    assert payload["metadata"]["type"] == "full_session"
 
 
 def test_store_tool_returns_saved_payload(provider):
@@ -409,3 +447,13 @@ def test_get_config_schema_minimal():
     assert len(schema) == 1
     assert schema[0]["key"] == "api_key"
     assert schema[0]["secret"] is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+def test_save_config_sets_owner_only_permissions(tmp_path):
+    """supermemory.json must be written with 0o600 so API key is not world-readable."""
+    _save_supermemory_config({"api_key": "sm-test-key"}, str(tmp_path))
+    config_file = tmp_path / "supermemory.json"
+    assert config_file.exists()
+    mode = stat.S_IMODE(config_file.stat().st_mode)
+    assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"

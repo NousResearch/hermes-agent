@@ -1,13 +1,13 @@
 ---
 title: Image Generation
-description: Generate images via FAL.ai — 9 models including FLUX 2, GPT Image (1.5 & 2), Nano Banana Pro, Ideogram, Recraft V4 Pro, and more, selectable via `hermes tools`.
+description: Generate images via FAL.ai — 11 models including FLUX 2, GPT Image (1.5 & 2), Nano Banana Pro, Ideogram, Recraft V4 Pro, Krea 2, and more, selectable via `hermes tools`.
 sidebar_label: Image Generation
 sidebar_position: 6
 ---
 
 # Image Generation
 
-Hermes Agent generates images from text prompts via FAL.ai. Nine models are supported out of the box, each with different speed, quality, and cost tradeoffs. The active model is user-configurable via `hermes tools` and persists in `config.yaml`.
+Hermes Agent generates images from text prompts via FAL.ai. Eleven models are supported out of the box, each with different speed, quality, and cost tradeoffs. The active model is user-configurable via `hermes tools` and persists in `config.yaml`.
 
 ## Supported Models
 
@@ -22,6 +22,8 @@ Hermes Agent generates images from text prompts via FAL.ai. Nine models are supp
 | `fal-ai/ideogram/v3` | ~5s | Best typography | $0.03–0.09/image |
 | `fal-ai/recraft/v4/pro/text-to-image` | ~8s | Design, brand systems, production-ready | $0.25/image |
 | `fal-ai/qwen-image` | ~12s | LLM-based, complex text | $0.02/MP |
+| `fal-ai/krea/v2/medium/text-to-image` | ~15-25s | Illustration, anime, painting, expressive/artistic styles | $0.030–0.035/image |
+| `fal-ai/krea/v2/large/text-to-image` | ~25-60s | Photorealism, raw textured looks (motion blur, grain, film) | $0.060–0.065/image |
 
 Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for current numbers.
 
@@ -83,6 +85,46 @@ Create a square portrait of a wise old owl — use the typography model
 ```
 Make me a futuristic cityscape, landscape orientation
 ```
+
+## Image-to-Image / Editing
+
+The same `image_generate` tool also **edits existing images** when the active
+model supports it — pass a source image and the backend routes to its editing
+endpoint automatically (mirrors how `video_generate` handles image-to-video).
+Omit the source image and it's plain text-to-image.
+
+```
+Take this photo and make it a rainy Tokyo street at night → <image>
+```
+
+```
+Blend these two product shots into one hero image → <image1> <image2>
+```
+
+Two inputs drive the edit:
+
+- **`image_url`** — the primary source image to edit/transform (public URL or local path).
+- **`reference_image_urls`** — additional style/composition references (capped per-model).
+
+### Which backends support editing
+
+| Backend | Image-to-image | Reference cap | How |
+|---|---|---|---|
+| **FAL.ai** (edit-capable models below) | ✓ | up to 9 | routes to the model's `/edit` endpoint |
+| **OpenAI** (`gpt-image-2`) | ✓ | up to 16 | `images.edit()` |
+| **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
+| **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
+| **OpenAI (Codex auth)** | ✗ | — | text-to-image only |
+
+FAL models with an editing endpoint: `flux-2/klein/9b`, `flux-2-pro`,
+`nano-banana-pro`, `gpt-image-1.5`, `gpt-image-2`, `ideogram/v3`, and
+`qwen-image`. Pure text-to-image FAL models (`z-image/turbo`, `recraft`,
+`krea/*`) reject image inputs with a clear error pointing you at an
+edit-capable model.
+
+The active model's editing capability is surfaced in the tool description at
+runtime, so the agent knows whether `image_url` will be honored before it
+calls the tool.
 
 ## Aspect Ratios
 
@@ -150,7 +192,7 @@ Debug logs go to `./logs/image_tools_debug_<session_id>.json` with per-call deta
 
 ## Limitations
 
-- **Requires FAL credentials** (direct `FAL_KEY` or Nous Subscription)
-- **Text-to-image only** — no inpainting, img2img, or editing via this tool
-- **Temporary URLs** — FAL returns hosted URLs that expire after hours/days; save locally if needed
-- **Per-model constraints** — some models don't support `seed`, `num_inference_steps`, etc. The `supports` filter silently drops unsupported params; this is expected behavior
+- **Requires credentials** for the active backend (FAL `FAL_KEY` / Nous Subscription, `OPENAI_API_KEY`, xAI OAuth, `KREA_API_KEY`)
+- **Editing is model-dependent** — image-to-image works only on edit-capable models (see the table above); text-to-image-only models reject image inputs with a clear error
+- **Temporary URLs** — backends return hosted URLs that expire after hours/days; Hermes materializes them to the local cache so delivery still works after expiry
+- **Per-model constraints** — some models don't support `seed`, `num_inference_steps`, etc. The `supports` / `edit_supports` filter silently drops unsupported params; this is expected behavior

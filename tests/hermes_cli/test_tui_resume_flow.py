@@ -638,6 +638,60 @@ def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
     assert "did not contain any valid toolsets" in err
 
 
+def test_oneshot_fails_closed_on_empty_final_response(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: "")
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no final response" in captured.err
+
+
+def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: "done")
+
+    assert oneshot_mod.run_oneshot("hello") == 0
+    captured = capsys.readouterr()
+    assert captured.out == "done\n"
+    assert captured.err == ""
+
+
+def test_oneshot_fails_closed_on_agent_exception(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("not a TTY")
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _boom)
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "agent failed" in captured.err
+    assert "not a TTY" in captured.err
+
+
+def test_oneshot_reraises_keyboard_interrupt(monkeypatch):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+    import pytest as _pytest
+
+    def _interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _interrupt)
+
+    with _pytest.raises(KeyboardInterrupt):
+        oneshot_mod.run_oneshot("hello")
+
+
 def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     from hermes_cli.oneshot import _validate_explicit_toolsets
@@ -840,6 +894,46 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+
+
+def test_launch_tui_applies_terminal_backend_config(
+    monkeypatch, main_mod, _isolate_hermes_home
+):
+    captured = {}
+    config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "terminal:",
+                "  backend: docker",
+                "  docker_image: example/hermes-tools:latest",
+                "  docker_extra_args:",
+                "    - --network=host",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_IMAGE", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_EXTRA_ARGS", raising=False)
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["TERMINAL_ENV"] == "docker"
+    assert captured["env"]["TERMINAL_DOCKER_IMAGE"] == "example/hermes-tools:latest"
+    assert captured["env"]["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
 
 
 def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):

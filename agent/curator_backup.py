@@ -21,6 +21,8 @@ It DOES include:
     pointer — otherwise the curator would immediately re-fire on the next
     tick)
   - ``.bundled_manifest`` (so protection markers stay consistent)
+  - ``.curator_suppressed`` (so rollback restores the set of pruned built-ins
+    the re-seeder must leave archived)
 
 Alongside the skills tarball, each snapshot also captures a copy of
 ``~/.hermes/cron/jobs.json`` as ``cron-jobs.json`` when it exists. Cron
@@ -39,15 +41,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import tarfile
-import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
@@ -209,13 +208,17 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
     )
 
 
-def snapshot_skills(reason: str = "manual") -> Optional[Path]:
+def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] = None) -> Optional[Path]:
     """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones.
 
     Returns the snapshot directory path, or ``None`` if the snapshot was
     skipped (backup disabled, skills dir missing, or an IO error occurred —
     in which case we log at debug and return None so the curator never
     aborts a pass because of a backup failure).
+
+    ``protect_ids`` is forwarded to the prune step so callers can guarantee
+    specific snapshot ids survive even when they fall outside the keep
+    window (rollback passes the id it is about to restore from).
     """
     if not is_enabled():
         logger.debug("Curator backup disabled by config; skipping snapshot")
@@ -277,15 +280,19 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
             pass
         return None
 
-    _prune_old(keep=get_keep())
+    _prune_old(keep=get_keep(), protect=protect_ids)
     logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
     return dest
 
 
-def _prune_old(keep: int) -> List[str]:
+def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
     """Delete regular snapshots beyond the newest *keep*. Returns deleted
-    ids. Staging dirs (``.rollback-staging-*``) are implementation detail
-    and pruned independently on every call."""
+    ids. Snapshot ids in *protect* are never deleted even when they fall
+    outside the keep window — rollback() uses this so the mandatory
+    pre-rollback safety snapshot can never evict the very snapshot being
+    restored. Staging dirs (``.rollback-staging-*``) are implementation
+    detail and pruned independently on every call."""
+    protect = protect or set()
     backups = _backups_dir()
     if not backups.exists():
         return []
@@ -306,6 +313,8 @@ def _prune_old(keep: int) -> List[str]:
     entries.sort(key=lambda t: t[0], reverse=True)
     deleted: List[str] = []
     for _, path in entries[keep:]:
+        if path.name in protect:
+            continue
         try:
             shutil.rmtree(path)
             deleted.append(path.name)
@@ -455,16 +464,16 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
         report["attempted"] = True  # we tried but there was nothing to do
         return report
 
-    # Load and rewrite the live jobs under the scheduler's lock.
+    # Load and rewrite the live jobs under the scheduler's cross-process lock.
     try:
-        from cron.jobs import load_jobs, save_jobs, _jobs_file_lock
+        from cron.jobs import load_jobs, save_jobs, _jobs_lock
     except ImportError as e:
         report["error"] = f"cron module unavailable: {e}"
         return report
 
     report["attempted"] = True
     try:
-        with _jobs_file_lock:
+        with _jobs_lock():
             live_jobs = load_jobs()
             changed = False
 
@@ -565,7 +574,13 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # out before touching anything — otherwise a failed extract could leave
     # the user with no skills.
     try:
-        snapshot_skills(reason=f"pre-rollback to {target.name}")
+        # Protect the target from this snapshot's prune step: at the steady
+        # keep limit, pruning the oldest snapshot would otherwise delete the
+        # very snapshot we are about to extract from.
+        snapshot_skills(
+            reason=f"pre-rollback to {target.name}",
+            protect_ids={target.name},
+        )
     except Exception as e:
         return (False, f"pre-rollback safety snapshot failed: {e}", None)
 

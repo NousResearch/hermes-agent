@@ -22,14 +22,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
-    _CORS_HEADERS,
     _derive_chat_session_id,
     check_api_server_requirements,
     cors_middleware,
@@ -499,6 +498,20 @@ class TestHealthEndpoint:
             assert data["platform"] == "hermes-agent"
 
     @pytest.mark.asyncio
+    async def test_health_reports_version(self, adapter):
+        """GET /health must expose a non-empty version so orchestrators (e.g.
+        AgentOS) can read the gateway version without scraping. Regression
+        guard for the missing-version gap."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert "version" in data
+            assert isinstance(data["version"], str)
+            assert data["version"] != ""
+
+    @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
         """GET /v1/health should return the same response as /health."""
         app = _create_app(adapter)
@@ -508,6 +521,7 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+            assert data.get("version")
 
 
 # ---------------------------------------------------------------------------

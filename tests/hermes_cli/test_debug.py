@@ -1,10 +1,8 @@
 """Tests for ``hermes debug`` CLI command and debug utilities."""
 
 import os
-import sys
 import urllib.error
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,6 +30,9 @@ def hermes_home(tmp_path, monkeypatch):
     )
     (logs_dir / "gateway.log").write_text(
         "2026-04-12 17:00:10 INFO gateway.run: started\n"
+    )
+    (logs_dir / "desktop.log").write_text(
+        "2026-04-12 17:00:15 INFO desktop: backend spawned\n"
     )
 
     return home
@@ -337,7 +338,6 @@ class TestCaptureLogSnapshotRedaction:
         redaction feature ships silently broken for users who opted out of
         runtime redaction (e.g. developers working on the redactor itself).
         """
-        import os
 
         # Force the runtime flag off so we're exercising the force=True path,
         # not the default-on path.
@@ -454,6 +454,15 @@ class TestCollectDebugReport:
 
         assert "--- gateway.log" in report
 
+    def test_report_includes_desktop_log(self, hermes_home):
+        from hermes_cli.debug import collect_debug_report
+
+        with patch("hermes_cli.dump.run_dump"):
+            report = collect_debug_report(log_lines=50)
+
+        assert "--- desktop.log" in report
+        assert "backend spawned" in report
+
     def test_missing_logs_handled(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()
@@ -529,8 +538,8 @@ class TestRunDebugShare:
         assert "FULL agent.log" in out
         assert "FULL gateway.log" in out
 
-    def test_share_uploads_three_pastes(self, hermes_home, capsys):
-        """Successful share uploads report + agent.log + gateway.log."""
+    def test_share_uploads_four_pastes(self, hermes_home, capsys):
+        """Successful share uploads report + agent.log + gateway.log + desktop.log."""
         from hermes_cli.debug import run_debug_share
 
         args = MagicMock()
@@ -552,14 +561,16 @@ class TestRunDebugShare:
             run_debug_share(args)
 
         out = capsys.readouterr().out
-        # Should have 3 uploads: report, agent.log, gateway.log
-        assert call_count[0] == 3
+        # Should have 4 uploads: report, agent.log, gateway.log, desktop.log
+        assert call_count[0] == 4
         assert "paste.rs/paste1" in out  # Report
         assert "paste.rs/paste2" in out  # agent.log
         assert "paste.rs/paste3" in out  # gateway.log
+        assert "paste.rs/paste4" in out  # desktop.log
         assert "Report" in out
         assert "agent.log" in out
         assert "gateway.log" in out
+        assert "desktop.log" in out
 
         # Each log paste should start with the dump header
         agent_paste = uploaded_content[1]
@@ -568,6 +579,9 @@ class TestRunDebugShare:
         gateway_paste = uploaded_content[2]
         assert "--- hermes dump ---" in gateway_paste
         assert "--- full gateway.log ---" in gateway_paste
+        desktop_paste = uploaded_content[3]
+        assert "--- hermes dump ---" in desktop_paste
+        assert "--- full desktop.log ---" in desktop_paste
 
     def test_share_keeps_report_and_full_log_on_same_snapshot(self, hermes_home, capsys):
         """A mid-run rotation must not make full agent.log older than the report."""
@@ -1259,3 +1273,110 @@ class TestShareIncludesAutoDelete:
 
         out = capsys.readouterr().out
         assert "public paste service" not in out
+
+
+# ---------------------------------------------------------------------------
+# build_debug_share — structured core used by the dashboard endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDebugShare:
+    """The shared core that returns structured paste URLs (not printed text).
+
+    Backs both ``hermes debug share`` (CLI) and ``POST /api/ops/debug-share``
+    (dashboard). The dashboard renders ``urls`` as real, copyable links, so the
+    contract here is the return value, not stdout.
+    """
+
+    def test_returns_structured_urls(self, hermes_home):
+        from hermes_cli.debug import build_debug_share, DebugShareResult
+
+        count = [0]
+
+        def _upload(content, expiry_days=7):
+            count[0] += 1
+            return f"https://paste.rs/p{count[0]}"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert isinstance(result, DebugShareResult)
+        # All four seeded logs (agent/gateway/desktop) + the summary report.
+        assert "Report" in result.urls
+        assert "agent.log" in result.urls
+        assert "gateway.log" in result.urls
+        assert "desktop.log" in result.urls
+        assert result.failures == []
+        assert result.redacted is True
+        assert result.auto_delete_seconds == 21600
+
+    def test_skips_missing_logs_without_failure(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        # Remove desktop.log so it should be neither uploaded nor reported failed.
+        (hermes_home / "logs" / "desktop.log").unlink()
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin",
+            side_effect=lambda c, expiry_days=7: "https://paste.rs/x",
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert "desktop.log" not in result.urls
+        assert result.failures == []
+
+    def test_redaction_keeps_secrets_out_of_payload(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        secret = "sk-proj-SUPERSECRETtoken1234567890"
+        (hermes_home / "logs" / "agent.log").write_text(
+            f"line one\nauthorization token={secret}\nline three\n"
+        )
+
+        uploaded = []
+
+        def _upload(content, expiry_days=7):
+            uploaded.append(content)
+            return "https://paste.rs/x"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert result.redacted is True
+        joined = "\n".join(uploaded)
+        assert secret not in joined, "secret leaked into upload payload"
+
+    def test_optional_log_failure_is_collected_not_raised(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        count = [0]
+
+        def _upload(content, expiry_days=7):
+            count[0] += 1
+            # First call (the required Report) succeeds; a later one fails.
+            if count[0] == 2:
+                raise RuntimeError("paste service hiccup")
+            return f"https://paste.rs/p{count[0]}"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert "Report" in result.urls
+        assert len(result.failures) == 1
+        assert "paste service hiccup" in result.failures[0]
+
+    def test_required_report_failure_raises(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin",
+            side_effect=RuntimeError("all paste services down"),
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            with pytest.raises(RuntimeError, match="all paste services down"):
+                build_debug_share(log_lines=50, redact=True)

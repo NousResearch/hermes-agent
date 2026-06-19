@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Artifact Title</title>
+<style>
+  /* ---------- design tokens (reuse verbatim; do not invent a palette) ---------- */
+  :root {
+    --ivory:#FAF9F5; --white:#FFFFFF; --slate:#141413;
+    --clay:#D97757; --olive:#788C5D; --rust:#B04A3F; --oat:#E3DACC;
+    --gray-150:#F0EEE6; --gray-300:#D1CFC5; --gray-500:#87867F; --gray-700:#3D3D3A;
+    --border:1.5px solid var(--gray-300);
+    --radius-panel:12px; --radius-row:8px; --radius-pill:999px;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono:  ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { background:var(--ivory); color:var(--gray-700); font-family:var(--sans);
+         line-height:1.6; -webkit-font-smoothing:antialiased; padding:56px 24px 120px; }
+  .page { max-width:860px; margin:0 auto; }            /* 820-860 reports · 1040-1120 two-col */
+
+  /* ---------- header ---------- */
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.08em;
+             text-transform:uppercase; color:var(--gray-500); margin-bottom:10px; }
+  h1 { font-family:var(--serif); font-weight:500; letter-spacing:-.01em; font-size:34px; }
+  h2 { font-family:var(--serif); font-weight:500; font-size:22px; margin:52px 0 16px;
+       scroll-margin-top:24px; }
+  .lead { font-size:17px; color:var(--gray-700); margin-top:12px; }
+
+  /* ---------- cards / callouts ---------- */
+  .card { background:var(--white); border:var(--border); border-radius:var(--radius-panel);
+          padding:20px; }
+  .card.warn { border-left:4px solid var(--clay); }
+  .grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:18px; }
+  .callout { background:rgba(217,119,87,.06); border-left:3px solid var(--clay);
+             border-radius:var(--radius-row); padding:14px 16px; margin:18px 0; }
+
+  /* ---------- pills / badges ---------- */
+  .pill  { display:inline-block; border-radius:var(--radius-pill); padding:2px 10px;
+           font-family:var(--mono); font-size:11px; background:var(--oat); }
+  .badge { display:inline-block; border-radius:6px; padding:1px 7px;
+           font-family:var(--mono); font-size:11px; }
+  .badge.new { background:rgba(120,140,93,.18); color:var(--olive); }
+  .badge.del { background:rgba(176,74,63,.18); color:var(--rust); }
+
+  /* ---------- tables ---------- */
+  table { width:100%; border-collapse:collapse; background:var(--white);
+          border:var(--border); border-radius:var(--radius-panel); overflow:hidden; }
+  thead { background:var(--gray-150); }
+  th { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.04em;
+       color:var(--gray-500); text-align:left; padding:10px 14px; }
+  td { padding:10px 14px; border-top:1px solid var(--gray-150); font-size:14px; }
+
+  /* ---------- code + diff ---------- */
+  .code { background:var(--slate); color:#E8E6DF; border-radius:var(--radius-panel);
+          padding:16px 18px; font-family:var(--mono); font-size:13px; overflow-x:auto; }
+  .code .kw{color:var(--clay)} .code .str{color:var(--olive)}
+  .code .cm{color:var(--gray-500)} .code .fn{color:#C9B98A}
+  .diff-row { display:grid; grid-template-columns:48px 18px 1fr; white-space:pre;
+              font-family:var(--mono); font-size:12.5px; }
+  .diff-row.add { background:rgba(120,140,93,.15); } .diff-row.add .mark{color:var(--olive)}
+  .diff-row.del { background:rgba(176,74,63,.15); }  .diff-row.del .mark{color:var(--rust)}
+  .diff-row.ctx .code-cell { color:#B8B6AC; }
+
+  /* ---------- two-column doc shell (optional) ---------- */
+  .layout { display:grid; grid-template-columns:220px minmax(0,1fr); gap:40px; }
+  aside { position:sticky; top:32px; align-self:start; }
+  aside a { display:block; color:var(--gray-500); text-decoration:none; padding:4px 0;
+            border-left:2px solid transparent; padding-left:10px; font-size:14px; }
+  aside a:hover { color:var(--clay); border-left-color:var(--clay); }
+
+  /* ---------- the entire responsive strategy ---------- */
+  @media (max-width:860px) {
+    .layout { grid-template-columns:1fr; } aside { display:none; }
+    .grid-4 { grid-template-columns:repeat(2,1fr); }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <p class="eyebrow">Section · Context</p>
+    <h1>Artifact Title</h1>
+    <p class="lead">One-sentence framing of what this artifact is and who it's for.</p>
+
+    <h2 id="overview">Overview</h2>
+    <p>Body copy. Keep paragraphs readable; let layout carry structure.</p>
+
+    <div class="grid-4">
+      <div class="card"><p class="eyebrow">Metric</p><strong style="font-family:var(--serif);font-size:26px">42</strong></div>
+      <div class="card"><p class="eyebrow">Metric</p><strong style="font-family:var(--serif);font-size:26px">7</strong></div>
+      <div class="card warn"><p class="eyebrow">Needs attention</p><strong style="font-family:var(--serif);font-size:26px">3</strong></div>
+      <div class="card"><p class="eyebrow">Metric</p><strong style="font-family:var(--serif);font-size:26px">98%</strong></div>
+    </div>
+
+    <div class="callout"><strong>Note.</strong> Use callouts for the one thing the reader must not miss.</div>
+
+    <!-- Add sections per mode: tables, .code blocks, inline <svg> diagrams (see svg-diagrams.md). -->
+    <!-- Keep JS optional: native <details> for collapsibles, anchor links for nav. -->
+  </div>
+</body>
+</html>

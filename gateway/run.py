@@ -12498,22 +12498,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
+    async def _inject_process_event_notification(
+        self,
+        synth_text: str,
+        evt: dict,
+        *,
+        internal_event_kind: str,
+        log_label: str,
+        suppress_when_background_notifications_off: bool,
+    ) -> None:
+        """Inject a trusted gateway-owned process/delegation event.
 
-        Routing must come from the queued watch event itself, not from whatever
+        Routing must come from the queued event itself, not from whatever
         foreground message happened to be active when the queue was drained.
+        ``display.background_process_notifications=off`` only suppresses
+        background process/watch notifications; async delegation completions
+        are conversation results and must still be delivered.
         """
-        if self._load_background_notifications_mode() == "off":
+        if (
+            suppress_when_background_notifications_off
+            and self._load_background_notifications_mode() == "off"
+        ):
             logger.debug(
-                "Dropping watch notification because background notifications are off: %s",
+                "Dropping %s because background notifications are off: %s",
+                log_label,
                 evt.get("session_id", "unknown"),
             )
             return
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(
-                "Dropping watch notification with no routing metadata for process %s",
+                "Dropping %s with no routing metadata for process %s",
+                log_label,
                 evt.get("session_id", "unknown"),
             )
             return
@@ -12531,19 +12547,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
-                internal_event_kind=InternalEventKind.BACKGROUND_WATCH.value,
+                internal_event_kind=internal_event_kind,
                 internal_event_source="gateway",
                 message_id=str(evt.get("message_id") or "").strip() or None,
             )
             logger.info(
-                "Watch pattern notification — injecting for %s chat=%s thread=%s",
+                "%s — injecting for %s chat=%s thread=%s",
+                log_label,
                 platform_name,
                 source.chat_id,
                 source.thread_id,
             )
             await adapter.handle_message(synth_event)
         except Exception as e:
-            logger.error("Watch notification injection error: %s", e)
+            logger.error("%s injection error: %s", log_label, e)
+
+    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
+        """Inject a watch-pattern notification as a synthetic message event."""
+        await self._inject_process_event_notification(
+            synth_text,
+            evt,
+            internal_event_kind=InternalEventKind.BACKGROUND_WATCH.value,
+            log_label="Watch pattern notification",
+            suppress_when_background_notifications_off=True,
+        )
+
+    async def _inject_async_delegation_completion(self, synth_text: str, evt: dict) -> None:
+        """Inject a completed background delegation result as a new turn."""
+        await self._inject_process_event_notification(
+            synth_text,
+            evt,
+            internal_event_kind=InternalEventKind.BACKGROUND_COMPLETION.value,
+            log_label="Async delegation completion",
+            suppress_when_background_notifications_off=False,
+        )
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -12606,7 +12643,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not synth_text:
                         continue
                     try:
-                        await self._inject_watch_notification(synth_text, evt)
+                        await self._inject_async_delegation_completion(synth_text, evt)
                     except Exception as e:
                         logger.error("Async delegation injection error: %s", e)
             except Exception as e:

@@ -9,6 +9,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 
 import asyncio
 import os
+import queue
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -421,6 +422,108 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_off_still_suppresses_watch_events(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    evt = {
+        "type": "watch_match",
+        "session_id": "proc_watch",
+        "session_key": "agent:main:telegram:group:-100:42",
+    }
+
+    await runner._inject_watch_notification("[Background process observation: matched]", evt)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_completion_bypasses_background_notifications_off(
+    monkeypatch, tmp_path
+):
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_off",
+        "session_key": "agent:main:telegram:dm:123:24296",
+        "goal": "Investigate background task",
+        "context": None,
+        "toolsets": ["terminal"],
+        "role": "leaf",
+        "model": "m",
+        "status": "completed",
+        "summary": "done",
+        "api_calls": 1,
+        "duration_seconds": 2.0,
+    }
+    runner._enrich_async_delegation_routing(evt)
+    synth_text = "[ASYNC DELEGATION COMPLETE — deleg_off]\ndone"
+
+    await runner._inject_async_delegation_completion(synth_text, evt)
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.internal is True
+    assert synth_event.internal_event_kind == InternalEventKind.BACKGROUND_COMPLETION.value
+    assert synth_event.internal_event_source == "gateway"
+    assert synth_event.source.platform == Platform.TELEGRAM
+    assert synth_event.source.chat_id == "123"
+    assert synth_event.source.thread_id == "24296"
+    assert synth_event.text == synth_text
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_watcher_delivers_when_background_notifications_off(
+    monkeypatch, tmp_path
+):
+    import tools.process_registry as pr_module
+
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    completion_queue = queue.Queue()
+    completion_queue.put({
+        "type": "async_delegation",
+        "delegation_id": "deleg_watcher_off",
+        "session_key": "agent:main:telegram:dm:123:24296",
+        "goal": "Investigate flaky test",
+        "context": "repo /tmp/p",
+        "toolsets": ["terminal"],
+        "role": "leaf",
+        "model": "m",
+        "status": "completed",
+        "summary": "Found the bug",
+        "api_calls": 4,
+        "duration_seconds": 12.0,
+    })
+    monkeypatch.setattr(
+        pr_module,
+        "process_registry",
+        SimpleNamespace(completion_queue=completion_queue),
+    )
+    runner._running = True
+    sleep_calls = 0
+
+    async def _controlled_sleep(*_a, **_kw):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            runner._running = False
+
+    monkeypatch.setattr(asyncio, "sleep", _controlled_sleep)
+
+    await runner._async_delegation_watcher(interval=0)
+
+    assert completion_queue.empty()
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.internal_event_kind == InternalEventKind.BACKGROUND_COMPLETION.value
+    assert "ASYNC DELEGATION COMPLETE" in synth_event.text
+    assert "Found the bug" in synth_event.text
 
 
 @pytest.mark.asyncio

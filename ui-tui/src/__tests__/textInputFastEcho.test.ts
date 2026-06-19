@@ -198,6 +198,23 @@ describe('supportsFastEchoTerminal', () => {
     expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
   })
 
+  it('disables fast-echo when only a tmux-flavored TERM is present (SSH from tmux, no TMUX forwarded)', () => {
+    // OpenSSH forwards TERM but not TMUX, so a TUI on a remote host launched
+    // from inside local tmux sees TERM=tmux-256color with no TMUX var. The
+    // cursor-drift bug still applies, so fast-echo must stay off.
+    expect(supportsFastEchoTerminal({ TERM: 'tmux' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(supportsFastEchoTerminal({ TERM: 'tmux-256color' } as NodeJS.ProcessEnv)).toBe(false)
+  })
+
+  it('does NOT disable fast-echo for screen-flavored TERM (GNU screen out of scope, no reported drift)', () => {
+    // GNU screen sets TERM=screen/screen-256color and has no reported drift.
+    // We must not widen the tmux guard to screen* and regress its perf.
+    expect(supportsFastEchoTerminal({ TERM: 'screen' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(supportsFastEchoTerminal({ TERM: 'screen-256color' } as NodeJS.ProcessEnv)).toBe(true)
+    // And an unrelated 256color TERM must stay enabled.
+    expect(supportsFastEchoTerminal({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
+  })
+
   it('disables fast-echo by default in Termux mode', () => {
     expect(
       supportsFastEchoTerminal({ TERMUX_VERSION: '0.118.0', PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)

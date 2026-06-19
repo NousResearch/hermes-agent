@@ -362,7 +362,16 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
   // tmux adds a PTY multiplexing layer that desyncs stdout.write() cursor
   // advances from its internal cursor model, causing cursor drift and ghost
   // whitespace under the fast-echo bypass path.
-  if ((env.TMUX ?? '').trim().length > 0) {
+  //
+  // `TMUX` catches the local case. It is NOT forwarded over SSH, so when the
+  // TUI runs on a remote host launched from inside local tmux we only see a
+  // tmux-flavored `TERM` (tmux sets `tmux`/`tmux-256color`); match that too so
+  // remote-over-tmux sessions still fall back to the safe render path. We
+  // deliberately do NOT match `screen*`: GNU screen sets the same TERM and has
+  // no reported drift, so widening to screen would disable the optimization for
+  // those users with no evidence of a bug.
+  const term = (env.TERM ?? '').trim().toLowerCase()
+  if ((env.TMUX ?? '').trim().length > 0 || term === 'tmux' || term.startsWith('tmux-')) {
     return false
   }
 

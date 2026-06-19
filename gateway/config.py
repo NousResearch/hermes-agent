@@ -2157,5 +2157,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
 
+    # Relay (generic connector-fronted platform, EXPERIMENTAL). Enabled when a
+    # connector relay URL is configured via GATEWAY_RELAY_URL (env) or
+    # gateway.relay_url (config.yaml). The adapter is registered into the
+    # platform_registry at gateway startup (gateway.relay.register_relay_adapter)
+    # and dials OUT to the connector — so, like Telegram/Matrix, it has no public
+    # inbound port and just needs Platform.RELAY present+enabled in
+    # config.platforms for start_gateway()'s connect loop to bring it up. The
+    # connected-checker (Platform.RELAY in _PLATFORM_CONNECTED_CHECKERS) keys on
+    # extra["relay_url"], so mirror the URL into extra here.
+    relay_url_env = os.getenv("GATEWAY_RELAY_URL", "").strip()
+    relay_url_yaml = ""
+    existing_relay = config.platforms.get(Platform.RELAY)
+    if existing_relay is not None:
+        relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip()
+    relay_url_val = relay_url_env or relay_url_yaml
+    if relay_url_val:
+        relay_config = _enable_from_env(Platform.RELAY)
+        relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)

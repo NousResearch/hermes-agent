@@ -6880,6 +6880,46 @@ def _session_latest_descendant(session_id: str):
 # succeed and delete the wrong row). Same story as the older
 # ``/api/sessions/search`` endpoint up at line ~1191. If you split or
 # reorder this block, move every route in it together.
+class BulkArchiveSessions(BaseModel):
+    ids: List[str]
+    archived: bool = True
+    profile: Optional[str] = None
+
+
+@app.post("/api/sessions/bulk-archive")
+async def bulk_archive_sessions_endpoint(body: BulkArchiveSessions):
+    """Archive or unarchive every session in ``body.ids`` in a single DB transaction.
+
+    Backs the dashboard's bulk-select-and-archive flow. Mirrors the
+    bulk-delete pattern for consistency. Per-row contract matches
+    :meth:`SessionDB.set_session_archived`:
+
+    * Unknown IDs are silently skipped (the response ``archived`` count
+      reflects what really happened). UI selection can race against
+      another tab's action.
+    * Archiving follows the whole compression chain (ancestors + descendants)
+      for each session in the list.
+    * We trust user selection — active/archived state doesn't block the action.
+
+    The response carries the actual archived count, so the UI can surface it
+    in a toast. Unknown IDs are skipped (see contract above).
+    """
+    if len(body.ids) > 500:
+        raise HTTPException(
+            status_code=400,
+            detail="ids must contain at most 500 entries",
+        )
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        archived_count = sum(
+            1 for sid in body.ids
+            if db.resolve_session_id(sid) and db.set_session_archived(sid, body.archived)
+        )
+        return {"ok": True, "archived": archived_count}
+    finally:
+        db.close()
+
+
 class BulkDeleteSessions(BaseModel):
     ids: List[str]
     profile: Optional[str] = None

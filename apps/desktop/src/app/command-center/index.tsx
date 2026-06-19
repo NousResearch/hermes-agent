@@ -426,7 +426,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                     </span>
                   )}
                 </div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)">
+                <pre
+                  className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)"
+                  data-selectable-text="true"
+                >
                   {logs.length ? logs.join('\n') : cc.noLogs}
                 </pre>
               </div>

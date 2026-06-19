@@ -219,6 +219,44 @@ class TestGenerate:
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
 
+    def test_unsupported_backend_returns_clear_error(self, provider, monkeypatch):
+        # The Codex backend rejects image_generation with HTTP 400; the user
+        # should get an actionable message, not a raw status dump (#49008).
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _unsupported(*args, **kwargs):
+            raise codex_plugin.CodexImageGenUnsupportedError(
+                "The Codex/ChatGPT OAuth backend does not support image generation"
+            )
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _unsupported)
+
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported"
+        assert "does not support image generation" in result["error"]
+
+
+# ── Unsupported-backend detection ─────────────────────────────────────────────
+
+
+class TestUnsupportedDetection:
+    @pytest.mark.parametrize("body", [
+        "Tool choice 'image_generation' not found in 'tools' parameter.",
+        "The image_generation tool is not supported on this surface.",
+        "image_generation: unsupported tool",
+    ])
+    def test_detects_unsupported_400(self, body):
+        assert codex_plugin._is_image_gen_unsupported(400, body) is True
+
+    def test_ignores_unrelated_400(self):
+        assert codex_plugin._is_image_gen_unsupported(400, "invalid prompt") is False
+
+    def test_ignores_non_400(self):
+        body = "Tool choice 'image_generation' not found in 'tools' parameter."
+        assert codex_plugin._is_image_gen_unsupported(401, body) is False
+        assert codex_plugin._is_image_gen_unsupported(500, body) is False
+
 
 # ── Plugin entry point ──────────────────────────────────────────────────────
 

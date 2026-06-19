@@ -35,6 +35,18 @@ from agent.image_gen_provider import (
 logger = logging.getLogger(__name__)
 
 
+class CodexImageGenUnsupportedError(RuntimeError):
+    """Raised when the Codex backend rejects the ``image_generation`` tool.
+
+    The Codex Responses surface (``chatgpt.com/backend-api/codex/responses``)
+    advertises ``experimental_supported_tools: []`` for its chat models and
+    rejects an ``image_generation`` ``tool_choice`` with HTTP 400
+    (``Tool choice 'image_generation' not found in 'tools' parameter``). That
+    is a fixed capability limit of the OAuth surface, not a transient error, so
+    it gets its own type to surface an actionable message instead of a raw 400.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Model catalog — mirrors the ``openai`` plugin so the picker UX is identical.
 # ---------------------------------------------------------------------------
@@ -172,6 +184,23 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
     }
 
 
+def _is_image_gen_unsupported(status_code: int, body: str) -> bool:
+    """Detect the Codex 400 that means image generation isn't supported.
+
+    The backend phrases this a few ways depending on the rejected payload
+    (``Tool choice 'image_generation' not found in 'tools' parameter``,
+    ``image_generation ... not supported``); match on the stable tokens rather
+    than an exact string so a minor server-side wording change doesn't make the
+    error opaque again.
+    """
+    if status_code != 400:
+        return False
+    low = (body or "").lower()
+    return "image_generation" in low and (
+        "not found" in low or "not supported" in low or "unsupported" in low
+    )
+
+
 def _extract_image_b64(value: Any) -> Optional[str]:
     """Return the newest image b64 embedded in a Responses event payload."""
     found: Optional[str] = None
@@ -264,6 +293,13 @@ def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> O
             except httpx.HTTPStatusError as exc:
                 exc.response.read()
                 body = exc.response.text[:500]
+                if _is_image_gen_unsupported(exc.response.status_code, body):
+                    raise CodexImageGenUnsupportedError(
+                        "The Codex/ChatGPT OAuth backend does not support image "
+                        "generation — its chat models expose no image_generation "
+                        "tool. Configure OPENAI_API_KEY and use the `openai` "
+                        "image-gen provider instead."
+                    ) from exc
                 raise RuntimeError(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
                 ) from exc
@@ -388,6 +424,16 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+            )
+        except CodexImageGenUnsupportedError as exc:
+            logger.debug("Codex backend does not support image generation", exc_info=True)
+            return error_response(
+                error=str(exc),
+                error_type="unsupported",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)

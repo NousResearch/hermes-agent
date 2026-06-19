@@ -32,6 +32,7 @@ import {
   clearComposerAttachments,
   type ComposerAttachment,
   setComposerAttachmentUploadState,
+  setComposerDraft,
   terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
@@ -951,7 +952,25 @@ export function usePromptActions({
             return
           }
 
+          // send / prefill carry an optional `notice` (e.g. "⊙ Goal set …")
+          // that the backend wants shown as a system line before the message
+          // is acted on. Mirrors the TUI's createSlashHandler — without it a
+          // `/goal <text>` looked like it did nothing.
+          if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
+            renderSlashOutput(dispatch.notice.trim())
+          }
+
           const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
+
+          // /undo returns a prefill directive: drop the backed-up message into
+          // the composer for editing instead of submitting it immediately.
+          if (dispatch.type === 'prefill') {
+            if (message) {
+              setComposerDraft(message)
+            }
+
+            return
+          }
 
           if (!message) {
             renderSlashOutput(

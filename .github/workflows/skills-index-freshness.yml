@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   check-freshness:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'wnml-io/hermes-agent'
     runs-on: ubuntu-latest
     steps:
       - name: Probe live index

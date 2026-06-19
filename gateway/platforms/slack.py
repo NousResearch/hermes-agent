@@ -1154,8 +1154,19 @@ class SlackAdapter(BasePlatformAdapter):
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
 
+            # Detect markdown tables and convert to Block Kit blocks.
+            # Stripped from the text fallback so tables don't appear twice.
+            text_without_tables, parsed_tables, table_segments = self._parse_markdown_tables(formatted)
+            blocks = (
+                self._markdown_table_message_blocks(table_segments)
+                if parsed_tables
+                else None
+            )
+
             # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self.truncate_message(
+                text_without_tables or formatted, self.MAX_MESSAGE_LENGTH
+            )
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -1164,19 +1175,52 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            for i, chunk in enumerate(chunks):
-                kwargs = {
+            def _message_kwargs(
+                chunk: str,
+                include_blocks: bool,
+                include_broadcast: bool,
+            ) -> Dict[str, Any]:
+                kwargs: Dict[str, Any] = {
                     "channel": chat_id,
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                if include_blocks and blocks:
+                    kwargs["blocks"] = blocks
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
-                    # Only broadcast the first chunk of the first reply
-                    if broadcast and i == 0:
+                    if include_broadcast and broadcast:
                         kwargs["reply_broadcast"] = True
+                return kwargs
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            for i, chunk in enumerate(chunks):
+                # Attach Block Kit blocks to the first chunk only so tables
+                # render inline above the text fallback.
+                try:
+                    last_result = await self._get_client(chat_id).chat_postMessage(
+                        **_message_kwargs(
+                            chunk,
+                            include_blocks=(i == 0),
+                            include_broadcast=(i == 0),
+                        )
+                    )
+                except Exception as send_error:
+                    if blocks and i == 0 and self._is_invalid_blocks_error(send_error):
+                        logger.warning(
+                            "[Slack] Table Block Kit payload rejected; retrying as plain text: %s",
+                            send_error,
+                        )
+                        plain_chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+                        for j, plain_chunk in enumerate(plain_chunks):
+                            last_result = await self._get_client(chat_id).chat_postMessage(
+                                **_message_kwargs(
+                                    plain_chunk,
+                                    include_blocks=False,
+                                    include_broadcast=(j == 0),
+                                )
+                            )
+                        break
+                    raise
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1204,6 +1248,14 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    @staticmethod
+    def _is_invalid_blocks_error(exc: Exception) -> bool:
+        response = getattr(exc, "response", None)
+        data = getattr(response, "data", None)
+        if isinstance(data, dict) and data.get("error") == "invalid_blocks":
+            return True
+        return "invalid_blocks" in str(exc)
 
     async def send_private_notice(
         self,
@@ -1571,6 +1623,130 @@ class SlackAdapter(BasePlatformAdapter):
         ):
             return True
         return self._is_retryable_error(body)
+
+    # ----- Markdown table → Block Kit conversion -----
+
+    _MD_TABLE_RE = re.compile(
+        r'(?:^|\n)(\|[^\n]+\|\n\|[-:| ]+\|\n(?:\|[^\n]+\|\n?)+)',
+        re.MULTILINE,
+    )
+
+    _CELL_DIVIDER_RE = re.compile(r'^:?-{3,}:?$')
+
+    @staticmethod
+    def _parse_markdown_tables(text: str):
+        """Extract markdown tables from text.
+
+        Returns ``(remaining_text, list_of_tables, ordered_segments)``.  Each
+        segment is either ``("text", str)`` or ``("table", rows)`` so visible
+        Slack blocks preserve ``text -> table -> text`` ordering.
+        """
+        tables: List[List[List[str]]] = []
+        segments: List[Tuple[str, Any]] = []
+        last_end = 0
+
+        def _parse_table_match(m: re.Match) -> List[List[str]] | None:
+            block = m.group(0).strip()
+            lines = [ln for ln in block.split('\n') if ln.strip()]
+            if len(lines) < 2:
+                return None
+            rows: List[List[str]] = []
+            for line in lines:
+                s = line.strip()
+                if s.startswith('|'):
+                    s = s[1:]
+                if s.endswith('|'):
+                    s = s[:-1]
+                row = [c.strip() for c in s.split('|')]
+                rows.append(row)
+            # Remove divider rows (e.g. |---|---|)
+            filtered = [
+                r for r in rows
+                if not all(SlackAdapter._CELL_DIVIDER_RE.match(c) for c in r)
+            ]
+            return filtered if len(filtered) >= 2 else None
+
+        def _replace_table(m: re.Match) -> str:
+            nonlocal last_end
+            table = _parse_table_match(m)
+            if table is None:
+                return m.group(0)
+
+            prefix = text[last_end:m.start()]
+            prefix = re.sub(r'\n{3,}', '\n\n', prefix).strip()
+            if prefix:
+                segments.append(("text", prefix))
+            segments.append(("table", table))
+            tables.append(table)
+            last_end = m.end()
+            return ''
+
+        result = SlackAdapter._MD_TABLE_RE.sub(_replace_table, text)
+        suffix = text[last_end:]
+        suffix = re.sub(r'\n{3,}', '\n\n', suffix).strip()
+        if suffix:
+            segments.append(("text", suffix))
+        result = re.sub(r'\n{3,}', '\n\n', result).strip()
+        return result, tables, segments
+
+    @staticmethod
+    def _markdown_table_message_blocks(
+        segments: List[Tuple[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Build visible Slack blocks for prose plus markdown tables."""
+        blocks: List[Dict[str, Any]] = []
+        for kind, value in segments:
+            if kind == "text":
+                text = (value or "").strip()
+                if not text:
+                    continue
+                for chunk in SlackAdapter.truncate_message(text, 3000):
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": chunk,
+                        },
+                    })
+            elif kind == "table":
+                blocks.extend(SlackAdapter._tables_to_blocks([value]))
+        return blocks
+
+    @staticmethod
+    def _tables_to_blocks(tables: List[List[List[str]]]) -> List[Dict[str, Any]]:
+        """Convert parsed markdown tables to Slack Block Kit ``table`` blocks."""
+        blocks: List[Dict[str, Any]] = []
+
+        for table_rows in tables:
+            if not table_rows:
+                continue
+            rows = table_rows[:100]
+            ncols = min(max(len(r) for r in rows), 20)
+
+            block_rows: List[List[Dict[str, Any]]] = []
+            remaining_chars = 10000
+            for row in rows:
+                block_row: List[Dict[str, Any]] = []
+                for ci in range(ncols):
+                    cell_text = row[ci] if ci < len(row) else ""
+                    if remaining_chars <= 0:
+                        cell_text = ""
+                    elif len(cell_text) > remaining_chars:
+                        cell_text = cell_text[:remaining_chars]
+                    remaining_chars -= len(cell_text)
+                    block_row.append({"type": "raw_text", "text": cell_text})
+                block_rows.append(block_row)
+                if remaining_chars <= 0:
+                    break
+
+            if block_rows:
+                blocks.append({
+                    "type": "table",
+                    "rows": block_rows,
+                    "column_settings": [{"is_wrapped": True} for _ in range(ncols)],
+                })
+
+        return blocks
 
     # ----- Markdown → mrkdwn conversion -----
 

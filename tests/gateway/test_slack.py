@@ -115,6 +115,75 @@ def adapter():
     return a
 
 
+class TestSendMarkdownTables:
+    @pytest.mark.asyncio
+    async def test_send_markdown_table_uses_block_kit_and_strips_text_fallback(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
+
+        result = await adapter.send(
+            "C123",
+            "Status\n\n| Feature | Result |\n|---|---|\n| Table | Pass |\n\nDone",
+        )
+
+        assert result.success
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["text"] == "Status\n\nDone"
+        assert "blocks" in kwargs
+        assert kwargs["blocks"][0] == {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Status",
+            },
+        }
+        table = kwargs["blocks"][1]
+        assert table["type"] == "table"
+        assert table["rows"] == [
+            [
+                {"type": "raw_text", "text": "Feature"},
+                {"type": "raw_text", "text": "Result"},
+            ],
+            [
+                {"type": "raw_text", "text": "Table"},
+                {"type": "raw_text", "text": "Pass"},
+            ],
+        ]
+        assert table["column_settings"] == [
+            {"is_wrapped": True},
+            {"is_wrapped": True},
+        ]
+        assert kwargs["blocks"][2] == {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Done",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_markdown_table_retries_plain_text_when_slack_rejects_blocks(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[RuntimeError("invalid_blocks"), {"ts": "fallback_ts"}]
+        )
+
+        result = await adapter.send(
+            "C123",
+            "Status\n\n| Feature | Result |\n|---|---|\n| Table | Pass |\n\nDone",
+        )
+
+        assert result.success
+        assert result.message_id == "fallback_ts"
+        assert adapter._app.client.chat_postMessage.await_count == 2
+        first = adapter._app.client.chat_postMessage.await_args_list[0].kwargs
+        second = adapter._app.client.chat_postMessage.await_args_list[1].kwargs
+        assert "blocks" in first
+        assert first["blocks"][0]["type"] == "section"
+        assert first["blocks"][1]["type"] == "table"
+        assert first["blocks"][2]["type"] == "section"
+        assert "blocks" not in second
+        assert "| Feature | Result |" in second["text"]
+
+
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
     """Point document cache to tmp_path so tests don't touch ~/.hermes."""

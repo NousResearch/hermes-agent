@@ -4343,7 +4343,12 @@ def refresh_agent_mcp_tools(
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.
     with _agent_tools_lock:
-        published_gen = getattr(agent, "_tool_snapshot_generation", -1)
+        # Defensive: the published generation should be an int, but tolerate an
+        # agent that never set it (or set a non-int, e.g. a test mock) rather
+        # than throwing TypeError on the comparison and silently failing the
+        # whole refresh.
+        published_gen_raw = getattr(agent, "_tool_snapshot_generation", -1)
+        published_gen = published_gen_raw if isinstance(published_gen_raw, int) else -1
         if snapshot_generation < published_gen:
             # A newer snapshot already won; our set is stale — drop it.
             return set()

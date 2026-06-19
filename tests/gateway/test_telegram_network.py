@@ -326,6 +326,7 @@ class TestFallbackTransportInit:
 
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")  # opt in to env proxy (#48820)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
 
@@ -334,6 +335,25 @@ class TestFallbackTransportInit:
         assert transport._fallback_ips == ["149.154.167.220"]
         assert len(seen_kwargs) == 2
         assert all(kwargs["proxy"] == "http://proxy.example:8080" for kwargs in seen_kwargs)
+
+    def test_inherited_proxy_ignored_without_optin(self, monkeypatch):
+        # #48820 Bug 3: an inherited HTTPS_PROXY must NOT be used unless opted
+        # in — the core of the Windows Scheduled Task misroute fix.
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy", "GATEWAY_TRUST_PROXY", "GATEWAY_TRUST_ENV"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        assert transport._fallback_ips == ["149.154.167.220"]
+        assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
     def test_no_proxy_bypasses_fallback_ip_cidr(self, monkeypatch):
         seen_kwargs = []
@@ -344,6 +364,7 @@ class TestFallbackTransportInit:
 
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("GATEWAY_TRUST_PROXY", "true")  # opt in so the NO_PROXY bypass path is exercised (#48820)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
         monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)

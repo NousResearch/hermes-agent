@@ -324,3 +324,207 @@ def test_generate_xai_tts_leaves_text_plain_by_default(tmp_path, monkeypatch):
     )
 
     assert captured["json"]["text"] == "Bonjour Monsieur Talbot. Ceci est un test."
+
+
+def test_generate_xai_tts_omits_speed_and_latency_by_default(tmp_path, monkeypatch):
+    """No speed / optimize_streaming_latency in the request body unless
+    the user explicitly sets them. Keeps the existing minimal-payload
+    contract for default configs.
+    """
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello world.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "ara", "language": "en"}},
+    )
+
+    assert "speed" not in captured["json"]
+    assert "optimize_streaming_latency" not in captured["json"]
+
+
+def test_generate_xai_tts_sends_speed_when_set(tmp_path, monkeypatch):
+    """tts.xai.speed flows into the POST body."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello world.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "ara", "language": "en", "speed": 1.5}},
+    )
+
+    assert captured["json"]["speed"] == 1.5
+
+
+def test_generate_xai_tts_speed_clamped_to_valid_range(tmp_path, monkeypatch):
+    """speed values outside xAI's 0.7..1.5 band are clamped, not sent raw."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    # Below 0.7 -> 0.7
+    _generate_xai_tts(
+        "Hello.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "eve", "language": "en", "speed": 0.1}},
+    )
+    assert captured["json"]["speed"] == 0.7
+
+    # Above 1.5 -> 1.5
+    _generate_xai_tts(
+        "Hello.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "eve", "language": "en", "speed": 3.0}},
+    )
+    assert captured["json"]["speed"] == 1.5
+
+
+def test_generate_xai_tts_omits_speed_when_exactly_default(tmp_path, monkeypatch):
+    """speed == 1.0 is the API default; the field stays out of the payload."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "eve", "language": "en", "speed": 1.0}},
+    )
+
+    assert "speed" not in captured["json"]
+
+
+def test_generate_xai_tts_sends_optimize_streaming_latency_when_set(tmp_path, monkeypatch):
+    """tts.xai.optimize_streaming_latency flows into the POST body."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello world.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "ara", "language": "en", "optimize_streaming_latency": 2}},
+    )
+
+    assert captured["json"]["optimize_streaming_latency"] == 2
+
+
+def test_generate_xai_tts_optimize_streaming_latency_omitted_at_default(tmp_path, monkeypatch):
+    """optimize_streaming_latency == 0 is the API default; field is not sent."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello world.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "ara", "language": "en", "optimize_streaming_latency": 0}},
+    )
+
+    assert "optimize_streaming_latency" not in captured["json"]
+
+
+def test_generate_xai_tts_global_speed_used_as_fallback(tmp_path, monkeypatch):
+    """Global tts.speed is the fallback when tts.xai.speed is unset."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello.",
+        str(tmp_path / "out.mp3"),
+        {"speed": 0.8, "xai": {"voice_id": "ara", "language": "en"}},
+    )
+
+    assert captured["json"]["speed"] == 0.8
+
+
+def test_generate_xai_tts_provider_speed_overrides_global(tmp_path, monkeypatch):
+    """tts.xai.speed wins over the global tts.speed fallback."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello.",
+        str(tmp_path / "out.mp3"),
+        {"speed": 1.5, "xai": {"voice_id": "ara", "language": "en", "speed": 0.7}},
+    )
+
+    assert captured["json"]["speed"] == 0.7

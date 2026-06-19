@@ -530,18 +530,20 @@ def compress_context(
                 # renumber, no contextvar/env/logging re-sync. The session's
                 # id, title, cwd, /goal, and gateway routing all stay put.
                 #
-                # Durable replace: the persisted transcript MUST become the
-                # compacted set, not "original history + summary". `compressed`
-                # already carries the surviving tail (current-turn messages the
-                # compressor kept via protect_last_n), so we DON'T pre-flush
-                # here — a flush would INSERT current-turn rows that the
-                # replace_messages DELETE immediately discards (wasted writes).
-                # Atomically replace ALL rows with `compressed` so a resume
-                # reloads the compacted transcript (lossy by design — the
-                # pre-compaction turns are summarized away). Without this the
-                # row keeps the full history and compaction never durably
-                # shrinks anything (the next turn just re-compacts). See #38763.
-                agent._session_db.replace_messages(agent.session_id, compressed)
+                # Durable, NON-DESTRUCTIVE replace: soft-archive the
+                # pre-compaction turns (active=0, kept on disk + FTS-searchable +
+                # recoverable) and insert `compressed` as the new live (active=1)
+                # set, atomically. `compressed` already carries the surviving
+                # tail (current-turn messages the compressor kept via
+                # protect_last_n), so we DON'T pre-flush here — a flush would
+                # INSERT current-turn rows that archive_and_compact would then
+                # archive alongside the rest (harmless but wasted writes). The
+                # live-context load filters active=1, so a resume reloads ONLY
+                # the compacted set; the original turns remain under the SAME id
+                # for search/recovery (Teknium review — keep one durable id
+                # WITHOUT destroying history, unlike a hard replace_messages).
+                # See #38763.
+                agent._session_db.archive_and_compact(agent.session_id, compressed)
                 # Reset the flush identity set so the next turn's appends are
                 # diffed against the COMPACTED transcript: the compacted dicts
                 # are passed as conversation_history next turn and skipped by

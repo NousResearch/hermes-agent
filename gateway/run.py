@@ -9962,6 +9962,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         event: MessageEvent,
         source: SessionSource,
         history: List[Dict[str, Any]],
+        session_key: Optional[str] = None,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
@@ -9980,10 +9981,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message_text = event.text or ""
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
-        # Use the same helper every other call site uses so the write key here
-        # matches the consume key at the run_conversation site — even if the
-        # session store overrides build_session_key's default behavior.
-        session_key = self._session_key_for_source(source)
+        # Prefer the already resolved session key from the caller so this write
+        # key matches the consume key at the run_conversation site. Fall back
+        # to deriving it here for tests and legacy standalone callers.
+        session_key = session_key or self._session_key_for_source(source)
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
@@ -10997,6 +10998,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             event=event,
             source=source,
             history=history,
+            session_key=session_key,
         )
         if message_text is None:
             return
@@ -19073,6 +19075,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event=pending_event,
                         source=next_source,
                         history=updated_history,
+                        session_key=session_key,
                     )
                     if next_message is None:
                         return result

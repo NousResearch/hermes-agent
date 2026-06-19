@@ -6258,7 +6258,20 @@ def show_config():
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))
     terminal = config.get('terminal', {})
-    print(f"  Backend:      {terminal.get('backend', 'local')}")
+    # ``terminal.backend`` in config.yaml is bridged to the TERMINAL_ENV env var,
+    # but a TERMINAL_ENV set directly in .env / the shell overrides config and is
+    # what terminal_tool actually uses (tools/terminal_tool.py reads TERMINAL_ENV).
+    # Report the EFFECTIVE backend so the diagnostic doesn't say "local" while the
+    # agent is jailed in docker (and vice-versa). Mirrors hermes dump / hermes status.
+    config_backend = terminal.get('backend', 'local')
+    env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if env_backend and env_backend != str(config_backend).strip().lower():
+        print(
+            f"  Backend:      {env_backend}  (TERMINAL_ENV overrides config.yaml "
+            f"terminal.backend={config_backend})"
+        )
+    else:
+        print(f"  Backend:      {config_backend}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
     

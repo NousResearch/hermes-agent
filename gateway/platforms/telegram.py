@@ -2356,8 +2356,48 @@ class TelegramAdapter(BasePlatformAdapter):
             # Bot API 10.0 guest reply: buffer content and return immediately.
             # Must run before the rich/legacy send paths — both use sendMessage
             # which Telegram rejects with Forbidden when the bot is not a member.
+            #
+            # Buffering strategy: streaming calls send() multiple times.
+            # Non-overflow: each call has the full accumulated text so far
+            # (growing) — replace the buffer so the last call wins.
+            # Overflow split: truncate_message splits the response into chunks
+            # shorter than the accumulated total and sends each separately —
+            # append so no chunk is lost.
             if self._pending_guest_queries.get(chat_id) is not None or chat_id in self._guest_only_chats:
-                self._guest_reply_buffer[chat_id] = content
+                # Tool-use progress blocks (💻 terminal etc.) come through
+                # send() from send_progress_messages().  The stream consumer
+                # always sets expect_edits=True on the first frame and
+                # notify=True on the fallback-final send; tool-progress calls
+                # have neither flag.  Drop anything that isn't from the stream
+                # consumer so the guest reply contains only the LLM response.
+                _is_stream_send = bool(
+                    metadata
+                    and (metadata.get("expect_edits") or metadata.get("notify"))
+                )
+                if not _is_stream_send:
+                    return SendResult(success=True, message_id=None)
+
+                # Strip the streaming cursor " ▉" before buffering so it is
+                # never embedded mid-word in the final reply.
+                _cursor = " ▉"
+                _clean = content
+                if _clean.endswith(_cursor):
+                    _clean = _clean[:-len(_cursor)]
+                elif _clean.endswith("▉"):
+                    _clean = _clean[:-1]
+
+                _existing = self._guest_reply_buffer.get(chat_id, "")
+                if _existing and _clean.startswith(_existing):
+                    # Cumulative streaming update: new content contains all
+                    # prior content as a prefix → replace so the last call wins.
+                    self._guest_reply_buffer[chat_id] = _clean
+                else:
+                    # Continuation or overflow chunk: content does NOT start
+                    # with what we already have → append (covers both the
+                    # stream-consumer fallback-final path, where only the
+                    # suffix after the preamble is sent, and overflow splits
+                    # where truncate_message delivers independent chunks).
+                    self._guest_reply_buffer[chat_id] = _existing + _clean
                 return SendResult(success=True, message_id=None)
 
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -2389,7 +2429,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
                     for chunk in chunks
                 ]
-            
+
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)

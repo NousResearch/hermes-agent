@@ -761,7 +761,7 @@ export const en: Translations = {
     gatewayRunning: 'Messaging gateway running',
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,
-    restartMessaging: 'Restart messaging',
+    restartGateway: 'Restart gateway',
     updateHermes: 'Update Hermes',
     actionRunning: 'running',
     actionDone: 'done',

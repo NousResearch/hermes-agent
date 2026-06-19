@@ -625,7 +625,7 @@ export interface Translations {
     gatewayRunning: string
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
-    restartMessaging: string
+    restartGateway: string
     updateHermes: string
     actionRunning: string
     actionDone: string

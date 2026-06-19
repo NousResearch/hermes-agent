@@ -426,6 +426,13 @@ def _hermetic_environment(tmp_path, monkeypatch):
                     if _url_var:
                         _existing.base_url_env_var = _url_var
                 continue
+            # Skip providers that need custom token resolution or are special-cased
+            # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
+            # openrouter/custom are aggregator/user-supplied and handled outside
+            # the registry — adding them here breaks runtime_provider resolution
+            # that relies on `openrouter not in PROVIDER_REGISTRY`).
+            if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+                continue
             if _pp.auth_type != "api_key" or not _pp.env_vars:
                 continue
             _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))

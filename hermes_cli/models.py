@@ -381,9 +381,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "opencode-zen": [
         "kimi-k2.5",
+        "kimi-k2.6",
+        "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-5.4-pro",
         "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
         "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
         "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.1",
@@ -393,6 +399,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5",
         "gpt-5-codex",
         "gpt-5-nano",
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
         "claude-opus-4-1",
@@ -400,21 +409,25 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-5",
         "claude-sonnet-4",
         "claude-haiku-4-5",
-        "claude-3-5-haiku",
+        "gemini-3.5-flash",
         "gemini-3.1-pro",
-        "gemini-3-pro",
         "gemini-3-flash",
         "minimax-m2.7",
         "minimax-m2.5",
-        "minimax-m2.5-free",
-        "minimax-m2.1",
+        "minimax-m3-free",
+        "glm-5.1",
         "glm-5",
-        "glm-4.7",
-        "glm-4.6",
-        "kimi-k2-thinking",
-        "kimi-k2",
-        "qwen3-coder",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-free",
+        "qwen3.6-plus",
+        "qwen3.6-plus-free",
+        "qwen3.5-plus",
+        "grok-build-0.1",
         "big-pickle",
+        "mimo-v2.5-free",
+        "north-mini-code-free",
+        "nemotron-3-ultra-free",
     ],
     "opencode-go": [
         "kimi-k2.6",
@@ -2420,15 +2433,24 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,
                     # partial rollout) still appear in the picker.
-                    # Curated entries come first so deliberately-surfaced
-                    # newest models (e.g. kimi-k2.7-code, #46309) stay at
-                    # the top of the picker; live-only entries are appended
-                    # afterwards for discovery.  (#46850)
+                    # Live API entries come first (the provider's authoritative
+                    # catalog), then curated-only entries are appended for
+                    # discovery — models that the live endpoint hasn't caught up
+                    # on still surface, but models the provider no longer serves
+                    # (stale curated entries) don't pollute the top of the picker.
+                    #
+                    # Design note: Single providers (kimi, zai) use curated-first
+                    # (commit 658ac1d86) to surface newest models even when live
+                    # API lags (#46309). However, aggregators like OpenCode Zen
+                    # have a live API as their authoritative catalog — the curated
+                    # list is just a fallback for models the live endpoint hasn't
+                    # caught up on. For aggregators, live-first prevents stale
+                    # curated entries from polluting the picker. (#46850)
                     curated = list(_PROVIDER_MODELS.get(normalized, []))
                     if curated:
-                        merged = list(curated)
-                        merged_lower = {m.lower() for m in curated}
-                        for m in live:
+                        merged = list(live)
+                        merged_lower = {m.lower() for m in live}
+                        for m in curated:
                             if m.lower() not in merged_lower:
                                 merged.append(m)
                                 merged_lower.add(m.lower())

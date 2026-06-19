@@ -77,7 +77,12 @@ def cron_list(show_all: bool = False):
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
-        schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
+        schedule_value = job.get("schedule") or {}
+        if isinstance(schedule_value, dict):
+            schedule_fallback = schedule_value.get("display") or schedule_value.get("value") or schedule_value.get("expr") or "?"
+        else:
+            schedule_fallback = str(schedule_value or "?")
+        schedule = job.get("schedule_display") or schedule_fallback
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
 

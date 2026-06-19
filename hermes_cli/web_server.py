@@ -12738,13 +12738,16 @@ async def ard_search_endpoint(request: Request):
 async def ard_get_catalog_endpoint(request: Request):
     """Return the ARD ai-catalog.json manifest.
 
-    Serves the same content as /.well-known/ai-catalog.json but via the
-    dashboard API (authenticated) so it can be used programmatically.
+    Dashboard API is authenticated and may request a private catalog for local
+    UI use. The unauthenticated /.well-known route remains public-only.
     """
     _require_token(request)
     from tools.skills_hub import generate_ard_catalog
 
-    catalog = generate_ard_catalog()
+    visibility = request.query_params.get("visibility", "public")
+    if visibility not in {"public", "private"}:
+        raise HTTPException(status_code=400, detail="visibility must be 'public' or 'private'")
+    catalog = generate_ard_catalog(visibility=visibility)
     return catalog
 
 
@@ -12753,7 +12756,7 @@ async def ard_publish_endpoint(request: Request):
     """Generate and write ai-catalog.json to ~/.hermes/.well-known/.
 
     Request body (optional):
-        {"domain": "my.domain.com"}
+        {"domain": "my.domain.com", "visibility": "public|private", "output_path": "/tmp/catalog.json"}
     """
     _require_token(request)
     try:
@@ -12762,10 +12765,14 @@ async def ard_publish_endpoint(request: Request):
         body = {}
 
     domain = str(body.get("domain", "hermes.local")) if isinstance(body, dict) else "hermes.local"
+    visibility = str(body.get("visibility", "public")) if isinstance(body, dict) else "public"
+    output_path = body.get("output_path") if isinstance(body, dict) else None
+    if visibility not in {"public", "private"}:
+        raise HTTPException(status_code=400, detail="visibility must be 'public' or 'private'")
 
     from tools.skills_hub import publish_ard_catalog
 
-    path = publish_ard_catalog(domain=domain)
+    path = publish_ard_catalog(domain=domain, visibility=visibility, output_path=output_path)
     import json
     data = json.loads(path.read_text())
     from collections import Counter
@@ -12776,7 +12783,26 @@ async def ard_publish_endpoint(request: Request):
         "entries": len(data["entries"]),
         "types": dict(Counter(e["type"].split("/")[-1] for e in data["entries"])),
         "domain": domain,
+        "visibility": visibility,
     }
+
+
+@app.post("/api/ard/inspect")
+async def ard_inspect_endpoint(request: Request):
+    """Inspect an ARD entry by URN without installing/registering it."""
+    _require_token(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    identifier = str(body.get("identifier", "")).strip() if isinstance(body, dict) else ""
+    if not identifier:
+        raise HTTPException(status_code=400, detail="identifier is required")
+    from scripts.ard_inspect import inspect_identifier
+    report = inspect_identifier(identifier)
+    if not report.get("ok") and report.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="ARD entry not found")
+    return report
 
 
 @app.get("/.well-known/ai-catalog.json")

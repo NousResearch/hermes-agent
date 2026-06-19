@@ -232,6 +232,24 @@ def _strip_html(html: str) -> str:
     return text.strip()
 
 
+def _is_html(text: str) -> bool:
+    """Return True if text appears to be HTML content."""
+    stripped = text.strip()
+    if stripped.startswith(("<!DOCTYPE", "<html", "<HTML", "<!doctype")):
+        return True
+    return bool(re.search(r"<(p|div|br|h[1-6]|ul|ol|table|html)\b", stripped, re.IGNORECASE))
+
+
+def _build_body_part(body: str) -> MIMEText | MIMEMultipart:
+    """Return a MIME part for the body — multipart/alternative if HTML detected."""
+    if _is_html(body):
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(_strip_html(body), "plain", "utf-8"))
+        alt.attach(MIMEText(body, "html", "utf-8"))
+        return alt
+    return MIMEText(body, "plain", "utf-8")
+
+
 def _extract_email_address(raw: str) -> str:
     """Extract bare email address from 'Name <addr>' format."""
     match = re.search(r"<([^>]+)>", raw)
@@ -654,7 +672,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        msg.attach(_build_body_part(body))
 
         smtp = self._connect_smtp()
         try:
@@ -768,7 +786,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Message-ID"] = msg_id
 
         if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(_build_body_part(body))
 
         for file_path in file_paths:
             p = Path(file_path)
@@ -848,7 +866,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Message-ID"] = msg_id
 
         if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(_build_body_part(body))
 
         # Attach file
         p = Path(file_path)

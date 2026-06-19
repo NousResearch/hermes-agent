@@ -1073,6 +1073,135 @@ class TestSendEmailStandalone(unittest.TestCase):
         self.assertIn("not configured", result["error"])
 
 
+class TestHtmlDetection(unittest.TestCase):
+    """Test _is_html detection and _build_body_part multipart/alternative logic."""
+
+    def test_plain_text_not_detected_as_html(self):
+        from gateway.platforms.email import _is_html
+        self.assertFalse(_is_html("Hello, this is plain text."))
+        self.assertFalse(_is_html("No tags here.\nJust lines."))
+        self.assertFalse(_is_html(""))
+
+    def test_doctype_detected(self):
+        from gateway.platforms.email import _is_html
+        self.assertTrue(_is_html("<!DOCTYPE html><html><body>Hi</body></html>"))
+        self.assertTrue(_is_html("<!doctype html>\n<html>"))
+
+    def test_html_tag_detected(self):
+        from gateway.platforms.email import _is_html
+        self.assertTrue(_is_html("<html><body>Content</body></html>"))
+        self.assertTrue(_is_html("<HTML><BODY>Content</BODY></HTML>"))
+
+    def test_block_level_tags_detected(self):
+        from gateway.platforms.email import _is_html
+        self.assertTrue(_is_html("<p>A paragraph</p>"))
+        self.assertTrue(_is_html("<div>A div</div>"))
+        self.assertTrue(_is_html("Hello<br>World"))
+        self.assertTrue(_is_html("<h1>Title</h1>"))
+        self.assertTrue(_is_html("<h6>Heading</h6>"))
+        self.assertTrue(_is_html("<ul><li>Item</li></ul>"))
+        self.assertTrue(_is_html("<ol><li>Item</li></ol>"))
+        self.assertTrue(_is_html("<table><tr><td>Cell</td></tr></table>"))
+
+    def test_inline_tags_not_detected(self):
+        from gateway.platforms.email import _is_html
+        self.assertFalse(_is_html("Use <b>bold</b> text"))
+        self.assertFalse(_is_html("<span>inline</span>"))
+        self.assertFalse(_is_html("<a href='x'>link</a>"))
+
+    def test_angle_brackets_in_prose_not_detected(self):
+        from gateway.platforms.email import _is_html
+        self.assertFalse(_is_html("if x < 10 and y > 5"))
+        self.assertFalse(_is_html("use <your_name> as placeholder"))
+
+    def test_leading_whitespace_ignored(self):
+        from gateway.platforms.email import _is_html
+        self.assertTrue(_is_html("  \n  <!DOCTYPE html><html>"))
+        self.assertTrue(_is_html("\n\n<html><body>X</body></html>"))
+
+    def test_build_body_part_plain_text(self):
+        from gateway.platforms.email import _build_body_part
+        part = _build_body_part("Hello, plain text.")
+        self.assertEqual(part.get_content_type(), "text/plain")
+        self.assertIn("Hello, plain text.", part.get_payload(decode=True).decode())
+
+    def test_build_body_part_html_returns_alternative(self):
+        from gateway.platforms.email import _build_body_part
+        html = "<html><body><h1>Hello</h1><p>World</p></body></html>"
+        part = _build_body_part(html)
+        self.assertEqual(part.get_content_type(), "multipart/alternative")
+        subparts = part.get_payload()
+        self.assertEqual(len(subparts), 2)
+        self.assertEqual(subparts[0].get_content_type(), "text/plain")
+        self.assertEqual(subparts[1].get_content_type(), "text/html")
+        # Plain part should have tags stripped
+        plain_body = subparts[0].get_payload(decode=True).decode()
+        self.assertNotIn("<h1>", plain_body)
+        self.assertIn("Hello", plain_body)
+        # HTML part should preserve original
+        html_body = subparts[1].get_payload(decode=True).decode()
+        self.assertIn("<h1>Hello</h1>", html_body)
+
+    def test_build_body_part_with_div_content(self):
+        from gateway.platforms.email import _build_body_part
+        html = "<div>Report: <p>Revenue is up 20%</p></div>"
+        part = _build_body_part(html)
+        self.assertEqual(part.get_content_type(), "multipart/alternative")
+
+    def test_send_email_uses_multipart_alternative_for_html(self):
+        """_send_email should produce multipart/alternative when body is HTML."""
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        html_body = "<html><body><h1>Report</h1><p>Details here.</p></body></html>"
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", html_body, None)
+
+            sent_msg = mock_server.send_message.call_args[0][0]
+            # The outer message is multipart/mixed, containing a multipart/alternative
+            payloads = sent_msg.get_payload()
+            alt_part = payloads[0] if isinstance(payloads, list) else sent_msg
+            self.assertEqual(alt_part.get_content_type(), "multipart/alternative")
+            sub = alt_part.get_payload()
+            self.assertEqual(sub[0].get_content_type(), "text/plain")
+            self.assertEqual(sub[1].get_content_type(), "text/html")
+
+    def test_send_email_plain_text_unchanged(self):
+        """_send_email should send plain MIMEText when body is not HTML."""
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Just plain text.", None)
+
+            sent_msg = mock_server.send_message.call_args[0][0]
+            payloads = sent_msg.get_payload()
+            # Should be a single text/plain part inside the multipart/mixed
+            text_part = payloads[0] if isinstance(payloads, list) else sent_msg
+            self.assertEqual(text_part.get_content_type(), "text/plain")
+
+
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""
 

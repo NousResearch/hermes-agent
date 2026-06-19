@@ -1208,11 +1208,13 @@ DEFAULT_CONFIG = {
     # the INSTANT discovery completes, so users with no MCP servers (the common
     # case) or fast servers pay ~0s regardless of this value — the bound is
     # only reached when a server is genuinely still connecting.  The old 0.75s
-    # default was too short for HTTP/OAuth servers (which can take 2–6s on a
-    # cold connect), so their tools were invisible for the whole session.
-    # Slow servers that miss this window are still picked up by the automatic
-    # late-binding refresh, so this is a UX/latency knob, not a correctness one.
-    "mcp_discovery_timeout": 5.0,
+    # default was a touch short for HTTP/OAuth servers on a cold connect; a
+    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
+    # only a turn-1 latency/UX knob: a server that misses this window is still
+    # picked up automatically on the next turn by the between-turns refresh
+    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
+    # small so a slow/dead server adds little to first-response latency.
+    "mcp_discovery_timeout": 1.5,
 
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the

@@ -531,7 +531,10 @@ def init_agent(
     agent._last_activity_desc: str = "initializing"
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
-
+    # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
+    # Set on internal forks (e.g. background_review) that must keep ``tools[]``
+    # byte-identical to a parent for provider cache parity.
+    agent._skip_mcp_refresh = False
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None

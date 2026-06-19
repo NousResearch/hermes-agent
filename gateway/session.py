@@ -386,9 +386,10 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Yuanbao. "
-            "You CAN send private (DM) messages via the send_message tool. "
-            "Use target='yuanbao:direct:<account_id>' for DM "
-            "and target='yuanbao:group:<group_code>' for group chat."
+            "To send a private (DM) message to a user in the current group, "
+            "use the yb_send_dm tool (look up the recipient by name or pass "
+            "their user_id). Your normal reply is delivered to the group you "
+            "are responding in."
         )
 
     # Connected platforms
@@ -1322,6 +1323,7 @@ class SessionStore:
                         message.get("platform_message_id") or message.get("message_id")
                     ),
                     observed=bool(message.get("observed")),
+                    timestamp=message.get("timestamp"),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)

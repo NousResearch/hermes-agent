@@ -512,6 +512,16 @@ def compress_context(
             old_title = agent._session_db.get_session_title(agent.session_id)
             # Trigger memory extraction on the old session before it rotates.
             agent.commit_memory_session(messages)
+            # Flush any un-persisted messages from the current turn to the
+            # old session *before* rotating.  compress_context() can be
+            # called mid-turn (auto-compress when context exceeds threshold)
+            # at a point when _flush_messages_to_session_db() has not yet
+            # run.  Without this, messages generated during the current turn
+            # are silently lost on session rotation (#47202).
+            try:
+                agent._flush_messages_to_session_db(messages)
+            except Exception:
+                pass  # best-effort — don't block compression on a flush error
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -602,6 +612,20 @@ def compress_context(
             f"accuracy may degrade. Consider /new to start fresh.",
             force=True,
         )
+
+    # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
+    # the completed old session before its details are lost.
+    _old_sid_for_event = locals().get("old_session_id")
+    if getattr(agent, "event_callback", None):
+        try:
+            agent.event_callback("session:compress", {
+                "platform": agent.platform or "",
+                "session_id": agent.session_id,
+                "old_session_id": _old_sid_for_event or "",
+                "compression_count": agent.context_compressor.compression_count,
+            })
+        except Exception as e:
+            logger.debug("event_callback error on session:compress: %s", e)
 
     # Keep the post-compression rough estimate for diagnostics, but do not
     # treat it as provider-reported prompt usage. Schema-heavy rough estimates

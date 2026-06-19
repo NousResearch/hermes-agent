@@ -323,6 +323,7 @@ export interface Translations {
       connected: string;
       pendingRestart: string;
       gatewayStopped: string;
+      startupFailed: string;
       disconnected: string;
       notConfigured: string;
       disabled: string;

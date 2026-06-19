@@ -11,3 +11,15 @@ def test_sidecar_session_create_requests_close_on_disconnect():
     call = re.search(r'"session\.create",\s*\{(.*?)\}', source, re.DOTALL)
     assert call, "sidecar session.create call not found"
     assert re.search(r"close_on_disconnect:\s*true", call.group(1))
+
+
+def test_sidecar_session_create_scopes_profile():
+    """The sidecar must pass the dashboard's selected profile so model/credential
+    info matches the PTY child under profile-scoped chat."""
+    source = CHAT_SIDEBAR.read_text(encoding="utf-8")
+    assert '"session.create"' in source
+    assert re.search(
+        r"close_on_disconnect:\s*true,\s*\.\.\.\(profile\s*\?\s*\{\s*profile\s*\}\s*:\s*\{\}\)",
+        source,
+        re.DOTALL,
+    )

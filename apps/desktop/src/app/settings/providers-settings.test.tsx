@@ -55,7 +55,7 @@ afterEach(() => {
 async function renderProvidersSettings() {
   const { ProvidersSettings } = await import('./providers-settings')
 
-  return render(<ProvidersSettings onViewChange={vi.fn()} view="accounts" />)
+  return render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" />)
 }
 
 describe('ProvidersSettings', () => {
@@ -95,6 +95,6 @@ describe('ProvidersSettings', () => {
 
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
-    expect(screen.getByText(/managed outside Hermes/)).toBeTruthy()
+    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 })

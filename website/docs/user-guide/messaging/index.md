@@ -320,7 +320,30 @@ Control how much tool activity is displayed in `~/.hermes/config.yaml`:
 display:
   tool_progress: all    # off | new | all | verbose
   tool_progress_command: false  # set to true to enable /verbose in messaging
+  # How progress is grouped on platforms that support message editing:
+  #   accumulate (default) — edit one bubble in place as tools run
+  #   separate             — send one message per tool (pre-v0.9 style; noisier)
+  # Only applies where tool_progress is already enabled.
+  tool_progress_grouping: accumulate   # accumulate | separate
 ```
+
+### Message timestamps in model context
+
+Off by default. When enabled, Hermes prepends a human-readable timestamp
+(e.g. `[Tue 2026-04-28 13:40:53 CEST]`) onto each **user** message *in the
+model's context* so the agent knows when messages were sent — useful for
+temporal reasoning ("you asked this morning…", noticing a long gap). It is
+**not** added to assistant messages or the system prompt.
+
+```yaml
+gateway:
+  message_timestamps:
+    enabled: false   # set true to show send-times to the model
+```
+
+Persisted transcripts always stay clean — the timestamp is stored as message
+metadata regardless of this toggle, so enabling it later also surfaces
+send-times for past messages, and replay never accumulates duplicate prefixes.
 
 When enabled, the bot sends status messages as it works:
 

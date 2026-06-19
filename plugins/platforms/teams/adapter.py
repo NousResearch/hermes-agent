@@ -617,7 +617,74 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-check_teams_requirements = check_requirements
+# NOTE: ``check_requirements`` is the PASSIVE probe (used as the registry
+# ``check_fn`` and by ``gateway status``) — it must never trigger a pip
+# install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
+# from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
+# SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+def check_teams_requirements() -> bool:
+    """Ensure the Teams SDK is importable, lazy-installing it on first use.
+
+    Lazy-installs ``microsoft-teams-apps`` via
+    ``tools.lazy_deps.ensure("platform.teams")`` if not present, then rebinds
+    all module-level SDK globals on success. Returns True once the SDK (and
+    aiohttp) are importable, False if they couldn't be installed/imported.
+    """
+    if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
+        return True
+
+    def _import() -> dict:
+        from aiohttp import web as _web
+        from microsoft_teams.apps import App, ActivityContext
+        from microsoft_teams.common.http.client import ClientOptions
+        from microsoft_teams.api import MessageActivity, ConversationReference
+        from microsoft_teams.api.activities.typing import TypingActivityInput
+        from microsoft_teams.api.activities.invoke.adaptive_card import (
+            AdaptiveCardInvokeActivity,
+        )
+        from microsoft_teams.api.models.adaptive_card import (
+            AdaptiveCardActionCardResponse,
+            AdaptiveCardActionMessageResponse,
+        )
+        from microsoft_teams.api.models.invoke_response import (
+            InvokeResponse,
+            AdaptiveCardInvokeResponse,
+        )
+        from microsoft_teams.apps.http.adapter import (
+            HttpMethod,
+            HttpRequest,
+            HttpResponse,
+            HttpRouteHandler,
+        )
+        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+        return {
+            "web": _web,
+            "AIOHTTP_AVAILABLE": True,
+            "App": App,
+            "ActivityContext": ActivityContext,
+            "ClientOptions": ClientOptions,
+            "MessageActivity": MessageActivity,
+            "ConversationReference": ConversationReference,
+            "TypingActivityInput": TypingActivityInput,
+            "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
+            "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
+            "AdaptiveCardActionMessageResponse": AdaptiveCardActionMessageResponse,
+            "InvokeResponse": InvokeResponse,
+            "AdaptiveCardInvokeResponse": AdaptiveCardInvokeResponse,
+            "HttpMethod": HttpMethod,
+            "HttpRequest": HttpRequest,
+            "HttpResponse": HttpResponse,
+            "HttpRouteHandler": HttpRouteHandler,
+            "AdaptiveCard": AdaptiveCard,
+            "ExecuteAction": ExecuteAction,
+            "TextBlock": TextBlock,
+            "TEAMS_SDK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+
+    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
 
 
 class TeamsAdapter(BasePlatformAdapter):
@@ -642,10 +709,13 @@ class TeamsAdapter(BasePlatformAdapter):
         self._conv_refs: Dict[str, Any] = {}
 
     async def connect(self) -> bool:
+        # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
+        # then re-check the module globals it rebinds.
+        check_teams_requirements()
         if not TEAMS_SDK_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "microsoft-teams-apps not installed. Run: pip install microsoft-teams-apps",
+                "microsoft-teams-apps could not be installed. Run: pip install microsoft-teams-apps",
                 retryable=False,
             )
             return False

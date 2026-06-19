@@ -1,5 +1,6 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
+import asyncio
 import os
 import json
 import shutil
@@ -245,6 +246,128 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+        assert data["can_update_hermes"] is True
+
+    def test_get_status_hides_update_capability_in_managed_runtime(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: True)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["can_update_hermes"] is False
+
+    def test_dashboard_update_capability_detects_generic_container(self, monkeypatch):
+        import hermes_constants
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+
+        assert web_server._dashboard_local_update_managed_externally() is True
+
+    @staticmethod
+    def _provider_field_map(payload):
+        return {field["key"]: field for field in payload["fields"]}
+
+    def test_get_memory_provider_config_returns_safe_defaults(self):
+        resp = self.client.get("/api/memory/providers/hindsight/config")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "hindsight"
+        assert data["label"] == "Hindsight"
+
+        fields = self._provider_field_map(data)
+        assert fields["mode"]["kind"] == "select"
+        assert fields["mode"]["value"] == "cloud"
+        assert {opt["value"] for opt in fields["mode"]["options"]} == {"cloud", "local_external"}
+        assert fields["api_url"]["value"] == "https://api.hindsight.vectorize.io"
+        assert fields["bank_id"]["value"] == "hermes"
+        assert fields["recall_budget"]["value"] == "mid"
+        assert fields["api_key"]["kind"] == "secret"
+        assert fields["api_key"]["is_set"] is False
+
+    def test_put_memory_provider_config_writes_config_and_secret(self):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config",
+            json={
+                "values": {
+                    "mode": "local_external",
+                    "api_url": "http://localhost:8888",
+                    "api_key": "hs-test-key",
+                    "bank_id": "ben-bank",
+                    "recall_budget": "high",
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert load_config()["memory"]["provider"] == "hindsight"
+        assert load_env()["HINDSIGHT_API_KEY"] == "hs-test-key"
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert provider_config == {
+            "mode": "local_external",
+            "api_url": "http://localhost:8888",
+            "bank_id": "ben-bank",
+            "recall_budget": "high",
+        }
+
+    def test_put_memory_provider_config_rejects_unsupported_select_value(self):
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config",
+            json={
+                "values": {
+                    "mode": "local_embedded",
+                    "api_url": "http://localhost:8888",
+                    "bank_id": "hermes",
+                    "recall_budget": "mid",
+                }
+            },
+        )
+
+        assert resp.status_code == 400
+
+    def test_put_unknown_memory_provider_returns_404(self):
+        resp = self.client.put(
+            "/api/memory/providers/nope/config", json={"values": {}}
+        )
+
+        assert resp.status_code == 404
+
+    def test_get_unknown_memory_provider_returns_empty_schema(self):
+        resp = self.client.get("/api/memory/providers/builtin/config")
+
+        assert resp.status_code == 200
+        assert resp.json()["fields"] == []
+
+    def test_get_memory_provider_config_does_not_return_secret(self):
+        self.client.put(
+            "/api/memory/providers/hindsight/config",
+            json={
+                "values": {
+                    "mode": "cloud",
+                    "api_url": "https://api.hindsight.vectorize.io",
+                    "api_key": "secret-value",
+                    "bank_id": "hermes",
+                    "recall_budget": "mid",
+                }
+            },
+        )
+
+        resp = self.client.get("/api/memory/providers/hindsight/config")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert fields["api_key"]["is_set"] is True
+        assert fields["api_key"]["value"] == ""
+        assert "secret-value" not in json.dumps(data)
 
     # ── GET /api/media (remote image display) ───────────────────────────
 
@@ -358,7 +481,6 @@ class TestWebServerEndpoints:
         config = load_config()
         assert config["dashboard"]["theme"] == "ember"
         assert config["dashboard"]["font"] == "jetbrains-mono"
-
 
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
@@ -911,6 +1033,48 @@ class TestWebServerEndpoints:
         assert status_data["exit_code"] == 1
         assert status_data["pid"] is None
         assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
+
+    def test_update_hermes_returns_managed_runtime_guidance_without_spawning(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        spawned = False
+        detected = False
+
+        def fail_spawn(*_args, **_kwargs):
+            nonlocal spawned
+            spawned = True
+            raise AssertionError("managed runtime update guard should not spawn hermes update")
+
+        def fail_detect(*_args, **_kwargs):
+            nonlocal detected
+            detected = True
+            raise AssertionError("managed runtime update guard should not detect install method")
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: True)
+        monkeypatch.setattr(web_server, "detect_install_method", fail_detect)
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["name"] == "hermes-update"
+        assert data["pid"] is None
+        assert data["error"] == "dashboard_update_managed_externally"
+        assert "managed outside this dashboard" in data["message"]
+        assert spawned is False
+        assert detected is False
+
+        status = self.client.get("/api/actions/hermes-update/status")
+        assert status.status_code == 200
+        status_data = status.json()
+        assert status_data["running"] is False
+        assert status_data["exit_code"] == 1
+        assert status_data["pid"] is None
+        assert any("managed outside this dashboard" in line for line in status_data["lines"])
 
     def test_update_hermes_spawns_on_non_docker_install(self, monkeypatch):
         import hermes_cli.web_server as web_server
@@ -4274,6 +4438,79 @@ class TestNormaliseThemeExtensions:
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
 
 
+class TestDeleteSessionEndpoint:
+    """Tests for ``DELETE /api/sessions/{session_id}`` — the single-row delete
+    behind the desktop sidebar's per-session delete.
+
+    The desktop optimistically removes the row, then RESTORES it on any error
+    and surfaces the message. So a 404 on a row that is already gone (reaped by
+    empty-session hygiene, or removed by a concurrent client — both common amid
+    /goal + auto-compression churn that leaves transient empty rows) resurrected
+    a ghost row and showed "session not found". DELETE must be idempotent and
+    resolve ids like every other session endpoint.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self, ids):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid in ids:
+                db.create_session(session_id=sid, source="cli")
+        finally:
+            db.close()
+
+    def _exists(self, sid) -> bool:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            return db.get_session(sid) is not None
+        finally:
+            db.close()
+
+    def test_delete_existing_session(self):
+        self._seed(["real_one"])
+        resp = self.auth_client.delete("/api/sessions/real_one")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        assert not self._exists("real_one")
+
+    def test_delete_absent_session_is_idempotent(self):
+        # PREMISE / regression: deleting a row that no longer exists must NOT
+        # 404 — the desktop would resurrect the ghost row and show
+        # "session not found". DELETE's contract is "ensure it's gone".
+        resp = self.auth_client.delete("/api/sessions/never_existed")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+
+    def test_delete_resolves_unique_prefix(self):
+        # Symmetry with the other session endpoints, which all resolve ids.
+        self._seed(["20260618_abcdef_unique"])
+        resp = self.auth_client.delete("/api/sessions/20260618_abcdef")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        assert not self._exists("20260618_abcdef_unique")
+
+
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the
     dashboard's "Delete N selected" flow on the sessions page.
@@ -4895,6 +5132,107 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
+
+    def test_resolve_chat_argv_async_uses_worker_thread(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["node", "dist/entry.js"], "/tmp/ui-tui", {"NODE_ENV": "production"})
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            captured["thread_fn"] = fn
+            captured["thread_args"] = args
+            captured["thread_kwargs"] = kwargs
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+        monkeypatch.setattr(self.ws_module.asyncio, "to_thread", fake_to_thread)
+
+        argv, cwd, env = asyncio.run(
+            self.ws_module._resolve_chat_argv_async(
+                resume="sess-42",
+                sidecar_url="ws://127.0.0.1:9119/api/pub?channel=abc",
+                profile="worker",
+            )
+        )
+
+        assert callable(captured["thread_fn"])
+        assert captured["thread_args"] == ()
+        assert captured["thread_kwargs"] == {
+            "resume": "sess-42",
+            "sidecar_url": "ws://127.0.0.1:9119/api/pub?channel=abc",
+            "profile": "worker",
+        }
+        assert argv == ["node", "dist/entry.js"]
+        assert cwd == "/tmp/ui-tui"
+        assert env == {"NODE_ENV": "production"}
+        assert captured["resume"] == "sess-42"
+        assert captured["sidecar_url"] == "ws://127.0.0.1:9119/api/pub?channel=abc"
+        assert captured["profile"] == "worker"
+
+    def test_pty_ws_resolves_argv_through_async_wrapper(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_resolve_async(resume=None, sidecar_url=None, profile=None):
+            captured["resume"] = resume
+            captured["sidecar_url"] = sidecar_url
+            captured["profile"] = profile
+            return (["/bin/sh", "-c", "printf async-resolve-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv_async", fake_resolve_async)
+
+        with self.client.websocket_connect(self._url(resume="sess-99")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured["resume"] == "sess-99"
+
+    def _assert_pty_propagates(self, monkeypatch, raising_resolver, *, profile=None, expect_detail=None):
+        """Drive /api/pty with a resolver that raises, and assert the error
+        propagates through the real _resolve_chat_argv_async -> asyncio.to_thread
+        -> lock -> re-raise chain into pty_ws's handler: the "Chat unavailable"
+        notice is sent and the socket closes with code 1011 (the stable
+        contract — we assert the close code, not the exact notice wording)."""
+        from starlette.websockets import WebSocketDisconnect
+
+        # Patch the REAL resolver so the whole wrapper/to_thread/lock chain runs.
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", raising_resolver)
+
+        url = self._url(profile=profile) if profile else self._url()
+        with self.client.websocket_connect(url) as conn:
+            notice = conn.receive_text()
+            with pytest.raises(WebSocketDisconnect) as exc:
+                conn.receive_text()
+        assert "Chat unavailable" in notice
+        assert exc.value.code == 1011
+        if expect_detail is not None:
+            assert expect_detail in notice
+
+    def test_pty_ws_propagates_systemexit_through_async_wrapper(self, monkeypatch):
+        """SystemExit from _make_tui_argv (node/npm missing) propagates through
+        the async wrapper and is caught by pty_ws's ``except SystemExit``."""
+
+        def boom(resume=None, sidecar_url=None, profile=None):
+            raise SystemExit("node not found")
+
+        self._assert_pty_propagates(monkeypatch, boom)
+
+    def test_pty_ws_propagates_httpexception_through_async_wrapper(self, monkeypatch):
+        """An invalid-profile HTTPException raised inside the threaded resolver
+        propagates through the wrapper and hits pty_ws's ``except HTTPException``."""
+        from fastapi import HTTPException
+
+        def bad_profile(resume=None, sidecar_url=None, profile=None):
+            raise HTTPException(status_code=404, detail="unknown profile")
+
+        self._assert_pty_propagates(
+            monkeypatch, bad_profile, profile="ghost", expect_detail="unknown profile"
+        )
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(

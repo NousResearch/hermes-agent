@@ -48,6 +48,7 @@ const STATE_BADGE: Record<
   connected: { tone: "success", labelKey: "connected" },
   pending_restart: { tone: "warning", labelKey: "pendingRestart" },
   gateway_stopped: { tone: "warning", labelKey: "gatewayStopped" },
+  startup_failed: { tone: "destructive", labelKey: "startupFailed" },
   disconnected: { tone: "warning", labelKey: "disconnected" },
   not_configured: { tone: "outline", labelKey: "notConfigured" },
   disabled: { tone: "secondary", labelKey: "disabled" },
@@ -89,6 +90,10 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 export default function ChannelsPage() {
   const { t } = useI18n();
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
+  const [envPath, setEnvPath] = useState("~/.hermes/.env");
+  const [gatewayStartCommand, setGatewayStartCommand] = useState(
+    "hermes gateway start",
+  );
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
@@ -111,7 +116,11 @@ export default function ChannelsPage() {
   const load = useCallback(() => {
     return api
       .getMessagingPlatforms()
-      .then((res) => setPlatforms(res.platforms))
+      .then((res) => {
+        setPlatforms(res.platforms);
+        setEnvPath(res.env_path || "~/.hermes/.env");
+        setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+      })
       .catch((e) =>
         showToast(
           formatTemplate(t.channels.errorToast, { error: String(e) }),
@@ -294,7 +303,11 @@ export default function ChannelsPage() {
         <Card className="border-border">
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
-            <span>{t.channels.gatewayNotRunning}</span>
+            <span>
+              {formatTemplate(t.channels.gatewayNotRunning, {
+                command: gatewayStartCommand,
+              })}
+            </span>
           </CardContent>
         </Card>
       )}
@@ -303,7 +316,7 @@ export default function ChannelsPage() {
         {formatTemplate(t.channels.configuredSummary, {
           configured,
           total: platforms.length,
-          path: "~/.hermes/.env",
+          path: envPath,
         })}
       </p>
 
@@ -410,7 +423,7 @@ export default function ChannelsPage() {
           const StateIcon =
             platform.state === "connected"
               ? CheckCircle2
-              : platform.state === "fatal"
+              : platform.state === "fatal" || platform.state === "startup_failed"
                 ? AlertTriangle
                 : Radio;
           return (
@@ -423,7 +436,8 @@ export default function ChannelsPage() {
                         "h-5 w-5 shrink-0 mt-0.5",
                         platform.state === "connected"
                           ? "text-success"
-                          : platform.state === "fatal"
+                          : platform.state === "fatal" ||
+                              platform.state === "startup_failed"
                             ? "text-destructive"
                             : "text-muted-foreground",
                       )}

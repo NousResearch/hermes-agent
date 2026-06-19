@@ -949,6 +949,29 @@ def test_grok_4_still_resolves_to_256k():
         assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000
 
 
+def test_grok_composer_context_length_is_200k():
+    """grok-composer-2.5-fast is OAuth-only and missing from /v1/models.
+
+    Without a specific entry it fell through to the generic ``grok`` 131k
+    catch-all.  xAI publishes a 200k usable context window for Composer 2.5
+    on Grok Build (SuperGrok / Premium+); /v1/responses additionally caps
+    the input+output budget at ~262144, but the usable context (what we
+    track) is 200k.
+    """
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    assert DEFAULT_CONTEXT_LENGTHS["grok-composer"] == 200_000
+    slug = "grok-composer-2.5-fast"
+    matched_key = max(
+        (k for k in DEFAULT_CONTEXT_LENGTHS if k in slug.lower()),
+        key=len,
+    )
+    assert matched_key == "grok-composer", (
+        f"Expected longest-first match on grok-composer for {slug}, got {matched_key}"
+    )
+    assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 200_000
+
+
 # ---------------------------------------------------------------------------
 # Cross-issuer reasoning replay guard
 #

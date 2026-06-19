@@ -540,3 +540,61 @@ class TestResolveAutoProviderModelPairing:
         # Opus model was NOT borrowed onto the codex provider.
         mock_resolve.assert_not_called()
         assert client is None
+
+
+class TestResolveProviderClientAutoRuntimeModel:
+    """The outer resolver must not reintroduce stale main-config models."""
+
+    def test_auto_provider_does_not_let_stale_config_model_override_runtime_model(self):
+        """``provider=auto`` uses ``_resolve_auto``'s runtime pair, not ``_read_main_model``.
+
+        Regression for a production compression failure after mid-session
+        fallback: ``_resolve_auto(main_runtime=...)`` correctly selected the
+        Codex runtime pair (openai-codex / gpt-5.5), but
+        ``resolve_provider_client`` had already filled ``model`` from stale
+        process/config state (claude-opus-4-8) and then returned Codex client +
+        stale Opus model. Codex rejected that wire shape with HTTP 400.
+        """
+        codex_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._get_aux_model_for_provider", return_value=None,
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client._resolve_auto", return_value=(codex_client, "gpt-5.5"),
+        ) as mock_resolve_auto:
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "auto",
+                None,
+                False,
+                main_runtime={"provider": "openai-codex", "model": "gpt-5.5"},
+            )
+
+        assert client is codex_client
+        mock_resolve_auto.assert_called_once_with(
+            main_runtime={"provider": "openai-codex", "model": "gpt-5.5"}
+        )
+        assert model == "gpt-5.5"
+        assert model != "claude-opus-4-8"
+
+    def test_auto_provider_preserves_explicit_model_override(self):
+        """A real caller-supplied model still wins over the auto-resolved model."""
+        codex_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._resolve_auto", return_value=(codex_client, "gpt-5.5"),
+        ):
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "auto",
+                "gpt-5.4-mini",
+                False,
+                main_runtime={"provider": "openai-codex", "model": "gpt-5.5"},
+            )
+
+        assert client is codex_client
+        assert model == "gpt-5.4-mini"

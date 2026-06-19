@@ -3420,13 +3420,14 @@ def resolve_provider_client(
     #      with grok-4.3 configured gets grok-4.3 for title generation
     #      instead of silently dropping to whatever Step-2 fallback (#31845).
     #
-    # Each provider branch below sees a non-empty ``model`` whenever the
-    # user has *anything* configured — no provider-specific empty-model
-    # guards needed.  When the user has NOTHING configured (fresh install,
-    # main_model also empty), the branches still hit their own
-    # missing-credentials returns and ``_resolve_auto`` falls through to
-    # the Step-2 chain as before.
-    if not model:
+    # Each explicit provider branch below sees a non-empty ``model`` whenever
+    # the user has *anything* configured — no provider-specific empty-model
+    # guards needed.  The ``auto`` branch is the exception: it must let
+    # ``_resolve_auto(main_runtime=...)`` choose the matched provider/model pair
+    # from the live runtime.  Falling back to ``_read_main_model()`` here can
+    # cross a stale config/default model (e.g. Opus) onto a newly failed-over
+    # provider client (e.g. Codex), producing provider+model mismatches.
+    if provider != "auto" and not model:
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:

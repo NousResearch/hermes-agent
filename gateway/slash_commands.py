@@ -2941,6 +2941,22 @@ class GatewaySlashCommandsMixin:
             else:
                 return t("gateway.title.current_no_title", session_id=session_id)
 
+    async def _resume_session_by_id(self, chat_id: str, session_id: str, session_key: str) -> str:
+        """Switch to a specific session by ID (called from resume picker callback)."""
+        if not self._session_db:
+            return "Session database not available."
+        self._release_running_agent_state(session_key)
+        new_entry = self.session_store.switch_session(session_key, session_id)
+        if not new_entry:
+            return "Failed to switch session."
+        self._clear_session_boundary_security_state(session_key)
+        self._evict_cached_agent(session_key)
+        title = self._session_db.get_session_title(session_id) or session_id[:8]
+        history = self.session_store.load_transcript(session_id)
+        msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+        return f"\u21bb Resumed session **{title}**{msg_part}. Conversation restored."
+
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""
         if not self._session_db:
@@ -2970,8 +2986,8 @@ class GatewaySlashCommandsMixin:
 
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
-            return [s for s in sessions if s.get("title")][:10]
+            sessions = self._session_db.list_sessions_rich(source=user_source, limit=50)
+            return [s for s in sessions if s.get("title")]
 
         if not name:
             # List recent titled sessions for this user/platform
@@ -2988,6 +3004,17 @@ class GatewaySlashCommandsMixin:
                     if source.platform == Platform.MATRIX and not allow_all:
                         return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")
+                # Platforms with interactive pickers get inline buttons
+                # instead of a numbered text list (e.g. Telegram bot API).
+                adapter = self.adapters.get(source.platform) if hasattr(self, 'adapters') else None
+                if adapter is not None and hasattr(adapter, "send_resume_picker"):
+                    await adapter.send_resume_picker(
+                        chat_id=source.chat_id,
+                        sessions=titled[:24],
+                        on_session_selected=self._resume_session_by_id,
+                        metadata=getattr(source, "metadata", None),
+                    )
+                    return ""
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]

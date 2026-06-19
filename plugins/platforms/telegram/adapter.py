@@ -581,6 +581,8 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        # Interactive resume session picker state per chat
+        self._resume_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -3603,6 +3605,153 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _build_resume_keyboard(self, sessions: list, page: int) -> tuple:
+        """Build paginated resume-session buttons. Returns (keyboard, page_info_text)."""
+        page_size = self._RESUME_PAGE_SIZE
+        total = len(sessions)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_sessions = sessions[start:end]
+
+        rows = []
+        for i, session in enumerate(page_sessions):
+            abs_idx = start + i
+            title = str(session.get("title") or session.get("id") or "Untitled")
+            label = title if len(title) <= 38 else title[:35] + "..."
+            rows.append([InlineKeyboardButton(label, callback_data=f"rs:{abs_idx}")])
+
+        if total_pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"rg:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="rx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"rg:{page + 1}"))
+            rows.append(nav)
+
+        rows.append([InlineKeyboardButton("✗ Cancel", callback_data="rx")])
+        page_info = f" ({start + 1}-{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
+
+    async def send_resume_picker(
+        self,
+        chat_id: str,
+        sessions: list,
+        on_session_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive inline-keyboard session resume picker."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            chat_key = str(chat_id)
+            keyboard, page_info = self._build_resume_keyboard(sessions, 0)
+            thread_id = metadata.get("thread_id") if metadata else None
+            text = f"📋 *Named Sessions*{page_info}\n\nSelect a session to resume:"
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=int(thread_id) if thread_id else None,
+                **self._link_preview_kwargs(),
+            )
+            self._resume_picker_state[chat_key] = {
+                "msg_id": msg.message_id,
+                "sessions": sessions,
+                "on_session_selected": on_session_selected,
+                "page": 0,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_resume_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_resume_picker_callback(self, query, data: str, chat_id: str) -> None:
+        """Handle resume picker callbacks (rs:/rg:/rx)."""
+        state = self._resume_picker_state.get(chat_id)
+        if not state:
+            await query.answer(text="Resume picker expired — use /resume again.")
+            return
+
+        if data == "rx:noop":
+            await query.answer()
+            return
+
+        if data.startswith("rg:"):
+            try:
+                page = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+            sessions = state.get("sessions", [])
+            state["page"] = page
+            keyboard, page_info = self._build_resume_keyboard(sessions, page)
+            await query.edit_message_text(
+                text=f"📋 *Named Sessions*{page_info}\n\nSelect a session to resume:",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+            return
+
+        if data.startswith("rs:"):
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+            sessions = state.get("sessions", [])
+            if idx < 0 or idx >= len(sessions):
+                await query.answer(text="Invalid session index.")
+                return
+            session = sessions[idx]
+            session_id = session.get("id")
+            callback = state.get("on_session_selected")
+            if not callable(callback):
+                await query.answer(text="Picker expired.")
+                return
+            try:
+                from gateway.session import build_session_key, SessionSource
+                source = SessionSource(
+                    platform=Platform.TELEGRAM,
+                    user_id=str(getattr(query.from_user, "id", "")),
+                    chat_id=str(query.message.chat_id),
+                    user_name=getattr(query.from_user, "username", None),
+                )
+                session_key = build_session_key(source)
+            except Exception:
+                session_key = f"agent:main:telegram:{chat_id}"
+            try:
+                result_text = await callback(chat_id, session_id, session_key)
+            except Exception as exc:
+                logger.error("Resume picker switch failed: %s", exc)
+                result_text = f"Error resuming session: {exc}"
+            try:
+                await query.edit_message_text(
+                    text=result_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(text=result_text, parse_mode=None, reply_markup=None)
+                except Exception:
+                    pass
+            await query.answer(text="Session resumed.")
+            self._resume_picker_state.pop(chat_id, None)
+            return
+
+        # rx (cancel)
+        self._resume_picker_state.pop(chat_id, None)
+        try:
+            await query.edit_message_text(text="Resume cancelled.", reply_markup=None)
+        except Exception:
+            pass
+        await query.answer()
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -3675,6 +3824,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     _MODEL_PAGE_SIZE = 8
+    _RESUME_PAGE_SIZE = 8
 
     def _build_provider_keyboard(self, providers: list):
         """Build the top-level provider keyboard, folding provider groups.
@@ -4081,6 +4231,13 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Resume picker callbacks ---
+        if data.startswith(("rs:", "rg:", "rx")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_resume_picker_callback(query, data, chat_id)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):

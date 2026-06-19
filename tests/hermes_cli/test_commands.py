@@ -190,6 +190,14 @@ class TestGatewayKnownCommands:
         assert "bg" in GATEWAY_KNOWN_COMMANDS
         assert "background" in GATEWAY_KNOWN_COMMANDS
 
+    def test_loop_health_is_gateway_known_with_telegram_alias(self):
+        assert "loop-health" in GATEWAY_KNOWN_COMMANDS
+        assert "loop_health" in GATEWAY_KNOWN_COMMANDS
+        cmd = resolve_command("loop_health")
+        assert cmd is not None
+        assert cmd.name == "loop-health"
+        assert cmd.gateway_only is True
+
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
 

@@ -66,6 +66,64 @@ class TestSlashCommands:
         assert "/" in response_text
 
     @pytest.mark.asyncio
+    async def test_loop_health_returns_cogitator_report_without_agent(self, adapter, runner, platform, monkeypatch, tmp_path):
+        cogitator_root = tmp_path / "Cogitator_clean"
+        cogitator_root.mkdir()
+        (cogitator_root / "cogitator_loop_health.py").write_text(
+            "def build_loop_health_report(*, log_path=None, limit=50):\n"
+            "    return 'Cogitator Loop Health\\nTotal preflight attempts: 0\\nNext action: Run /repo smoke.'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("COGITATOR_REPO_ROOT", str(cogitator_root))
+        runner._handle_message_with_agent = AsyncMock(
+            side_effect=AssertionError("/loop_health must not call the model/agent")
+        )
+
+        send = await send_and_capture(adapter, "/loop_health", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "Cogitator Loop Health" in response_text
+        assert "Total preflight attempts: 0" in response_text
+        assert "inspect the current repository status" not in response_text
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_loop_health_hyphenated_alias_returns_report(self, adapter, runner, platform, monkeypatch, tmp_path):
+        cogitator_root = tmp_path / "Cogitator_clean"
+        cogitator_root.mkdir()
+        (cogitator_root / "cogitator_loop_health.py").write_text(
+            "def build_loop_health_report(*, log_path=None, limit=50):\n"
+            "    return 'Cogitator Loop Health\\nTotal preflight attempts: 0\\nNext action: Run /repo smoke.'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("COGITATOR_REPO_ROOT", str(cogitator_root))
+        runner._handle_message_with_agent = AsyncMock(
+            side_effect=AssertionError("/loop-health must not call the model/agent")
+        )
+
+        send = await send_and_capture(adapter, "/loop-health", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "Cogitator Loop Health" in response_text
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_slash_command_still_rejected(self, adapter, runner, platform):
+        runner._handle_message_with_agent = AsyncMock(
+            side_effect=AssertionError("unknown slash command must not call the model/agent")
+        )
+
+        send = await send_and_capture(adapter, "/not_loop_health", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "Unknown command" in response_text
+        assert "/not_loop_health" in response_text
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_sequential_commands_share_session(self, adapter, platform):
         """Two commands from the same chat_id should both succeed."""
         send_help = await send_and_capture(adapter, "/help", platform)

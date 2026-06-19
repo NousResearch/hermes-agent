@@ -1029,6 +1029,81 @@ class GatewaySlashCommandsMixin:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
+    async def _handle_loop_health_command(self, event: MessageEvent) -> str:
+        """Handle /loop_health by rendering Cogitator's read-only loop-health report."""
+        import importlib.util
+
+        root = Path(os.environ.get("COGITATOR_REPO_ROOT", "/home/v0id/Projects/Cogitator_clean")).resolve()
+        module_path = root / "cogitator_loop_health.py"
+        if not module_path.is_file():
+            logger.warning("Cogitator loop-health module missing at %s", module_path)
+            return (
+                "Cogitator Loop Health\n\n"
+                "Status: unavailable\n"
+                "Reason: cogitator_loop_health.py was not found at the configured Cogitator root.\n"
+                "Next action: verify COGITATOR_REPO_ROOT and deployed Cogitator main."
+            )
+
+        digest = hashlib.sha256(str(module_path).encode("utf-8")).hexdigest()[:12]
+        spec = importlib.util.spec_from_file_location(
+            f"cogitator_loop_health__{digest}",
+            module_path,
+        )
+        if spec is None or spec.loader is None:
+            logger.warning("Cogitator loop-health module spec unavailable for %s", module_path)
+            return (
+                "Cogitator Loop Health\n\n"
+                "Status: unavailable\n"
+                "Reason: failed to load cogitator_loop_health.py.\n"
+                "Next action: inspect Cogitator deployment."
+            )
+
+        module = importlib.util.module_from_spec(spec)
+        old_dont_write_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            logger.exception("Cogitator loop-health report import failed")
+            return (
+                "Cogitator Loop Health\n\n"
+                "Status: unavailable\n"
+                f"Reason: report import failed: {type(exc).__name__}.\n"
+                "Next action: inspect Cogitator deployment logs."
+            )
+        finally:
+            sys.dont_write_bytecode = old_dont_write_bytecode
+
+        build_report = getattr(module, "build_loop_health_report", None)
+        if not callable(build_report):
+            logger.warning("Cogitator build_loop_health_report missing in %s", module_path)
+            return (
+                "Cogitator Loop Health\n\n"
+                "Status: unavailable\n"
+                "Reason: build_loop_health_report() is missing.\n"
+                "Next action: verify Cogitator PR #816 deployment."
+            )
+
+        try:
+            report = build_report(
+                log_path=root / "storage" / "metrics" / "virgil_preflight_events.jsonl"
+            )
+        except Exception as exc:
+            logger.exception("Cogitator loop-health report render failed")
+            return (
+                "Cogitator Loop Health\n\n"
+                "Status: unavailable\n"
+                f"Reason: report render failed: {type(exc).__name__}.\n"
+                "Next action: inspect Cogitator loop-health metrics file."
+            )
+
+        return str(report) if report else (
+            "Cogitator Loop Health\n\n"
+            "Status: unavailable\n"
+            "Reason: empty report.\n"
+            "Next action: inspect Cogitator loop-health report builder."
+        )
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 

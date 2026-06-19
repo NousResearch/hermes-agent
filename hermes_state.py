@@ -5127,175 +5127,146 @@ class SessionDB:
 
     def insert_shadow_clone_task(
         self,
+        *,
         delegation_id: str,
         session_key: str,
         goal: Optional[str] = None,
         kanban_ticket_id: Optional[str] = None,
-        routing_meta: Optional[dict] = None,
+        routing_meta: Optional[str] = None,
         dispatched_at: Optional[float] = None,
     ) -> None:
-        """Record a new in-flight shadow clone delegation.
+        """Persist a new shadow-clone task (status='running').
 
-        Called at dispatch time (before the background thread starts) so the
-        row is durable even if the gateway crashes before the child completes.
-        Idempotent via INSERT OR IGNORE — safe to call again on re-dispatch.
+        Uses INSERT OR IGNORE so re-delivery or duplicate dispatch calls
+        are harmless (idempotent).
         """
-        import json as _json
-        ts = dispatched_at or __import__("time").time()
-        routing_json = _json.dumps(routing_meta, ensure_ascii=False) if routing_meta else None
-
+        import time as _time
         def _do(conn):
             conn.execute(
-                "INSERT OR IGNORE INTO shadow_clone_tasks "
-                "(delegation_id, session_key, kanban_ticket_id, goal, "
-                " status, dispatched_at, routing_meta) "
-                "VALUES (?, ?, ?, ?, 'running', ?, ?)",
-                (delegation_id, session_key, kanban_ticket_id,
-                 (goal or "")[:500], ts, routing_json),
+                """
+                INSERT OR IGNORE INTO shadow_clone_tasks
+                    (delegation_id, session_key, goal, kanban_ticket_id,
+                     routing_meta, status, dispatched_at)
+                VALUES (?, ?, ?, ?, ?, 'running', ?)
+                """,
+                (
+                    delegation_id,
+                    session_key,
+                    goal,
+                    kanban_ticket_id,
+                    routing_meta,
+                    dispatched_at if dispatched_at is not None else _time.time(),
+                ),
             )
         self._execute_write(_do)
 
     def update_shadow_clone_task(
         self,
         delegation_id: str,
-        status: str,  # 'completed' | 'failed' | 'timeout'
-        result: Optional[Any] = None,
+        *,
+        status: str,
+        result_json: Optional[str] = None,
         completed_at: Optional[float] = None,
+        routing_meta: Optional[str] = None,
     ) -> None:
-        """Persist the final status and result for a shadow clone delegation.
-
-        Called from the background runner thread after the subagent finishes.
-        Swallows DB errors gracefully — the in-memory completion event is
-        always enqueued regardless of this write's outcome.
-        """
-        import json as _json
-        ts = completed_at or __import__("time").time()
-        result_json: Optional[str] = None
-        if result is not None:
-            try:
-                result_json = _json.dumps(result, ensure_ascii=False, default=str)[:8000]
-            except Exception:
-                pass
-
+        """Update status (and optionally result) of an existing shadow-clone task."""
+        import time as _time
         def _do(conn):
             conn.execute(
-                "UPDATE shadow_clone_tasks "
-                "SET status = ?, completed_at = ?, result_json = ? "
-                "WHERE delegation_id = ?",
-                (status, ts, result_json, delegation_id),
+                """
+                UPDATE shadow_clone_tasks
+                SET status = ?,
+                    result_json = COALESCE(?, result_json),
+                    completed_at = COALESCE(?, completed_at),
+                    routing_meta = COALESCE(?, routing_meta)
+                WHERE delegation_id = ?
+                """,
+                (
+                    status,
+                    result_json,
+                    completed_at if completed_at is not None else _time.time(),
+                    routing_meta,
+                    delegation_id,
+                ),
             )
-        try:
-            self._execute_write(_do)
-        except Exception as _e:
-            logger.warning("shadow_clone update_task failed for %s: %s", delegation_id, _e)
+        self._execute_write(_do)
 
-    def gc_shadow_clone_tasks(self, retain_hours: float = 24.0) -> int:
-        """Delete terminal rows older than *retain_hours*.
+    def recover_inflight_shadow_clone_tasks(
+        self, ttl_seconds: float = 7200
+    ) -> list:
+        """Return rows whose status is 'running' and mark stale ones 'timeout'.
 
-        Terminal statuses: completed, failed, timeout (recovery-set),
-        error, cancelled, timed_out (runner-set).
-        Running rows are never deleted.
-        Returns the number of rows deleted.
+        Called at gateway startup to recover tasks that were dispatched before
+        the previous shutdown.  Rows dispatched within ``ttl_seconds`` are
+        returned as-is (still considered live).  Rows older than the TTL are
+        marked 'timeout' in place and included in the returned list with their
+        updated status so the caller can emit recovery notifications.
+
+        Returns
+        -------
+        list[dict]
+            All rows that were 'running' at call time (after TTL promotion).
         """
-        cutoff = __import__("time").time() - retain_hours * 3600
-        deleted = 0
+        import time as _time
+        cutoff = _time.time() - ttl_seconds
+        rows: list = []
 
         def _do(conn):
             cur = conn.execute(
-                "DELETE FROM shadow_clone_tasks "
-                "WHERE status IN ('completed', 'failed', 'timeout', 'error', 'cancelled', 'timed_out') "
-                "AND completed_at IS NOT NULL AND completed_at < ?",
+                "SELECT delegation_id, session_key, goal, kanban_ticket_id, "
+                "routing_meta, status, result_json, dispatched_at, completed_at "
+                "FROM shadow_clone_tasks WHERE status = 'running'"
+            )
+            fetched = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            stale_ids = []
+            for raw in fetched:
+                row = dict(zip(cols, raw))
+                da = row.get("dispatched_at") or 0.0
+                if da < cutoff:
+                    row["status"] = "timeout"
+                    stale_ids.append(row["delegation_id"])
+                rows.append(row)
+            if stale_ids:
+                placeholders = ",".join("?" * len(stale_ids))
+                conn.execute(
+                    f"UPDATE shadow_clone_tasks SET status = 'timeout', "
+                    f"completed_at = ? WHERE delegation_id IN ({placeholders})",
+                    [_time.time(), *stale_ids],
+                )
+
+        self._execute_write(_do)
+        return rows
+
+    def gc_shadow_clone_tasks(self, retain_hours: float = 24) -> int:
+        """Delete terminal shadow-clone rows older than ``retain_hours``.
+
+        Terminal statuses: completed, error, cancelled, timed_out, timeout,
+        interrupted.  Running rows are never deleted.
+
+        Returns
+        -------
+        int
+            Number of rows deleted.
+        """
+        import time as _time
+        cutoff = _time.time() - retain_hours * 3600
+        deleted: list[int] = [0]
+
+        def _do(conn):
+            cur = conn.execute(
+                """
+                DELETE FROM shadow_clone_tasks
+                WHERE status IN (
+                    'completed', 'error', 'cancelled',
+                    'timed_out', 'timeout', 'interrupted'
+                )
+                AND completed_at IS NOT NULL
+                AND completed_at < ?
+                """,
                 (cutoff,),
             )
-            return cur.rowcount
+            deleted[0] = cur.rowcount
 
-        try:
-            deleted = self._execute_write(_do)
-        except Exception as _e:
-            logger.warning("gc_shadow_clone_tasks failed: %s", _e)
-        return deleted or 0
-
-    def recover_inflight_shadow_clone_tasks(
-        self, ttl_seconds: float = 7200.0
-    ) -> Tuple[List[dict], List[str]]:
-        """Scan *running* rows on gateway startup and classify them.
-
-        Returns ``(fresh, stale)`` where:
-
-        * ``fresh`` — list of task dicts for delegations that started within
-          *ttl_seconds* and may be re-dispatched / notified.
-        * ``stale`` — list of delegation_ids that exceeded the TTL and have
-          been marked 'timeout' in-place.
-
-        Called once at gateway startup (before adapters connect) so that
-        callers can decide whether to re-enqueue or surface a user notice.
-        """
-        now = __import__("time").time()
-        cutoff = now - ttl_seconds
-        fresh: List[dict] = []
-        stale_ids: List[str] = []
-
-        try:
-            if self._conn is None:
-                return [], []
-            rows = self._conn.execute(
-                "SELECT delegation_id, session_key, kanban_ticket_id, goal, "
-                "dispatched_at, routing_meta FROM shadow_clone_tasks "
-                "WHERE status = 'running'"
-            ).fetchall()
-        except Exception as _e:
-            logger.warning("recover_inflight_shadow_clone_tasks: read failed: %s", _e)
-            return [], []
-
-        import json as _json
-
-        for row in rows:
-            did = row[0] if isinstance(row, (tuple, list)) else row["delegation_id"]
-            dispatched_at = row[4] if isinstance(row, (tuple, list)) else row["dispatched_at"]
-            if dispatched_at < cutoff:
-                stale_ids.append(did)
-            else:
-                routing_raw = row[5] if isinstance(row, (tuple, list)) else row["routing_meta"]
-                routing = {}
-                if routing_raw:
-                    try:
-                        routing = _json.loads(routing_raw)
-                    except Exception:
-                        pass
-                fresh.append({
-                    "delegation_id": did,
-                    "session_key": row[1] if isinstance(row, (tuple, list)) else row["session_key"],
-                    "kanban_ticket_id": row[2] if isinstance(row, (tuple, list)) else row["kanban_ticket_id"],
-                    "goal": row[3] if isinstance(row, (tuple, list)) else row["goal"],
-                    "dispatched_at": dispatched_at,
-                    "routing_meta": routing,
-                })
-
-        # Mark stale rows as 'timeout' in one pass
-        if stale_ids:
-            ts = now
-            for did in stale_ids:
-                try:
-                    def _mark_timeout(conn, _did=did, _ts=ts):
-                        conn.execute(
-                            "UPDATE shadow_clone_tasks "
-                            "SET status = 'timeout', completed_at = ? "
-                            "WHERE delegation_id = ?",
-                            (_ts, _did),
-                        )
-                    self._execute_write(_mark_timeout)
-                except Exception as _e:
-                    logger.warning(
-                        "recover_inflight: timeout mark failed for %s: %s", did, _e
-                    )
-            logger.info(
-                "Shadow clone startup recovery: %d stale (>%.0fs) → marked timeout, "
-                "%d fresh → available for re-dispatch",
-                len(stale_ids), ttl_seconds, len(fresh),
-            )
-        elif fresh:
-            logger.info(
-                "Shadow clone startup recovery: %d fresh in-flight rows found", len(fresh)
-            )
-
-        return fresh, stale_ids
+        self._execute_write(_do)
+        return deleted[0]

@@ -378,7 +378,7 @@ def _do_dispatch(item: QueuedDispatch) -> None:
                 _sdb.update_shadow_clone_task(
                     delegation_id=delegation_id,
                     status=status,
-                    result=result,
+                    result_json=json.dumps(result, default=str)[:8000] if result is not None else None,
                     completed_at=completion_time,
                 )
             except Exception as _sdbe:

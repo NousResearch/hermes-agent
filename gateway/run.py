@@ -2242,6 +2242,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
+        # shadow_clone inbox — thread-safe queue + per-delegation routing cache.
+        # Thread-safe enqueue from the worker thread; drain from the event loop.
+        # _shadow_clone_inbox: list of (delegation_id, routing_meta_dict) tuples.
+        # _shadow_clone_routing: delegation_id -> routing_meta_dict (pre-captured).
+        # _shadow_clone_drain_locks: asyncio.Lock per delegation_id (C1: prevents
+        #   concurrent drain of the same delegation).
+        import collections as _collections
+        self._shadow_clone_inbox: "_collections.deque[tuple]" = _collections.deque()
+        self._shadow_clone_inbox_lock = __import__("threading").Lock()
+        self._shadow_clone_routing: "Dict[str, Dict[str, Any]]" = {}
+        self._shadow_clone_drain_locks: "Dict[str, asyncio.Lock]" = {}
+
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
@@ -5394,6 +5406,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Start async-delegation watcher — drains async_delegation events from
         # the completion queue and injects them into idle sessions between turns.
         asyncio.create_task(self._async_delegation_watcher())
+
+        # Start the scale-to-zero idle watcher ONLY when this instance is opted
+        # in (the NAS "Labs" HERMES_SCALE_TO_ZERO stamp), messaging is
+        # relay-only/absent, and a wakeUrl is registered (decisions.md D1/D11/
+        # §3.4(1)). A non-opted instance never starts it, so behaviour is exactly
+        # as today. When armed, the watcher drives the relay dormant on sustained
+        # idle so the platform (Fly autostop:"suspend") can suspend the machine.
+        try:
+            if self._scale_to_zero_should_arm():
+                logger.info(
+                    "scale-to-zero: armed (idle timeout %.0fs) — watching for idle",
+                    self._scale_to_zero_idle_timeout_seconds(),
+                )
+                asyncio.create_task(self._scale_to_zero_watcher())
+        except Exception:  # noqa: BLE001 - arming must never block startup
+            logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
+
+        # Recover in-flight shadow_clone tasks from SQLite (survive gateway restart).
+        # Rows dispatched within 2 h are still considered live; older rows become
+        # 'timeout' so GC can clean them up.  Best-effort — never prevents startup.
+        try:
+            from hermes_state import SessionDB
+            _sc_db = SessionDB()
+            _inflight = _sc_db.recover_inflight_shadow_clone_tasks(ttl_seconds=7200)
+            if _inflight:
+                logger.info(
+                    "shadow_clone: recovered %d in-flight task(s) from state.db "
+                    "(%d timed-out, %d still running)",
+                    len(_inflight),
+                    sum(1 for r in _inflight if r.get("status") == "timeout"),
+                    sum(1 for r in _inflight if r.get("status") == "running"),
+                )
+        except Exception as _sc_exc:
+            logger.debug("shadow_clone startup recovery skipped: %s", _sc_exc)
+
 
         logger.info("Press Ctrl+C to stop")
         

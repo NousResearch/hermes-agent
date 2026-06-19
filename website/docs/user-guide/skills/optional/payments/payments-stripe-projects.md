@@ -44,13 +44,13 @@ Trigger phrases:
 - "manage my stack credentials", "rotate this key", "upgrade my plan"
 - "what providers can I add?"
 
-If the user already has the service set up manually and just wants to use it, this skill is not the right entry point.
+If the user already has a provider account, this skill can still connect it with `stripe projects link &lt;provider>`. If the user wants to use an existing provider resource, such as an existing database or Vercel project, check provider support first; many providers currently support provisioning new resources but not importing existing ones.
 
 ## Prerequisites
 
 - Stripe CLI installed (Homebrew on macOS, package manager on Linux, or download from https://docs.stripe.com/stripe-cli/install)
 - Stripe Projects plugin installed
-- A Stripe account, logged in via `stripe login`
+- A Stripe account. If the user doesn't have one yet, the CLI can guide them through sign-in or account creation in the browser during setup.
 
 ## Install
 

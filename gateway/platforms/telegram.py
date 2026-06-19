@@ -4937,6 +4937,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
+        if not self._typing_indicator_enabled():
+            return
         if self._bot:
             _is_dm_topic: bool = False
             message_thread_id: Optional[int] = None

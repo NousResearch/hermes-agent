@@ -1904,6 +1904,25 @@ class BasePlatformAdapter(ABC):
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
 
+    def _typing_indicator_enabled(self) -> bool:
+        """Return whether this adapter should send native typing indicators."""
+        raw = getattr(getattr(self, "config", None), "extra", {}).get("typing_indicator")
+        if raw is not None:
+            if isinstance(raw, str):
+                return raw.strip().lower() in {"true", "1", "yes", "on"}
+            return bool(raw)
+        try:
+            from hermes_cli.config import load_config_readonly
+            from gateway.display_config import resolve_display_setting
+            return bool(resolve_display_setting(
+                load_config_readonly(),
+                _platform_name(self.platform),
+                "typing_indicator",
+                True,
+            ))
+        except Exception:
+            return True
+
     @property
     def message_len_fn(self) -> Callable[[str], int]:
         """Return the length function for measuring message size on this platform.
@@ -4171,12 +4190,14 @@ class BasePlatformAdapter(ABC):
             _keep_typing_sig = None
         if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
             _keep_typing_kwargs["stop_event"] = interrupt_event
-        typing_task = asyncio.create_task(
-            self._keep_typing(
-                event.source.chat_id,
-                **_keep_typing_kwargs,
+        typing_task = None
+        if self._typing_indicator_enabled():
+            typing_task = asyncio.create_task(
+                self._keep_typing(
+                    event.source.chat_id,
+                    **_keep_typing_kwargs,
+                )
             )
-        )
 
         async def _stop_typing_task() -> None:
             await self._stop_typing_refresh(

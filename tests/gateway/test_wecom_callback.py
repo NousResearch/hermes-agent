@@ -53,6 +53,45 @@ class TestWecomCrypto:
         with pytest.raises(SignatureError):
             crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))
 
+    def test_signature_check_uses_constant_time_compare(self, monkeypatch):
+        """The signature check must go through hmac.compare_digest so an
+        attacker cannot recover the expected signature via timing.
+        """
+        import gateway.platforms.wecom_crypto as crypto_mod
+
+        calls: list[tuple[str, str]] = []
+        real_compare = crypto_mod.hmac.compare_digest
+
+        def _spy(a, b):
+            calls.append((a, b))
+            return real_compare(a, b)
+
+        monkeypatch.setattr(crypto_mod.hmac, "compare_digest", _spy)
+
+        app = _app()
+        crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+        encrypted_xml = crypt.encrypt("<xml/>", nonce="n", timestamp="1")
+        root = ET.fromstring(encrypted_xml)
+        crypt.decrypt(
+            root.findtext("MsgSignature", default=""),
+            root.findtext("TimeStamp", default=""),
+            root.findtext("Nonce", default=""),
+            root.findtext("Encrypt", default=""),
+        )
+        assert calls, "signature comparison did not use hmac.compare_digest"
+
+    def test_signature_none_does_not_raise_typeerror(self):
+        """A missing/None signature must surface as SignatureError, not a
+        TypeError from comparing str against None.
+        """
+        app = _app()
+        crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+        encrypted_xml = crypt.encrypt("<xml/>", nonce="n", timestamp="1")
+        root = ET.fromstring(encrypted_xml)
+        from gateway.platforms.wecom_crypto import SignatureError
+        with pytest.raises(SignatureError):
+            crypt.decrypt(None, "1", "n", root.findtext("Encrypt", default=""))
+
 
 class TestWecomCallbackEventConstruction:
     def test_build_event_extracts_text_message(self):

@@ -4530,7 +4530,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # that triggered the /restart command closing its console.
         if sys.platform == "win32":
             import textwrap
-            from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+            from hermes_cli._subprocess_compat import (
+                windows_detach_flags_without_breakaway,
+                windows_detach_popen_kwargs,
+            )
 
             cmd_argv = [*hermes_cmd, "gateway", "restart"]
             watcher = textwrap.dedent(
@@ -4596,13 +4599,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if watcher_env.get("PYTHONPATH"):
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-            subprocess.Popen(
-                [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                **windows_detach_popen_kwargs(),
-            )
+            try:
+                subprocess.Popen(
+                    [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=watcher_env,
+                    **windows_detach_popen_kwargs(),
+                )
+            except OSError:
+                # Windows Scheduled Tasks put the process in a job object
+                # without JOB_OBJECT_LIMIT_BREAKAWAY_OK, causing
+                # CREATE_BREAKAWAY_FROM_JOB to fail with ERROR_ACCESS_DENIED
+                # (WinError 5). Retry without the breakaway flag —
+                # DETACHED_PROCESS alone is sufficient to survive console
+                # closure in the Scheduled Task / pythonw.exe scenario.
+                subprocess.Popen(
+                    [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=watcher_env,
+                    creationflags=windows_detach_flags_without_breakaway(),
+                    close_fds=True,
+                )
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)

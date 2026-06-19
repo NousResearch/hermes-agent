@@ -1313,6 +1313,28 @@ def _get_platform_tools(
     plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
+    def _static_resolve_toolset(ts_name: str, visited: set[str] | None = None) -> set[str]:
+        """Resolve a built-in toolset using only static TOOLSETS entries.
+
+        ``toolsets.resolve_toolset()`` merges dynamically registered tools from
+        the global registry into built-in toolsets. That is correct when
+        building the runtime schema, but wrong for this reverse-mapping step:
+        a prior test or plugin can register an extra tool under ``terminal`` or
+        another built-in toolset, and then the platform default composite no
+        longer looks like it contains that configurable toolset. Use the static
+        declaration here so composite → configurable inference is stable.
+        """
+        if visited is None:
+            visited = set()
+        if ts_name in visited:
+            return set()
+        visited.add(ts_name)
+        ts_def = TOOLSETS.get(ts_name) or {}
+        tools = set(ts_def.get("tools", []))
+        for included in ts_def.get("includes", []):
+            tools.update(_static_resolve_toolset(str(included), visited))
+        return tools
+
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
     # This avoids the subset-inference bug where composite toolsets like
@@ -1345,7 +1367,7 @@ def _get_platform_tools(
             for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
                 if not _toolset_allowed_for_platform(ts_key, platform):
                     continue
-                ts_tools = set(resolve_toolset(ts_key))
+                ts_tools = _static_resolve_toolset(ts_key)
                 if ts_tools and ts_tools.issubset(composite_tools):
                     expanded.add(ts_key)
 
@@ -1368,7 +1390,7 @@ def _get_platform_tools(
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
             if not _toolset_allowed_for_platform(ts_key, platform):
                 continue
-            ts_tools = set(resolve_toolset(ts_key))
+            ts_tools = _static_resolve_toolset(ts_key)
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
@@ -1424,7 +1446,7 @@ def _get_platform_tools(
     platform_tool_universe = set(resolve_toolset(_default_ts))
     configurable_tool_universe = set()
     for ck in configurable_keys:
-        configurable_tool_universe.update(resolve_toolset(ck))
+        configurable_tool_universe.update(_static_resolve_toolset(ck))
     claimed = set()
     for ts_key in enabled_toolsets:
         claimed.update(resolve_toolset(ts_key))

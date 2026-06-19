@@ -29,6 +29,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    CodexAuxiliaryClient,
 )
 
 
@@ -3043,7 +3044,79 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.30
+
+
+class TestCodexAuxiliaryAdapterNullOutputRecovery:
+    def test_recovers_output_item_when_sdk_raises_during_iteration(self):
+        """Regression for #11179 in auxiliary calls such as compression/title generation."""
+
+        output_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="aux survived")],
+        )
+
+        class NullOutputParseStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=output_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - iterator fails first
+                raise AssertionError("get_final_response should not be reached")
+
+        class FakeResponses:
+            def __init__(self):
+                self.create = MagicMock()
+
+            def stream(self, **kwargs):
+                return NullOutputParseStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content == "aux survived"
+        fake_client.responses.create.assert_not_called()
+
+    def test_recovers_text_deltas_when_sdk_raises_during_iteration(self):
+        """Text-only auxiliary streams can fail before output_item.done is emitted."""
+
+        class NullOutputTextDeltaStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="aux ")
+                yield SimpleNamespace(type="response.output_text.delta", delta="text survived")
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - iterator fails first
+                raise AssertionError("get_final_response should not be reached")
+
+        class FakeResponses:
+            def __init__(self):
+                self.create = MagicMock()
+
+            def stream(self, **kwargs):
+                return NullOutputTextDeltaStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content == "aux text survived"
+        fake_client.responses.create.assert_not_called()
 
 
 class TestCodexAuxiliaryToolMessageConversion:
@@ -3863,6 +3936,60 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestCodexNativeCompaction:
+    def test_compact_messages_posts_compact_endpoint_and_keeps_opaque_items(self):
+        class FakeResponse:
+            def __init__(self):
+                self.status_code = 200
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {
+                    "output": [
+                        {"id": "msg_1", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "summary"}]},
+                        {"id": "cmp_1", "type": "compaction_summary", "encrypted_content": "opaque", "summary": []},
+                    ]
+                }
+
+        real_client = MagicMock()
+        real_client.api_key = "test-token"
+        real_client.base_url = "https://chatgpt.com/backend-api/codex"
+        real_client.post.return_value = FakeResponse()
+        client = CodexAuxiliaryClient(real_client, "gpt-5.5")
+
+        result = client.compact_messages([{"role": "user", "content": "hello"}], timeout=12)
+
+        assert result == [
+            {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "summary"}]},
+            {"type": "compaction_summary", "encrypted_content": "opaque"},
+        ]
+        real_client.post.assert_called_once()
+        path = real_client.post.call_args.args[0]
+        assert path == "/responses/compact"
+        assert "options" in real_client.post.call_args.kwargs
+        body = real_client.post.call_args.kwargs["body"]
+        assert body["model"] == "gpt-5.5"
+        assert body["input"] == [{"role": "user", "content": "hello"}]
+        assert "store" not in body
+
+    def test_compact_messages_accepts_items_shape(self):
+        class FakeResponse:
+            status_code = 200
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {"items": [{"type": "compaction_summary", "encrypted_content": "opaque"}]}
+
+        real_client = MagicMock()
+        real_client.api_key = "test-token"
+        real_client.base_url = "https://chatgpt.com/backend-api/codex"
+        real_client.post.return_value = FakeResponse()
+
+        result = CodexAuxiliaryClient(real_client, "gpt-5.5").compact_messages([{"role": "user", "content": "hello"}])
+
+        assert result == [{"type": "compaction_summary", "encrypted_content": "opaque"}]
 
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────

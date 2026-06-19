@@ -948,6 +948,105 @@ class CodexAuxiliaryClient:
     def close(self):
         self._real_client.close()
 
+    @staticmethod
+    def _extract_compact_output(data: Any) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            raw_items = data
+        elif isinstance(data, dict):
+            raw_items = data.get("output") or data.get("items") or data.get("input") or []
+        else:
+            raw_items = getattr(data, "output", None) or getattr(data, "items", None) or []
+        if not isinstance(raw_items, list):
+            return []
+
+        compact_items: List[Dict[str, Any]] = []
+        for item in raw_items:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump(exclude_none=True)
+            elif not isinstance(item, dict):
+                item = getattr(item, "__dict__", None)
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "message":
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                normalized_content = []
+                for part in content:
+                    if hasattr(part, "model_dump"):
+                        part = part.model_dump(exclude_none=True)
+                    elif not isinstance(part, dict):
+                        part = getattr(part, "__dict__", None)
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type")
+                    if ptype not in {"output_text", "text"}:
+                        continue
+                    text = part.get("text", "")
+                    if text is None:
+                        text = ""
+                    if not isinstance(text, str):
+                        text = str(text)
+                    normalized_content.append({"type": "output_text", "text": text})
+                if not normalized_content:
+                    continue
+                compact_items.append({
+                    "type": "message",
+                    "role": item.get("role") or "assistant",
+                    "status": item.get("status") or "completed",
+                    "content": normalized_content,
+                })
+                continue
+            if item_type in {"compaction_summary", "reasoning"}:
+                encrypted = item.get("encrypted_content")
+                if not isinstance(encrypted, str) or not encrypted:
+                    continue
+                compact_items.append({
+                    "type": item_type,
+                    "encrypted_content": encrypted,
+                })
+        return compact_items
+
+    def compact_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        model: Optional[str] = None,
+        timeout: Optional[float] = None,
+        focus_topic: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Run native Codex Responses compaction and return replayable items."""
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        instructions = "Compact this conversation for later continuation."
+        if focus_topic:
+            instructions += f" Preserve details related to this focus topic: {focus_topic}"
+        input_items = _chat_messages_to_responses_input(messages)
+        body = {
+            "model": model or self.chat.completions._model,
+            "instructions": instructions,
+            "input": input_items or [{"role": "user", "content": ""}],
+        }
+
+        post_kwargs: Dict[str, Any] = {"body": body}
+        if timeout is not None:
+            try:
+                from openai._base_client import make_request_options
+                post_kwargs["options"] = make_request_options(timeout=timeout)
+            except Exception:
+                post_kwargs["timeout"] = timeout
+        try:
+            import httpx
+            response = self._real_client.post("/responses/compact", cast_to=httpx.Response, **post_kwargs)
+        except TypeError:
+            # Test doubles and some SDK-compatible clients use a simpler post signature.
+            response = self._real_client.post("/responses/compact", **post_kwargs)
+        if hasattr(response, "raise_for_status"):
+            response.raise_for_status()
+        data = response.json() if hasattr(response, "json") else response
+        return self._extract_compact_output(data)
+
 
 class _AsyncCodexCompletionsAdapter:
     """Async version of the Codex Responses adapter.

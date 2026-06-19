@@ -100,7 +100,7 @@ def check_packages():
         import faster_whisper
         check("faster-whisper (local STT)", True)
     except ImportError:
-        warn("faster-whisper (local STT)", "not installed — local STT unavailable")
+        warn("faster-whisper (local STT)", "not installed — will lazy-install on first local STT use")
 
     # Optional: TTS providers
     try:

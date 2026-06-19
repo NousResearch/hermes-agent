@@ -1487,7 +1487,7 @@ class TestRunJobConfigLogging:
         }
 
         # Mock heavy post-yaml work so the test only exercises the warning
-        # path. Without these mocks, run_job continues into provider
+        # path. Without these mocks, _run_job_impl continues into provider
         # resolution and MCP discovery, both of which can spawn subprocesses
         # / hit the network and have caused this test to time out on CI
         # (>30s wall clock) under load. See PR #33661 follow-up.

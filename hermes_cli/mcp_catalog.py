@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from hermes_constants import get_hermes_home, get_optional_mcps_dir
+from hermes_constants import get_env_path, get_hermes_home, get_optional_mcps_dir
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import (
     load_config,
@@ -68,6 +68,11 @@ class AuthSpec:
     provider: Optional[str] = None
     scopes: List[str] = field(default_factory=list)
     env_var: Optional[str] = None
+    # Name of the env var an stdio bridge reads its credentials-file path from
+    # (e.g. n8n's N8N_MCP_ENV). When set, the installer points it at
+    # HERMES_HOME/.env so the prompted `env` secrets are visible to a server
+    # that loads from a file rather than the (allowlist-filtered) process env.
+    env_file_var: Optional[str] = None
 
 
 @dataclass
@@ -206,12 +211,21 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if not isinstance(env_list_raw, list):
         raise CatalogError(f"{path}: auth.env must be a list")
     env_list = [_parse_env_spec(e) for e in env_list_raw]
+    env_file_var = auth_raw.get("env_file_var")
+    if env_file_var is not None:
+        if not isinstance(env_file_var, str) or not re.match(
+            r"^[A-Za-z_][A-Za-z0-9_]*$", env_file_var
+        ):
+            raise CatalogError(
+                f"{path}: auth.env_file_var must be a valid env var name"
+            )
     auth = AuthSpec(
         type=a_type,
         env=env_list,
         provider=auth_raw.get("provider"),
         scopes=list(auth_raw.get("scopes") or []),
         env_var=auth_raw.get("env_var"),
+        env_file_var=env_file_var,
     )
 
     tools_raw = data.get("tools") or {}
@@ -434,13 +448,18 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
 
 
 def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
-    """Walk the env spec list, prompting the user for each. Writes secrets and
-    non-secrets alike to ~/.hermes/.env via save_env_value()."""
+    """Walk the env spec list, prompting the user for each. Writes newly
+    prompted secrets and non-secrets to ~/.hermes/.env via save_env_value().
+
+    Existing values may come from either the process environment or .env;
+    callers that need a real env file (auth.env_file_var) should materialize
+    the returned values with _persist_env_file_credentials().
+    """
     collected: Dict[str, str] = {}
     for spec in specs:
         existing = get_env_value(spec.name)
         if existing:
-            print(color(f"  ✓ {spec.name} already set in .env", Colors.GREEN))
+            print(color(f"  ✓ {spec.name} already configured", Colors.GREEN))
             collected[spec.name] = existing
             continue
         value = _prompt_input(
@@ -457,6 +476,20 @@ def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
     return collected
 
 
+def _persist_env_file_credentials(values: Dict[str, str]) -> None:
+    """Ensure collected auth values exist in HERMES_HOME/.env.
+
+    get_env_value() intentionally treats process env as authoritative. That is
+    fine for normal Hermes config interpolation, but stdio bridges using
+    auth.env_file_var are handed a path to HERMES_HOME/.env and load secrets
+    from that file themselves. If a user supplied credentials via shell env,
+    materialize those values into .env before pointing the bridge at it.
+    """
+    for key, value in values.items():
+        if value:
+            save_env_value(key, value)
+
+
 def _build_server_config(
     entry: CatalogEntry, install_dir: Optional[Path]
 ) -> dict:
@@ -468,6 +501,17 @@ def _build_server_config(
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
+        # Some stdio bridges read their credentials from an env *file* rather
+        # than the inherited process env (e.g. n8n's bridge looks for
+        # N8N_MCP_ENV / ~/.config/n8n-mcp/env / ./.env). Hermes filters the
+        # subprocess env down to a safe allowlist before launch, so the
+        # N8N_API_KEY / N8N_BASE_URL we just saved into HERMES_HOME/.env are
+        # invisible to such a server. When the manifest names that pointer var
+        # (auth.env_file_var), point it at Hermes' own .env so the secrets land.
+        # Resolved here (not via a config placeholder) because runtime ${VAR}
+        # interpolation only resolves names present in os.environ.
+        if entry.auth.env_file_var:
+            cfg["env"] = {entry.auth.env_file_var: str(get_env_path())}
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":
@@ -699,7 +743,9 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     if entry.auth.type == "api_key":
         print()
         print(color("  Configure credentials:", Colors.CYAN))
-        _prompt_env_vars(entry.auth.env)
+        collected_env = _prompt_env_vars(entry.auth.env)
+        if entry.auth.env_file_var:
+            _persist_env_file_credentials(collected_env)
     elif entry.auth.type == "oauth":
         if entry.auth.provider:
             # Case 2: provider-mediated (Google, GitHub, etc.). We rely on

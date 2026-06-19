@@ -40,6 +40,15 @@ install:
 #   type: none     — no credentials needed
 auth:
   type: api_key
+  # The bridge reads its credentials from an env file (one of N8N_MCP_ENV,
+  # ~/.config/n8n-mcp/env, ./.env) — NOT the inherited process env, which
+  # Hermes filters down to a safe allowlist before launching stdio servers.
+  # Naming the pointer var here makes the installer write
+  # `env: {N8N_MCP_ENV: <HERMES_HOME>/.env}` into config.yaml, so the
+  # N8N_BASE_URL / N8N_API_KEY collected below are actually visible to the
+  # server. The path is resolved from Hermes home at install time (profile-
+  # aware; no hardcoded user path).
+  env_file_var: N8N_MCP_ENV
   env:
     - name: N8N_BASE_URL
       prompt: "n8n instance URL"

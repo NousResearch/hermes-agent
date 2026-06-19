@@ -38,6 +38,12 @@ import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
+import {
+  createChatTerminalOptions,
+  terminalFontSizeForWidth,
+  terminalLineHeightForWidth,
+  TERMINAL_THEME_STATIC,
+} from "@/pages/chatTerminalOptions";
 
 function buildWsUrl(
   authParam: [string, string],
@@ -69,19 +75,6 @@ function generateChannelId(): string {
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
-// `background` is omitted here — it's supplied dynamically from the active
-// theme's `terminalBackground` field so users can control it via YAML themes.
-const TERMINAL_THEME_STATIC = {
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
-};
-
 /**
  * CSS width for xterm font tiers.
  *
@@ -99,20 +92,6 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
   const vvw = vv?.width ?? inner;
   const layout = Math.min(inner, vvw, doc > 0 ? doc : inner);
   return Math.max(1, Math.round(layout));
-}
-
-function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
-  if (layoutWidthPx < 1024) return 12;
-  return 14;
-}
-
-function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
@@ -185,6 +164,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => ({ ...TERMINAL_THEME_STATIC, background: terminalBg }),
     [terminalBg],
   );
+  const terminalThemeRef = useRef(terminalTheme);
+
+  useEffect(() => {
+    terminalThemeRef.current = terminalTheme;
+  }, [terminalTheme]);
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
@@ -320,33 +304,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     const tierW0 = terminalTierWidthPx(host);
-    const term = new Terminal({
-      allowProposedApi: true,
-      cursorBlink: true,
-      fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
-      fontSize: terminalFontSizeForWidth(tierW0),
-      lineHeight: terminalLineHeightForWidth(tierW0),
-      letterSpacing: 0,
-      fontWeight: "400",
-      fontWeightBold: "700",
-      macOptionIsMeta: true,
-      // Hold Option (Alt on Linux/Windows) to force native text selection
-      // even when the inner Hermes TUI has enabled xterm mouse-events
-      // mode (CSI ?1000h family). Without this, click-and-drag in the
-      // chat canvas selects nothing and Cmd+C falls back to copying the
-      // entire visible buffer, which is rarely what the user wants.
-      // See #25720.
-      macOptionClickForcesSelection: true,
-      // Right-click selects the word under the pointer. xterm.js default
-      // is false; enabling it gives users a single-action selection
-      // path on top of the modifier-based bypass above.
-      rightClickSelectsWord: true,
-      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
-      // history in xterm.js so the browser wheel can scroll it directly.
-      scrollback: 5000,
-      theme: terminalTheme,
-    });
+    const term = new Terminal(
+      createChatTerminalOptions(tierW0, terminalThemeRef.current),
+    );
     termRef.current = term;
 
     // --- Clipboard integration ---------------------------------------

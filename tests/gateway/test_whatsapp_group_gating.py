@@ -370,3 +370,78 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+# --- Env-only allowlist tests ---
+
+
+def test_dm_allowlist_honors_env_only_whatsapp_allowed_users(monkeypatch):
+    """Env-only setup (WHATSAPP_DM_POLICY + WHATSAPP_ALLOWED_USERS, no config
+    ``extra``) must populate the DM allowlist. Otherwise ``dm_policy: allowlist``
+    runs with an empty allowlist and drops every authorized DM — the same
+    silent failure fixed for WeCom in f7a3509b2."""
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "6281234567890@s.whatsapp.net, 6289999999999@s.whatsapp.net")
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+
+    assert adapter._dm_policy == "allowlist"
+    assert adapter._allow_from == {"6281234567890@s.whatsapp.net", "6289999999999@s.whatsapp.net"}
+    assert adapter._is_dm_allowed("6281234567890@s.whatsapp.net") is True
+    assert adapter._is_dm_allowed("6289999999999@s.whatsapp.net") is True
+    assert adapter._is_dm_allowed("stranger@s.whatsapp.net") is False
+
+
+def test_dm_allowlist_extra_takes_precedence_over_env(monkeypatch):
+    """Config ``extra`` wins over the env fallback so an explicit allowlist
+    is never silently widened by a stale WHATSAPP_ALLOWED_USERS in the env."""
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "env-user@s.whatsapp.net")
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"dm_policy": "allowlist", "allow_from": ["cfg-user@s.whatsapp.net"]},
+        )
+    )
+
+    assert adapter._allow_from == {"cfg-user@s.whatsapp.net"}
+    assert adapter._is_dm_allowed("cfg-user@s.whatsapp.net") is True
+    assert adapter._is_dm_allowed("env-user@s.whatsapp.net") is False
+
+
+def test_group_allowlist_honors_env_only_whatsapp_group_allowed_users(monkeypatch):
+    """Env-only setup (WHATSAPP_GROUP_POLICY + WHATSAPP_GROUP_ALLOWED_USERS,
+    no config ``extra``) must populate the group allowlist."""
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "120363001234567890@g.us")
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
+
+    assert adapter._group_policy == "allowlist"
+    assert adapter._group_allow_from == {"120363001234567890@g.us"}
+    assert adapter._is_group_allowed("120363001234567890@g.us") is True
+    assert adapter._is_group_allowed("999999999999@g.us") is False
+
+
+def test_group_allowlist_extra_takes_precedence_over_env(monkeypatch):
+    """Config ``extra`` wins over the env fallback for group allowlist too."""
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "env-group@g.us")
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={"group_policy": "allowlist", "group_allow_from": ["cfg-group@g.us"]},
+        )
+    )
+
+    assert adapter._group_allow_from == {"cfg-group@g.us"}
+    assert adapter._is_group_allowed("cfg-group@g.us") is True
+    assert adapter._is_group_allowed("env-group@g.us") is False

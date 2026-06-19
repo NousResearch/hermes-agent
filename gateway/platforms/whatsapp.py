@@ -275,9 +275,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        self._allow_from = self._coerce_allow_list(
+            config.extra.get("allow_from")
+            or config.extra.get("allowFrom")
+            or os.getenv("WHATSAPP_ALLOWED_USERS", "")
+        )
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_allow_from = self._coerce_allow_list(
+            config.extra.get("group_allow_from")
+            or config.extra.get("groupAllowFrom")
+            or os.getenv("WHATSAPP_GROUP_ALLOWED_USERS", "")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None

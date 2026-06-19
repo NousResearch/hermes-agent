@@ -832,7 +832,7 @@ def cmd_setup(args) -> None:
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
     print("\n  Observation mode:")
     print("    directional  -- all observations on, each AI peer builds its own view (default)")
-    print("    unified      -- shared pool, user observes self, AI observes others only")
+    print("    unified      -- user observes self, AI observes others only")
     new_obs = _prompt("Observation mode", default=current_obs)
     if new_obs in {"unified", "directional"}:
         hermes_host["observationMode"] = new_obs

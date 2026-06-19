@@ -185,7 +185,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `recallMode` | string | `"hybrid"` | `"hybrid"` (auto-inject + tools), `"context"` (auto-inject only, tools hidden), `"tools"` (tools only, no injection). Legacy `"auto"` → `"hybrid"` |
-| `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (shared pool). Use `observation` object for granular control |
+| `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 
 ### Write Behavior

@@ -216,6 +216,7 @@ gateway:
   restart:
     in_progress:           "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
     restarting:            "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
+    completed:             "♻ 게이트웨이 재시작이 완료되었습니다. 세션은 계속 이어집니다."
 
   resume:
     db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."

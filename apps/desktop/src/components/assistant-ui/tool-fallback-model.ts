@@ -724,6 +724,10 @@ function extractSearchResults(result: unknown, limit = 6): SearchResultRow[] {
     .slice(0, limit)
 }
 
+// Exit code a user-interrupted command returns (128 + SIGINT). Mirrors the
+// Python INTERRUPT_EXIT_CODE; a manual stop is not a failure.
+const INTERRUPT_EXIT_CODE = 130
+
 function toolErrorText(part: ToolPart, result: Record<string, unknown>): string {
   const extractedError = extractToolErrorMessage(part.result)
 
@@ -755,6 +759,13 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
   const exit = numberValue(result.exit_code)
 
   if (exit !== null && exit !== 0) {
+    // Benign nonzero: backend tagged it (grep no-match, diff differs, test
+    // false, find) or it's a user interrupt (130). Not a failure even with no
+    // output — grep prints nothing when it finds nothing.
+    if (result.exit_code_meaning || exit === INTERRUPT_EXIT_CODE) {
+      return ''
+    }
+
     const hasOutput = Boolean(firstStringField(result, ['output', 'stdout', 'stderr'])?.trim())
 
     return hasOutput ? '' : `Command failed with exit code ${exit}.`

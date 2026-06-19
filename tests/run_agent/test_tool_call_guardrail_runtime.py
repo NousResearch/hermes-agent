@@ -306,6 +306,53 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
         assert len(following_results) == len(call_ids)
 
 
+def test_repeated_benign_grep_no_match_in_turn_does_not_halt_or_block():
+    """Benign terminal exits (grep no-match = exit 1 + exit_code_meaning) must
+    not feed the guardrail counter. An agent that greps in a loop and finds
+    nothing should never be halted/blocked. The hard-stop thresholds here are
+    low enough that — if benign exits were miscounted as failures — five
+    repeated calls would trip a same-tool halt; with the fix they must not.
+
+    Drives the real classification path: _execute_tool_calls_sequential calls
+    _detect_tool_failure to derive `failed`, which is what the controller
+    counts.
+    """
+    agent = _make_agent(
+        "terminal",
+        config=_hard_stop_config(
+            warn_after={"exact_failure": 2, "same_tool_failure": 2, "idempotent_no_progress": 5},
+            hard_stop_after={"exact_failure": 3, "same_tool_failure": 3, "idempotent_no_progress": 5},
+        ),
+    )
+    benign = json.dumps({
+        "output": "",
+        "exit_code": 1,
+        "error": None,
+        "exit_code_meaning": "No matches found (not an error)",
+    })
+    # Five grep-no-match calls (varying patterns → same_tool counter, not exact)
+    # in a single assistant turn.
+    calls = [
+        _mock_tool_call("terminal", json.dumps({"command": f"grep needle-{i} haystack.txt"}), f"c-grep-{i}")
+        for i in range(5)
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=benign):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert agent._tool_guardrail_halt_decision is None
+    assert len(messages) == 5
+    for m in messages:
+        # action stayed "allow": no guardrail guidance was appended, so the
+        # benign result is returned to the model verbatim.
+        assert json.loads(m["content"]) == json.loads(benign)
+        assert "Tool loop warning" not in m["content"]
+        assert "_halt" not in m["content"]
+        assert "_block" not in m["content"]
+
+
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     """Regression for #30770: when the guardrail halts the loop, the
     synthesized halt message must be pushed through ``stream_delta_callback``

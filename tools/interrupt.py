@@ -20,6 +20,12 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+# Exit code a user-interrupted command returns (128 + SIGINT(2)).  Mirrors the
+# value produced in tools/environments/base.py when a command is interrupted.
+# Failure classifiers treat this as benign (not a real failure) so a manual
+# stop never colours the card red or feeds the guardrail halt counter.
+INTERRUPT_EXIT_CODE = 130
+
 # Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in
 # tools/environments/base.py.  Enables per-call logging of set/check so the
 # caller thread, target thread, and current state are visible when

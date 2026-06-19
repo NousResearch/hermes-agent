@@ -2,6 +2,9 @@
 
 import json
 
+import pytest
+
+from agent.display import _detect_tool_failure
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -130,6 +133,66 @@ def test_success_resets_exact_signature_failure_streak():
     assert controller.before_call("web_search", args).action == "allow"
     controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
     assert controller.before_call("web_search", args).action == "allow"
+
+
+class TestClassifyTerminalBenignExits:
+    """classify_tool_failure mirrors _detect_tool_failure's benign/failure
+    boolean for nonzero terminal exits. (Suffix text may differ — this
+    fallback classifier has no error-message branch; only the boolean must
+    match, which is what feeds the guardrail counter.)"""
+
+    @staticmethod
+    def _assert_parity(result: str):
+        guard_failed, _ = classify_tool_failure("terminal", result)
+        display_failed, _ = _detect_tool_failure("terminal", result)
+        assert guard_failed == display_failed
+        return guard_failed
+
+    def test_grep_no_match_exit1_with_meaning_is_benign(self):
+        result = json.dumps({
+            "output": "",
+            "exit_code": 1,
+            "error": None,
+            "exit_code_meaning": "No matches found (not an error)",
+        })
+        assert self._assert_parity(result) is False
+        assert classify_tool_failure("terminal", result) == (False, "")
+
+    def test_diff_differs_exit1_with_meaning_is_benign(self):
+        result = json.dumps({
+            "output": "< old\n> new\n",
+            "exit_code": 1,
+            "exit_code_meaning": "Files differ",
+        })
+        assert self._assert_parity(result) is False
+        assert classify_tool_failure("terminal", result) == (False, "")
+
+    def test_user_interrupt_exit130_is_benign(self):
+        result = json.dumps({
+            "output": "partial\n[Command interrupted]",
+            "exit_code": 130,
+            "error": None,
+        })
+        assert self._assert_parity(result) is False
+        assert classify_tool_failure("terminal", result) == (False, "")
+
+    # Inputs the terminal tool actually emits. (exit_code_meaning is only ever
+    # set with error=None — terminal_tool.py:2469,2474 — so error+meaning never
+    # co-occurs; the "error wins" guarantee is a display-only concern and is
+    # covered in test_display_tool_failure. Here we assert boolean parity on
+    # the failure inputs the minimal fallback classifier must agree on.)
+    @pytest.mark.parametrize("payload", [
+        {"output": "", "exit_code": 2},                       # grep/diff real error
+        {"output": "", "exit_code": 124},                     # timeout stays a failure (D1)
+        {"output": "", "exit_code": 127},                     # command not found
+        {"output": "curl: (7) ...", "exit_code": 7},          # curl connect fail (no longer tagged)
+        {"output": "! [rejected]", "exit_code": 1},           # git push rejected (no longer tagged)
+        {"output": "", "exit_code": -1,                       # exception path: error, no meaning
+         "error": "Failed to execute command: boom", "status": "error"},
+    ])
+    def test_real_failures_and_error_field_still_flagged(self, payload):
+        result = json.dumps(payload)
+        assert self._assert_parity(result) is True
 
 
 def test_file_mutation_lint_error_result_is_not_a_tool_failure():

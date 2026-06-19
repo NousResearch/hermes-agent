@@ -78,6 +78,74 @@ class TestDetectToolFailureTerminal:
         assert _detect_tool_failure("terminal", None) == (False, "")
 
 
+class TestDetectToolFailureTerminalBenign:
+    """terminal: benign nonzero exits (grep/diff/test=1, interrupt=130) are
+    not failures. The tool layer tags known-benign command+code pairs with
+    ``exit_code_meaning``; a user interrupt returns 130 with no meaning."""
+
+    def test_grep_no_match_exit1_with_meaning_is_benign(self):
+        result = json.dumps({
+            "output": "",
+            "exit_code": 1,
+            "error": None,
+            "exit_code_meaning": "No matches found (not an error)",
+        })
+        assert _detect_tool_failure("terminal", result) == (False, "")
+
+    def test_diff_differs_exit1_with_meaning_is_benign(self):
+        result = json.dumps({
+            "output": "< old\n> new\n",
+            "exit_code": 1,
+            "exit_code_meaning": "Files differ",
+        })
+        assert _detect_tool_failure("terminal", result) == (False, "")
+
+    def test_user_interrupt_exit130_is_benign(self):
+        # Interrupt has no exit_code_meaning — handled by the explicit 130 check.
+        result = json.dumps({
+            "output": "partial\n[Command interrupted]",
+            "exit_code": 130,
+            "error": None,
+        })
+        assert _detect_tool_failure("terminal", result) == (False, "")
+
+    def test_real_failure_codes_without_meaning_still_flagged(self):
+        # exit 2 (grep/diff real error), 124 (timeout, stays a failure per D1),
+        # 127 (command not found) have no meaning and are not 130 → flagged.
+        for code in (2, 124, 127):
+            result = json.dumps({"output": "", "exit_code": code})
+            is_failure, suffix = _detect_tool_failure("terminal", result)
+            assert is_failure is True, f"exit {code} should be a failure"
+            assert suffix == f" [exit {code}]"
+
+    def test_curl_and_git_failures_carry_no_meaning_and_are_flagged(self):
+        # _interpret_exit_code no longer tags curl (DNS/connect/HTTP/timeout) or
+        # git (push-rejected/conflict) failures as benign, so their results
+        # carry no exit_code_meaning and must flag — the failure reason is in
+        # the captured stderr (output).
+        for payload in (
+            {"output": "curl: (7) Failed to connect to host", "exit_code": 7, "error": None},
+            {"output": "! [rejected]        main -> main (non-fast-forward)", "exit_code": 1, "error": None},
+        ):
+            result = json.dumps(payload)
+            is_failure, suffix = _detect_tool_failure("terminal", result)
+            assert is_failure is True, f"{payload} should flag"
+            assert suffix == f" [exit {payload['exit_code']}]"
+
+    def test_populated_error_field_wins_over_benign_meaning(self):
+        # A populated error must still flag even when exit_code_meaning is set:
+        # the error-field check runs before the benign short-circuit.
+        result = json.dumps({
+            "output": "",
+            "exit_code": 1,
+            "error": "grep: invalid option -- z",
+            "exit_code_meaning": "No matches found (not an error)",
+        })
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert "invalid option" in suffix
+
+
 class TestDetectToolFailureMemory:
     """memory: 'full' is distinct from real errors."""
 

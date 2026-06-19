@@ -1640,6 +1640,10 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     # Extract the last command in a pipeline/chain — that determines the
     # exit code.  Handles  `cmd1 && cmd2`, `cmd1 | cmd2`, `cmd1; cmd2`.
     # Deliberately simple: split on shell operators and take the last piece.
+    # Known limitation: without `set -o pipefail`, a benign final segment
+    # (e.g. `curl … | grep x`) hides an earlier segment's real failure, since
+    # we classify by the last segment only. Accepted — detecting a masked
+    # upstream failure without pipefail is not reliably possible here.
     segments = re.split(r'\s*(?:\|\||&&|[|;])\s*', command)
     last_segment = (segments[-1] if segments else command).strip()
 
@@ -1656,7 +1660,19 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     if not base_cmd:
         return None
 
-    # Command-specific semantics
+    # Command-specific semantics. ONLY list (command, exit_code) pairs whose
+    # nonzero exit is the command's *expected, non-erroneous* outcome. This
+    # table is the single source of truth for `exit_code_meaning`, which the
+    # failure classifiers trust as "present ⟺ benign" (agent/display.py,
+    # agent/tool_guardrails.py, desktop tool-fallback-model.ts). A command
+    # whose nonzero exit can mean a genuine failure must NOT appear here, or
+    # that failure silently renders as success. Deliberately excluded:
+    #   - curl 6/7/22/28 (DNS / connect / HTTP-error / timeout) are real
+    #     failures, not "context"; the reason is already in curl's stderr.
+    #   - git 1 is ambiguous: benign for `git diff`, but a genuine failure for
+    #     push-rejected / merge|rebase conflicts / `commit` with nothing staged.
+    #     A by-base-command table can't disambiguate, and masking a failed
+    #     push/merge is worse than over-tagging `git diff`, so git is excluded.
     semantics: dict[str, dict[int, str]] = {
         # grep/rg/ag/ack: 1=no matches found (normal), 2+=real error
         "grep":  {1: "No matches found (not an error)"},
@@ -1673,15 +1689,6 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
         # test/[: 1=condition is false (expected)
         "test":  {1: "Condition evaluated to false (expected, not an error)"},
         "[":     {1: "Condition evaluated to false (expected, not an error)"},
-        # curl: common non-error codes
-        "curl":  {
-            6: "Could not resolve host",
-            7: "Failed to connect to host",
-            22: "HTTP response code indicated error (e.g. 404, 500)",
-            28: "Operation timed out",
-        },
-        # git: 1 is context-dependent but often normal (e.g. git diff with changes)
-        "git":   {1: "Non-zero exit (often normal — e.g. 'git diff' returns 1 when files differ)"},
     }
 
     cmd_semantics = semantics.get(base_cmd)

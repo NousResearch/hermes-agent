@@ -3456,6 +3456,32 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
+    def test_duplicate_completed_tool_call_id_halts_without_replaying_result(self, agent):
+        self._setup_agent(agent)
+        first = _mock_tool_call(name="web_search", arguments='{"query":"pwd"}', call_id="c1")
+        replay = _mock_tool_call(name="web_search", arguments='{"query":"pwd"}', call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[first])
+        resp2 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[replay])
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"results": ["pwd"]}') as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("run pwd")
+
+        assert mock_handle_function_call.call_count == 1
+        assert result["turn_exit_reason"] == "guardrail_halt"
+        assert result["guardrail"]["code"] == "duplicate_completed_tool_call"
+        assert "re-issued a completed web_search tool_call_id" in result["final_response"]
+        tool_msgs = [
+            m for m in result["messages"]
+            if m.get("role") == "tool" and m.get("tool_call_id") == "c1"
+        ]
+        assert len(tool_msgs) == 1
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

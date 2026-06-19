@@ -3425,6 +3425,57 @@ class AIAgent:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
 
+    @classmethod
+    def _completed_tool_call_ids(cls, messages: List[Dict[str, Any]]) -> set[str]:
+        """Return tool_call IDs that already have a recorded tool result."""
+        completed: set[str] = set()
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            cid = msg.get("tool_call_id")
+            if isinstance(cid, str) and cid:
+                completed.add(cid)
+        return completed
+
+    @classmethod
+    def _filter_completed_tool_call_replays(
+        cls,
+        tool_calls: list,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[list, list]:
+        """Split tool calls into fresh calls and already-completed replays."""
+        completed_ids = cls._completed_tool_call_ids(messages)
+        if not completed_ids:
+            return tool_calls, []
+
+        fresh: list = []
+        replayed: list = []
+        for tc in tool_calls:
+            cid = cls._get_tool_call_id_static(tc)
+            if cid and cid in completed_ids:
+                replayed.append(tc)
+            else:
+                fresh.append(tc)
+        return fresh if replayed else tool_calls, replayed
+
+    @classmethod
+    def _duplicate_tool_call_halt_decision(cls, tool_calls: list) -> ToolGuardrailDecision:
+        """Build a controlled-halt decision for replayed completed tool calls."""
+        first = tool_calls[0] if tool_calls else None
+        tool_name = cls._get_tool_call_name_static(first) if first is not None else ""
+        count = len(tool_calls)
+        plural = "s" if count != 1 else ""
+        return ToolGuardrailDecision(
+            action="halt",
+            code="duplicate_completed_tool_call",
+            message=(
+                f"Provider repeated {count} completed tool_call_id{plural}. "
+                "Stop this turn instead of replaying an already-submitted result."
+            ),
+            tool_name=tool_name,
+            count=count,
+        )
+
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
         from agent.agent_runtime_helpers import repair_tool_call
@@ -5091,6 +5142,12 @@ class AIAgent:
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
+        if decision.code == "duplicate_completed_tool_call":
+            return (
+                f"I stopped because the provider re-issued a completed {tool} "
+                "tool_call_id. Hermes already submitted that result once, so "
+                "replaying it would duplicate side effects or loop the turn."
+            )
         return (
             f"I stopped retrying {tool} because it hit the tool-call guardrail "
             f"({decision.code}) after {decision.count} repeated non-progressing "

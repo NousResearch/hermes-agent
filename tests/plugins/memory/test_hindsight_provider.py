@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hermes_cli.memory_setup import _CANCELLED
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
     RECALL_SCHEMA,
@@ -376,6 +377,61 @@ class TestConfig:
 
 
 class TestPostSetup:
+    def test_setup_cancel_at_mode_picker_writes_nothing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        save_config = MagicMock()
+        which = MagicMock(return_value="/usr/bin/uv")
+        run = MagicMock()
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: _CANCELLED)
+        monkeypatch.setattr("shutil.which", which)
+        monkeypatch.setattr("subprocess.run", run)
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("getpass.getpass", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {"provider": "builtin"}})
+
+        save_config.assert_not_called()
+        which.assert_not_called()
+        run.assert_not_called()
+        assert not (hermes_home / ".env").exists()
+        assert not (hermes_home / "hindsight" / "config.json").exists()
+        assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
+
+    def test_local_embedded_setup_cancel_at_llm_picker_writes_nothing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        selections = iter([1, _CANCELLED])  # local_embedded, then cancel LLM picker
+        save_config = MagicMock()
+        which = MagicMock(return_value="/usr/bin/uv")
+        run = MagicMock()
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
+        monkeypatch.setattr("shutil.which", which)
+        monkeypatch.setattr("subprocess.run", run)
+        monkeypatch.setattr("builtins.input", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("getpass.getpass", MagicMock(side_effect=AssertionError("prompt should not run")))
+        monkeypatch.setattr("hermes_cli.config.save_config", save_config)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {"provider": "builtin"}})
+
+        save_config.assert_not_called()
+        which.assert_not_called()
+        run.assert_not_called()
+        assert not (hermes_home / ".env").exists()
+        assert not (hermes_home / "hindsight" / "config.json").exists()
+        assert not (user_home / ".hindsight" / "profiles" / "hermes.env").exists()
+
     def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes-home"
         user_home = tmp_path / "user-home"

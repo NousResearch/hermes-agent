@@ -5116,7 +5116,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # adapter dials the connector over a WebSocket, negotiates its capability
         # descriptor at handshake, and bridges inbound/outbound like any platform.
         try:
-            from gateway.relay import register_relay_adapter, relay_url
+            from gateway.relay import (
+                register_relay_adapter,
+                relay_url,
+                self_provision_relay,
+            )
+
+            # Boot-time relay self-provision: resolve the agent's NAS token ->
+            # POST /relay/provision -> set GATEWAY_RELAY_* in os.environ BEFORE
+            # registration reads them. No-op when relay is unconfigured, a secret
+            # is already pinned, or no NAS token resolves (self-hosted, unenrolled).
+            # Never raises.
+            self_provision_relay()
 
             if register_relay_adapter():
                 logger.info("relay adapter registered (connector at %s)", relay_url())

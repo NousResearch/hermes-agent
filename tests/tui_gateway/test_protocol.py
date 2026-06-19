@@ -1121,20 +1121,45 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
 
 
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
-def test_slash_exec_rejects_pending_input_commands(server, cmd):
-    """slash.exec must reject commands that use _pending_input in the CLI."""
-    sid = "test-session"
-    server._sessions[sid] = {"session_key": sid, "agent": None}
+def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
+    """slash.exec must route _pending_input commands to command.dispatch
+    internally instead of returning the old 4018 "use command.dispatch"
+    fallback error (#48848). Some TUI clients failed that client-side
+    fallback, dropping the input and surfacing "empty command".
 
-    resp = server.handle_request({
+    The contract is that slash.exec produces exactly the response
+    command.dispatch would for the same command — no fragile retry hop.
+    """
+    base, _, arg = cmd.partition(" ")
+
+    def fresh_session():
+        return {"session_key": "test-session", "agent": None}
+
+    sid = "test-session"
+
+    # Response from the (new) internal routing in slash.exec.
+    server._sessions[sid] = fresh_session()
+    routed = server.handle_request({
         "id": "r1",
         "method": "slash.exec",
         "params": {"command": cmd, "session_id": sid},
     })
 
-    assert "error" in resp
-    assert resp["error"]["code"] == 4018
-    assert "pending-input command" in resp["error"]["message"]
+    # Response from calling command.dispatch directly with the parsed parts.
+    server._sessions[sid] = fresh_session()
+    direct = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": base, "arg": arg, "session_id": sid},
+    })
+
+    # slash.exec must no longer emit the old client-fallback rejection.
+    if "error" in routed:
+        assert "pending-input command" not in routed["error"]["message"]
+
+    # Internal routing must yield the same payload as command.dispatch.
+    assert routed.get("result") == direct.get("result")
+    assert routed.get("error") == direct.get("error")
 
 
 def test_command_dispatch_queue_sends_message(server):

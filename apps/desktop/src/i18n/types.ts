@@ -462,6 +462,8 @@ export interface Translations {
       removedMessage: (provider: string) => string
       failedRemove: (provider: string) => string
       noProviderKeys: string
+      searchKeys: string
+      noKeysMatch: string
       loading: string
     }
     sessions: {

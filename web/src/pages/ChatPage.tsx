@@ -32,6 +32,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -153,6 +154,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setBanner(null);
     setReconnectNonce((n) => n + 1);
   }, []);
+  const startFreshDashboardChat = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+
+    next.delete("resume");
+    setSearchParams(next, { replace: true });
+    setSessionEnded(false);
+    setBanner(null);
+    setReconnectNonce((n) => n + 1);
+  }, [searchParams, setSearchParams]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -881,7 +891,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} profile={scopedProfile} />
+            <div className="border-b border-current/10 px-1 py-2">
+              <ChatSidebar
+                channel={channel}
+                profile={scopedProfile}
+                onDashboardNewSessionRequest={startFreshDashboardChat}
+                showTools={false}
+              />
+            </div>
+            <ChatSessionList
+              activeSessionId={resumeParam}
+              profile={scopedProfile}
+              onPicked={closeMobilePanel}
+              onNewChat={startFreshDashboardChat}
+            />
           </div>
         </div>
       </>,
@@ -964,10 +987,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
+            className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
           >
+            {/* Model picker (tools card hidden — keeps the rail thin). */}
+            <div className="shrink-0">
+              <ChatSidebar
+                channel={channel}
+                profile={scopedProfile}
+                onDashboardNewSessionRequest={startFreshDashboardChat}
+                showTools={false}
+              />
+            </div>
+
+            {/* Session switcher fills the remaining height below the model box. */}
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} profile={scopedProfile} />
+              <ChatSessionList
+                activeSessionId={resumeParam}
+                profile={scopedProfile}
+                onNewChat={startFreshDashboardChat}
+              />
             </div>
           </div>
         )}

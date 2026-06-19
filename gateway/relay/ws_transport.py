@@ -54,6 +54,35 @@ _HANDSHAKE_TIMEOUT_S = 30.0
 _OUTBOUND_TIMEOUT_S = 30.0
 
 
+def _ws_dial_url(url: str) -> str:
+    """Normalize a connector URL to the ``ws(s)://…/relay`` dial target.
+
+    The relay URL is configured once (``GATEWAY_RELAY_URL`` / ``gateway.relay_url``)
+    as the connector's BASE URL (e.g. ``https://connector.example``) and shared by
+    both the provision POST (which needs ``http(s)://…/relay/provision`` — see
+    ``_provision_url``) and the WS dial (which needs ``ws(s)://…/relay``, the path
+    the connector mounts its ``WebSocketServer`` on). Two normalizations, both
+    load-bearing:
+
+      - scheme: ``https -> wss``, ``http -> ws`` (``websockets.connect`` raises
+        "scheme isn't ws or wss" on an http(s) URL).
+      - path: ensure it ends in ``/relay`` (the connector returns HTTP 400 on an
+        upgrade to any other path, since the WS server is mounted at ``/relay``).
+
+    Idempotent: an already-``ws(s)://…/relay`` URL is returned unchanged, so a URL
+    configured WITH the scheme and/or ``/relay`` still works.
+    """
+    raw = (url or "").strip()
+    if raw.startswith("https://"):
+        raw = "wss://" + raw[len("https://"):]
+    elif raw.startswith("http://"):
+        raw = "ws://" + raw[len("http://"):]
+    raw = raw.rstrip("/")
+    if not raw.endswith("/relay"):
+        raw = f"{raw}/relay"
+    return raw
+
+
 def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
@@ -118,7 +147,7 @@ class WebSocketRelayTransport:
                 "WebSocketRelayTransport requires the 'websockets' package "
                 "(install the messaging extra)."
             )
-        self._url = url
+        self._url = _ws_dial_url(url)
         self._platform = platform
         self._bot_id = bot_id
         self._connect_timeout_s = connect_timeout_s

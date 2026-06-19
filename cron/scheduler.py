@@ -15,6 +15,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,59 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
+    """Return a compact one-line failure message for chat delivery.
+
+    Full details stay in the cron output directory and the logs. Chat should
+    show the operator what broke without dumping provider JSON, retry noise, or
+    stack traces into the delivery channel.
+    """
+    job_name = job.get("name") or job.get("id") or "cron job"
+    text = (error or "unknown error").strip()
+    lower = text.lower()
+
+    # Provider/API failures are the common noisy path. Keep these short.
+    if "429" in text or "rate limit" in lower or "usage limit" in lower:
+        reason = "rate limit"
+        if "weekly usage limit" in lower:
+            reason = "weekly usage limit"
+        elif "quota" in lower:
+            reason = "quota limit"
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider {reason}. "
+            "Fallback chain was exhausted or unavailable. "
+            "Full details saved in cron output."
+        )
+
+    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider timeout. "
+            "Fallback chain was exhausted or unavailable. "
+            "Full details saved in cron output."
+        )
+
+    # Match authentication/authorization wording at a word boundary and the
+    # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
+    # not trip a misleading auth message.
+    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider authentication error. "
+            "Full details saved in cron output."
+        )
+
+    # Strip common exception wrappers and collapse provider payloads. Bound
+    # the input first so a multi-KB provider blob cannot slow the
+    # substitutions.
+    cleaned = re.sub(
+        r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*",
+        "", text[:2000],
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > 180:
+        cleaned = cleaned[:177].rstrip() + "..."
+    return f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -1992,7 +2046,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # Deliver the final response to the origin/target chat.
         # If the agent responded with [SILENT], skip delivery (but
         # output is already saved above).  Failed jobs always deliver.
-        deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
         # Treat whitespace-only final responses the same as empty
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.

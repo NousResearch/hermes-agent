@@ -443,7 +443,9 @@ def test_apply_model_switch_does_not_leak_process_env():
 
     with (
         patch("hermes_cli.model_switch.parse_model_flags",
-              return_value=("glm-5.1", None, False, False)),
+              return_value=("glm-5.1", None, False, False, True)),
+        patch("hermes_cli.model_switch.resolve_persist_behavior",
+              return_value=False),
         patch("hermes_cli.model_switch.switch_model", return_value=_FakeResult()),
         patch("tui_gateway.server._emit"),
         patch("tui_gateway.server._restart_slash_worker"),

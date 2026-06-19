@@ -774,6 +774,8 @@ export const zh: Translations = {
       removedMessage: provider => `${provider} 已移除。`,
       failedRemove: provider => `无法移除 ${provider}`,
       noProviderKeys: '没有可用的提供方 API 密钥。',
+      searchKeys: '搜索提供方…',
+      noKeysMatch: '没有匹配的提供方。',
       loading: '正在加载提供方...'
     },
     sessions: {

@@ -83,6 +83,66 @@ def _make_mock_client():
     return client
 
 
+def _provider_for_mode(tmp_path, monkeypatch, mode: str):
+    """Create an initialized provider without pre-seeding its client."""
+    config = {
+        "mode": mode,
+        "apiKey": "test-key",
+        "api_url": "http://localhost:9999",
+        "bank_id": "test-bank",
+        "budget": "mid",
+        "memory_mode": "hybrid",
+    }
+    config_path = tmp_path / "hindsight" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config))
+
+    monkeypatch.setattr(
+        "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+    )
+
+    provider = HindsightMemoryProvider()
+    provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+    return provider
+
+
+def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mode: str):
+    """Cloud/local-external clients must ensure lazy deps before importing."""
+    import builtins
+
+    provider = _provider_for_mode(tmp_path, monkeypatch, mode)
+    ensure_calls = []
+
+    def fake_ensure(feature, prompt=True):
+        ensure_calls.append((feature, prompt))
+
+    class FakeHindsight:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "hindsight_client":
+            if ensure_calls != [("memory.hindsight", False)]:
+                raise ModuleNotFoundError("No module named 'hindsight_client'")
+            return SimpleNamespace(Hindsight=FakeHindsight)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    client = provider._get_client()
+
+    assert ensure_calls == [("memory.hindsight", False)]
+    assert isinstance(client, FakeHindsight)
+    assert client.kwargs == {
+        "base_url": "http://localhost:9999",
+        "timeout": 120.0,
+        "api_key": "test-key",
+    }
+
+
 class _FakeSessionDB:
     def __init__(self, messages=None):
         self._messages = list(messages or [])
@@ -232,6 +292,14 @@ class TestSchemas:
 
 
 class TestConfig:
+    def test_cloud_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
+        _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, "cloud")
+
+    def test_local_external_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
+        _assert_cloud_client_lazy_installed_before_import(
+            tmp_path, monkeypatch, "local_external"
+        )
+
     def test_default_values(self, provider):
         assert provider._auto_retain is True
         assert provider._auto_recall is True

@@ -1581,6 +1581,14 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Seconds between prompt_toolkit redraws in the classic CLI when idle.
+        # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
+        # last-turn) ticking and keeps the bottom chrome alive during idle —
+        # without it prompt_toolkit stops repainting the status bar after a
+        # turn and it can go stale/disappear (#45592).
+        # Set 0 to disable the background refresh if it fights terminal
+        # auto-scroll in non-fullscreen mode on some emulators (#48309).
+        "cli_refresh_interval": 1.0,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,
@@ -3453,6 +3461,7 @@ OPTIONAL_ENV_VARS = {
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
                        "im:history, im:read, im:write, users:read, files:read, files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
+        "help": "In your Slack app, add the required bot scopes, install the app to the workspace, then copy OAuth & Permissions > Bot User OAuth Token.",
         "url": "https://api.slack.com/apps",
         "password": True,
         "category": "messaging",
@@ -3462,8 +3471,17 @@ OPTIONAL_ENV_VARS = {
                        "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
                        "message.channels, message.groups, app_mention",
         "prompt": "Slack App Token (xapp-...)",
+        "help": "In your Slack app, enable Socket Mode, then create Basic Information > App-Level Tokens with the connections:write scope.",
         "url": "https://api.slack.com/apps",
         "password": True,
+        "category": "messaging",
+    },
+    "SLACK_ALLOWED_USERS": {
+        "description": "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.",
+        "prompt": "Allowed Slack member IDs",
+        "help": "In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.",
+        "url": "https://api.slack.com/apps",
+        "password": False,
         "category": "messaging",
     },
     "MATTERMOST_URL": {

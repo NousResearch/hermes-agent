@@ -106,6 +106,13 @@ export interface SkillCommandDispatchResponse {
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
+  notice?: string
+}
+
+export interface PrefillCommandDispatchResponse {
+  type: 'prefill'
+  message: string
+  notice?: string
 }
 
 export type CommandDispatchResponse =
@@ -113,6 +120,7 @@ export type CommandDispatchResponse =
   | AliasCommandDispatchResponse
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
+  | PrefillCommandDispatchResponse
 
 export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 

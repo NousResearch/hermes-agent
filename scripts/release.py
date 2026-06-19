@@ -45,6 +45,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "charles@salesondemand.io": "salesondemandio",
     "victor@rocketfueldev.com": "victor-kyriazakos",
     "87440198+JoaoMarcos44@users.noreply.github.com": "JoaoMarcos44",
     "286497132+srojk34@users.noreply.github.com": "srojk34",
@@ -56,6 +57,8 @@ AUTHOR_MAP = {
     "despitemeguru@gmail.com": "definitelynotguru",
     "chaslui@outlook.com": "ChasLui",
     "rio.jeong@thebytesize.ai": "rio-jeong",
+    "cdddo@users.noreply.github.com": "Cdddo",
+    "carlos.dddo@gmail.com": "Cdddo",
     "yehaotian@xuanshudeMac-mini.local": "ArcanePivot",
     "dbeyer7@gmail.com": "benegessarit",
     "264773240+MrDiamondBallz@users.noreply.github.com": "MrDiamondBallz",
@@ -103,6 +106,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "johnjacobkenny@users.noreply.github.com": "johnjacobkenny",
     "chanyoung.kim@nota.ai": "channkim",
     "stevenn.damatoo@gmail.com": "x1erra",
     "evansrory@gmail.com": "zimigit2020",
@@ -415,6 +419,7 @@ AUTHOR_MAP = {
     "androidhtml@yandex.com": "hllqkb",
     "25840394+Bongulielmi@users.noreply.github.com": "Bongulielmi",
     "jonathan.troyer@overmatch.com": "JTroyerOvermatch",
+    "53142663+tt-a1i@users.noreply.github.com": "tt-a1i",  # PR #48933 (SSE-only Anthropic stream aggregation, #48923)
     "harryykyle1@gmail.com": "hharry11",
     "wysie@users.noreply.github.com": "wysie",
     "ronhi@buildabear1.localdomain": "RonHillDev",  # PR #29523 salvage (machine-local commit email)
@@ -1528,6 +1533,7 @@ AUTHOR_MAP = {
     "erik.engervall@gmail.com": "erikengervall",  # PR #28774 (firecrawl integration tag)
     "egilewski@egilewski.com": "egilewski",  # PR #30432 (MEDIA path traversal fix, GHSA-jmf9-9729-7pp8)
     "edison@mcclean.codes": "McClean-Edison",  # PR #29817 (register_auxiliary_task plugin API)
+    "OYLFLMH@users.noreply.github.com": "OYLFLMH",  # PR #48312 salvage (cli_refresh_interval config, #48309)
     "zhangsamuel12@gmail.com": "SamuelZ12",  # PR #7480 (show recap after in-session resume)
     "490408354@qq.com": "daizhonggeng",  # PR #9020 (numbered /resume selection)
     "claw@openclaw.ai": "wanwan2qq",  # PR #10215 (strip brackets/quotes from /resume; gateway session-ID lookup)
@@ -1577,6 +1583,8 @@ AUTHOR_MAP = {
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #45494 salvage (claim session slot before auto-resume task; #45456)
     "andrewdmwalker@gmail.com": "capt-marbles",  # PR #38440 salvage (resolve xAI OAuth credentials across profiles; #43589)
     "infinitycrew39@gmail.com": "infinitycrew39",  # PR #47945 salvage (scope langfuse trace state by turn/request ids; #48292)
+    "eurekaxun@163.com": "huangxun375-stack",  # PR #37251 / #48894 structured OpenViking sync
+    "218421507+Sahil-SS9@users.noreply.github.com": "Sahil-SS9",  # PR #48466/#44919/#44909/#42209 salvage (cron/checkpoint/kanban/skill)
 }
 
 

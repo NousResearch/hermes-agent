@@ -299,33 +299,45 @@ class ModelSwitchResult:
 # Flag parsing
 # ---------------------------------------------------------------------------
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool]:
-    """Parse --provider, --global, and --refresh flags from /model command args.
+def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
+    """Parse --provider, --global, --session, and --refresh flags from /model command args.
 
-    Returns (model_input, explicit_provider, is_global, force_refresh).
+    Returns ``(model_input, explicit_provider, is_global, force_refresh, is_session)``.
+
+    ``is_global`` and ``is_session`` are independent flag presences; the
+    *effective* persistence decision is resolved by
+    :func:`resolve_persist_behavior` so the config-gated default
+    (``model.persist_switch_by_default``) is applied in one place.
 
     Examples::
 
-        "sonnet"                         -> ("sonnet", "", False, False)
-        "sonnet --global"                -> ("sonnet", "", True, False)
-        "sonnet --provider anthropic"    -> ("sonnet", "anthropic", False, False)
-        "--provider my-ollama"           -> ("", "my-ollama", False, False)
-        "--refresh"                      -> ("", "", False, True)
-        "sonnet --provider anthropic --global" -> ("sonnet", "anthropic", True, False)
+        "sonnet"                         -> ("sonnet", "", False, False, False)
+        "sonnet --global"                -> ("sonnet", "", True, False, False)
+        "sonnet --session"               -> ("sonnet", "", False, False, True)
+        "sonnet --provider anthropic"    -> ("sonnet", "anthropic", False, False, False)
+        "--provider my-ollama"           -> ("", "my-ollama", False, False, False)
+        "--refresh"                      -> ("", "", False, True, False)
+        "sonnet --provider anthropic --global" -> ("sonnet", "anthropic", True, False, False)
     """
     is_global = False
     explicit_provider = ""
     force_refresh = False
+    is_session = False
 
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|refresh)', r'--\1', raw_args)
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh)', r'--\1', raw_args)
 
     # Extract --global
     if "--global" in raw_args:
         is_global = True
         raw_args = raw_args.replace("--global", "").strip()
+
+    # Extract --session (explicit session-only; overrides the persist default)
+    if "--session" in raw_args:
+        is_session = True
+        raw_args = raw_args.replace("--session", "").strip()
 
     # Extract --refresh (bust the model picker disk cache before listing)
     if "--refresh" in raw_args:
@@ -345,7 +357,37 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool]:
             i += 1
 
     model_input = " ".join(filtered).strip()
-    return (model_input, explicit_provider, is_global, force_refresh)
+    return (model_input, explicit_provider, is_global, force_refresh, is_session)
+
+
+def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
+    """Decide whether a ``/model`` switch should persist to ``config.yaml``.
+
+    Resolution order:
+
+    1. ``--session`` explicitly opts out → ``False`` (this session only).
+    2. ``--global`` explicitly opts in → ``True``.
+    3. Otherwise defer to ``model.persist_switch_by_default`` in
+       ``config.yaml`` (defaults to ``True``, so a plain ``/model <name>``
+       survives across sessions — the behavior users expect).
+
+    The config read is defensive: on a fresh install ``model`` may be a
+    flat string rather than a dict, in which case the built-in default
+    (``True``) applies.
+    """
+    if is_session:
+        return False
+    if is_global:
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model")
+        if isinstance(model_cfg, dict):
+            return bool(model_cfg.get("persist_switch_by_default", True))
+    except Exception:
+        pass
+    return True
 
 
 # ---------------------------------------------------------------------------

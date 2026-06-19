@@ -837,3 +837,56 @@ def test_unknown_pkce_provider_rejected_cleanly():
     # 4xx — what we MUST NOT see is a 200 with claude.ai in the body.
     assert resp.status_code >= 400, resp.text
     assert "claude.ai" not in resp.text.lower()
+
+
+def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
+    """Accounts-tab providers with no hardcoded branch reflect REAL status.
+
+    Providers appended to the Accounts tab from the unified provider_catalog()
+    carry status_fn=None and may have no explicit branch in
+    _resolve_provider_status. Before the fallthrough they rendered permanently
+    logged-out; now they dispatch to hermes_cli.auth.get_auth_status (the
+    canonical slug dispatcher) so membership AND status both auto-extend.
+    """
+    import hermes_cli.web_server as ws
+
+    fake_status = {
+        "logged_in": True,
+        "provider": "some-future-oauth",
+        "name": "Future OAuth Provider",
+        "access_token": "sk-future-secret-token-xyz",
+        "expires_at": "2026-12-01T00:00:00Z",
+        "has_refresh_token": True,
+    }
+    with patch("hermes_cli.auth.get_auth_status", return_value=fake_status):
+        out = ws._resolve_provider_status("some-future-oauth", None)
+
+    assert out["logged_in"] is True
+    assert out["source"] == "some-future-oauth"
+    assert out["source_label"] == "Future OAuth Provider"
+    # Token is previewed, never returned whole.
+    assert out["token_preview"] and "sk-future-secret-token-xyz" not in out["token_preview"]
+    assert out["expires_at"] == "2026-12-01T00:00:00Z"
+    assert out["has_refresh_token"] is True
+
+
+def test_status_hardcoded_branch_wins_over_generic_fallback():
+    """An existing hardcoded branch (nous) is unaffected by the fallthrough."""
+    import hermes_cli.web_server as ws
+
+    with patch(
+        "hermes_cli.auth.get_nous_auth_status",
+        return_value={"logged_in": True, "portal_base_url": "https://portal.test"},
+    ):
+        out = ws._resolve_provider_status("nous", None)
+    assert out["source"] == "nous_portal"
+    assert out["source_label"] == "https://portal.test"
+
+
+def test_status_unknown_provider_degrades_to_logged_out():
+    """A provider the generic dispatcher can't resolve stays logged-out cleanly."""
+    import hermes_cli.web_server as ws
+
+    with patch("hermes_cli.auth.get_auth_status", return_value={"logged_in": False}):
+        out = ws._resolve_provider_status("totally-unknown", None)
+    assert out["logged_in"] is False

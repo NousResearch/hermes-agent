@@ -27,6 +27,7 @@ import html
 import json
 import logging
 import os
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -95,7 +96,6 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_image_from_url,
     cache_media_bytes,
 )
 
@@ -470,6 +470,51 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
 import re as _re_teams
 _TEAMS_CONV_ID_RE = _re_teams.compile(r"^[A-Za-z0-9:@\-_.]+$")
 
+# HTTP statuses worth retrying on an outbound send: rate-limit + server-side
+# transients. Everything else (4xx client errors, malformed cards, permission
+# denials) is permanent and must NOT set SendResult.retryable, otherwise
+# base._send_with_retry retries the identical payload and skips its plain-text
+# fallback.
+_TEAMS_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_transient_send_error(exc: BaseException) -> bool:
+    """Classify an outbound send failure as transient (retryable) vs permanent.
+
+    Retryable: HTTP 429 / 5xx, request timeouts, and connection/transport
+    failures. Permanent (returns False so base falls back to plain text):
+    HTTP 4xx other than 429, malformed/oversized payloads, permission denials,
+    and local errors such as ``ValueError`` / ``OSError``.
+
+    The Teams SDK's outbound HTTP layer is ``httpx`` and calls
+    ``raise_for_status()``, so HTTP failures arrive as ``httpx.HTTPStatusError``
+    carrying ``response.status_code``. ``httpx`` is imported lazily here to keep
+    it off the module import path (see the lazy-import note near the top).
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    # httpx.HTTPStatusError carries the response; classify by status code.
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        return status in _TEAMS_RETRYABLE_HTTP_STATUSES
+    try:
+        import httpx
+
+        if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+            return True
+    except Exception:
+        pass
+    # Fallback heuristics for transport errors that carry no status / when httpx
+    # is unavailable.
+    text = str(exc).lower()
+    if "timeout" in text or "timed out" in text:
+        return True
+    if "connection" in text and ("reset" in text or "refused" in text or "aborted" in text):
+        return True
+    if "broken pipe" in text or "remote disconnected" in text:
+        return True
+    return False
+
 
 def _validate_teams_service_url(raw: str) -> Optional[str]:
     """Return a normalized service URL or ``None`` if it is not allowed.
@@ -687,6 +732,12 @@ def check_teams_requirements() -> bool:
     return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
 
 
+# Max number of conversation references kept for proactive sends. Mirrors the
+# dedup cache cap; evicted LRU-first. References are in-memory only (rebuilt as
+# conversations send inbound messages), so eviction only affects idle chats.
+_CONV_REF_CACHE_SIZE = 1000
+
+
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
@@ -701,12 +752,26 @@ class TeamsAdapter(BasePlatformAdapter):
         self._port = _coerce_port(
             extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
         )
+        # Bot Framework service host for proactive sends (App.send/App.reply).
+        # Regional/government tenants (GCC/GCC-High) need a non-global host;
+        # validate against the allowlist so a tampered value can't redirect a
+        # freshly minted bearer token. None => SDK default (global host).
+        self._service_url = _validate_teams_service_url(
+            os.getenv("TEAMS_SERVICE_URL", "").strip()
+            or extra.get("service_url", "")
+        )
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._dedup = MessageDeduplicator(max_size=1000)
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
-        self._conv_refs: Dict[str, Any] = {}
+        # Bounded with LRU eviction (same cap as the dedup cache) so a long-lived
+        # bot in many conversations does not accumulate references without bound.
+        self._conv_refs: "OrderedDict[str, Any]" = OrderedDict()
+        # Maps chat_id → {"name": str, "type": str} observed on inbound messages.
+        # Teams has no on-demand conversation lookup, so get_chat_info() replays
+        # the type/name we saw on the activity rather than guessing.
+        self._chat_meta: Dict[str, Dict[str, str]] = {}
 
     async def connect(self) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -741,13 +806,19 @@ class TeamsAdapter(BasePlatformAdapter):
             aiohttp_app = web.Application()
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
-            self._app = App(
+            app_kwargs: Dict[str, Any] = dict(
                 client_id=self._client_id,
                 client_secret=self._client_secret,
                 tenant_id=self._tenant_id,
                 http_server_adapter=_AiohttpBridgeAdapter(aiohttp_app),
                 client=ClientOptions(headers={"User-Agent": "Hermes"}),
             )
+            # Only override the SDK default when an allowlisted host was
+            # supplied, so proactive sends reach the tenant's regional/
+            # government Bot Framework endpoint instead of the global host.
+            if self._service_url:
+                app_kwargs["service_url"] = self._service_url
+            self._app = App(**app_kwargs)
 
             # Register message handler before initialize()
             @self._app.on_message
@@ -796,13 +867,21 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
-    async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
+    async def _fetch_attachment_bytes(
+        self,
+        url: str,
+        timeout: float = 30.0,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> bytes:
         """Download attachment bytes with SSRF protection.
 
-        Teams file attachments carry pre-authenticated SharePoint download
-        URLs (no extra auth header needed). Validates the URL against the
-        SSRF guard and follows redirects through the shared redirect guard,
-        matching the cache_*_from_url helpers in gateway.platforms.base.
+        Teams ``file.download.info`` attachments carry pre-authenticated
+        SharePoint download URLs (no extra auth header needed). Bot Connector
+        attachment URLs (inline images on ``serviceUrl`` hosts such as
+        ``smba.trafficmanager.net``) are bearer-gated — callers pass the bot
+        token via *headers*. Validates the URL against the SSRF guard and
+        follows redirects through the shared redirect guard, matching the
+        cache_*_from_url helpers in gateway.platforms.base.
         """
         from tools.url_safety import is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard
@@ -812,25 +891,61 @@ class TeamsAdapter(BasePlatformAdapter):
 
         import httpx
 
+        request_headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
+        if headers:
+            request_headers.update(headers)
+
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
+            response = await client.get(url, headers=request_headers)
             response.raise_for_status()
             return response.content
+
+    async def _bot_auth_header(
+        self, content_url: str, service_url: Optional[str]
+    ) -> Dict[str, str]:
+        """Return an ``Authorization`` header for a Bot Connector attachment URL.
+
+        Inline Teams images arrive as attachments whose ``content_url`` lives
+        on the conversation's Bot Connector host and require the app-only Bot
+        Framework token. To avoid leaking that bearer token to arbitrary
+        third-party image hosts, the header is attached **only** when
+        ``content_url`` shares a host with the activity's ``service_url``.
+        Returns an empty dict when there is no live app, no service URL, the
+        hosts differ, or the token cannot be acquired.
+        """
+        if not (self._app and content_url and service_url):
+            return {}
+        from urllib.parse import urlsplit
+
+        try:
+            if urlsplit(content_url).hostname != urlsplit(service_url).hostname:
+                return {}
+        except Exception:
+            return {}
+        try:
+            token = await self._app._get_bot_token()
+        except Exception as e:
+            logger.warning("[teams] Could not acquire bot token for attachment fetch: %s", e)
+            return {}
+        token_str = str(token) if token else ""
+        if not token_str:
+            return {}
+        return {"Authorization": f"Bearer {token_str}"}
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
         activity = ctx.activity
 
-        # Self-message filter
+        # Self-message filter. App.id is the bare client_id GUID, but Teams
+        # delivers the bot's own from_.id in the channel-prefixed Bot Framework
+        # form "28:<appId>", so match either the bare GUID or that suffix.
         bot_id = self._app.id if self._app else None
-        if bot_id and getattr(activity.from_, "id", None) == bot_id:
+        from_id = getattr(activity.from_, "id", None)
+        if bot_id and from_id and (from_id == bot_id or from_id.endswith(":" + bot_id)):
             return
 
         # Deduplication
@@ -838,10 +953,14 @@ class TeamsAdapter(BasePlatformAdapter):
         if msg_id and self._dedup.is_duplicate(msg_id):
             return
 
-        # Cache the conversation reference for proactive sends (approval cards, etc.)
+        # Cache the conversation reference for proactive sends (approval cards, etc.).
+        # LRU-bounded: refresh recency on each inbound, evict the oldest when over cap.
         conv_id = getattr(activity.conversation, "id", None)
         if conv_id:
             self._conv_refs[conv_id] = ctx.conversation_ref
+            self._conv_refs.move_to_end(conv_id)
+            if len(self._conv_refs) > _CONV_REF_CACHE_SIZE:
+                self._conv_refs.popitem(last=False)
 
         # Extract text — strip bot @mentions
         text = ""
@@ -864,10 +983,27 @@ class TeamsAdapter(BasePlatformAdapter):
         else:
             chat_type = "dm"
 
+        # Remember the conversation's type/name so get_chat_info() can return a
+        # valid enum type instead of "unknown" (Teams has no lookup API).
+        if conv_id:
+            self._chat_meta[conv_id] = {
+                "name": getattr(conv, "name", None) or "",
+                "type": chat_type,
+            }
+
         # Build source
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         user_name = getattr(from_account, "name", None) or ""
+
+        # Thread support for channel/group conversations: replies carry
+        # ``reply_to_id`` (the thread root); a top-level post is itself the
+        # root, so fall back to the message id. Without this, every message in
+        # a conversation shares thread_id=None and collapses into one session.
+        # DMs stay unthreaded. Mirrors Mattermost (root_id or post_id).
+        thread_id = None
+        if chat_type != "dm":
+            thread_id = getattr(activity, "reply_to_id", None) or msg_id
 
         source = self.build_source(
             chat_id=conv.id,
@@ -875,6 +1011,7 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(user_id),
             user_name=user_name,
+            thread_id=thread_id,
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
         )
 
@@ -882,6 +1019,9 @@ class TeamsAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         media_kinds = []
+        # Bot Connector attachment URLs (inline images) live on this host and
+        # require the bot bearer token; used to scope the auth header below.
+        activity_service_url = getattr(activity, "service_url", None)
         for att in getattr(activity, "attachments", None) or []:
             content_url = getattr(att, "content_url", None)
             content_type = (getattr(att, "content_type", None) or "").lower()
@@ -923,12 +1063,21 @@ class TeamsAdapter(BasePlatformAdapter):
                 continue
 
             if content_url and content_type.startswith("image/"):
+                # Inline Teams images are served from the Bot Connector host and
+                # need the bot bearer token; an anonymous GET returns 401/403 so
+                # the image never reaches vision. Fetch with the scoped auth
+                # header, then cache the bytes (parity with the file/document
+                # branches below).
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    auth = await self._bot_auth_header(content_url, activity_service_url)
+                    data = await self._fetch_attachment_bytes(content_url, headers=auth)
+                    cached = cache_media_bytes(
+                        data, mime_type=content_type, default_kind="image"
+                    )
                     if cached:
-                        media_urls.append(cached)
-                        media_types.append(content_type)
-                        media_kinds.append("image")
+                        media_urls.append(cached.path)
+                        media_types.append(cached.media_type)
+                        media_kinds.append(cached.kind)
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
                 continue
@@ -1143,7 +1292,7 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e), retryable=True)
+            return SendResult(success=False, error=str(e), retryable=_is_transient_send_error(e))
 
     async def send(
         self,
@@ -1156,7 +1305,7 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_message_id = None
 
         for chunk in chunks:
@@ -1177,7 +1326,7 @@ class TeamsAdapter(BasePlatformAdapter):
                     result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
             except Exception as e:
-                return SendResult(success=False, error=str(e), retryable=True)
+                return SendResult(success=False, error=str(e), retryable=_is_transient_send_error(e))
 
         return SendResult(success=True, message_id=last_message_id)
 
@@ -1229,7 +1378,7 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
             logger.error("[teams] send_image failed: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e), retryable=True)
+            return SendResult(success=False, error=str(e), retryable=_is_transient_send_error(e))
 
     async def send_image_file(
         self,
@@ -1247,7 +1396,10 @@ class TeamsAdapter(BasePlatformAdapter):
         )
 
     async def get_chat_info(self, chat_id: str) -> dict:
-        return {"name": chat_id, "type": "unknown", "chat_id": chat_id}
+        meta = self._chat_meta.get(chat_id) or {}
+        chat_type = meta.get("type") or "dm"
+        name = meta.get("name") or chat_id
+        return {"name": name, "type": chat_type, "chat_id": chat_id}
 
 
 # ── Interactive setup ─────────────────────────────────────────────────────────

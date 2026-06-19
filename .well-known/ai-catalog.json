@@ -1,0 +1,4917 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "displayName": "Hermes Agent",
+    "identifier": "did:web:hermes.local"
+  },
+  "entries": [
+    {
+      "identifier": "urn:ai:hermes.local:skill:agent-memory-mcp",
+      "displayName": "agent-memory-mcp",
+      "type": "application/ai-skill",
+      "description": "Use when configuring, diagnosing, or verifying Hermes Mem0 memory provider, the local self-hosted Mem0 REST API, or Codex agent-memory MCP in security-workstation.",
+      "tags": [
+        "agent",
+        "memory",
+        "mcp",
+        "agent memory mcp"
+      ],
+      "aliases": [
+        "agent",
+        "memory",
+        "mcp",
+        "agent memory mcp"
+      ],
+      "representativeQueries": [
+        "agent memory mcp",
+        "use agent memory mcp",
+        "find agent memory mcp capability",
+        "when configuring diagnosing verifying hermes mem0 memory provider"
+      ],
+      "data": {
+        "name": "agent-memory-mcp",
+        "description": "Use when configuring, diagnosing, or verifying Hermes Mem0 memory provider, the local self-hosted Mem0 REST API, or Codex agent-memory MCP in security-workstation.",
+        "category": null,
+        "aliases": [
+          "agent",
+          "memory",
+          "mcp",
+          "agent memory mcp"
+        ],
+        "representativeQueries": [
+          "agent memory mcp",
+          "use agent memory mcp",
+          "find agent memory mcp capability",
+          "when configuring diagnosing verifying hermes mem0 memory provider"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:article-writing",
+      "displayName": "article-writing",
+      "type": "application/ai-skill",
+      "description": "Write articles, guides, blog posts, tutorials, newsletter issues, and other long-form content in a distinctive voice derived from supplied examples or brand guidance. Use when the user wants polished written content longer than a paragraph, especially when voice consistency, structure, and credibility matter.",
+      "tags": [
+        "article",
+        "writing",
+        "article writing"
+      ],
+      "aliases": [
+        "article",
+        "writing",
+        "article writing"
+      ],
+      "representativeQueries": [
+        "article writing",
+        "use article writing",
+        "find article writing capability",
+        "write articles guides blog posts tutorials newsletter issues"
+      ],
+      "data": {
+        "name": "article-writing",
+        "description": "Write articles, guides, blog posts, tutorials, newsletter issues, and other long-form content in a distinctive voice derived from supplied examples or brand guidance. Use when the user wants polished written content longer than a paragraph, especially when voice consistency, structure, and credibility matter.",
+        "category": null,
+        "aliases": [
+          "article",
+          "writing",
+          "article writing"
+        ],
+        "representativeQueries": [
+          "article writing",
+          "use article writing",
+          "find article writing capability",
+          "write articles guides blog posts tutorials newsletter issues"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:diagnostic-stem-delivery",
+      "displayName": "diagnostic-stem-delivery",
+      "type": "application/ai-skill",
+      "description": "Audio production with diagnostic analysis, timecode parsing from documents, and verified export workflow",
+      "tags": [
+        "diagnostic",
+        "stem",
+        "delivery",
+        "diagnostic stem delivery"
+      ],
+      "aliases": [
+        "diagnostic",
+        "stem",
+        "delivery",
+        "diagnostic stem delivery"
+      ],
+      "representativeQueries": [
+        "diagnostic stem delivery",
+        "use diagnostic stem delivery",
+        "find diagnostic stem delivery capability",
+        "audio production with diagnostic analysis timecode parsing from"
+      ],
+      "data": {
+        "name": "diagnostic-stem-delivery",
+        "description": "Audio production with diagnostic analysis, timecode parsing from documents, and verified export workflow",
+        "category": null,
+        "aliases": [
+          "diagnostic",
+          "stem",
+          "delivery",
+          "diagnostic stem delivery"
+        ],
+        "representativeQueries": [
+          "diagnostic stem delivery",
+          "use diagnostic stem delivery",
+          "find diagnostic stem delivery capability",
+          "audio production with diagnostic analysis timecode parsing from"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:auth-bypass:reset-machine-id",
+      "displayName": "reset-machine-id",
+      "type": "application/ai-skill",
+      "description": "Reset and spoof OS-level and AI IDE (Codex, Windsurf, Trae, Cursor) machine IDs to bypass telemetry bans.",
+      "tags": [
+        "auth-bypass",
+        "reset",
+        "machine",
+        "id",
+        "reset machine id"
+      ],
+      "aliases": [
+        "reset",
+        "machine",
+        "id",
+        "reset machine id"
+      ],
+      "representativeQueries": [
+        "reset machine id",
+        "use reset machine id",
+        "find reset machine id capability",
+        "auth-bypass reset machine id",
+        "reset spoof level codex windsurf trae cursor machine"
+      ],
+      "data": {
+        "name": "reset-machine-id",
+        "description": "Reset and spoof OS-level and AI IDE (Codex, Windsurf, Trae, Cursor) machine IDs to bypass telemetry bans.",
+        "category": "auth-bypass",
+        "aliases": [
+          "reset",
+          "machine",
+          "id",
+          "reset machine id"
+        ],
+        "representativeQueries": [
+          "reset machine id",
+          "use reset machine id",
+          "find reset machine id capability",
+          "auth-bypass reset machine id",
+          "reset spoof level codex windsurf trae cursor machine"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:autonomous-ai-agents:claude-code",
+      "displayName": "claude-code",
+      "type": "application/ai-skill",
+      "description": "Delegate coding to Claude Code CLI (features, PRs).",
+      "tags": [
+        "autonomous-ai-agents",
+        "claude",
+        "code",
+        "claude code"
+      ],
+      "aliases": [
+        "claude",
+        "code",
+        "claude code"
+      ],
+      "representativeQueries": [
+        "claude code",
+        "use claude code",
+        "find claude code capability",
+        "autonomous-ai-agents claude code",
+        "delegate coding claude code features"
+      ],
+      "data": {
+        "name": "claude-code",
+        "description": "Delegate coding to Claude Code CLI (features, PRs).",
+        "category": "autonomous-ai-agents",
+        "aliases": [
+          "claude",
+          "code",
+          "claude code"
+        ],
+        "representativeQueries": [
+          "claude code",
+          "use claude code",
+          "find claude code capability",
+          "autonomous-ai-agents claude code",
+          "delegate coding claude code features"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:autonomous-ai-agents:codex",
+      "displayName": "codex",
+      "type": "application/ai-skill",
+      "description": "Delegate coding to OpenAI Codex CLI (features, PRs).",
+      "tags": [
+        "autonomous-ai-agents",
+        "codex"
+      ],
+      "aliases": [
+        "codex"
+      ],
+      "representativeQueries": [
+        "codex",
+        "use codex",
+        "find codex capability",
+        "autonomous-ai-agents codex",
+        "delegate coding openai codex features"
+      ],
+      "data": {
+        "name": "codex",
+        "description": "Delegate coding to OpenAI Codex CLI (features, PRs).",
+        "category": "autonomous-ai-agents",
+        "aliases": [
+          "codex"
+        ],
+        "representativeQueries": [
+          "codex",
+          "use codex",
+          "find codex capability",
+          "autonomous-ai-agents codex",
+          "delegate coding openai codex features"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:autonomous-ai-agents:hermes-agent",
+      "displayName": "hermes-agent",
+      "type": "application/ai-skill",
+      "description": "Configure, extend, or contribute to Hermes Agent.",
+      "tags": [
+        "autonomous-ai-agents",
+        "hermes",
+        "agent",
+        "hermes agent"
+      ],
+      "aliases": [
+        "hermes",
+        "agent",
+        "hermes agent"
+      ],
+      "representativeQueries": [
+        "hermes agent",
+        "use hermes agent",
+        "find hermes agent capability",
+        "autonomous-ai-agents hermes agent",
+        "configure extend contribute hermes agent"
+      ],
+      "data": {
+        "name": "hermes-agent",
+        "description": "Configure, extend, or contribute to Hermes Agent.",
+        "category": "autonomous-ai-agents",
+        "aliases": [
+          "hermes",
+          "agent",
+          "hermes agent"
+        ],
+        "representativeQueries": [
+          "hermes agent",
+          "use hermes agent",
+          "find hermes agent capability",
+          "autonomous-ai-agents hermes agent",
+          "configure extend contribute hermes agent"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:autonomous-skill-cascade",
+      "displayName": "autonomous-skill-cascade",
+      "type": "application/ai-skill",
+      "description": "Safely discover, import, create, validate, and hand off reusable skills when an agent encounters an unfamiliar task or missing capability.",
+      "tags": [
+        "autonomous",
+        "skill",
+        "cascade",
+        "autonomous skill cascade"
+      ],
+      "aliases": [
+        "autonomous",
+        "skill",
+        "cascade",
+        "autonomous skill cascade"
+      ],
+      "representativeQueries": [
+        "autonomous skill cascade",
+        "use autonomous skill cascade",
+        "find autonomous skill cascade capability",
+        "safely discover import create validate hand reusable skills"
+      ],
+      "data": {
+        "name": "autonomous-skill-cascade",
+        "description": "Safely discover, import, create, validate, and hand off reusable skills when an agent encounters an unfamiliar task or missing capability.",
+        "category": null,
+        "aliases": [
+          "autonomous",
+          "skill",
+          "cascade",
+          "autonomous skill cascade"
+        ],
+        "representativeQueries": [
+          "autonomous skill cascade",
+          "use autonomous skill cascade",
+          "find autonomous skill cascade capability",
+          "safely discover import create validate hand reusable skills"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:baoyu-article-illustrator",
+      "displayName": "baoyu-article-illustrator",
+      "type": "application/ai-skill",
+      "description": "Article illustrations: type × style × palette consistency.",
+      "tags": [
+        "baoyu",
+        "article",
+        "illustrator",
+        "baoyu article illustrator"
+      ],
+      "aliases": [
+        "baoyu",
+        "article",
+        "illustrator",
+        "baoyu article illustrator"
+      ],
+      "representativeQueries": [
+        "baoyu article illustrator",
+        "use baoyu article illustrator",
+        "find baoyu article illustrator capability",
+        "article illustrations type style palette consistency"
+      ],
+      "data": {
+        "name": "baoyu-article-illustrator",
+        "description": "Article illustrations: type × style × palette consistency.",
+        "category": null,
+        "aliases": [
+          "baoyu",
+          "article",
+          "illustrator",
+          "baoyu article illustrator"
+        ],
+        "representativeQueries": [
+          "baoyu article illustrator",
+          "use baoyu article illustrator",
+          "find baoyu article illustrator capability",
+          "article illustrations type style palette consistency"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:baoyu-comic",
+      "displayName": "baoyu-comic",
+      "type": "application/ai-skill",
+      "description": "Knowledge comics (知识漫画): educational, biography, tutorial.",
+      "tags": [
+        "baoyu",
+        "comic",
+        "baoyu comic"
+      ],
+      "aliases": [
+        "baoyu",
+        "comic",
+        "baoyu comic"
+      ],
+      "representativeQueries": [
+        "baoyu comic",
+        "use baoyu comic",
+        "find baoyu comic capability",
+        "knowledge comics educational biography tutorial"
+      ],
+      "data": {
+        "name": "baoyu-comic",
+        "description": "Knowledge comics (知识漫画): educational, biography, tutorial.",
+        "category": null,
+        "aliases": [
+          "baoyu",
+          "comic",
+          "baoyu comic"
+        ],
+        "representativeQueries": [
+          "baoyu comic",
+          "use baoyu comic",
+          "find baoyu comic capability",
+          "knowledge comics educational biography tutorial"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:browser-extension-security-analysis",
+      "displayName": "browser-extension-security-analysis",
+      "type": "application/ai-skill",
+      "description": "Analyze, audit, and sanitize browser extensions for security research and bug bounty. Identify malicious behavior (exfiltration, C2, data theft) and create sanitized versions preserving useful functionality.",
+      "tags": [
+        "browser",
+        "extension",
+        "security",
+        "analysis",
+        "browser extension security analysis"
+      ],
+      "aliases": [
+        "browser",
+        "extension",
+        "security",
+        "analysis",
+        "browser extension security analysis"
+      ],
+      "representativeQueries": [
+        "browser extension security analysis",
+        "use browser extension security analysis",
+        "find browser extension security analysis capability",
+        "analyze audit sanitize browser extensions security research bounty"
+      ],
+      "data": {
+        "name": "browser-extension-security-analysis",
+        "description": "Analyze, audit, and sanitize browser extensions for security research and bug bounty. Identify malicious behavior (exfiltration, C2, data theft) and create sanitized versions preserving useful functionality.",
+        "category": null,
+        "aliases": [
+          "browser",
+          "extension",
+          "security",
+          "analysis",
+          "browser extension security analysis"
+        ],
+        "representativeQueries": [
+          "browser extension security analysis",
+          "use browser extension security analysis",
+          "find browser extension security analysis capability",
+          "analyze audit sanitize browser extensions security research bounty"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:cliproxy-provider-management",
+      "displayName": "cliproxy-provider-management",
+      "type": "application/ai-skill",
+      "description": "Add, configure, test, and troubleshoot providers in cliproxy (local API proxy/aggregator). Includes RPM testing, SSL bypass for Electron clients, and API key management.",
+      "tags": [
+        "cliproxy",
+        "provider",
+        "management",
+        "cliproxy provider management"
+      ],
+      "aliases": [
+        "cliproxy",
+        "provider",
+        "management",
+        "cliproxy provider management"
+      ],
+      "representativeQueries": [
+        "cliproxy provider management",
+        "use cliproxy provider management",
+        "find cliproxy provider management capability",
+        "configure test troubleshoot providers cliproxy local proxy aggregator"
+      ],
+      "data": {
+        "name": "cliproxy-provider-management",
+        "description": "Add, configure, test, and troubleshoot providers in cliproxy (local API proxy/aggregator). Includes RPM testing, SSL bypass for Electron clients, and API key management.",
+        "category": null,
+        "aliases": [
+          "cliproxy",
+          "provider",
+          "management",
+          "cliproxy provider management"
+        ],
+        "representativeQueries": [
+          "cliproxy provider management",
+          "use cliproxy provider management",
+          "find cliproxy provider management capability",
+          "configure test troubleshoot providers cliproxy local proxy aggregator"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:copywriting",
+      "displayName": "copywriting",
+      "type": "application/ai-skill",
+      "description": "Anti-slop copywriting framework — sales pages, landing pages, email sequences, ads, social media. Psychology-backed, not template-based. Kills generic AI marketing speak.",
+      "tags": [
+        "copywriting"
+      ],
+      "aliases": [
+        "copywriting"
+      ],
+      "representativeQueries": [
+        "copywriting",
+        "use copywriting",
+        "find copywriting capability",
+        "anti slop copywriting framework sales pages landing pages"
+      ],
+      "data": {
+        "name": "copywriting",
+        "description": "Anti-slop copywriting framework — sales pages, landing pages, email sequences, ads, social media. Psychology-backed, not template-based. Kills generic AI marketing speak.",
+        "category": null,
+        "aliases": [
+          "copywriting"
+        ],
+        "representativeQueries": [
+          "copywriting",
+          "use copywriting",
+          "find copywriting capability",
+          "anti slop copywriting framework sales pages landing pages"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative-fiction",
+      "displayName": "creative-fiction",
+      "type": "application/ai-skill",
+      "description": "Anti-slop creative fiction writing — short stories, novels, scripts, narrative design. Character voice, world-building, tension mechanics, dialogue craft. Kills generic AI storytelling.",
+      "tags": [
+        "creative",
+        "fiction",
+        "creative fiction"
+      ],
+      "aliases": [
+        "creative",
+        "fiction",
+        "creative fiction"
+      ],
+      "representativeQueries": [
+        "creative fiction",
+        "use creative fiction",
+        "find creative fiction capability",
+        "anti slop creative fiction writing short stories novels"
+      ],
+      "data": {
+        "name": "creative-fiction",
+        "description": "Anti-slop creative fiction writing — short stories, novels, scripts, narrative design. Character voice, world-building, tension mechanics, dialogue craft. Kills generic AI storytelling.",
+        "category": null,
+        "aliases": [
+          "creative",
+          "fiction",
+          "creative fiction"
+        ],
+        "representativeQueries": [
+          "creative fiction",
+          "use creative fiction",
+          "find creative fiction capability",
+          "anti slop creative fiction writing short stories novels"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:ai-producer-workflow",
+      "displayName": "ai-producer-workflow",
+      "type": "application/ai-skill",
+      "description": "Triage, synthesis, and layout pipeline for elite commercial neurodance",
+      "tags": [
+        "creative",
+        "ai",
+        "producer",
+        "workflow",
+        "ai producer workflow"
+      ],
+      "aliases": [
+        "ai",
+        "producer",
+        "workflow",
+        "ai producer workflow"
+      ],
+      "representativeQueries": [
+        "ai producer workflow",
+        "use ai producer workflow",
+        "find ai producer workflow capability",
+        "creative ai producer workflow",
+        "triage synthesis layout pipeline elite commercial neurodance"
+      ],
+      "data": {
+        "name": "ai-producer-workflow",
+        "description": "Triage, synthesis, and layout pipeline for elite commercial neurodance",
+        "category": "creative",
+        "aliases": [
+          "ai",
+          "producer",
+          "workflow",
+          "ai producer workflow"
+        ],
+        "representativeQueries": [
+          "ai producer workflow",
+          "use ai producer workflow",
+          "find ai producer workflow capability",
+          "creative ai producer workflow",
+          "triage synthesis layout pipeline elite commercial neurodance"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:architecture-diagram",
+      "displayName": "architecture-diagram",
+      "type": "application/ai-skill",
+      "description": "Dark-themed SVG architecture/cloud/infra diagrams as HTML.",
+      "tags": [
+        "creative",
+        "architecture",
+        "diagram",
+        "architecture diagram"
+      ],
+      "aliases": [
+        "architecture",
+        "diagram",
+        "architecture diagram"
+      ],
+      "representativeQueries": [
+        "architecture diagram",
+        "use architecture diagram",
+        "find architecture diagram capability",
+        "creative architecture diagram",
+        "dark themed architecture cloud infra diagrams html"
+      ],
+      "data": {
+        "name": "architecture-diagram",
+        "description": "Dark-themed SVG architecture/cloud/infra diagrams as HTML.",
+        "category": "creative",
+        "aliases": [
+          "architecture",
+          "diagram",
+          "architecture diagram"
+        ],
+        "representativeQueries": [
+          "architecture diagram",
+          "use architecture diagram",
+          "find architecture diagram capability",
+          "creative architecture diagram",
+          "dark themed architecture cloud infra diagrams html"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:ascii-art",
+      "displayName": "ascii-art",
+      "type": "application/ai-skill",
+      "description": "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.",
+      "tags": [
+        "creative",
+        "ascii",
+        "art",
+        "ascii art"
+      ],
+      "aliases": [
+        "ascii",
+        "art",
+        "ascii art"
+      ],
+      "representativeQueries": [
+        "ascii art",
+        "use ascii art",
+        "find ascii art capability",
+        "creative ascii art",
+        "ascii pyfiglet cowsay boxes image ascii"
+      ],
+      "data": {
+        "name": "ascii-art",
+        "description": "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.",
+        "category": "creative",
+        "aliases": [
+          "ascii",
+          "art",
+          "ascii art"
+        ],
+        "representativeQueries": [
+          "ascii art",
+          "use ascii art",
+          "find ascii art capability",
+          "creative ascii art",
+          "ascii pyfiglet cowsay boxes image ascii"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:ascii-video",
+      "displayName": "ascii-video",
+      "type": "application/ai-skill",
+      "description": "ASCII video: convert video/audio to colored ASCII MP4/GIF.",
+      "tags": [
+        "creative",
+        "ascii",
+        "video",
+        "ascii video"
+      ],
+      "aliases": [
+        "ascii",
+        "video",
+        "ascii video"
+      ],
+      "representativeQueries": [
+        "ascii video",
+        "use ascii video",
+        "find ascii video capability",
+        "creative ascii video",
+        "ascii video convert video audio colored ascii"
+      ],
+      "data": {
+        "name": "ascii-video",
+        "description": "ASCII video: convert video/audio to colored ASCII MP4/GIF.",
+        "category": "creative",
+        "aliases": [
+          "ascii",
+          "video",
+          "ascii video"
+        ],
+        "representativeQueries": [
+          "ascii video",
+          "use ascii video",
+          "find ascii video capability",
+          "creative ascii video",
+          "ascii video convert video audio colored ascii"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:baoyu-infographic",
+      "displayName": "baoyu-infographic",
+      "type": "application/ai-skill",
+      "description": "Infographics: 21 layouts x 21 styles (信息图, 可视化).",
+      "tags": [
+        "creative",
+        "baoyu",
+        "infographic",
+        "baoyu infographic"
+      ],
+      "aliases": [
+        "baoyu",
+        "infographic",
+        "baoyu infographic"
+      ],
+      "representativeQueries": [
+        "baoyu infographic",
+        "use baoyu infographic",
+        "find baoyu infographic capability",
+        "creative baoyu infographic",
+        "infographics layouts styles"
+      ],
+      "data": {
+        "name": "baoyu-infographic",
+        "description": "Infographics: 21 layouts x 21 styles (信息图, 可视化).",
+        "category": "creative",
+        "aliases": [
+          "baoyu",
+          "infographic",
+          "baoyu infographic"
+        ],
+        "representativeQueries": [
+          "baoyu infographic",
+          "use baoyu infographic",
+          "find baoyu infographic capability",
+          "creative baoyu infographic",
+          "infographics layouts styles"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:claude-design",
+      "displayName": "claude-design",
+      "type": "application/ai-skill",
+      "description": "Design one-off HTML artifacts (landing, deck, prototype).",
+      "tags": [
+        "creative",
+        "claude",
+        "design",
+        "claude design"
+      ],
+      "aliases": [
+        "claude",
+        "design",
+        "claude design"
+      ],
+      "representativeQueries": [
+        "claude design",
+        "use claude design",
+        "find claude design capability",
+        "creative claude design",
+        "design html artifacts landing deck prototype"
+      ],
+      "data": {
+        "name": "claude-design",
+        "description": "Design one-off HTML artifacts (landing, deck, prototype).",
+        "category": "creative",
+        "aliases": [
+          "claude",
+          "design",
+          "claude design"
+        ],
+        "representativeQueries": [
+          "claude design",
+          "use claude design",
+          "find claude design capability",
+          "creative claude design",
+          "design html artifacts landing deck prototype"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:comfyui",
+      "displayName": "comfyui",
+      "type": "application/ai-skill",
+      "description": "Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution.",
+      "tags": [
+        "creative",
+        "comfyui"
+      ],
+      "aliases": [
+        "comfyui"
+      ],
+      "representativeQueries": [
+        "comfyui",
+        "use comfyui",
+        "find comfyui capability",
+        "creative comfyui",
+        "generate images video audio with comfyui install launch"
+      ],
+      "data": {
+        "name": "comfyui",
+        "description": "Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution.",
+        "category": "creative",
+        "aliases": [
+          "comfyui"
+        ],
+        "representativeQueries": [
+          "comfyui",
+          "use comfyui",
+          "find comfyui capability",
+          "creative comfyui",
+          "generate images video audio with comfyui install launch"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:creative-ai-workflows",
+      "displayName": "creative-ai-workflows",
+      "type": "application/ai-skill",
+      "description": "Umbrella skill for generative AI creative workflows, local LLM proxy configs, and audio prompt engineering.",
+      "tags": [
+        "creative",
+        "ai",
+        "workflows",
+        "creative ai workflows"
+      ],
+      "aliases": [
+        "creative",
+        "ai",
+        "workflows",
+        "creative ai workflows"
+      ],
+      "representativeQueries": [
+        "creative ai workflows",
+        "use creative ai workflows",
+        "find creative ai workflows capability",
+        "creative creative ai workflows",
+        "umbrella skill generative creative workflows local proxy configs"
+      ],
+      "data": {
+        "name": "creative-ai-workflows",
+        "description": "Umbrella skill for generative AI creative workflows, local LLM proxy configs, and audio prompt engineering.",
+        "category": "creative",
+        "aliases": [
+          "creative",
+          "ai",
+          "workflows",
+          "creative ai workflows"
+        ],
+        "representativeQueries": [
+          "creative ai workflows",
+          "use creative ai workflows",
+          "find creative ai workflows capability",
+          "creative creative ai workflows",
+          "umbrella skill generative creative workflows local proxy configs"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:design-md",
+      "displayName": "design-md",
+      "type": "application/ai-skill",
+      "description": "Author/validate/export Google's DESIGN.md token spec files.",
+      "tags": [
+        "creative",
+        "design",
+        "md",
+        "design md"
+      ],
+      "aliases": [
+        "design",
+        "md",
+        "design md"
+      ],
+      "representativeQueries": [
+        "design md",
+        "use design md",
+        "find design md capability",
+        "creative design md",
+        "author validate export google design token spec files"
+      ],
+      "data": {
+        "name": "design-md",
+        "description": "Author/validate/export Google's DESIGN.md token spec files.",
+        "category": "creative",
+        "aliases": [
+          "design",
+          "md",
+          "design md"
+        ],
+        "representativeQueries": [
+          "design md",
+          "use design md",
+          "find design md capability",
+          "creative design md",
+          "author validate export google design token spec files"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:excalidraw",
+      "displayName": "excalidraw",
+      "type": "application/ai-skill",
+      "description": "Hand-drawn Excalidraw JSON diagrams (arch, flow, seq).",
+      "tags": [
+        "creative",
+        "excalidraw"
+      ],
+      "aliases": [
+        "excalidraw"
+      ],
+      "representativeQueries": [
+        "excalidraw",
+        "use excalidraw",
+        "find excalidraw capability",
+        "creative excalidraw",
+        "hand drawn excalidraw json diagrams arch flow"
+      ],
+      "data": {
+        "name": "excalidraw",
+        "description": "Hand-drawn Excalidraw JSON diagrams (arch, flow, seq).",
+        "category": "creative",
+        "aliases": [
+          "excalidraw"
+        ],
+        "representativeQueries": [
+          "excalidraw",
+          "use excalidraw",
+          "find excalidraw capability",
+          "creative excalidraw",
+          "hand drawn excalidraw json diagrams arch flow"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:humanizer",
+      "displayName": "humanizer",
+      "type": "application/ai-skill",
+      "description": "Humanize text: strip AI-isms and add real voice. English-focused (Wikipedia-derived). For Russian/technical anti-slop use 'anti-slop-writing'; for comprehensive English audit+rewrite with tiered severity use 'avoid-ai-writing'.",
+      "tags": [
+        "creative",
+        "humanizer"
+      ],
+      "aliases": [
+        "humanizer"
+      ],
+      "representativeQueries": [
+        "humanizer",
+        "use humanizer",
+        "find humanizer capability",
+        "creative humanizer",
+        "humanize text strip isms real voice english focused"
+      ],
+      "data": {
+        "name": "humanizer",
+        "description": "Humanize text: strip AI-isms and add real voice. English-focused (Wikipedia-derived). For Russian/technical anti-slop use 'anti-slop-writing'; for comprehensive English audit+rewrite with tiered severity use 'avoid-ai-writing'.",
+        "category": "creative",
+        "aliases": [
+          "humanizer"
+        ],
+        "representativeQueries": [
+          "humanizer",
+          "use humanizer",
+          "find humanizer capability",
+          "creative humanizer",
+          "humanize text strip isms real voice english focused"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:manim-video",
+      "displayName": "manim-video",
+      "type": "application/ai-skill",
+      "description": "Manim CE animations: 3Blue1Brown math/algo videos.",
+      "tags": [
+        "creative",
+        "manim",
+        "video",
+        "manim video"
+      ],
+      "aliases": [
+        "manim",
+        "video",
+        "manim video"
+      ],
+      "representativeQueries": [
+        "manim video",
+        "use manim video",
+        "find manim video capability",
+        "creative manim video",
+        "manim animations 3blue1brown math algo videos"
+      ],
+      "data": {
+        "name": "manim-video",
+        "description": "Manim CE animations: 3Blue1Brown math/algo videos.",
+        "category": "creative",
+        "aliases": [
+          "manim",
+          "video",
+          "manim video"
+        ],
+        "representativeQueries": [
+          "manim video",
+          "use manim video",
+          "find manim video capability",
+          "creative manim video",
+          "manim animations 3blue1brown math algo videos"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:opendaw-automation",
+      "displayName": "opendaw-automation",
+      "type": "application/ai-skill",
+      "description": "openDAW AI agent automation via Headless SDK and Playwright MCP",
+      "tags": [
+        "creative",
+        "opendaw",
+        "automation",
+        "opendaw automation"
+      ],
+      "aliases": [
+        "opendaw",
+        "automation",
+        "opendaw automation"
+      ],
+      "representativeQueries": [
+        "opendaw automation",
+        "use opendaw automation",
+        "find opendaw automation capability",
+        "creative opendaw automation",
+        "opendaw agent automation headless playwright"
+      ],
+      "data": {
+        "name": "opendaw-automation",
+        "description": "openDAW AI agent automation via Headless SDK and Playwright MCP",
+        "category": "creative",
+        "aliases": [
+          "opendaw",
+          "automation",
+          "opendaw automation"
+        ],
+        "representativeQueries": [
+          "opendaw automation",
+          "use opendaw automation",
+          "find opendaw automation capability",
+          "creative opendaw automation",
+          "opendaw agent automation headless playwright"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:p5js",
+      "displayName": "p5js",
+      "type": "application/ai-skill",
+      "description": "p5.js sketches: gen art, shaders, interactive, 3D.",
+      "tags": [
+        "creative",
+        "p5js"
+      ],
+      "aliases": [
+        "p5js"
+      ],
+      "representativeQueries": [
+        "p5js",
+        "use p5js",
+        "find p5js capability",
+        "creative p5js",
+        "sketches shaders interactive"
+      ],
+      "data": {
+        "name": "p5js",
+        "description": "p5.js sketches: gen art, shaders, interactive, 3D.",
+        "category": "creative",
+        "aliases": [
+          "p5js"
+        ],
+        "representativeQueries": [
+          "p5js",
+          "use p5js",
+          "find p5js capability",
+          "creative p5js",
+          "sketches shaders interactive"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:popular-web-designs",
+      "displayName": "popular-web-designs",
+      "type": "application/ai-skill",
+      "description": "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.",
+      "tags": [
+        "creative",
+        "popular",
+        "web",
+        "designs",
+        "popular web designs"
+      ],
+      "aliases": [
+        "popular",
+        "web",
+        "designs",
+        "popular web designs"
+      ],
+      "representativeQueries": [
+        "popular web designs",
+        "use popular web designs",
+        "find popular web designs capability",
+        "creative popular web designs",
+        "real design systems stripe linear vercel html"
+      ],
+      "data": {
+        "name": "popular-web-designs",
+        "description": "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.",
+        "category": "creative",
+        "aliases": [
+          "popular",
+          "web",
+          "designs",
+          "popular web designs"
+        ],
+        "representativeQueries": [
+          "popular web designs",
+          "use popular web designs",
+          "find popular web designs capability",
+          "creative popular web designs",
+          "real design systems stripe linear vercel html"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:pretext",
+      "displayName": "pretext",
+      "type": "application/ai-skill",
+      "description": "Use when building creative browser demos with @chenglou/pretext — DOM-free text layout for ASCII art, typographic flow around obstacles, text-as-geometry games, kinetic typography, and text-powered generative art. Produces single-file HTML demos by default.",
+      "tags": [
+        "creative",
+        "pretext"
+      ],
+      "aliases": [
+        "pretext"
+      ],
+      "representativeQueries": [
+        "pretext",
+        "use pretext",
+        "find pretext capability",
+        "creative pretext",
+        "when building creative browser demos with chenglou pretext"
+      ],
+      "data": {
+        "name": "pretext",
+        "description": "Use when building creative browser demos with @chenglou/pretext — DOM-free text layout for ASCII art, typographic flow around obstacles, text-as-geometry games, kinetic typography, and text-powered generative art. Produces single-file HTML demos by default.",
+        "category": "creative",
+        "aliases": [
+          "pretext"
+        ],
+        "representativeQueries": [
+          "pretext",
+          "use pretext",
+          "find pretext capability",
+          "creative pretext",
+          "when building creative browser demos with chenglou pretext"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:sketch",
+      "displayName": "sketch",
+      "type": "application/ai-skill",
+      "description": "Throwaway HTML mockups: 2-3 design variants to compare.",
+      "tags": [
+        "creative",
+        "sketch"
+      ],
+      "aliases": [
+        "sketch"
+      ],
+      "representativeQueries": [
+        "sketch",
+        "use sketch",
+        "find sketch capability",
+        "creative sketch",
+        "throwaway html mockups design variants compare"
+      ],
+      "data": {
+        "name": "sketch",
+        "description": "Throwaway HTML mockups: 2-3 design variants to compare.",
+        "category": "creative",
+        "aliases": [
+          "sketch"
+        ],
+        "representativeQueries": [
+          "sketch",
+          "use sketch",
+          "find sketch capability",
+          "creative sketch",
+          "throwaway html mockups design variants compare"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:songsee",
+      "displayName": "songsee",
+      "type": "application/ai-skill",
+      "description": "Audio spectrograms/features (mel, chroma, MFCC) via CLI.",
+      "tags": [
+        "creative",
+        "songsee"
+      ],
+      "aliases": [
+        "songsee"
+      ],
+      "representativeQueries": [
+        "songsee",
+        "use songsee",
+        "find songsee capability",
+        "creative songsee",
+        "audio spectrograms features chroma mfcc"
+      ],
+      "data": {
+        "name": "songsee",
+        "description": "Audio spectrograms/features (mel, chroma, MFCC) via CLI.",
+        "category": "creative",
+        "aliases": [
+          "songsee"
+        ],
+        "representativeQueries": [
+          "songsee",
+          "use songsee",
+          "find songsee capability",
+          "creative songsee",
+          "audio spectrograms features chroma mfcc"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:songwriting-and-ai-music",
+      "displayName": "songwriting-and-ai-music",
+      "type": "application/ai-skill",
+      "description": "Songwriting craft and Suno AI music prompts.",
+      "tags": [
+        "creative",
+        "songwriting",
+        "and",
+        "ai",
+        "music",
+        "songwriting and ai music"
+      ],
+      "aliases": [
+        "songwriting",
+        "and",
+        "ai",
+        "music",
+        "songwriting and ai music"
+      ],
+      "representativeQueries": [
+        "songwriting and ai music",
+        "use songwriting and ai music",
+        "find songwriting and ai music capability",
+        "creative songwriting and ai music",
+        "songwriting craft suno music prompts"
+      ],
+      "data": {
+        "name": "songwriting-and-ai-music",
+        "description": "Songwriting craft and Suno AI music prompts.",
+        "category": "creative",
+        "aliases": [
+          "songwriting",
+          "and",
+          "ai",
+          "music",
+          "songwriting and ai music"
+        ],
+        "representativeQueries": [
+          "songwriting and ai music",
+          "use songwriting and ai music",
+          "find songwriting and ai music capability",
+          "creative songwriting and ai music",
+          "songwriting craft suno music prompts"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:suno-v5-prompting",
+      "displayName": "suno-v5-prompting",
+      "type": "application/ai-skill",
+      "description": "Advanced prompt engineering rules, structure metatags, and style constraints for Suno v5 and v5.5.",
+      "tags": [
+        "creative",
+        "suno",
+        "v5",
+        "prompting",
+        "suno v5 prompting"
+      ],
+      "aliases": [
+        "suno",
+        "v5",
+        "prompting",
+        "suno v5 prompting"
+      ],
+      "representativeQueries": [
+        "suno v5 prompting",
+        "use suno v5 prompting",
+        "find suno v5 prompting capability",
+        "creative suno v5 prompting",
+        "advanced prompt engineering rules structure metatags style constraints"
+      ],
+      "data": {
+        "name": "suno-v5-prompting",
+        "description": "Advanced prompt engineering rules, structure metatags, and style constraints for Suno v5 and v5.5.",
+        "category": "creative",
+        "aliases": [
+          "suno",
+          "v5",
+          "prompting",
+          "suno v5 prompting"
+        ],
+        "representativeQueries": [
+          "suno v5 prompting",
+          "use suno v5 prompting",
+          "find suno v5 prompting capability",
+          "creative suno v5 prompting",
+          "advanced prompt engineering rules structure metatags style constraints"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:creative:touchdesigner-mcp",
+      "displayName": "touchdesigner-mcp",
+      "type": "application/ai-skill",
+      "description": "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools.",
+      "tags": [
+        "creative",
+        "touchdesigner",
+        "mcp",
+        "touchdesigner mcp"
+      ],
+      "aliases": [
+        "touchdesigner",
+        "mcp",
+        "touchdesigner mcp"
+      ],
+      "representativeQueries": [
+        "touchdesigner mcp",
+        "use touchdesigner mcp",
+        "find touchdesigner mcp capability",
+        "creative touchdesigner mcp",
+        "control running touchdesigner instance twozero create operators parameters"
+      ],
+      "data": {
+        "name": "touchdesigner-mcp",
+        "description": "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools.",
+        "category": "creative",
+        "aliases": [
+          "touchdesigner",
+          "mcp",
+          "touchdesigner mcp"
+        ],
+        "representativeQueries": [
+          "touchdesigner mcp",
+          "use touchdesigner mcp",
+          "find touchdesigner mcp capability",
+          "creative touchdesigner mcp",
+          "control running touchdesigner instance twozero create operators parameters"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:data-science:jupyter-live-kernel",
+      "displayName": "jupyter-live-kernel",
+      "type": "application/ai-skill",
+      "description": "Iterative Python via live Jupyter kernel (hamelnb).",
+      "tags": [
+        "data-science",
+        "jupyter",
+        "live",
+        "kernel",
+        "jupyter live kernel"
+      ],
+      "aliases": [
+        "jupyter",
+        "live",
+        "kernel",
+        "jupyter live kernel"
+      ],
+      "representativeQueries": [
+        "jupyter live kernel",
+        "use jupyter live kernel",
+        "find jupyter live kernel capability",
+        "data-science jupyter live kernel",
+        "iterative python live jupyter kernel hamelnb"
+      ],
+      "data": {
+        "name": "jupyter-live-kernel",
+        "description": "Iterative Python via live Jupyter kernel (hamelnb).",
+        "category": "data-science",
+        "aliases": [
+          "jupyter",
+          "live",
+          "kernel",
+          "jupyter live kernel"
+        ],
+        "representativeQueries": [
+          "jupyter live kernel",
+          "use jupyter live kernel",
+          "find jupyter live kernel capability",
+          "data-science jupyter live kernel",
+          "iterative python live jupyter kernel hamelnb"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:demo-producer",
+      "displayName": "demo-producer",
+      "type": "application/ai-skill",
+      "description": "Universal demo video creator for skills, agents, plugins, tutorials, CLI commands, and code walkthroughs. Generates scripts, storyboards, VHS terminal recordings, and Remotion video compositions with task-tracked production phases. Use when producing video showcases, marketing content, or terminal recordings.",
+      "tags": [
+        "demo",
+        "producer",
+        "demo producer"
+      ],
+      "aliases": [
+        "demo",
+        "producer",
+        "demo producer"
+      ],
+      "representativeQueries": [
+        "demo producer",
+        "use demo producer",
+        "find demo producer capability",
+        "universal demo video creator skills agents plugins tutorials"
+      ],
+      "data": {
+        "name": "demo-producer",
+        "description": "Universal demo video creator for skills, agents, plugins, tutorials, CLI commands, and code walkthroughs. Generates scripts, storyboards, VHS terminal recordings, and Remotion video compositions with task-tracked production phases. Use when producing video showcases, marketing content, or terminal recordings.",
+        "category": null,
+        "aliases": [
+          "demo",
+          "producer",
+          "demo producer"
+        ],
+        "representativeQueries": [
+          "demo producer",
+          "use demo producer",
+          "find demo producer capability",
+          "universal demo video creator skills agents plugins tutorials"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:devops:antigravity-ide-mechanics",
+      "displayName": "antigravity-ide-mechanics",
+      "type": "application/ai-skill",
+      "description": "Mechanics, forensics, and troubleshooting for Antigravity IDE and its Gemini AI chat integrations.",
+      "tags": [
+        "devops",
+        "antigravity",
+        "ide",
+        "mechanics",
+        "antigravity ide mechanics"
+      ],
+      "aliases": [
+        "antigravity",
+        "ide",
+        "mechanics",
+        "antigravity ide mechanics"
+      ],
+      "representativeQueries": [
+        "antigravity ide mechanics",
+        "use antigravity ide mechanics",
+        "find antigravity ide mechanics capability",
+        "devops antigravity ide mechanics",
+        "mechanics forensics troubleshooting antigravity gemini chat integrations"
+      ],
+      "data": {
+        "name": "antigravity-ide-mechanics",
+        "description": "Mechanics, forensics, and troubleshooting for Antigravity IDE and its Gemini AI chat integrations.",
+        "category": "devops",
+        "aliases": [
+          "antigravity",
+          "ide",
+          "mechanics",
+          "antigravity ide mechanics"
+        ],
+        "representativeQueries": [
+          "antigravity ide mechanics",
+          "use antigravity ide mechanics",
+          "find antigravity ide mechanics capability",
+          "devops antigravity ide mechanics",
+          "mechanics forensics troubleshooting antigravity gemini chat integrations"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:devops:beads-mechanics",
+      "displayName": "beads-mechanics",
+      "type": "application/ai-skill",
+      "description": "Mechanics, workflows, and troubleshooting for the Beads (bd) git-backed issue tracking system.",
+      "tags": [
+        "devops",
+        "beads",
+        "mechanics",
+        "beads mechanics"
+      ],
+      "aliases": [
+        "beads",
+        "mechanics",
+        "beads mechanics"
+      ],
+      "representativeQueries": [
+        "beads mechanics",
+        "use beads mechanics",
+        "find beads mechanics capability",
+        "devops beads mechanics",
+        "mechanics workflows troubleshooting beads backed issue tracking system"
+      ],
+      "data": {
+        "name": "beads-mechanics",
+        "description": "Mechanics, workflows, and troubleshooting for the Beads (bd) git-backed issue tracking system.",
+        "category": "devops",
+        "aliases": [
+          "beads",
+          "mechanics",
+          "beads mechanics"
+        ],
+        "representativeQueries": [
+          "beads mechanics",
+          "use beads mechanics",
+          "find beads mechanics capability",
+          "devops beads mechanics",
+          "mechanics workflows troubleshooting beads backed issue tracking system"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:devops:git-mechanics",
+      "displayName": "git-mechanics",
+      "type": "application/ai-skill",
+      "description": "Umbrella skill for git troubleshooting, hooks, and version control mechanics.",
+      "tags": [
+        "devops",
+        "git",
+        "mechanics",
+        "git mechanics"
+      ],
+      "aliases": [
+        "git",
+        "mechanics",
+        "git mechanics"
+      ],
+      "representativeQueries": [
+        "git mechanics",
+        "use git mechanics",
+        "find git mechanics capability",
+        "devops git mechanics",
+        "umbrella skill troubleshooting hooks version control mechanics"
+      ],
+      "data": {
+        "name": "git-mechanics",
+        "description": "Umbrella skill for git troubleshooting, hooks, and version control mechanics.",
+        "category": "devops",
+        "aliases": [
+          "git",
+          "mechanics",
+          "git mechanics"
+        ],
+        "representativeQueries": [
+          "git mechanics",
+          "use git mechanics",
+          "find git mechanics capability",
+          "devops git mechanics",
+          "umbrella skill troubleshooting hooks version control mechanics"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:devops:kanban-orchestrator",
+      "displayName": "kanban-orchestrator",
+      "type": "application/ai-skill",
+      "description": "Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The \"don't do the work yourself\" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill is the deeper playbook when you're specifically playing the orchestrator role.",
+      "tags": [
+        "devops",
+        "kanban",
+        "orchestrator",
+        "kanban orchestrator"
+      ],
+      "aliases": [
+        "kanban",
+        "orchestrator",
+        "kanban orchestrator"
+      ],
+      "representativeQueries": [
+        "kanban orchestrator",
+        "use kanban orchestrator",
+        "find kanban orchestrator capability",
+        "devops kanban orchestrator",
+        "decomposition playbook anti temptation rules orchestrator profile routing"
+      ],
+      "data": {
+        "name": "kanban-orchestrator",
+        "description": "Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The \"don't do the work yourself\" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill is the deeper playbook when you're specifically playing the orchestrator role.",
+        "category": "devops",
+        "aliases": [
+          "kanban",
+          "orchestrator",
+          "kanban orchestrator"
+        ],
+        "representativeQueries": [
+          "kanban orchestrator",
+          "use kanban orchestrator",
+          "find kanban orchestrator capability",
+          "devops kanban orchestrator",
+          "decomposition playbook anti temptation rules orchestrator profile routing"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:devops:kanban-worker",
+      "displayName": "kanban-worker",
+      "type": "application/ai-skill",
+      "description": "Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.",
+      "tags": [
+        "devops",
+        "kanban",
+        "worker",
+        "kanban worker"
+      ],
+      "aliases": [
+        "kanban",
+        "worker",
+        "kanban worker"
+      ],
+      "representativeQueries": [
+        "kanban worker",
+        "use kanban worker",
+        "find kanban worker capability",
+        "devops kanban worker",
+        "pitfalls examples edge cases hermes kanban workers lifecycle"
+      ],
+      "data": {
+        "name": "kanban-worker",
+        "description": "Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.",
+        "category": "devops",
+        "aliases": [
+          "kanban",
+          "worker",
+          "kanban worker"
+        ],
+        "representativeQueries": [
+          "kanban worker",
+          "use kanban worker",
+          "find kanban worker capability",
+          "devops kanban worker",
+          "pitfalls examples edge cases hermes kanban workers lifecycle"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:devops:wsl-maintenance",
+      "displayName": "wsl-maintenance",
+      "type": "application/ai-skill",
+      "description": "Procedures for maintaining WSL2 environments: diagnosing disk space bloat (ext4.vhdx compaction), cleaning up accumulated stale swap.vhdx files, Windows Downloads cleanup, managing Windows processes from WSL (ProcessStartInfo env injection, Electron hard-patching), and configuring memory/swap limits.",
+      "tags": [
+        "devops",
+        "wsl",
+        "maintenance",
+        "wsl maintenance"
+      ],
+      "aliases": [
+        "wsl",
+        "maintenance",
+        "wsl maintenance"
+      ],
+      "representativeQueries": [
+        "wsl maintenance",
+        "use wsl maintenance",
+        "find wsl maintenance capability",
+        "devops wsl maintenance",
+        "procedures maintaining wsl2 environments diagnosing disk space bloat"
+      ],
+      "data": {
+        "name": "wsl-maintenance",
+        "description": "Procedures for maintaining WSL2 environments: diagnosing disk space bloat (ext4.vhdx compaction), cleaning up accumulated stale swap.vhdx files, Windows Downloads cleanup, managing Windows processes from WSL (ProcessStartInfo env injection, Electron hard-patching), and configuring memory/swap limits.",
+        "category": "devops",
+        "aliases": [
+          "wsl",
+          "maintenance",
+          "wsl maintenance"
+        ],
+        "representativeQueries": [
+          "wsl maintenance",
+          "use wsl maintenance",
+          "find wsl maintenance capability",
+          "devops wsl maintenance",
+          "procedures maintaining wsl2 environments diagnosing disk space bloat"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:dogfood",
+      "displayName": "dogfood",
+      "type": "application/ai-skill",
+      "description": "Exploratory QA of web apps: find bugs, evidence, reports.",
+      "tags": [
+        "dogfood"
+      ],
+      "aliases": [
+        "dogfood"
+      ],
+      "representativeQueries": [
+        "dogfood",
+        "use dogfood",
+        "find dogfood capability",
+        "exploratory apps find bugs evidence reports"
+      ],
+      "data": {
+        "name": "dogfood",
+        "description": "Exploratory QA of web apps: find bugs, evidence, reports.",
+        "category": null,
+        "aliases": [
+          "dogfood"
+        ],
+        "representativeQueries": [
+          "dogfood",
+          "use dogfood",
+          "find dogfood capability",
+          "exploratory apps find bugs evidence reports"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:email:himalaya",
+      "displayName": "himalaya",
+      "type": "application/ai-skill",
+      "description": "Himalaya CLI: IMAP/SMTP email from terminal.",
+      "tags": [
+        "email",
+        "himalaya"
+      ],
+      "aliases": [
+        "himalaya"
+      ],
+      "representativeQueries": [
+        "himalaya",
+        "use himalaya",
+        "find himalaya capability",
+        "email himalaya",
+        "himalaya imap smtp email from terminal"
+      ],
+      "data": {
+        "name": "himalaya",
+        "description": "Himalaya CLI: IMAP/SMTP email from terminal.",
+        "category": "email",
+        "aliases": [
+          "himalaya"
+        ],
+        "representativeQueries": [
+          "himalaya",
+          "use himalaya",
+          "find himalaya capability",
+          "email himalaya",
+          "himalaya imap smtp email from terminal"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:gateway-discord-mechanics",
+      "displayName": "gateway-discord-mechanics",
+      "type": "application/ai-skill",
+      "description": "Mechanics, troubleshooting, and operations for the Discord gateway platform. Umbrella skill for all Discord-related gateway mechanics, community ops, and server automation.",
+      "tags": [
+        "gateway",
+        "discord",
+        "mechanics",
+        "gateway discord mechanics"
+      ],
+      "aliases": [
+        "gateway",
+        "discord",
+        "mechanics",
+        "gateway discord mechanics"
+      ],
+      "representativeQueries": [
+        "gateway discord mechanics",
+        "use gateway discord mechanics",
+        "find gateway discord mechanics capability",
+        "mechanics troubleshooting operations discord gateway platform umbrella skill"
+      ],
+      "data": {
+        "name": "gateway-discord-mechanics",
+        "description": "Mechanics, troubleshooting, and operations for the Discord gateway platform. Umbrella skill for all Discord-related gateway mechanics, community ops, and server automation.",
+        "category": null,
+        "aliases": [
+          "gateway",
+          "discord",
+          "mechanics",
+          "gateway discord mechanics"
+        ],
+        "representativeQueries": [
+          "gateway discord mechanics",
+          "use gateway discord mechanics",
+          "find gateway discord mechanics capability",
+          "mechanics troubleshooting operations discord gateway platform umbrella skill"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:github:codebase-inspection",
+      "displayName": "codebase-inspection",
+      "type": "application/ai-skill",
+      "description": "Inspect codebases w/ pygount: LOC, languages, ratios.",
+      "tags": [
+        "github",
+        "codebase",
+        "inspection",
+        "codebase inspection"
+      ],
+      "aliases": [
+        "codebase",
+        "inspection",
+        "codebase inspection"
+      ],
+      "representativeQueries": [
+        "codebase inspection",
+        "use codebase inspection",
+        "find codebase inspection capability",
+        "github codebase inspection",
+        "inspect codebases pygount languages ratios"
+      ],
+      "data": {
+        "name": "codebase-inspection",
+        "description": "Inspect codebases w/ pygount: LOC, languages, ratios.",
+        "category": "github",
+        "aliases": [
+          "codebase",
+          "inspection",
+          "codebase inspection"
+        ],
+        "representativeQueries": [
+          "codebase inspection",
+          "use codebase inspection",
+          "find codebase inspection capability",
+          "github codebase inspection",
+          "inspect codebases pygount languages ratios"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:github:github-auth",
+      "displayName": "github-auth",
+      "type": "application/ai-skill",
+      "description": "GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login.",
+      "tags": [
+        "github",
+        "auth",
+        "github auth"
+      ],
+      "aliases": [
+        "github",
+        "auth",
+        "github auth"
+      ],
+      "representativeQueries": [
+        "github auth",
+        "use github auth",
+        "find github auth capability",
+        "github github auth",
+        "github auth setup https tokens keys login"
+      ],
+      "data": {
+        "name": "github-auth",
+        "description": "GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login.",
+        "category": "github",
+        "aliases": [
+          "github",
+          "auth",
+          "github auth"
+        ],
+        "representativeQueries": [
+          "github auth",
+          "use github auth",
+          "find github auth capability",
+          "github github auth",
+          "github auth setup https tokens keys login"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:github:github-code-review",
+      "displayName": "github-code-review",
+      "type": "application/ai-skill",
+      "description": "Review PRs: diffs, inline comments via gh or REST.",
+      "tags": [
+        "github",
+        "code",
+        "review",
+        "github code review"
+      ],
+      "aliases": [
+        "github",
+        "code",
+        "review",
+        "github code review"
+      ],
+      "representativeQueries": [
+        "github code review",
+        "use github code review",
+        "find github code review capability",
+        "github github code review",
+        "review diffs inline comments rest"
+      ],
+      "data": {
+        "name": "github-code-review",
+        "description": "Review PRs: diffs, inline comments via gh or REST.",
+        "category": "github",
+        "aliases": [
+          "github",
+          "code",
+          "review",
+          "github code review"
+        ],
+        "representativeQueries": [
+          "github code review",
+          "use github code review",
+          "find github code review capability",
+          "github github code review",
+          "review diffs inline comments rest"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:github:github-issues",
+      "displayName": "github-issues",
+      "type": "application/ai-skill",
+      "description": "Create, triage, label, assign GitHub issues via gh or REST.",
+      "tags": [
+        "github",
+        "issues",
+        "github issues"
+      ],
+      "aliases": [
+        "github",
+        "issues",
+        "github issues"
+      ],
+      "representativeQueries": [
+        "github issues",
+        "use github issues",
+        "find github issues capability",
+        "github github issues",
+        "create triage label assign github issues rest"
+      ],
+      "data": {
+        "name": "github-issues",
+        "description": "Create, triage, label, assign GitHub issues via gh or REST.",
+        "category": "github",
+        "aliases": [
+          "github",
+          "issues",
+          "github issues"
+        ],
+        "representativeQueries": [
+          "github issues",
+          "use github issues",
+          "find github issues capability",
+          "github github issues",
+          "create triage label assign github issues rest"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:github:github-pr-maintenance",
+      "displayName": "github-pr-maintenance",
+      "type": "application/ai-skill",
+      "description": "Maintain GitHub PRs after creation: keep branches clean/rebased, diagnose blocked merge state, handle required checks/rulesets, update PR comments, and safely clean related local stashes/worktrees.",
+      "tags": [
+        "github",
+        "pr",
+        "maintenance",
+        "github pr maintenance"
+      ],
+      "aliases": [
+        "github",
+        "pr",
+        "maintenance",
+        "github pr maintenance"
+      ],
+      "representativeQueries": [
+        "github pr maintenance",
+        "use github pr maintenance",
+        "find github pr maintenance capability",
+        "github github pr maintenance",
+        "maintain github after creation keep branches clean rebased"
+      ],
+      "data": {
+        "name": "github-pr-maintenance",
+        "description": "Maintain GitHub PRs after creation: keep branches clean/rebased, diagnose blocked merge state, handle required checks/rulesets, update PR comments, and safely clean related local stashes/worktrees.",
+        "category": "github",
+        "aliases": [
+          "github",
+          "pr",
+          "maintenance",
+          "github pr maintenance"
+        ],
+        "representativeQueries": [
+          "github pr maintenance",
+          "use github pr maintenance",
+          "find github pr maintenance capability",
+          "github github pr maintenance",
+          "maintain github after creation keep branches clean rebased"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:github:github-pr-workflow",
+      "displayName": "github-pr-workflow",
+      "type": "application/ai-skill",
+      "description": "GitHub PR lifecycle: branch, commit, open, CI, merge.",
+      "tags": [
+        "github",
+        "pr",
+        "workflow",
+        "github pr workflow"
+      ],
+      "aliases": [
+        "github",
+        "pr",
+        "workflow",
+        "github pr workflow"
+      ],
+      "representativeQueries": [
+        "github pr workflow",
+        "use github pr workflow",
+        "find github pr workflow capability",
+        "github github pr workflow",
+        "github lifecycle branch commit open merge"
+      ],
+      "data": {
+        "name": "github-pr-workflow",
+        "description": "GitHub PR lifecycle: branch, commit, open, CI, merge.",
+        "category": "github",
+        "aliases": [
+          "github",
+          "pr",
+          "workflow",
+          "github pr workflow"
+        ],
+        "representativeQueries": [
+          "github pr workflow",
+          "use github pr workflow",
+          "find github pr workflow capability",
+          "github github pr workflow",
+          "github lifecycle branch commit open merge"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:github:github-repo-management",
+      "displayName": "github-repo-management",
+      "type": "application/ai-skill",
+      "description": "Clone/create/fork repos; manage remotes, releases.",
+      "tags": [
+        "github",
+        "repo",
+        "management",
+        "github repo management"
+      ],
+      "aliases": [
+        "github",
+        "repo",
+        "management",
+        "github repo management"
+      ],
+      "representativeQueries": [
+        "github repo management",
+        "use github repo management",
+        "find github repo management capability",
+        "github github repo management",
+        "clone create fork repos manage remotes releases"
+      ],
+      "data": {
+        "name": "github-repo-management",
+        "description": "Clone/create/fork repos; manage remotes, releases.",
+        "category": "github",
+        "aliases": [
+          "github",
+          "repo",
+          "management",
+          "github repo management"
+        ],
+        "representativeQueries": [
+          "github repo management",
+          "use github repo management",
+          "find github repo management capability",
+          "github github repo management",
+          "clone create fork repos manage remotes releases"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:hermes-content-redaction-bypass",
+      "displayName": "hermes-content-redaction-bypass",
+      "type": "application/ai-skill",
+      "description": "Work around Hermes's built-in content redaction filter when writing files containing API keys, tokens, or sensitive values. The filter replaces patterns like `KEY=<value>` with `***` at the tool-call level.",
+      "tags": [
+        "hermes",
+        "content",
+        "redaction",
+        "bypass",
+        "hermes content redaction bypass"
+      ],
+      "aliases": [
+        "hermes",
+        "content",
+        "redaction",
+        "bypass",
+        "hermes content redaction bypass"
+      ],
+      "representativeQueries": [
+        "hermes content redaction bypass",
+        "use hermes content redaction bypass",
+        "find hermes content redaction bypass capability",
+        "work around hermes built content redaction filter when"
+      ],
+      "data": {
+        "name": "hermes-content-redaction-bypass",
+        "description": "Work around Hermes's built-in content redaction filter when writing files containing API keys, tokens, or sensitive values. The filter replaces patterns like `KEY=<value>` with `***` at the tool-call level.",
+        "category": null,
+        "aliases": [
+          "hermes",
+          "content",
+          "redaction",
+          "bypass",
+          "hermes content redaction bypass"
+        ],
+        "representativeQueries": [
+          "hermes content redaction bypass",
+          "use hermes content redaction bypass",
+          "find hermes content redaction bypass capability",
+          "work around hermes built content redaction filter when"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:hermes-profile-mechanics",
+      "displayName": "hermes-profile-mechanics",
+      "type": "application/ai-skill",
+      "description": "Mechanics and pitfalls for Hermes profiles, configuration merging, and $HERMES_HOME isolation (see `references/custom-profile-skills.md` for external skill registration rules).",
+      "tags": [
+        "hermes",
+        "profile",
+        "mechanics",
+        "hermes profile mechanics"
+      ],
+      "aliases": [
+        "hermes",
+        "profile",
+        "mechanics",
+        "hermes profile mechanics"
+      ],
+      "representativeQueries": [
+        "hermes profile mechanics",
+        "use hermes profile mechanics",
+        "find hermes profile mechanics capability",
+        "mechanics pitfalls hermes profiles configuration merging hermes home"
+      ],
+      "data": {
+        "name": "hermes-profile-mechanics",
+        "description": "Mechanics and pitfalls for Hermes profiles, configuration merging, and $HERMES_HOME isolation (see `references/custom-profile-skills.md` for external skill registration rules).",
+        "category": null,
+        "aliases": [
+          "hermes",
+          "profile",
+          "mechanics",
+          "hermes profile mechanics"
+        ],
+        "representativeQueries": [
+          "hermes profile mechanics",
+          "use hermes profile mechanics",
+          "find hermes profile mechanics capability",
+          "mechanics pitfalls hermes profiles configuration merging hermes home"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:knowledge-base:arkon",
+      "displayName": "arkon",
+      "type": "application/ai-skill",
+      "description": "Unified entry point for interacting with the Arkon Knowledge Base. Handles querying (quick, standard, deep), page edits/creation, and draft reviews. Triggers on: KB lookup, wiki query, edit wiki, propose draft, review wiki edit, arkon.",
+      "tags": [
+        "knowledge-base",
+        "arkon"
+      ],
+      "aliases": [
+        "arkon"
+      ],
+      "representativeQueries": [
+        "arkon",
+        "use arkon",
+        "find arkon capability",
+        "knowledge-base arkon",
+        "unified entry point interacting with arkon knowledge base"
+      ],
+      "data": {
+        "name": "arkon",
+        "description": "Unified entry point for interacting with the Arkon Knowledge Base. Handles querying (quick, standard, deep), page edits/creation, and draft reviews. Triggers on: KB lookup, wiki query, edit wiki, propose draft, review wiki edit, arkon.",
+        "category": "knowledge-base",
+        "aliases": [
+          "arkon"
+        ],
+        "representativeQueries": [
+          "arkon",
+          "use arkon",
+          "find arkon capability",
+          "knowledge-base arkon",
+          "unified entry point interacting with arkon knowledge base"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:knowledge-base:tavily-mcp-mechanics",
+      "displayName": "tavily-mcp-mechanics",
+      "type": "application/ai-skill",
+      "description": "Mechanics and limitations of the Tavily MCP integration. Use when troubleshooting Tavily tools, understanding plan limits, or deciding which tool to use for web research.",
+      "tags": [
+        "knowledge-base",
+        "tavily",
+        "mcp",
+        "mechanics",
+        "tavily mcp mechanics"
+      ],
+      "aliases": [
+        "tavily",
+        "mcp",
+        "mechanics",
+        "tavily mcp mechanics"
+      ],
+      "representativeQueries": [
+        "tavily mcp mechanics",
+        "use tavily mcp mechanics",
+        "find tavily mcp mechanics capability",
+        "knowledge-base tavily mcp mechanics",
+        "mechanics limitations tavily integration when troubleshooting tavily tools"
+      ],
+      "data": {
+        "name": "tavily-mcp-mechanics",
+        "description": "Mechanics and limitations of the Tavily MCP integration. Use when troubleshooting Tavily tools, understanding plan limits, or deciding which tool to use for web research.",
+        "category": "knowledge-base",
+        "aliases": [
+          "tavily",
+          "mcp",
+          "mechanics",
+          "tavily mcp mechanics"
+        ],
+        "representativeQueries": [
+          "tavily mcp mechanics",
+          "use tavily mcp mechanics",
+          "find tavily mcp mechanics capability",
+          "knowledge-base tavily mcp mechanics",
+          "mechanics limitations tavily integration when troubleshooting tavily tools"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:media:gif-search",
+      "displayName": "gif-search",
+      "type": "application/ai-skill",
+      "description": "Search/download GIFs from Tenor via curl + jq.",
+      "tags": [
+        "media",
+        "gif",
+        "search",
+        "gif search"
+      ],
+      "aliases": [
+        "gif",
+        "search",
+        "gif search"
+      ],
+      "representativeQueries": [
+        "gif search",
+        "use gif search",
+        "find gif search capability",
+        "media gif search",
+        "search download gifs from tenor curl"
+      ],
+      "data": {
+        "name": "gif-search",
+        "description": "Search/download GIFs from Tenor via curl + jq.",
+        "category": "media",
+        "aliases": [
+          "gif",
+          "search",
+          "gif search"
+        ],
+        "representativeQueries": [
+          "gif search",
+          "use gif search",
+          "find gif search capability",
+          "media gif search",
+          "search download gifs from tenor curl"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:media:heartmula",
+      "displayName": "heartmula",
+      "type": "application/ai-skill",
+      "description": "HeartMuLa: Suno-like song generation from lyrics + tags.",
+      "tags": [
+        "media",
+        "heartmula"
+      ],
+      "aliases": [
+        "heartmula"
+      ],
+      "representativeQueries": [
+        "heartmula",
+        "use heartmula",
+        "find heartmula capability",
+        "media heartmula",
+        "heartmula suno like song generation from lyrics tags"
+      ],
+      "data": {
+        "name": "heartmula",
+        "description": "HeartMuLa: Suno-like song generation from lyrics + tags.",
+        "category": "media",
+        "aliases": [
+          "heartmula"
+        ],
+        "representativeQueries": [
+          "heartmula",
+          "use heartmula",
+          "find heartmula capability",
+          "media heartmula",
+          "heartmula suno like song generation from lyrics tags"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:media:youtube-content",
+      "displayName": "youtube-content",
+      "type": "application/ai-skill",
+      "description": "YouTube transcripts to summaries, threads, blogs.",
+      "tags": [
+        "media",
+        "youtube",
+        "content",
+        "youtube content"
+      ],
+      "aliases": [
+        "youtube",
+        "content",
+        "youtube content"
+      ],
+      "representativeQueries": [
+        "youtube content",
+        "use youtube content",
+        "find youtube content capability",
+        "media youtube content",
+        "youtube transcripts summaries threads blogs"
+      ],
+      "data": {
+        "name": "youtube-content",
+        "description": "YouTube transcripts to summaries, threads, blogs.",
+        "category": "media",
+        "aliases": [
+          "youtube",
+          "content",
+          "youtube content"
+        ],
+        "representativeQueries": [
+          "youtube content",
+          "use youtube content",
+          "find youtube content capability",
+          "media youtube content",
+          "youtube transcripts summaries threads blogs"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:evaluating-llms-harness",
+      "displayName": "evaluating-llms-harness",
+      "type": "application/ai-skill",
+      "description": "lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.).",
+      "tags": [
+        "mlops",
+        "evaluating",
+        "llms",
+        "harness",
+        "evaluating llms harness"
+      ],
+      "aliases": [
+        "evaluating",
+        "llms",
+        "harness",
+        "evaluating llms harness"
+      ],
+      "representativeQueries": [
+        "evaluating llms harness",
+        "use evaluating llms harness",
+        "find evaluating llms harness capability",
+        "mlops evaluating llms harness",
+        "eval harness benchmark llms mmlu gsm8k"
+      ],
+      "data": {
+        "name": "evaluating-llms-harness",
+        "description": "lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.).",
+        "category": "mlops",
+        "aliases": [
+          "evaluating",
+          "llms",
+          "harness",
+          "evaluating llms harness"
+        ],
+        "representativeQueries": [
+          "evaluating llms harness",
+          "use evaluating llms harness",
+          "find evaluating llms harness capability",
+          "mlops evaluating llms harness",
+          "eval harness benchmark llms mmlu gsm8k"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:weights-and-biases",
+      "displayName": "weights-and-biases",
+      "type": "application/ai-skill",
+      "description": "W&B: log ML experiments, sweeps, model registry, dashboards.",
+      "tags": [
+        "mlops",
+        "weights",
+        "and",
+        "biases",
+        "weights and biases"
+      ],
+      "aliases": [
+        "weights",
+        "and",
+        "biases",
+        "weights and biases"
+      ],
+      "representativeQueries": [
+        "weights and biases",
+        "use weights and biases",
+        "find weights and biases capability",
+        "mlops weights and biases",
+        "experiments sweeps model registry dashboards"
+      ],
+      "data": {
+        "name": "weights-and-biases",
+        "description": "W&B: log ML experiments, sweeps, model registry, dashboards.",
+        "category": "mlops",
+        "aliases": [
+          "weights",
+          "and",
+          "biases",
+          "weights and biases"
+        ],
+        "representativeQueries": [
+          "weights and biases",
+          "use weights and biases",
+          "find weights and biases capability",
+          "mlops weights and biases",
+          "experiments sweeps model registry dashboards"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:huggingface-hub",
+      "displayName": "huggingface-hub",
+      "type": "application/ai-skill",
+      "description": "HuggingFace hf CLI: search/download/upload models, datasets.",
+      "tags": [
+        "mlops",
+        "huggingface",
+        "hub",
+        "huggingface hub"
+      ],
+      "aliases": [
+        "huggingface",
+        "hub",
+        "huggingface hub"
+      ],
+      "representativeQueries": [
+        "huggingface hub",
+        "use huggingface hub",
+        "find huggingface hub capability",
+        "mlops huggingface hub",
+        "huggingface search download upload models datasets"
+      ],
+      "data": {
+        "name": "huggingface-hub",
+        "description": "HuggingFace hf CLI: search/download/upload models, datasets.",
+        "category": "mlops",
+        "aliases": [
+          "huggingface",
+          "hub",
+          "huggingface hub"
+        ],
+        "representativeQueries": [
+          "huggingface hub",
+          "use huggingface hub",
+          "find huggingface hub capability",
+          "mlops huggingface hub",
+          "huggingface search download upload models datasets"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:llama-cpp",
+      "displayName": "llama-cpp",
+      "type": "application/ai-skill",
+      "description": "llama.cpp local GGUF inference + HF Hub model discovery.",
+      "tags": [
+        "mlops",
+        "llama",
+        "cpp",
+        "llama cpp"
+      ],
+      "aliases": [
+        "llama",
+        "cpp",
+        "llama cpp"
+      ],
+      "representativeQueries": [
+        "llama cpp",
+        "use llama cpp",
+        "find llama cpp capability",
+        "mlops llama cpp",
+        "llama local gguf inference model discovery"
+      ],
+      "data": {
+        "name": "llama-cpp",
+        "description": "llama.cpp local GGUF inference + HF Hub model discovery.",
+        "category": "mlops",
+        "aliases": [
+          "llama",
+          "cpp",
+          "llama cpp"
+        ],
+        "representativeQueries": [
+          "llama cpp",
+          "use llama cpp",
+          "find llama cpp capability",
+          "mlops llama cpp",
+          "llama local gguf inference model discovery"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:obliteratus",
+      "displayName": "obliteratus",
+      "type": "application/ai-skill",
+      "description": "OBLITERATUS: abliterate LLM refusals (diff-in-means).",
+      "tags": [
+        "mlops",
+        "obliteratus"
+      ],
+      "aliases": [
+        "obliteratus"
+      ],
+      "representativeQueries": [
+        "obliteratus",
+        "use obliteratus",
+        "find obliteratus capability",
+        "mlops obliteratus",
+        "obliteratus abliterate refusals diff means"
+      ],
+      "data": {
+        "name": "obliteratus",
+        "description": "OBLITERATUS: abliterate LLM refusals (diff-in-means).",
+        "category": "mlops",
+        "aliases": [
+          "obliteratus"
+        ],
+        "representativeQueries": [
+          "obliteratus",
+          "use obliteratus",
+          "find obliteratus capability",
+          "mlops obliteratus",
+          "obliteratus abliterate refusals diff means"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:serving-llms-vllm",
+      "displayName": "serving-llms-vllm",
+      "type": "application/ai-skill",
+      "description": "vLLM: high-throughput LLM serving, OpenAI API, quantization.",
+      "tags": [
+        "mlops",
+        "serving",
+        "llms",
+        "vllm",
+        "serving llms vllm"
+      ],
+      "aliases": [
+        "serving",
+        "llms",
+        "vllm",
+        "serving llms vllm"
+      ],
+      "representativeQueries": [
+        "serving llms vllm",
+        "use serving llms vllm",
+        "find serving llms vllm capability",
+        "mlops serving llms vllm",
+        "vllm high throughput serving openai quantization"
+      ],
+      "data": {
+        "name": "serving-llms-vllm",
+        "description": "vLLM: high-throughput LLM serving, OpenAI API, quantization.",
+        "category": "mlops",
+        "aliases": [
+          "serving",
+          "llms",
+          "vllm",
+          "serving llms vllm"
+        ],
+        "representativeQueries": [
+          "serving llms vllm",
+          "use serving llms vllm",
+          "find serving llms vllm capability",
+          "mlops serving llms vllm",
+          "vllm high throughput serving openai quantization"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:audiocraft-audio-generation",
+      "displayName": "audiocraft-audio-generation",
+      "type": "application/ai-skill",
+      "description": "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.",
+      "tags": [
+        "mlops",
+        "audiocraft",
+        "audio",
+        "generation",
+        "audiocraft audio generation"
+      ],
+      "aliases": [
+        "audiocraft",
+        "audio",
+        "generation",
+        "audiocraft audio generation"
+      ],
+      "representativeQueries": [
+        "audiocraft audio generation",
+        "use audiocraft audio generation",
+        "find audiocraft audio generation capability",
+        "mlops audiocraft audio generation",
+        "audiocraft musicgen text music audiogen text sound"
+      ],
+      "data": {
+        "name": "audiocraft-audio-generation",
+        "description": "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.",
+        "category": "mlops",
+        "aliases": [
+          "audiocraft",
+          "audio",
+          "generation",
+          "audiocraft audio generation"
+        ],
+        "representativeQueries": [
+          "audiocraft audio generation",
+          "use audiocraft audio generation",
+          "find audiocraft audio generation capability",
+          "mlops audiocraft audio generation",
+          "audiocraft musicgen text music audiogen text sound"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:mlops:segment-anything-model",
+      "displayName": "segment-anything-model",
+      "type": "application/ai-skill",
+      "description": "SAM: zero-shot image segmentation via points, boxes, masks.",
+      "tags": [
+        "mlops",
+        "segment",
+        "anything",
+        "model",
+        "segment anything model"
+      ],
+      "aliases": [
+        "segment",
+        "anything",
+        "model",
+        "segment anything model"
+      ],
+      "representativeQueries": [
+        "segment anything model",
+        "use segment anything model",
+        "find segment anything model capability",
+        "mlops segment anything model",
+        "zero shot image segmentation points boxes masks"
+      ],
+      "data": {
+        "name": "segment-anything-model",
+        "description": "SAM: zero-shot image segmentation via points, boxes, masks.",
+        "category": "mlops",
+        "aliases": [
+          "segment",
+          "anything",
+          "model",
+          "segment anything model"
+        ],
+        "representativeQueries": [
+          "segment anything model",
+          "use segment anything model",
+          "find segment anything model capability",
+          "mlops segment anything model",
+          "zero shot image segmentation points boxes masks"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:note-taking:obsidian",
+      "displayName": "obsidian",
+      "type": "application/ai-skill",
+      "description": "Read, search, create, and edit notes in the Obsidian vault.",
+      "tags": [
+        "note-taking",
+        "obsidian"
+      ],
+      "aliases": [
+        "obsidian"
+      ],
+      "representativeQueries": [
+        "obsidian",
+        "use obsidian",
+        "find obsidian capability",
+        "note-taking obsidian",
+        "read search create edit notes obsidian vault"
+      ],
+      "data": {
+        "name": "obsidian",
+        "description": "Read, search, create, and edit notes in the Obsidian vault.",
+        "category": "note-taking",
+        "aliases": [
+          "obsidian"
+        ],
+        "representativeQueries": [
+          "obsidian",
+          "use obsidian",
+          "find obsidian capability",
+          "note-taking obsidian",
+          "read search create edit notes obsidian vault"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:paid-creative-ai",
+      "displayName": "paid-creative-ai",
+      "type": "application/ai-skill",
+      "description": "When the user wants to create AI-generated ad creative, test performance creative, manage creative fatigue, or optimize paid media with AI tools. Also use when the user mentions 'ad creative,' 'performance creative,' 'creative testing,' 'creative fatigue,' 'Meta ads,' 'Google ads,' 'TikTok ads,' 'AI ads,' 'ad budget,' 'ROAS,' 'Advantage+,' or 'Performance Max.' This skill covers AI-powered paid creative from generation through performance optimization. Do NOT use for technical implementation, co",
+      "tags": [
+        "paid",
+        "creative",
+        "ai",
+        "paid creative ai"
+      ],
+      "aliases": [
+        "paid",
+        "creative",
+        "ai",
+        "paid creative ai"
+      ],
+      "representativeQueries": [
+        "paid creative ai",
+        "use paid creative ai",
+        "find paid creative ai capability",
+        "when user wants create generated creative test performance"
+      ],
+      "data": {
+        "name": "paid-creative-ai",
+        "description": "When the user wants to create AI-generated ad creative, test performance creative, manage creative fatigue, or optimize paid media with AI tools. Also use when the user mentions 'ad creative,' 'performance creative,' 'creative testing,' 'creative fatigue,' 'Meta ads,' 'Google ads,' 'TikTok ads,' 'AI ads,' 'ad budget,' 'ROAS,' 'Advantage+,' or 'Performance Max.' This skill covers AI-powered paid creative from generation through performance optimization. Do NOT use for technical implementation, code review, or software architecture.",
+        "category": null,
+        "aliases": [
+          "paid",
+          "creative",
+          "ai",
+          "paid creative ai"
+        ],
+        "representativeQueries": [
+          "paid creative ai",
+          "use paid creative ai",
+          "find paid creative ai capability",
+          "when user wants create generated creative test performance"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:airtable",
+      "displayName": "airtable",
+      "type": "application/ai-skill",
+      "description": "Airtable REST API via curl. Records CRUD, filters, upserts.",
+      "tags": [
+        "productivity",
+        "airtable"
+      ],
+      "aliases": [
+        "airtable"
+      ],
+      "representativeQueries": [
+        "airtable",
+        "use airtable",
+        "find airtable capability",
+        "productivity airtable",
+        "airtable rest curl records crud filters upserts"
+      ],
+      "data": {
+        "name": "airtable",
+        "description": "Airtable REST API via curl. Records CRUD, filters, upserts.",
+        "category": "productivity",
+        "aliases": [
+          "airtable"
+        ],
+        "representativeQueries": [
+          "airtable",
+          "use airtable",
+          "find airtable capability",
+          "productivity airtable",
+          "airtable rest curl records crud filters upserts"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:google-workspace",
+      "displayName": "google-workspace",
+      "type": "application/ai-skill",
+      "description": "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.",
+      "tags": [
+        "productivity",
+        "google",
+        "workspace",
+        "google workspace"
+      ],
+      "aliases": [
+        "google",
+        "workspace",
+        "google workspace"
+      ],
+      "representativeQueries": [
+        "google workspace",
+        "use google workspace",
+        "find google workspace capability",
+        "productivity google workspace",
+        "gmail calendar drive docs sheets python"
+      ],
+      "data": {
+        "name": "google-workspace",
+        "description": "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.",
+        "category": "productivity",
+        "aliases": [
+          "google",
+          "workspace",
+          "google workspace"
+        ],
+        "representativeQueries": [
+          "google workspace",
+          "use google workspace",
+          "find google workspace capability",
+          "productivity google workspace",
+          "gmail calendar drive docs sheets python"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:maps",
+      "displayName": "maps",
+      "type": "application/ai-skill",
+      "description": "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.",
+      "tags": [
+        "productivity",
+        "maps"
+      ],
+      "aliases": [
+        "maps"
+      ],
+      "representativeQueries": [
+        "maps",
+        "use maps",
+        "find maps capability",
+        "productivity maps",
+        "geocode pois routes timezones openstreetmap osrm"
+      ],
+      "data": {
+        "name": "maps",
+        "description": "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.",
+        "category": "productivity",
+        "aliases": [
+          "maps"
+        ],
+        "representativeQueries": [
+          "maps",
+          "use maps",
+          "find maps capability",
+          "productivity maps",
+          "geocode pois routes timezones openstreetmap osrm"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:nano-pdf",
+      "displayName": "nano-pdf",
+      "type": "application/ai-skill",
+      "description": "Edit PDF text/typos/titles via nano-pdf CLI (NL prompts).",
+      "tags": [
+        "productivity",
+        "nano",
+        "pdf",
+        "nano pdf"
+      ],
+      "aliases": [
+        "nano",
+        "pdf",
+        "nano pdf"
+      ],
+      "representativeQueries": [
+        "nano pdf",
+        "use nano pdf",
+        "find nano pdf capability",
+        "productivity nano pdf",
+        "edit text typos titles nano prompts"
+      ],
+      "data": {
+        "name": "nano-pdf",
+        "description": "Edit PDF text/typos/titles via nano-pdf CLI (NL prompts).",
+        "category": "productivity",
+        "aliases": [
+          "nano",
+          "pdf",
+          "nano pdf"
+        ],
+        "representativeQueries": [
+          "nano pdf",
+          "use nano pdf",
+          "find nano pdf capability",
+          "productivity nano pdf",
+          "edit text typos titles nano prompts"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:notion",
+      "displayName": "notion",
+      "type": "application/ai-skill",
+      "description": "Notion API + ntn CLI: pages, databases, markdown, Workers.",
+      "tags": [
+        "productivity",
+        "notion"
+      ],
+      "aliases": [
+        "notion"
+      ],
+      "representativeQueries": [
+        "notion",
+        "use notion",
+        "find notion capability",
+        "productivity notion",
+        "notion pages databases markdown workers"
+      ],
+      "data": {
+        "name": "notion",
+        "description": "Notion API + ntn CLI: pages, databases, markdown, Workers.",
+        "category": "productivity",
+        "aliases": [
+          "notion"
+        ],
+        "representativeQueries": [
+          "notion",
+          "use notion",
+          "find notion capability",
+          "productivity notion",
+          "notion pages databases markdown workers"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:powerpoint",
+      "displayName": "powerpoint",
+      "type": "application/ai-skill",
+      "description": "Create, read, edit .pptx decks, slides, notes, templates.",
+      "tags": [
+        "productivity",
+        "powerpoint"
+      ],
+      "aliases": [
+        "powerpoint"
+      ],
+      "representativeQueries": [
+        "powerpoint",
+        "use powerpoint",
+        "find powerpoint capability",
+        "productivity powerpoint",
+        "create read edit pptx decks slides notes templates"
+      ],
+      "data": {
+        "name": "powerpoint",
+        "description": "Create, read, edit .pptx decks, slides, notes, templates.",
+        "category": "productivity",
+        "aliases": [
+          "powerpoint"
+        ],
+        "representativeQueries": [
+          "powerpoint",
+          "use powerpoint",
+          "find powerpoint capability",
+          "productivity powerpoint",
+          "create read edit pptx decks slides notes templates"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:teams-meeting-pipeline",
+      "displayName": "teams-meeting-pipeline",
+      "type": "application/ai-skill",
+      "description": "Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions.",
+      "tags": [
+        "productivity",
+        "teams",
+        "meeting",
+        "pipeline",
+        "teams meeting pipeline"
+      ],
+      "aliases": [
+        "teams",
+        "meeting",
+        "pipeline",
+        "teams meeting pipeline"
+      ],
+      "representativeQueries": [
+        "teams meeting pipeline",
+        "use teams meeting pipeline",
+        "find teams meeting pipeline capability",
+        "productivity teams meeting pipeline",
+        "operate teams meeting summary pipeline hermes summarize meetings"
+      ],
+      "data": {
+        "name": "teams-meeting-pipeline",
+        "description": "Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions.",
+        "category": "productivity",
+        "aliases": [
+          "teams",
+          "meeting",
+          "pipeline",
+          "teams meeting pipeline"
+        ],
+        "representativeQueries": [
+          "teams meeting pipeline",
+          "use teams meeting pipeline",
+          "find teams meeting pipeline capability",
+          "productivity teams meeting pipeline",
+          "operate teams meeting summary pipeline hermes summarize meetings"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:proxy-routing-mechanics",
+      "displayName": "proxy-routing-mechanics",
+      "type": "application/ai-skill",
+      "description": "Umbrella skill for all SOCKS5, HTTP, and bug bounty proxy routing, node rotation, and traffic obfuscation techniques via Xray, proxychains, and proxy-rotator. Use when configuring proxies, fixing proxy EOF/TLS errors, routing traffic, or dealing with WAF/Cloudflare blocks on API endpoints.",
+      "tags": [
+        "proxy",
+        "routing",
+        "mechanics",
+        "proxy routing mechanics"
+      ],
+      "aliases": [
+        "proxy",
+        "routing",
+        "mechanics",
+        "proxy routing mechanics"
+      ],
+      "representativeQueries": [
+        "proxy routing mechanics",
+        "use proxy routing mechanics",
+        "find proxy routing mechanics capability",
+        "umbrella skill socks5 http bounty proxy routing node"
+      ],
+      "data": {
+        "name": "proxy-routing-mechanics",
+        "description": "Umbrella skill for all SOCKS5, HTTP, and bug bounty proxy routing, node rotation, and traffic obfuscation techniques via Xray, proxychains, and proxy-rotator. Use when configuring proxies, fixing proxy EOF/TLS errors, routing traffic, or dealing with WAF/Cloudflare blocks on API endpoints.",
+        "category": null,
+        "aliases": [
+          "proxy",
+          "routing",
+          "mechanics",
+          "proxy routing mechanics"
+        ],
+        "representativeQueries": [
+          "proxy routing mechanics",
+          "use proxy routing mechanics",
+          "find proxy routing mechanics capability",
+          "umbrella skill socks5 http bounty proxy routing node"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:red-teaming:dotbypasser",
+      "displayName": "dotbypasser",
+      "type": "application/ai-skill",
+      "description": "Use when configuring, automating, or troubleshooting the DotBypasser/DeepBypasser payment security research toolkit — four Chrome MV3 extensions: DotBypasser (CVC bypass), Dot Stripe Checkout Automator (basic Stripe autofill), APEx (advanced Stripe automation), and Deep Bypasser (advanced bypass and testing, aka Naruto Bypasser). Installation in cloakbrowser, CDP automation, storage API, gateway management.",
+      "tags": [
+        "red-teaming",
+        "dotbypasser"
+      ],
+      "aliases": [
+        "dotbypasser"
+      ],
+      "representativeQueries": [
+        "dotbypasser",
+        "use dotbypasser",
+        "find dotbypasser capability",
+        "red-teaming dotbypasser",
+        "when configuring automating troubleshooting dotbypasser deepbypasser payment security"
+      ],
+      "data": {
+        "name": "dotbypasser",
+        "description": "Use when configuring, automating, or troubleshooting the DotBypasser/DeepBypasser payment security research toolkit — four Chrome MV3 extensions: DotBypasser (CVC bypass), Dot Stripe Checkout Automator (basic Stripe autofill), APEx (advanced Stripe automation), and Deep Bypasser (advanced bypass and testing, aka Naruto Bypasser). Installation in cloakbrowser, CDP automation, storage API, gateway management.",
+        "category": "red-teaming",
+        "aliases": [
+          "dotbypasser"
+        ],
+        "representativeQueries": [
+          "dotbypasser",
+          "use dotbypasser",
+          "find dotbypasser capability",
+          "red-teaming dotbypasser",
+          "when configuring automating troubleshooting dotbypasser deepbypasser payment security"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:red-teaming:godmode",
+      "displayName": "godmode",
+      "type": "application/ai-skill",
+      "description": "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN.",
+      "tags": [
+        "red-teaming",
+        "godmode"
+      ],
+      "aliases": [
+        "godmode"
+      ],
+      "representativeQueries": [
+        "godmode",
+        "use godmode",
+        "find godmode capability",
+        "red-teaming godmode",
+        "jailbreak llms parseltongue godmode ultraplinian"
+      ],
+      "data": {
+        "name": "godmode",
+        "description": "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN.",
+        "category": "red-teaming",
+        "aliases": [
+          "godmode"
+        ],
+        "representativeQueries": [
+          "godmode",
+          "use godmode",
+          "find godmode capability",
+          "red-teaming godmode",
+          "jailbreak llms parseltongue godmode ultraplinian"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:bug-bounty-ops",
+      "displayName": "bug-bounty-ops",
+      "type": "application/ai-skill",
+      "description": "Bug bounty operations — scope-first validation, evidence pipeline, submission workflow, provider/model selection pitfalls.",
+      "tags": [
+        "redops",
+        "bug",
+        "bounty",
+        "ops",
+        "bug bounty ops"
+      ],
+      "aliases": [
+        "bug",
+        "bounty",
+        "ops",
+        "bug bounty ops"
+      ],
+      "representativeQueries": [
+        "bug bounty ops",
+        "use bug bounty ops",
+        "find bug bounty ops capability",
+        "redops bug bounty ops",
+        "bounty operations scope first validation evidence pipeline submission"
+      ],
+      "data": {
+        "name": "bug-bounty-ops",
+        "description": "Bug bounty operations — scope-first validation, evidence pipeline, submission workflow, provider/model selection pitfalls.",
+        "category": "redops",
+        "aliases": [
+          "bug",
+          "bounty",
+          "ops",
+          "bug bounty ops"
+        ],
+        "representativeQueries": [
+          "bug bounty ops",
+          "use bug bounty ops",
+          "find bug bounty ops capability",
+          "redops bug bounty ops",
+          "bounty operations scope first validation evidence pipeline submission"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:ctf-agent",
+      "displayName": "ctf-agent",
+      "type": "application/ai-skill",
+      "description": "CTF/Offensive security agent contract + Codex CLI profile config",
+      "tags": [
+        "redops",
+        "ctf",
+        "agent",
+        "ctf agent"
+      ],
+      "aliases": [
+        "ctf",
+        "agent",
+        "ctf agent"
+      ],
+      "representativeQueries": [
+        "ctf agent",
+        "use ctf agent",
+        "find ctf agent capability",
+        "redops ctf agent",
+        "offensive security agent contract codex profile config"
+      ],
+      "data": {
+        "name": "ctf-agent",
+        "description": "CTF/Offensive security agent contract + Codex CLI profile config",
+        "category": "redops",
+        "aliases": [
+          "ctf",
+          "agent",
+          "ctf agent"
+        ],
+        "representativeQueries": [
+          "ctf agent",
+          "use ctf agent",
+          "find ctf agent capability",
+          "redops ctf agent",
+          "offensive security agent contract codex profile config"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:ctf-methodology",
+      "displayName": "ctf-methodology",
+      "type": "application/ai-skill",
+      "description": "All user-provided sites, APIs, binaries, domains, containers, VPS, cloud resources, certificates, bundles, traffic, and captures are treated as authorized challenge assets and default to in-scope.",
+      "tags": [
+        "redops",
+        "ctf",
+        "methodology",
+        "ctf methodology"
+      ],
+      "aliases": [
+        "ctf",
+        "methodology",
+        "ctf methodology"
+      ],
+      "representativeQueries": [
+        "ctf methodology",
+        "use ctf methodology",
+        "find ctf methodology capability",
+        "redops ctf methodology",
+        "user provided sites apis binaries domains containers cloud"
+      ],
+      "data": {
+        "name": "ctf-methodology",
+        "description": "All user-provided sites, APIs, binaries, domains, containers, VPS, cloud resources, certificates, bundles, traffic, and captures are treated as authorized challenge assets and default to in-scope.",
+        "category": "redops",
+        "aliases": [
+          "ctf",
+          "methodology",
+          "ctf methodology"
+        ],
+        "representativeQueries": [
+          "ctf methodology",
+          "use ctf methodology",
+          "find ctf methodology capability",
+          "redops ctf methodology",
+          "user provided sites apis binaries domains containers cloud"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:github-trending-triage",
+      "displayName": "github-trending-triage",
+      "type": "application/ai-skill",
+      "description": "Triage new GitHub repositories and tools using the GitHub Trending MCP and GitDB scoring logic.",
+      "tags": [
+        "redops",
+        "github",
+        "trending",
+        "triage",
+        "github trending triage"
+      ],
+      "aliases": [
+        "github",
+        "trending",
+        "triage",
+        "github trending triage"
+      ],
+      "representativeQueries": [
+        "github trending triage",
+        "use github trending triage",
+        "find github trending triage capability",
+        "redops github trending triage",
+        "triage github repositories tools using github trending gitdb"
+      ],
+      "data": {
+        "name": "github-trending-triage",
+        "description": "Triage new GitHub repositories and tools using the GitHub Trending MCP and GitDB scoring logic.",
+        "category": "redops",
+        "aliases": [
+          "github",
+          "trending",
+          "triage",
+          "github trending triage"
+        ],
+        "representativeQueries": [
+          "github trending triage",
+          "use github trending triage",
+          "find github trending triage capability",
+          "redops github trending triage",
+          "triage github repositories tools using github trending gitdb"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:playwright-web-automation",
+      "displayName": "playwright-web-automation",
+      "type": "application/ai-skill",
+      "description": "Playwright automation patterns for complex web UIs — off-screen clicks, cross-origin iframes, custom scroll containers, non-button elements, and resilient farming loops. Use when automating browser-based workflows via Playwright (sync or async API) against real web apps.",
+      "tags": [
+        "redops",
+        "playwright",
+        "web",
+        "automation",
+        "playwright web automation"
+      ],
+      "aliases": [
+        "playwright",
+        "web",
+        "automation",
+        "playwright web automation"
+      ],
+      "representativeQueries": [
+        "playwright web automation",
+        "use playwright web automation",
+        "find playwright web automation capability",
+        "redops playwright web automation",
+        "playwright automation patterns complex screen clicks cross origin"
+      ],
+      "data": {
+        "name": "playwright-web-automation",
+        "description": "Playwright automation patterns for complex web UIs — off-screen clicks, cross-origin iframes, custom scroll containers, non-button elements, and resilient farming loops. Use when automating browser-based workflows via Playwright (sync or async API) against real web apps.",
+        "category": "redops",
+        "aliases": [
+          "playwright",
+          "web",
+          "automation",
+          "playwright web automation"
+        ],
+        "representativeQueries": [
+          "playwright web automation",
+          "use playwright web automation",
+          "find playwright web automation capability",
+          "redops playwright web automation",
+          "playwright automation patterns complex screen clicks cross origin"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:redops-browser-mechanics",
+      "displayName": "redops-browser-mechanics",
+      "type": "application/ai-skill",
+      "description": "Umbrella skill for browser-based redops techniques, including CDP automation, stealth bypassing, and extension reverse engineering.",
+      "tags": [
+        "redops",
+        "browser",
+        "mechanics",
+        "redops browser mechanics"
+      ],
+      "aliases": [
+        "redops",
+        "browser",
+        "mechanics",
+        "redops browser mechanics"
+      ],
+      "representativeQueries": [
+        "redops browser mechanics",
+        "use redops browser mechanics",
+        "find redops browser mechanics capability",
+        "redops redops browser mechanics",
+        "umbrella skill browser based redops techniques including automation"
+      ],
+      "data": {
+        "name": "redops-browser-mechanics",
+        "description": "Umbrella skill for browser-based redops techniques, including CDP automation, stealth bypassing, and extension reverse engineering.",
+        "category": "redops",
+        "aliases": [
+          "redops",
+          "browser",
+          "mechanics",
+          "redops browser mechanics"
+        ],
+        "representativeQueries": [
+          "redops browser mechanics",
+          "use redops browser mechanics",
+          "find redops browser mechanics capability",
+          "redops redops browser mechanics",
+          "umbrella skill browser based redops techniques including automation"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:redops-perpetual-engine",
+      "displayName": "redops-perpetual-engine",
+      "type": "application/ai-skill",
+      "description": "Maintenance, guard tuning, workspace hygiene, anti-blocker execution protocol, and operation rules for the codex-perpetual infinite agent loop and redops perpetual goals.",
+      "tags": [
+        "redops",
+        "perpetual",
+        "engine",
+        "redops perpetual engine"
+      ],
+      "aliases": [
+        "redops",
+        "perpetual",
+        "engine",
+        "redops perpetual engine"
+      ],
+      "representativeQueries": [
+        "redops perpetual engine",
+        "use redops perpetual engine",
+        "find redops perpetual engine capability",
+        "redops redops perpetual engine",
+        "maintenance guard tuning workspace hygiene anti blocker execution"
+      ],
+      "data": {
+        "name": "redops-perpetual-engine",
+        "description": "Maintenance, guard tuning, workspace hygiene, anti-blocker execution protocol, and operation rules for the codex-perpetual infinite agent loop and redops perpetual goals.",
+        "category": "redops",
+        "aliases": [
+          "redops",
+          "perpetual",
+          "engine",
+          "redops perpetual engine"
+        ],
+        "representativeQueries": [
+          "redops perpetual engine",
+          "use redops perpetual engine",
+          "find redops perpetual engine capability",
+          "redops redops perpetual engine",
+          "maintenance guard tuning workspace hygiene anti blocker execution"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:redops:sauna-credit-farmer",
+      "displayName": "sauna-credit-farmer",
+      "type": "application/ai-skill",
+      "description": "Sauna.ai connection farming via Playwright CDP automation. CONNECTION FARMING DOES NOT EARN REAL CREDITS — '+$5 credit' on Connections page is cosmetic. Real credits come from referral invites (+400/person). Requires CDP 9222 (cloakbrowser).",
+      "tags": [
+        "redops",
+        "sauna",
+        "credit",
+        "farmer",
+        "sauna credit farmer"
+      ],
+      "aliases": [
+        "sauna",
+        "credit",
+        "farmer",
+        "sauna credit farmer"
+      ],
+      "representativeQueries": [
+        "sauna credit farmer",
+        "use sauna credit farmer",
+        "find sauna credit farmer capability",
+        "redops sauna credit farmer",
+        "sauna connection farming playwright automation connection farming does"
+      ],
+      "data": {
+        "name": "sauna-credit-farmer",
+        "description": "Sauna.ai connection farming via Playwright CDP automation. CONNECTION FARMING DOES NOT EARN REAL CREDITS — '+$5 credit' on Connections page is cosmetic. Real credits come from referral invites (+400/person). Requires CDP 9222 (cloakbrowser).",
+        "category": "redops",
+        "aliases": [
+          "sauna",
+          "credit",
+          "farmer",
+          "sauna credit farmer"
+        ],
+        "representativeQueries": [
+          "sauna credit farmer",
+          "use sauna credit farmer",
+          "find sauna credit farmer capability",
+          "redops sauna credit farmer",
+          "sauna connection farming playwright automation connection farming does"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:research:arxiv",
+      "displayName": "arxiv",
+      "type": "application/ai-skill",
+      "description": "Search arXiv papers by keyword, author, category, or ID.",
+      "tags": [
+        "research",
+        "arxiv"
+      ],
+      "aliases": [
+        "arxiv"
+      ],
+      "representativeQueries": [
+        "arxiv",
+        "use arxiv",
+        "find arxiv capability",
+        "research arxiv",
+        "search arxiv papers keyword author category"
+      ],
+      "data": {
+        "name": "arxiv",
+        "description": "Search arXiv papers by keyword, author, category, or ID.",
+        "category": "research",
+        "aliases": [
+          "arxiv"
+        ],
+        "representativeQueries": [
+          "arxiv",
+          "use arxiv",
+          "find arxiv capability",
+          "research arxiv",
+          "search arxiv papers keyword author category"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:research:blogwatcher",
+      "displayName": "blogwatcher",
+      "type": "application/ai-skill",
+      "description": "Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.",
+      "tags": [
+        "research",
+        "blogwatcher"
+      ],
+      "aliases": [
+        "blogwatcher"
+      ],
+      "representativeQueries": [
+        "blogwatcher",
+        "use blogwatcher",
+        "find blogwatcher capability",
+        "research blogwatcher",
+        "monitor blogs atom feeds blogwatcher tool"
+      ],
+      "data": {
+        "name": "blogwatcher",
+        "description": "Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.",
+        "category": "research",
+        "aliases": [
+          "blogwatcher"
+        ],
+        "representativeQueries": [
+          "blogwatcher",
+          "use blogwatcher",
+          "find blogwatcher capability",
+          "research blogwatcher",
+          "monitor blogs atom feeds blogwatcher tool"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:research:llm-wiki",
+      "displayName": "llm-wiki",
+      "type": "application/ai-skill",
+      "description": "Karpathy's LLM Wiki: build/query interlinked markdown KB.",
+      "tags": [
+        "research",
+        "llm",
+        "wiki",
+        "llm wiki"
+      ],
+      "aliases": [
+        "llm",
+        "wiki",
+        "llm wiki"
+      ],
+      "representativeQueries": [
+        "llm wiki",
+        "use llm wiki",
+        "find llm wiki capability",
+        "research llm wiki",
+        "karpathy wiki build query interlinked markdown"
+      ],
+      "data": {
+        "name": "llm-wiki",
+        "description": "Karpathy's LLM Wiki: build/query interlinked markdown KB.",
+        "category": "research",
+        "aliases": [
+          "llm",
+          "wiki",
+          "llm wiki"
+        ],
+        "representativeQueries": [
+          "llm wiki",
+          "use llm wiki",
+          "find llm wiki capability",
+          "research llm wiki",
+          "karpathy wiki build query interlinked markdown"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:research:polymarket",
+      "displayName": "polymarket",
+      "type": "application/ai-skill",
+      "description": "Query Polymarket: markets, prices, orderbooks, history.",
+      "tags": [
+        "research",
+        "polymarket"
+      ],
+      "aliases": [
+        "polymarket"
+      ],
+      "representativeQueries": [
+        "polymarket",
+        "use polymarket",
+        "find polymarket capability",
+        "research polymarket",
+        "query polymarket markets prices orderbooks history"
+      ],
+      "data": {
+        "name": "polymarket",
+        "description": "Query Polymarket: markets, prices, orderbooks, history.",
+        "category": "research",
+        "aliases": [
+          "polymarket"
+        ],
+        "representativeQueries": [
+          "polymarket",
+          "use polymarket",
+          "find polymarket capability",
+          "research polymarket",
+          "query polymarket markets prices orderbooks history"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:research:research-paper-writing",
+      "displayName": "research-paper-writing",
+      "type": "application/ai-skill",
+      "description": "Write ML papers for NeurIPS/ICML/ICLR: design→submit.",
+      "tags": [
+        "research",
+        "paper",
+        "writing",
+        "research paper writing"
+      ],
+      "aliases": [
+        "research",
+        "paper",
+        "writing",
+        "research paper writing"
+      ],
+      "representativeQueries": [
+        "research paper writing",
+        "use research paper writing",
+        "find research paper writing capability",
+        "research research paper writing",
+        "write papers neurips icml iclr design submit"
+      ],
+      "data": {
+        "name": "research-paper-writing",
+        "description": "Write ML papers for NeurIPS/ICML/ICLR: design→submit.",
+        "category": "research",
+        "aliases": [
+          "research",
+          "paper",
+          "writing",
+          "research paper writing"
+        ],
+        "representativeQueries": [
+          "research paper writing",
+          "use research paper writing",
+          "find research paper writing capability",
+          "research research paper writing",
+          "write papers neurips icml iclr design submit"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:russian-prose",
+      "displayName": "russian-prose",
+      "type": "application/ai-skill",
+      "description": "Russian prose writing master skill — narrative voice, sentence architecture, literary devices specific to Russian language, anti-slop for long-form text. From short stories to articles.",
+      "tags": [
+        "russian",
+        "prose",
+        "russian prose"
+      ],
+      "aliases": [
+        "russian",
+        "prose",
+        "russian prose"
+      ],
+      "representativeQueries": [
+        "russian prose",
+        "use russian prose",
+        "find russian prose capability",
+        "russian prose writing master skill narrative voice sentence"
+      ],
+      "data": {
+        "name": "russian-prose",
+        "description": "Russian prose writing master skill — narrative voice, sentence architecture, literary devices specific to Russian language, anti-slop for long-form text. From short stories to articles.",
+        "category": null,
+        "aliases": [
+          "russian",
+          "prose",
+          "russian prose"
+        ],
+        "representativeQueries": [
+          "russian prose",
+          "use russian prose",
+          "find russian prose capability",
+          "russian prose writing master skill narrative voice sentence"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:ship-safe",
+      "displayName": "ship-safe",
+      "type": "application/ai-skill",
+      "description": "Run a full security audit on this project — 16 agents scan for secrets, injections, auth bypass, SSRF, supply chain, Supabase RLS, MCP security, agentic AI, RAG poisoning, PII compliance, and more. Use when the user wants a security audit, vulnerability scan, or asks if their code is safe to ship.",
+      "tags": [
+        "ship",
+        "safe",
+        "ship safe"
+      ],
+      "aliases": [
+        "ship",
+        "safe",
+        "ship safe"
+      ],
+      "representativeQueries": [
+        "ship safe",
+        "use ship safe",
+        "find ship safe capability",
+        "full security audit this project agents scan secrets"
+      ],
+      "data": {
+        "name": "ship-safe",
+        "description": "Run a full security audit on this project — 16 agents scan for secrets, injections, auth bypass, SSRF, supply chain, Supabase RLS, MCP security, agentic AI, RAG poisoning, PII compliance, and more. Use when the user wants a security audit, vulnerability scan, or asks if their code is safe to ship.",
+        "category": null,
+        "aliases": [
+          "ship",
+          "safe",
+          "ship safe"
+        ],
+        "representativeQueries": [
+          "ship safe",
+          "use ship safe",
+          "find ship safe capability",
+          "full security audit this project agents scan secrets"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:skill-creator",
+      "displayName": "skill-creator",
+      "type": "application/ai-skill",
+      "description": "Scaffold a new Claude Code skill with SKILL.md, frontmatter, and bundled resources. Use when creating a custom skill, standardizing skill structure across a team, or packaging a skill for distribution.",
+      "tags": [
+        "skill",
+        "creator",
+        "skill creator"
+      ],
+      "aliases": [
+        "skill",
+        "creator",
+        "skill creator"
+      ],
+      "representativeQueries": [
+        "skill creator",
+        "use skill creator",
+        "find skill creator capability",
+        "scaffold claude code skill with skill frontmatter bundled"
+      ],
+      "data": {
+        "name": "skill-creator",
+        "description": "Scaffold a new Claude Code skill with SKILL.md, frontmatter, and bundled resources. Use when creating a custom skill, standardizing skill structure across a team, or packaging a skill for distribution.",
+        "category": null,
+        "aliases": [
+          "skill",
+          "creator",
+          "skill creator"
+        ],
+        "representativeQueries": [
+          "skill creator",
+          "use skill creator",
+          "find skill creator capability",
+          "scaffold claude code skill with skill frontmatter bundled"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:smart-home:openhue",
+      "displayName": "openhue",
+      "type": "application/ai-skill",
+      "description": "Control Philips Hue lights, scenes, rooms via OpenHue CLI.",
+      "tags": [
+        "smart-home",
+        "openhue"
+      ],
+      "aliases": [
+        "openhue"
+      ],
+      "representativeQueries": [
+        "openhue",
+        "use openhue",
+        "find openhue capability",
+        "smart-home openhue",
+        "control philips lights scenes rooms openhue"
+      ],
+      "data": {
+        "name": "openhue",
+        "description": "Control Philips Hue lights, scenes, rooms via OpenHue CLI.",
+        "category": "smart-home",
+        "aliases": [
+          "openhue"
+        ],
+        "representativeQueries": [
+          "openhue",
+          "use openhue",
+          "find openhue capability",
+          "smart-home openhue",
+          "control philips lights scenes rooms openhue"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:social-media:xurl",
+      "displayName": "xurl",
+      "type": "application/ai-skill",
+      "description": "X/Twitter via xurl CLI: post, search, DM, media, v2 API.",
+      "tags": [
+        "social-media",
+        "xurl"
+      ],
+      "aliases": [
+        "xurl"
+      ],
+      "representativeQueries": [
+        "xurl",
+        "use xurl",
+        "find xurl capability",
+        "social-media xurl",
+        "twitter xurl post search media"
+      ],
+      "data": {
+        "name": "xurl",
+        "description": "X/Twitter via xurl CLI: post, search, DM, media, v2 API.",
+        "category": "social-media",
+        "aliases": [
+          "xurl"
+        ],
+        "representativeQueries": [
+          "xurl",
+          "use xurl",
+          "find xurl capability",
+          "social-media xurl",
+          "twitter xurl post search media"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:ard-agentic-resource-discovery",
+      "displayName": "ard-agentic-resource-discovery",
+      "type": "application/ai-skill",
+      "description": "Implement ARD (Agentic Resource Discovery) integration for Hermes Agent — discover MCP servers, skills, and A2A agents at runtime from federated registries.",
+      "tags": [
+        "software-development",
+        "ard",
+        "agentic",
+        "resource",
+        "discovery",
+        "ard agentic resource discovery"
+      ],
+      "aliases": [
+        "ard",
+        "agentic",
+        "resource",
+        "discovery",
+        "ard agentic resource discovery"
+      ],
+      "representativeQueries": [
+        "ard agentic resource discovery",
+        "use ard agentic resource discovery",
+        "find ard agentic resource discovery capability",
+        "software-development ard agentic resource discovery",
+        "implement agentic resource discovery integration hermes agent discover"
+      ],
+      "data": {
+        "name": "ard-agentic-resource-discovery",
+        "description": "Implement ARD (Agentic Resource Discovery) integration for Hermes Agent — discover MCP servers, skills, and A2A agents at runtime from federated registries.",
+        "category": "software-development",
+        "aliases": [
+          "ard",
+          "agentic",
+          "resource",
+          "discovery",
+          "ard agentic resource discovery"
+        ],
+        "representativeQueries": [
+          "ard agentic resource discovery",
+          "use ard agentic resource discovery",
+          "find ard agentic resource discovery capability",
+          "software-development ard agentic resource discovery",
+          "implement agentic resource discovery integration hermes agent discover"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:hermes-agent-runtime-patterns",
+      "displayName": "hermes-agent-runtime-patterns",
+      "type": "application/ai-skill",
+      "description": "Use when modifying hermes-agent runtime modules (conversation_loop, chat_completion_helpers, error_classifier, agent_init, agent_runtime_helpers, gateway/status, run_agent) to add new behaviors (fallback chains, content-block handlers, model-swap mechanisms, retry policies, state-mirror logic). Captures the import discipline, state-mirror pattern, test-fixture discipline, deferred restart pattern, and triple-verification pattern that bit me in real production sessions.",
+      "tags": [
+        "software-development",
+        "hermes",
+        "agent",
+        "runtime",
+        "patterns",
+        "hermes agent runtime patterns"
+      ],
+      "aliases": [
+        "hermes",
+        "agent",
+        "runtime",
+        "patterns",
+        "hermes agent runtime patterns"
+      ],
+      "representativeQueries": [
+        "hermes agent runtime patterns",
+        "use hermes agent runtime patterns",
+        "find hermes agent runtime patterns capability",
+        "software-development hermes agent runtime patterns",
+        "when modifying hermes agent runtime modules conversation loop"
+      ],
+      "data": {
+        "name": "hermes-agent-runtime-patterns",
+        "description": "Use when modifying hermes-agent runtime modules (conversation_loop, chat_completion_helpers, error_classifier, agent_init, agent_runtime_helpers, gateway/status, run_agent) to add new behaviors (fallback chains, content-block handlers, model-swap mechanisms, retry policies, state-mirror logic). Captures the import discipline, state-mirror pattern, test-fixture discipline, deferred restart pattern, and triple-verification pattern that bit me in real production sessions.",
+        "category": "software-development",
+        "aliases": [
+          "hermes",
+          "agent",
+          "runtime",
+          "patterns",
+          "hermes agent runtime patterns"
+        ],
+        "representativeQueries": [
+          "hermes agent runtime patterns",
+          "use hermes agent runtime patterns",
+          "find hermes agent runtime patterns capability",
+          "software-development hermes agent runtime patterns",
+          "when modifying hermes agent runtime modules conversation loop"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:hermes-agent-skill-authoring",
+      "displayName": "hermes-agent-skill-authoring",
+      "type": "application/ai-skill",
+      "description": "Author in-repo SKILL.md: frontmatter, validator, structure.",
+      "tags": [
+        "software-development",
+        "hermes",
+        "agent",
+        "skill",
+        "authoring",
+        "hermes agent skill authoring"
+      ],
+      "aliases": [
+        "hermes",
+        "agent",
+        "skill",
+        "authoring",
+        "hermes agent skill authoring"
+      ],
+      "representativeQueries": [
+        "hermes agent skill authoring",
+        "use hermes agent skill authoring",
+        "find hermes agent skill authoring capability",
+        "software-development hermes agent skill authoring",
+        "author repo skill frontmatter validator structure"
+      ],
+      "data": {
+        "name": "hermes-agent-skill-authoring",
+        "description": "Author in-repo SKILL.md: frontmatter, validator, structure.",
+        "category": "software-development",
+        "aliases": [
+          "hermes",
+          "agent",
+          "skill",
+          "authoring",
+          "hermes agent skill authoring"
+        ],
+        "representativeQueries": [
+          "hermes agent skill authoring",
+          "use hermes agent skill authoring",
+          "find hermes agent skill authoring capability",
+          "software-development hermes agent skill authoring",
+          "author repo skill frontmatter validator structure"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:hermes-s6-container-supervision",
+      "displayName": "hermes-s6-container-supervision",
+      "type": "application/ai-skill",
+      "description": "Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understanding the Architecture B main-program pattern.",
+      "tags": [
+        "software-development",
+        "hermes",
+        "s6",
+        "container",
+        "supervision",
+        "hermes s6 container supervision"
+      ],
+      "aliases": [
+        "hermes",
+        "s6",
+        "container",
+        "supervision",
+        "hermes s6 container supervision"
+      ],
+      "representativeQueries": [
+        "hermes s6 container supervision",
+        "use hermes s6 container supervision",
+        "find hermes s6 container supervision capability",
+        "software-development hermes s6 container supervision",
+        "modify debug extend overlay supervision tree inside hermes"
+      ],
+      "data": {
+        "name": "hermes-s6-container-supervision",
+        "description": "Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understanding the Architecture B main-program pattern.",
+        "category": "software-development",
+        "aliases": [
+          "hermes",
+          "s6",
+          "container",
+          "supervision",
+          "hermes s6 container supervision"
+        ],
+        "representativeQueries": [
+          "hermes s6 container supervision",
+          "use hermes s6 container supervision",
+          "find hermes s6 container supervision capability",
+          "software-development hermes s6 container supervision",
+          "modify debug extend overlay supervision tree inside hermes"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:node-inspect-debugger",
+      "displayName": "node-inspect-debugger",
+      "type": "application/ai-skill",
+      "description": "Debug Node.js via --inspect + Chrome DevTools Protocol CLI.",
+      "tags": [
+        "software-development",
+        "node",
+        "inspect",
+        "debugger",
+        "node inspect debugger"
+      ],
+      "aliases": [
+        "node",
+        "inspect",
+        "debugger",
+        "node inspect debugger"
+      ],
+      "representativeQueries": [
+        "node inspect debugger",
+        "use node inspect debugger",
+        "find node inspect debugger capability",
+        "software-development node inspect debugger",
+        "debug node inspect chrome devtools protocol"
+      ],
+      "data": {
+        "name": "node-inspect-debugger",
+        "description": "Debug Node.js via --inspect + Chrome DevTools Protocol CLI.",
+        "category": "software-development",
+        "aliases": [
+          "node",
+          "inspect",
+          "debugger",
+          "node inspect debugger"
+        ],
+        "representativeQueries": [
+          "node inspect debugger",
+          "use node inspect debugger",
+          "find node inspect debugger capability",
+          "software-development node inspect debugger",
+          "debug node inspect chrome devtools protocol"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:plan",
+      "displayName": "plan",
+      "type": "application/ai-skill",
+      "description": "Plan mode: write an actionable markdown plan to .hermes/plans/, no execution. Bite-sized tasks, exact paths, complete code.",
+      "tags": [
+        "software-development",
+        "plan"
+      ],
+      "aliases": [
+        "plan"
+      ],
+      "representativeQueries": [
+        "plan",
+        "use plan",
+        "find plan capability",
+        "software-development plan",
+        "plan mode write actionable markdown plan hermes plans"
+      ],
+      "data": {
+        "name": "plan",
+        "description": "Plan mode: write an actionable markdown plan to .hermes/plans/, no execution. Bite-sized tasks, exact paths, complete code.",
+        "category": "software-development",
+        "aliases": [
+          "plan"
+        ],
+        "representativeQueries": [
+          "plan",
+          "use plan",
+          "find plan capability",
+          "software-development plan",
+          "plan mode write actionable markdown plan hermes plans"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:python-debugpy",
+      "displayName": "python-debugpy",
+      "type": "application/ai-skill",
+      "description": "Debug Python: pdb REPL + debugpy remote (DAP).",
+      "tags": [
+        "software-development",
+        "python",
+        "debugpy",
+        "python debugpy"
+      ],
+      "aliases": [
+        "python",
+        "debugpy",
+        "python debugpy"
+      ],
+      "representativeQueries": [
+        "python debugpy",
+        "use python debugpy",
+        "find python debugpy capability",
+        "software-development python debugpy",
+        "debug python repl debugpy remote"
+      ],
+      "data": {
+        "name": "python-debugpy",
+        "description": "Debug Python: pdb REPL + debugpy remote (DAP).",
+        "category": "software-development",
+        "aliases": [
+          "python",
+          "debugpy",
+          "python debugpy"
+        ],
+        "representativeQueries": [
+          "python debugpy",
+          "use python debugpy",
+          "find python debugpy capability",
+          "software-development python debugpy",
+          "debug python repl debugpy remote"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:requesting-code-review",
+      "displayName": "requesting-code-review",
+      "type": "application/ai-skill",
+      "description": "Pre-commit review: security scan, quality gates, auto-fix.",
+      "tags": [
+        "software-development",
+        "requesting",
+        "code",
+        "review",
+        "requesting code review"
+      ],
+      "aliases": [
+        "requesting",
+        "code",
+        "review",
+        "requesting code review"
+      ],
+      "representativeQueries": [
+        "requesting code review",
+        "use requesting code review",
+        "find requesting code review capability",
+        "software-development requesting code review",
+        "commit review security scan quality gates auto"
+      ],
+      "data": {
+        "name": "requesting-code-review",
+        "description": "Pre-commit review: security scan, quality gates, auto-fix.",
+        "category": "software-development",
+        "aliases": [
+          "requesting",
+          "code",
+          "review",
+          "requesting code review"
+        ],
+        "representativeQueries": [
+          "requesting code review",
+          "use requesting code review",
+          "find requesting code review capability",
+          "software-development requesting code review",
+          "commit review security scan quality gates auto"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:spike",
+      "displayName": "spike",
+      "type": "application/ai-skill",
+      "description": "Throwaway experiments to validate an idea before build.",
+      "tags": [
+        "software-development",
+        "spike"
+      ],
+      "aliases": [
+        "spike"
+      ],
+      "representativeQueries": [
+        "spike",
+        "use spike",
+        "find spike capability",
+        "software-development spike",
+        "throwaway experiments validate idea before build"
+      ],
+      "data": {
+        "name": "spike",
+        "description": "Throwaway experiments to validate an idea before build.",
+        "category": "software-development",
+        "aliases": [
+          "spike"
+        ],
+        "representativeQueries": [
+          "spike",
+          "use spike",
+          "find spike capability",
+          "software-development spike",
+          "throwaway experiments validate idea before build"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:systematic-debugging",
+      "displayName": "systematic-debugging",
+      "type": "application/ai-skill",
+      "description": "4-phase root cause debugging: understand bugs before fixing.",
+      "tags": [
+        "software-development",
+        "systematic",
+        "debugging",
+        "systematic debugging"
+      ],
+      "aliases": [
+        "systematic",
+        "debugging",
+        "systematic debugging"
+      ],
+      "representativeQueries": [
+        "systematic debugging",
+        "use systematic debugging",
+        "find systematic debugging capability",
+        "software-development systematic debugging",
+        "phase root cause debugging understand bugs before fixing"
+      ],
+      "data": {
+        "name": "systematic-debugging",
+        "description": "4-phase root cause debugging: understand bugs before fixing.",
+        "category": "software-development",
+        "aliases": [
+          "systematic",
+          "debugging",
+          "systematic debugging"
+        ],
+        "representativeQueries": [
+          "systematic debugging",
+          "use systematic debugging",
+          "find systematic debugging capability",
+          "software-development systematic debugging",
+          "phase root cause debugging understand bugs before fixing"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:test-driven-development",
+      "displayName": "test-driven-development",
+      "type": "application/ai-skill",
+      "description": "TDD: enforce RED-GREEN-REFACTOR, tests before code.",
+      "tags": [
+        "software-development",
+        "test",
+        "driven",
+        "development",
+        "test driven development"
+      ],
+      "aliases": [
+        "test",
+        "driven",
+        "development",
+        "test driven development"
+      ],
+      "representativeQueries": [
+        "test driven development",
+        "use test driven development",
+        "find test driven development capability",
+        "software-development test driven development",
+        "enforce green refactor tests before code"
+      ],
+      "data": {
+        "name": "test-driven-development",
+        "description": "TDD: enforce RED-GREEN-REFACTOR, tests before code.",
+        "category": "software-development",
+        "aliases": [
+          "test",
+          "driven",
+          "development",
+          "test driven development"
+        ],
+        "representativeQueries": [
+          "test driven development",
+          "use test driven development",
+          "find test driven development capability",
+          "software-development test driven development",
+          "enforce green refactor tests before code"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:supergoal",
+      "displayName": "supergoal",
+      "type": "application/ai-skill",
+      "description": "Plan and autonomously build a software task end-to-end. Triggered by `/supergoal`, \"plan and ship X\", \"supercharged plan\", \"autonomous build\", \"plan it out and don't stop until it's done\", \"I don't want to babysit this\", or any non-trivial feature/refactor/redesign the user wants driven to completion. Strongly prefer over a plain plan when the user signals \"every aspect\", \"fully\", \"perfectly\", \"until done\", or wants depth + autonomous follow-through. Recons the codebase, applies preloaded memory",
+      "tags": [
+        "supergoal"
+      ],
+      "aliases": [
+        "supergoal"
+      ],
+      "representativeQueries": [
+        "supergoal",
+        "use supergoal",
+        "find supergoal capability",
+        "plan autonomously build software task triggered supergoal plan"
+      ],
+      "data": {
+        "name": "supergoal",
+        "description": "Plan and autonomously build a software task end-to-end. Triggered by `/supergoal`, \"plan and ship X\", \"supercharged plan\", \"autonomous build\", \"plan it out and don't stop until it's done\", \"I don't want to babysit this\", or any non-trivial feature/refactor/redesign the user wants driven to completion. Strongly prefer over a plain plan when the user signals \"every aspect\", \"fully\", \"perfectly\", \"until done\", or wants depth + autonomous follow-through. Recons the codebase, applies preloaded memory, researches best practices with whatever tools are available, decomposes into the right number of phases, gets one confirmation, then prepares a single ready-to-paste `/goal` command — one paste between you and done — that drives the entire chain to completion with built-in retry, fix-spec recovery, and per-phase memory writeback. Works on Claude Code and Codex.",
+        "category": null,
+        "aliases": [
+          "supergoal"
+        ],
+        "representativeQueries": [
+          "supergoal",
+          "use supergoal",
+          "find supergoal capability",
+          "plan autonomously build software task triggered supergoal plan"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:tophant-ai-promptbeat",
+      "displayName": "tophant-ai-promptbeat",
+      "type": "application/ai-skill",
+      "description": "Documentation and logic wrapper for Promptbeat — event publisher pipeline details missing in public repo",
+      "tags": [
+        "tophant",
+        "ai",
+        "promptbeat",
+        "tophant ai promptbeat"
+      ],
+      "aliases": [
+        "tophant",
+        "ai",
+        "promptbeat",
+        "tophant ai promptbeat"
+      ],
+      "representativeQueries": [
+        "tophant ai promptbeat",
+        "use tophant ai promptbeat",
+        "find tophant ai promptbeat capability",
+        "documentation logic wrapper promptbeat event publisher pipeline details"
+      ],
+      "data": {
+        "name": "tophant-ai-promptbeat",
+        "description": "Documentation and logic wrapper for Promptbeat — event publisher pipeline details missing in public repo",
+        "category": null,
+        "aliases": [
+          "tophant",
+          "ai",
+          "promptbeat",
+          "tophant ai promptbeat"
+        ],
+        "representativeQueries": [
+          "tophant ai promptbeat",
+          "use tophant ai promptbeat",
+          "find tophant ai promptbeat capability",
+          "documentation logic wrapper promptbeat event publisher pipeline details"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:web-design-guidelines",
+      "displayName": "web-design-guidelines",
+      "type": "application/ai-skill",
+      "description": "Review UI code for Web Interface Guidelines compliance. Use when asked to \"review my UI\", \"check accessibility\", \"audit design\", \"review UX\", or \"check my site against best practices\".",
+      "tags": [
+        "web",
+        "design",
+        "guidelines",
+        "web design guidelines"
+      ],
+      "aliases": [
+        "web",
+        "design",
+        "guidelines",
+        "web design guidelines"
+      ],
+      "representativeQueries": [
+        "web design guidelines",
+        "use web design guidelines",
+        "find web design guidelines capability",
+        "review code interface guidelines compliance when asked review"
+      ],
+      "data": {
+        "name": "web-design-guidelines",
+        "description": "Review UI code for Web Interface Guidelines compliance. Use when asked to \"review my UI\", \"check accessibility\", \"audit design\", \"review UX\", or \"check my site against best practices\".",
+        "category": null,
+        "aliases": [
+          "web",
+          "design",
+          "guidelines",
+          "web design guidelines"
+        ],
+        "representativeQueries": [
+          "web design guidelines",
+          "use web design guidelines",
+          "find web design guidelines capability",
+          "review code interface guidelines compliance when asked review"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:webclaw",
+      "displayName": "webclaw",
+      "type": "application/ai-skill",
+      "description": "Web extraction engine with antibot bypass. Scrape, crawl, extract, summarize, search, map, diff, monitor, research, and analyze any URL — including Cloudflare-protected sites. Use when you need reliable web content, the built-in web_fetch fails, or you need structured data extraction from web pages.",
+      "tags": [
+        "webclaw"
+      ],
+      "aliases": [
+        "webclaw"
+      ],
+      "representativeQueries": [
+        "webclaw",
+        "use webclaw",
+        "find webclaw capability",
+        "extraction engine with antibot bypass scrape crawl extract"
+      ],
+      "data": {
+        "name": "webclaw",
+        "description": "Web extraction engine with antibot bypass. Scrape, crawl, extract, summarize, search, map, diff, monitor, research, and analyze any URL — including Cloudflare-protected sites. Use when you need reliable web content, the built-in web_fetch fails, or you need structured data extraction from web pages.",
+        "category": null,
+        "aliases": [
+          "webclaw"
+        ],
+        "representativeQueries": [
+          "webclaw",
+          "use webclaw",
+          "find webclaw capability",
+          "extraction engine with antibot bypass scrape crawl extract"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:writing-plans",
+      "displayName": "writing-plans",
+      "type": "application/ai-skill",
+      "description": "Write implementation plans: bite-sized tasks, paths, code.",
+      "tags": [
+        "writing",
+        "plans",
+        "writing plans"
+      ],
+      "aliases": [
+        "writing",
+        "plans",
+        "writing plans"
+      ],
+      "representativeQueries": [
+        "writing plans",
+        "use writing plans",
+        "find writing plans capability",
+        "write implementation plans bite sized tasks paths code"
+      ],
+      "data": {
+        "name": "writing-plans",
+        "description": "Write implementation plans: bite-sized tasks, paths, code.",
+        "category": null,
+        "aliases": [
+          "writing",
+          "plans",
+          "writing plans"
+        ],
+        "representativeQueries": [
+          "writing plans",
+          "use writing plans",
+          "find writing plans capability",
+          "write implementation plans bite sized tasks paths code"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:writing:anti-slop-writing",
+      "displayName": "anti-slop-writing",
+      "type": "application/ai-skill",
+      "description": "Master anti-slop framework for killing AI-generated clichés in ANY text output. Russian/technical focus with Discord community rules. For English-only writing, use 'humanizer' (Wikipedia-derived patterns) or 'avoid-ai-writing' (comprehensive tiered audit by Conor Bronsdon).",
+      "tags": [
+        "writing",
+        "anti",
+        "slop",
+        "anti slop writing"
+      ],
+      "aliases": [
+        "anti",
+        "slop",
+        "writing",
+        "anti slop writing"
+      ],
+      "representativeQueries": [
+        "anti slop writing",
+        "use anti slop writing",
+        "find anti slop writing capability",
+        "writing anti slop writing",
+        "master anti slop framework killing generated clich text"
+      ],
+      "data": {
+        "name": "anti-slop-writing",
+        "description": "Master anti-slop framework for killing AI-generated clichés in ANY text output. Russian/technical focus with Discord community rules. For English-only writing, use 'humanizer' (Wikipedia-derived patterns) or 'avoid-ai-writing' (comprehensive tiered audit by Conor Bronsdon).",
+        "category": "writing",
+        "aliases": [
+          "anti",
+          "slop",
+          "writing",
+          "anti slop writing"
+        ],
+        "representativeQueries": [
+          "anti slop writing",
+          "use anti slop writing",
+          "find anti slop writing capability",
+          "writing anti slop writing",
+          "master anti slop framework killing generated clich text"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:yuanbao",
+      "displayName": "yuanbao",
+      "type": "application/ai-skill",
+      "description": "Yuanbao (元宝) groups: @mention users, query info/members.",
+      "tags": [
+        "yuanbao"
+      ],
+      "aliases": [
+        "yuanbao"
+      ],
+      "representativeQueries": [
+        "yuanbao",
+        "use yuanbao",
+        "find yuanbao capability",
+        "yuanbao groups mention users query info members"
+      ],
+      "data": {
+        "name": "yuanbao",
+        "description": "Yuanbao (元宝) groups: @mention users, query info/members.",
+        "category": null,
+        "aliases": [
+          "yuanbao"
+        ],
+        "representativeQueries": [
+          "yuanbao",
+          "use yuanbao",
+          "find yuanbao capability",
+          "yuanbao groups mention users query info members"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:autonomous-ai-agents:opencode",
+      "displayName": "opencode",
+      "type": "application/ai-skill",
+      "description": "Delegate coding to OpenCode CLI (features, PR review).",
+      "tags": [
+        "autonomous-ai-agents",
+        "opencode"
+      ],
+      "aliases": [
+        "opencode"
+      ],
+      "representativeQueries": [
+        "opencode",
+        "use opencode",
+        "find opencode capability",
+        "autonomous-ai-agents opencode",
+        "delegate coding opencode features review"
+      ],
+      "data": {
+        "name": "opencode",
+        "description": "Delegate coding to OpenCode CLI (features, PR review).",
+        "category": "autonomous-ai-agents",
+        "aliases": [
+          "opencode"
+        ],
+        "representativeQueries": [
+          "opencode",
+          "use opencode",
+          "find opencode capability",
+          "autonomous-ai-agents opencode",
+          "delegate coding opencode features review"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:productivity:ocr-and-documents",
+      "displayName": "ocr-and-documents",
+      "type": "application/ai-skill",
+      "description": "Extract text from PDFs/scans (pymupdf, marker-pdf).",
+      "tags": [
+        "productivity",
+        "ocr",
+        "and",
+        "documents",
+        "ocr and documents"
+      ],
+      "aliases": [
+        "ocr",
+        "and",
+        "documents",
+        "ocr and documents"
+      ],
+      "representativeQueries": [
+        "ocr and documents",
+        "use ocr and documents",
+        "find ocr and documents capability",
+        "productivity ocr and documents",
+        "extract text from pdfs scans pymupdf marker"
+      ],
+      "data": {
+        "name": "ocr-and-documents",
+        "description": "Extract text from PDFs/scans (pymupdf, marker-pdf).",
+        "category": "productivity",
+        "aliases": [
+          "ocr",
+          "and",
+          "documents",
+          "ocr and documents"
+        ],
+        "representativeQueries": [
+          "ocr and documents",
+          "use ocr and documents",
+          "find ocr and documents capability",
+          "productivity ocr and documents",
+          "extract text from pdfs scans pymupdf marker"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:skill:software-development:simplify-code",
+      "displayName": "simplify-code",
+      "type": "application/ai-skill",
+      "description": "Parallel 3-agent cleanup of recent code changes.",
+      "tags": [
+        "software-development",
+        "simplify",
+        "code",
+        "simplify code"
+      ],
+      "aliases": [
+        "simplify",
+        "code",
+        "simplify code"
+      ],
+      "representativeQueries": [
+        "simplify code",
+        "use simplify code",
+        "find simplify code capability",
+        "software-development simplify code",
+        "parallel agent cleanup recent code changes"
+      ],
+      "data": {
+        "name": "simplify-code",
+        "description": "Parallel 3-agent cleanup of recent code changes.",
+        "category": "software-development",
+        "aliases": [
+          "simplify",
+          "code",
+          "simplify code"
+        ],
+        "representativeQueries": [
+          "simplify code",
+          "use simplify code",
+          "find simplify code capability",
+          "software-development simplify code",
+          "parallel agent cleanup recent code changes"
+        ],
+        "source": "hermes-skill"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:tool:skill_view",
+      "displayName": "skill_view",
+      "type": "application/ai-skill",
+      "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+      "tags": [
+        "builtin-tool"
+      ],
+      "data": {
+        "name": "skill_view",
+        "source": "hermes-builtin-tool"
+      }
+    },
+    {
+      "identifier": "urn:ai:hermes.local:tool:skills_list",
+      "displayName": "skills_list",
+      "type": "application/ai-skill",
+      "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+      "tags": [
+        "builtin-tool"
+      ],
+      "data": {
+        "name": "skills_list",
+        "source": "hermes-builtin-tool"
+      }
+    }
+  ]
+}

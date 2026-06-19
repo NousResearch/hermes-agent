@@ -627,7 +627,14 @@ def cmd_setup(args) -> None:
         # --- Cloud: OAuth (browser) or API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
 
+        # Detect an existing OAuth grant so re-running setup reflects it instead
+        # of looking like a fresh connect.
+        from plugins.memory.honcho.oauth import OAuthCredential
+        existing_oauth = OAuthCredential.from_host_block(hermes_host)
+
         print("\n  Auth method:")
+        if existing_oauth is not None:
+            print(f"    (currently connected via OAuth — client {existing_oauth.client_id})")
         print("    oauth  -- sign in via browser (recommended)")
         print("    apikey -- paste an API key from https://app.honcho.dev")
         method = _prompt("OAuth or API key?", default="oauth").strip().lower()
@@ -1056,6 +1063,12 @@ def cmd_status(args) -> None:
     api_key = hcfg.api_key or ""
     masked = f"...{api_key[-8:]}" if len(api_key) > 8 else ("set" if api_key else "not set")
 
+    # Auth line distinguishes an OAuth grant (refreshable) from a static API key
+    # — the OAuth access token is also stored under apiKey, so masking alone hides it.
+    from plugins.memory.honcho.oauth import OAuthCredential
+    host_block = (getattr(hcfg, "raw", None) or {}).get("hosts", {}).get(hcfg.host) or {}
+    cred = OAuthCredential.from_host_block(host_block)
+
     profile = _active_profile_name()
     profile_label = f" [{hcfg.host}]" if profile != "default" else ""
 
@@ -1064,7 +1077,13 @@ def cmd_status(args) -> None:
         print(f"  Profile:        {profile}")
     print(f"  Host:           {hcfg.host}")
     print(f"  Enabled:        {hcfg.enabled}")
-    print(f"  API key:        {masked}")
+    if cred is not None:
+        import time as _time
+        remaining = int(cred.expires_at - _time.time())
+        token_state = f"valid {remaining // 60}m" if remaining > 0 else "expired — refreshes on next use"
+        print(f"  Auth:           OAuth ({cred.client_id}, token {token_state})")
+    else:
+        print(f"  Auth:           API key ({masked})")
     print(f"  Workspace:      {hcfg.workspace_id}")
 
     # Config paths — show where config was read from and where writes go

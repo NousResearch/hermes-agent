@@ -328,6 +328,13 @@ def compress_context(
         agent._compression_feasibility_checked = True
 
     _pre_msg_count = len(messages)
+    # In-place compaction (config: compression.in_place, see #38763). When True,
+    # this compaction rewrites the message list + rebuilds the system prompt but
+    # keeps the SAME session_id — no end_session, no parent_session_id child, no
+    # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
+    # engine session-switch. The conversation keeps one durable id for life,
+    # eliminating the session-rotation bug cluster. Default False during rollout.
+    in_place = bool(getattr(agent, "compression_in_place", False))
     logger.info(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
         agent.session_id or "none", _pre_msg_count,
@@ -508,65 +515,82 @@ def compress_context(
 
     if agent._session_db:
         try:
-            # Propagate title to the new session with auto-numbering
-            old_title = agent._session_db.get_session_title(agent.session_id)
-            # Trigger memory extraction on the old session before it rotates.
+            # Trigger memory extraction on the current session before the
+            # transcript is rewritten (runs in BOTH modes — the logical
+            # conversation's pre-compaction turns are about to be summarized
+            # away regardless of whether the id rotates).
             agent.commit_memory_session(messages)
-            # Flush any un-persisted messages from the current turn to the
-            # old session *before* rotating.  compress_context() can be
-            # called mid-turn (auto-compress when context exceeds threshold)
-            # at a point when _flush_messages_to_session_db() has not yet
-            # run.  Without this, messages generated during the current turn
-            # are silently lost on session rotation (#47202).
+            # Flush any un-persisted messages from the current turn *before*
+            # the rewrite.  compress_context() can be called mid-turn
+            # (auto-compress when context exceeds threshold) at a point when
+            # _flush_messages_to_session_db() has not yet run.  Without this,
+            # messages generated during the current turn are silently lost
+            # (#47202). In-place mode flushes to the SAME session; rotation
+            # mode flushes to the old session before ending it.
             try:
                 agent._flush_messages_to_session_db(messages)
             except Exception:
                 pass  # best-effort — don't block compression on a flush error
-            agent._session_db.end_session(agent.session_id, "compression")
-            old_session_id = agent.session_id
-            agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-            # Ordering contract: the agent thread updates the contextvar here;
-            # the gateway propagates to SessionEntry after run_in_executor returns.
-            try:
-                from gateway.session_context import set_current_session_id
 
-                set_current_session_id(agent.session_id)
-            except Exception:
-                os.environ["HERMES_SESSION_ID"] = agent.session_id
-            # The gateway/tools session context (ContextVar + env) and the
-            # logging session context are SEPARATE mechanisms. The call above
-            # moves the former; the ``[session_id]`` tag on log lines comes
-            # from ``hermes_logging._session_context`` (set once per turn in
-            # conversation_loop.py). Without this, post-rotation log lines in
-            # the same turn keep the STALE old id while the message/DB/gateway
-            # state carry the new one — breaking log correlation exactly at the
-            # compaction boundary (see #34089). Guarded separately so a logging
-            # failure can never regress the routing update above.
-            try:
-                from hermes_logging import set_session_context
-
-                set_session_context(agent.session_id)
-            except Exception:
-                pass
-            agent._session_db_created = False
-            agent._session_db.create_session(
-                session_id=agent.session_id,
-                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=agent.model,
-                model_config=agent._session_init_model_config,
-                parent_session_id=old_session_id,
-            )
-            agent._session_db_created = True
-            # Auto-number the title for the continuation session
-            if old_title:
+            if in_place:
+                # ── In-place compaction: keep the same session_id ──────────
+                # No end_session, no new row, no parent_session_id, no title
+                # renumber, no contextvar/env/logging re-sync. Just refresh
+                # the stored system prompt on the existing row. The session's
+                # id, title, cwd, /goal, FTS-indexed history, and gateway
+                # routing all stay put. See #38763.
+                agent._session_db.update_system_prompt(
+                    agent.session_id, new_system_prompt
+                )
+            else:
+                # ── Rotation (legacy): end this session, fork a continuation ─
+                # Propagate title to the new session with auto-numbering
+                old_title = agent._session_db.get_session_title(agent.session_id)
+                agent._session_db.end_session(agent.session_id, "compression")
+                old_session_id = agent.session_id
+                agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                # Ordering contract: the agent thread updates the contextvar here;
+                # the gateway propagates to SessionEntry after run_in_executor returns.
                 try:
-                    new_title = agent._session_db.get_next_title_in_lineage(old_title)
-                    agent._session_db.set_session_title(agent.session_id, new_title)
-                except (ValueError, Exception) as e:
-                    logger.debug("Could not propagate title on compression: %s", e)
-            agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            # Reset flush cursor — new session starts with no messages written
-            agent._last_flushed_db_idx = 0
+                    from gateway.session_context import set_current_session_id
+
+                    set_current_session_id(agent.session_id)
+                except Exception:
+                    os.environ["HERMES_SESSION_ID"] = agent.session_id
+                # The gateway/tools session context (ContextVar + env) and the
+                # logging session context are SEPARATE mechanisms. The call above
+                # moves the former; the ``[session_id]`` tag on log lines comes
+                # from ``hermes_logging._session_context`` (set once per turn in
+                # conversation_loop.py). Without this, post-rotation log lines in
+                # the same turn keep the STALE old id while the message/DB/gateway
+                # state carry the new one — breaking log correlation exactly at the
+                # compaction boundary (see #34089). Guarded separately so a logging
+                # failure can never regress the routing update above.
+                try:
+                    from hermes_logging import set_session_context
+
+                    set_session_context(agent.session_id)
+                except Exception:
+                    pass
+                agent._session_db_created = False
+                agent._session_db.create_session(
+                    session_id=agent.session_id,
+                    source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=agent.model,
+                    model_config=agent._session_init_model_config,
+                    parent_session_id=old_session_id,
+                )
+                agent._session_db_created = True
+                # Auto-number the title for the continuation session
+                if old_title:
+                    try:
+                        new_title = agent._session_db.get_next_title_in_lineage(old_title)
+                        agent._session_db.set_session_title(agent.session_id, new_title)
+                    except (ValueError, Exception) as e:
+                        logger.debug("Could not propagate title on compression: %s", e)
+                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                # Reset flush cursor — new session starts with no messages written
+                agent._last_flushed_db_idx = 0
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 

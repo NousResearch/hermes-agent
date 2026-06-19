@@ -685,6 +685,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 pass
         self._poll_task = None
 
+        for task in self._pending_text_batch_tasks.values():
+            if task and not task.done():
+                task.cancel()
+        self._pending_text_batch_tasks.clear()
+        self._pending_text_batches.clear()
+
         # Close the persistent HTTP session
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()

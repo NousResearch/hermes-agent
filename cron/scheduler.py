@@ -951,13 +951,36 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _scripts_dir_for_job(job: dict | None) -> Path:
+    """Resolve the scripts directory for a cron job.
+
+    Profile-pinned jobs use that profile's ``HERMES_HOME/scripts``.
+    Jobs without a profile always use the default ``~/.hermes/scripts``
+    even when another profile job has temporarily switched process-global
+    ``HERMES_HOME``. This prevents parallel no_agent ticks from failing with
+    "Script not found" under ``profiles/<name>/scripts``.
+    """
+    profile = str((job or {}).get("profile") or "").strip()
+    if profile and profile.lower() != "default":
+        scripts_dir = _get_hermes_home() / "scripts"
+    else:
+        try:
+            from hermes_cli.profiles import _get_default_hermes_home
+
+            scripts_dir = _get_default_hermes_home() / "scripts"
+        except Exception:
+            scripts_dir = Path.home() / ".hermes" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    return scripts_dir
+
+
+def _run_job_script(script_path: str, job: dict | None = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    Scripts must reside within the job's scripts directory (see
+    ``_scripts_dir_for_job``).  Both relative and absolute paths are
+    resolved and validated against this directory to prevent arbitrary
+    script execution via path traversal or absolute path injection.
 
     Supported interpreters (chosen by file extension):
 
@@ -978,8 +1001,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir = _scripts_dir_for_job(job)
     scripts_dir_resolved = scripts_dir.resolve()
 
     raw = Path(script_path).expanduser()
@@ -1119,7 +1141,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(script_path, job=job)
         if success:
             if script_output:
                 prompt = (
@@ -1418,7 +1440,7 @@ def _run_job_unscoped(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, job=job)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -1507,7 +1529,7 @@ def _run_job_unscoped(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script(script_path, job=job)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

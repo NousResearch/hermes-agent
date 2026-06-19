@@ -172,6 +172,44 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
+    def test_default_job_uses_default_scripts_dir_when_profile_home_active(
+        self, tmp_path, monkeypatch
+    ):
+        """Unprofiled jobs should not inherit another profile's HERMES_HOME."""
+        default_home = tmp_path / "default-home"
+        profile_home = tmp_path / "profile-home"
+        (default_home / "scripts").mkdir(parents=True)
+        (profile_home / "scripts").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        from hermes_cli import profiles
+
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+
+        from cron.scheduler import _run_job_script
+
+        script = default_home / "scripts" / "default_only.py"
+        script.write_text('print("default scripts")\n')
+
+        success, output = _run_job_script("default_only.py", job={})
+        assert success is True
+        assert output == "default scripts"
+
+    def test_profile_job_uses_profile_scripts_dir(self, tmp_path, monkeypatch):
+        """Profile-pinned jobs should resolve scripts under the active profile home."""
+        profile_home = tmp_path / "profile-home"
+        (profile_home / "scripts").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        from cron.scheduler import _run_job_script
+
+        script = profile_home / "scripts" / "profile_only.py"
+        script.write_text('print("profile scripts")\n')
+
+        success, output = _run_job_script("profile_only.py", job={"profile": "secretary"})
+        assert success is True
+        assert output == "profile scripts"
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

@@ -1345,9 +1345,11 @@ class AIAgent:
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
-        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
-            return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        # Only match actual Ollama instances. The previous is_local_endpoint()
+        # fallback was too broad — it matched any local proxy (e.g. CLIProxy on
+        # 127.0.0.1:8317), causing false-positive stop→truncated conversions
+        # for GLM models served through local load-balancers.
+        return "ollama" in self._base_url_lower or ":11434" in self._base_url_lower
 
     def _should_treat_stop_as_truncated(
         self,

@@ -27,6 +27,8 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
         "browser_snapshot",
         "browser_console",
         "browser_get_images",
+        "skills_list",
+        "skill_view",
         "mcp_filesystem_read_file",
         "mcp_filesystem_read_text_file",
         "mcp_filesystem_read_multiple_files",

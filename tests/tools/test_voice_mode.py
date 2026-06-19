@@ -333,6 +333,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -351,6 +352,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -367,6 +369,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         sd = MagicMock()
         sd.query_devices.return_value = []
@@ -387,6 +390,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         sd = MagicMock()
         sd.query_devices.side_effect = RuntimeError("boom")
@@ -410,6 +414,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()

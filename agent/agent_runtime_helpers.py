@@ -1850,28 +1850,32 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 store=agent._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes.
-            # Covers both the single-op shape and each add/replace inside a batch.
+            # Covers both the single-op shape and each add/replace/remove inside a batch.
             if agent._memory_manager:
                 if operations:
                     _mem_ops = [
                         op for op in operations
-                        if isinstance(op, dict) and op.get("action") in {"add", "replace"}
+                        if isinstance(op, dict) and op.get("action") in {"add", "replace", "remove"}
                     ]
                 else:
                     _mem_ops = (
-                        [{"action": next_args.get("action"), "content": next_args.get("content")}]
-                        if next_args.get("action") in {"add", "replace"} else []
+                        [{"action": next_args.get("action"), "content": next_args.get("content"),
+                          "old_text": next_args.get("old_text")}]
+                        if next_args.get("action") in {"add", "replace", "remove"} else []
                     )
                 for _op in _mem_ops:
                     try:
+                        _meta = agent._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=tool_call_id,
+                        )
+                        if _op.get("old_text"):
+                            _meta["old_text"] = _op.get("old_text")
                         agent._memory_manager.on_memory_write(
                             _op.get("action", ""),
                             target,
                             _op.get("content", "") or "",
-                            metadata=agent._build_memory_write_metadata(
-                                task_id=effective_task_id,
-                                tool_call_id=tool_call_id,
-                            ),
+                            metadata=_meta,
                         )
                     except Exception:
                         pass

@@ -481,6 +481,13 @@ class GatewaySlashCommandsMixin:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
                 context_total = _int_value(getattr(ctx, "context_length", 0))
 
+        # Check session model overrides from /model command first
+        session_override = self._session_model_overrides.get(session_key, {})
+        if session_override:
+            model_name = model_name or _clean_str(session_override.get("model", ""))
+            provider_name = provider_name or _clean_str(session_override.get("provider", ""))
+            base_url = base_url or _clean_str(session_override.get("base_url", ""))
+
         model_name = model_name or _clean_str(session_row.get("model"))
         provider_name = provider_name or _clean_str(session_row.get("billing_provider"))
         base_url = base_url or _clean_str(session_row.get("billing_base_url"))

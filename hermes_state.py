@@ -2594,6 +2594,208 @@ class SessionDB:
             result.append(msg)
         return result
 
+    # ── Session hover summary (issue #45103) ─────────────────────────
+    # Lazy LLM-generated 3-5 sentence summary cached in `sessions.summary`.
+    # Designed for the Desktop sidebar hover card (PR #48535 added the
+    # schema columns; this method writes them).
+
+    # Default knobs. Override per-call via kwargs. Kept conservative:
+    # 20 messages is enough to capture the topic + outcome of most
+    # sessions, and ~250 output tokens is plenty for 3-5 sentences.
+    _SUMMARY_DEFAULT_MAX_MESSAGES = 20
+    _SUMMARY_DEFAULT_MAX_TOKENS = 250
+    _SUMMARY_TIMEOUT_SECONDS = 30.0
+
+    @staticmethod
+    def _summarize_format_conversation(messages: List[Dict[str, Any]]) -> str:
+        """Format a message list into a compact textual transcript for the
+        summarizer LLM. Strips tool calls/results to keep the prompt under
+        ~3k tokens; keeps user/assistant text verbatim so the model has the
+        actual conversation to summarize (not just metadata).
+        """
+        lines = []
+        for m in messages:
+            role = m.get("role", "unknown")
+            content = m.get("content")
+            if content is None:
+                continue
+            if isinstance(content, list):
+                # Multi-part content (text + image_url blocks). Concatenate
+                # text parts only — image bytes are useless to the
+                # summarizer and would blow the token budget.
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                content = "\n".join(text_parts)
+            if not isinstance(content, str):
+                content = str(content)
+            content = content.strip()
+            if not content:
+                continue
+            # Tag the role for the model (it doesn't see the message dict)
+            lines.append(f"[{role}] {content}")
+        return "\n\n".join(lines)
+
+    def summarize_session(
+        self,
+        session_id: str,
+        *,
+        max_messages: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        force: bool = False,
+    ) -> Optional[str]:
+        """Generate (or refresh) a 3-5 sentence summary for a session.
+
+        Returns the new summary text on success, or ``None`` on any failure
+        (LLM error, missing session, no provider configured, etc.). Failures
+        are logged at WARNING; the next call to this method can retry.
+
+        The summary is stored in ``sessions.summary`` along with
+        ``summary_updated_at`` (unix seconds) and ``summary_model`` (the
+        model that produced it). The frontend reads these fields directly
+        off the existing ``list_sessions`` / ``get_session`` response.
+
+        If a summary already exists and ``force=False`` (the default), this
+        is a no-op — the frontend should treat the existing summary as
+        current. Pass ``force=True`` to regenerate unconditionally.
+
+        Model routing: uses the session's own ``model`` field and the
+        configured runtime for that model. If the session has no model
+        recorded (rare; pre-migration sessions), falls back to the user's
+        currently-configured main model. This mirrors how the agent picks
+        a model for the session itself, so the summary uses the same
+        provider the user is paying for.
+        """
+        max_messages = max_messages or self._SUMMARY_DEFAULT_MAX_MESSAGES
+        max_tokens = max_tokens or self._SUMMARY_DEFAULT_MAX_TOKENS
+
+        # Load the session row
+        session = self.get_session(session_id)
+        if not session:
+            logger.warning("summarize_session: session %s not found", session_id)
+            return None
+
+        # Idempotency: skip if a recent summary already exists, unless
+        # forced. Treat summaries < 5 minutes old as current — the
+        # scheduler will refresh on session close / idle / 20-msg
+        # threshold; the frontend should not re-trigger on every render.
+        if (
+            not force
+            and session.get("summary")
+            and session.get("summary_updated_at")
+        ):
+            age = time.time() - float(session["summary_updated_at"])
+            if age < 300:
+                return session["summary"]
+
+        # Load the last N messages (insertion order, via get_messages).
+        # Take the tail, since recent context is most informative.
+        all_messages = self.get_messages(session_id, include_inactive=False)
+        if not all_messages:
+            logger.info(
+                "summarize_session: session %s has no messages, skipping",
+                session_id,
+            )
+            return None
+        messages = all_messages[-max_messages:]
+
+        transcript = self._summarize_format_conversation(messages)
+        if not transcript.strip():
+            logger.info(
+                "summarize_session: session %s has no text content, skipping",
+                session_id,
+            )
+            return None
+
+        # Build the summarizer prompt. Kept short: the model only needs
+        # the transcript + the output shape; everything else is noise.
+        # Issue #45103 acceptance: 3-5 sentences, "what / why / outcome".
+        prompt = (
+            "Summarize the following conversation in 3-5 sentences. "
+            "Cover: what was done, why it was being done, and what the "
+            "outcome was (or the current state if still in progress). "
+            "Use the same language as the user. Be concrete — name "
+            "specific files, decisions, numbers, or next steps when they "
+            "appear in the conversation. Do NOT include tool call output, "
+            "file paths from internal mechanics, or any preamble like "
+            "'The user asked...' — just the substance.\n\n"
+            f"CONVERSATION:\n{transcript}"
+        )
+
+        # Resolve the runtime for this session's model. Prefer the
+        # session's own model + a sensible default API mode. Falls back
+        # to None — call_llm will then auto-resolve against the user's
+        # main config.
+        main_runtime: Dict[str, Any] = {
+            "model": session.get("model"),
+            "api_mode": "chat_completions",
+        }
+        # Drop model=None so call_llm's auto-detection kicks in for
+        # pre-migration sessions with no recorded model.
+        main_runtime = {k: v for k, v in main_runtime.items() if v is not None}
+
+        # Local import: keep hermes_state importable in environments
+        # where the agent stack isn't installed (e.g. the dashboard-only
+        # profile that just reads state.db).
+        try:
+            from agent.auxiliary_client import call_llm
+        except ImportError:
+            logger.warning(
+                "summarize_session: agent.auxiliary_client not importable; "
+                "skipping summary for session %s",
+                session_id,
+            )
+            return None
+
+        try:
+            response = call_llm(
+                task="session_summarization",
+                main_runtime=main_runtime or None,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=int(max_tokens),
+                timeout=self._SUMMARY_TIMEOUT_SECONDS,
+            )
+            content = response.choices[0].message.content
+            if not isinstance(content, str):
+                content = str(content) if content else ""
+            summary_text = content.strip()
+            if not summary_text:
+                logger.warning(
+                    "summarize_session: empty response for session %s",
+                    session_id,
+                )
+                return None
+        except Exception as exc:
+            # Mirror context_compressor.py: any LLM failure is
+            # non-fatal. The caller (scheduler / API) decides whether
+            # to retry; we leave the cached summary as-is so the user
+            # still sees the last good one (or nothing, if first
+            # attempt).
+            logger.warning(
+                "summarize_session: LLM call failed for session %s: %s",
+                session_id,
+                exc,
+            )
+            return None
+
+        # Persist. Use the same lock the rest of the class uses so
+        # concurrent summarization jobs on different sessions don't
+        # fight each other.
+        resolved_model = (
+            getattr(response, "model", None)
+            or session.get("model")
+            or "auto"
+        )
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET summary = ?, summary_updated_at = ?, "
+                "summary_model = ? WHERE id = ?",
+                (summary_text, time.time(), resolved_model, session_id),
+            )
+            self._conn.commit()
+        return summary_text
+
     def get_messages_around(
         self,
         session_id: str,

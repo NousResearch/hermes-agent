@@ -5,7 +5,9 @@ import sqlite3
 from zoneinfo import ZoneInfo
 
 from tools.local_repair_tool import (
+    collect_token_usage_report,
     collect_today_token_usage_report,
+    format_token_usage_report,
     format_today_token_usage_report,
     repair_morning_briefing_operation_summary,
 )
@@ -129,6 +131,7 @@ def _write_state_db(tmp_path):
     today_a = dt.datetime(2026, 6, 16, 8, 0, tzinfo=tz).timestamp()
     today_b = dt.datetime(2026, 6, 16, 9, 0, tzinfo=tz).timestamp()
     yesterday = dt.datetime(2026, 6, 15, 23, 59, tzinfo=tz).timestamp()
+    old = dt.datetime(2026, 6, 14, 11, 59, tzinfo=tz).timestamp()
     conn.executemany(
         """
         INSERT INTO sessions (
@@ -141,6 +144,7 @@ def _write_state_db(tmp_path):
             ("s-small", "feishu", "m", today_a, "done", 3, 1, 100, 10, 5, 0.01, "estimated", "Small", 2),
             ("s-large", "cron", "m", today_b, "done", 4, 2, 900, 30, 10, 0.02, "estimated", "Large", 3),
             ("s-old", "feishu", "m", yesterday, "done", 4, 2, 5000, 50, 0, 1.0, "estimated", "Old", 3),
+            ("s-too-old", "feishu", "m", old, "done", 4, 2, 7000, 70, 0, 1.0, "estimated", "Too Old", 3),
         ],
     )
     conn.commit()
@@ -178,3 +182,70 @@ def test_today_token_usage_report_can_filter_feishu_scope(tmp_path):
     assert "飞书会话" in text
     assert "Small" in text
     assert "Old" not in text
+
+
+def test_token_usage_report_can_target_yesterday_natural_day(tmp_path):
+    db_path = _write_state_db(tmp_path)
+    now = dt.datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    result = collect_token_usage_report(
+        db_path=db_path,
+        target_date=dt.date(2026, 6, 15),
+        top_n=5,
+        now=now,
+    )
+    text = format_token_usage_report(result)
+
+    assert result["session_count"] == 1
+    assert result["input_tokens"] == 5000
+    assert [item["session_id"] for item in result["top_sessions"]] == ["s-old"]
+    assert "2026-06-15 00:00:00 至 2026-06-16 00:00:00" in text
+
+
+def test_token_usage_report_accepts_string_target_date(tmp_path):
+    db_path = _write_state_db(tmp_path)
+    now = dt.datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    result = collect_token_usage_report(
+        db_path=db_path,
+        target_date="2026-06-15",
+        top_n=5,
+        now=now,
+    )
+
+    assert result["session_count"] == 1
+    assert result["input_tokens"] == 5000
+
+
+def test_token_usage_report_supports_rolling_days(tmp_path):
+    db_path = _write_state_db(tmp_path)
+    now = dt.datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    result = collect_token_usage_report(
+        db_path=db_path,
+        days=2,
+        top_n=5,
+        now=now,
+        label="最近 2 天",
+    )
+
+    assert result["session_count"] == 3
+    assert result["input_tokens"] == 6000
+    assert [item["session_id"] for item in result["top_sessions"]] == ["s-old", "s-large", "s-small"]
+
+
+def test_token_usage_report_supports_explicit_date_range(tmp_path):
+    db_path = _write_state_db(tmp_path)
+    now = dt.datetime(2026, 6, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    result = collect_token_usage_report(
+        db_path=db_path,
+        range_start="2026-06-15",
+        range_end="2026-06-17",
+        top_n=5,
+        now=now,
+    )
+
+    assert result["session_count"] == 3
+    assert result["input_tokens"] == 6000
+    assert "s-too-old" not in [item["session_id"] for item in result["top_sessions"]]

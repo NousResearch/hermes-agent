@@ -8,9 +8,11 @@ entry here when a repeated failure has a stable detector and executable handler.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime as dt
 import logging
 import re
 from typing import Callable, Sequence
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -46,15 +48,35 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "").lower()
 
 
-def _looks_like_today_token_usage_request(text: str) -> bool:
-    """Detect the repeated Feishu daily token-report request shape."""
+def _looks_like_token_usage_request(text: str) -> bool:
+    """Detect Feishu token-report requests before dispatching to the agent."""
     normalized = _normalize_text(text)
     if not normalized:
         return False
     has_token = "token" in normalized or "tokens" in normalized
-    has_today = any(marker in normalized for marker in ("今天", "今日", "当日", "截止到现在"))
     has_usage = any(marker in normalized for marker in ("消耗", "统计", "输入", "输出", "用量"))
-    return bool(has_token and has_today and has_usage)
+    has_time_window = any(
+        marker in normalized
+        for marker in (
+            "今天",
+            "今日",
+            "当日",
+            "截止到现在",
+            "昨天",
+            "昨日",
+            "最近",
+            "之内",
+            "以内",
+            "一周",
+            "一月",
+            "一个月",
+            "本周",
+            "本月",
+        )
+    ) or bool(re.search(r"\d+\s*(?:天|周|个月|月)", text or "")) or bool(
+        re.search(r"\d{4}-\d{2}-\d{2}", text or "")
+    )
+    return bool(has_token and has_usage and has_time_window)
 
 
 def _looks_like_agent_loop_diagnostic_request(text: str) -> bool:
@@ -133,12 +155,89 @@ def _today_token_usage_scope(text: str) -> str:
     return "all"
 
 
-def _render_today_token_usage_report(text: str) -> str:
-    from tools.local_repair_tool import render_today_token_usage_report
+def _chinese_number_to_int(raw: str, default: int) -> int:
+    raw = (raw or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    digits = {
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+    if raw == "十":
+        return 10
+    if raw.startswith("十"):
+        return 10 + digits.get(raw[1:], 0)
+    if "十" in raw:
+        left, _, right = raw.partition("十")
+        return digits.get(left, 1) * 10 + digits.get(right, 0)
+    return digits.get(raw, default)
 
-    return render_today_token_usage_report(
+
+def _parse_token_usage_window(text: str) -> dict[str, object]:
+    normalized = _normalize_text(text)
+    now = dt.datetime.now(ZoneInfo("Asia/Shanghai"))
+    today = now.date()
+    dates = re.findall(r"\d{4}-\d{2}-\d{2}", text or "")
+
+    if len(dates) >= 2:
+        return {
+            "range_start": dates[0],
+            "range_end": (dt.date.fromisoformat(dates[1]) + dt.timedelta(days=1)).isoformat(),
+            "label": f"{dates[0]} 至 {dates[1]}",
+        }
+    if len(dates) == 1:
+        return {"target_date": dates[0], "label": dates[0]}
+
+    if any(marker in normalized for marker in ("昨天", "昨日")):
+        target = today - dt.timedelta(days=1)
+        return {"target_date": target.isoformat(), "label": "昨日"}
+
+    if any(marker in normalized for marker in ("本周", "这周")):
+        start = today - dt.timedelta(days=today.weekday())
+        return {"range_start": start.isoformat(), "range_end": (today + dt.timedelta(days=1)).isoformat(), "label": "本周"}
+
+    if any(marker in normalized for marker in ("本月", "这个月")):
+        start = today.replace(day=1)
+        return {"range_start": start.isoformat(), "range_end": (today + dt.timedelta(days=1)).isoformat(), "label": "本月"}
+
+    month_match = re.search(r"(?:最近)?([0-9一二两三四五六七八九十]+)?(?:个)?月(?:内|以内|之内)?", normalized)
+    if month_match and "本月" not in normalized:
+        months = _chinese_number_to_int(month_match.group(1) or "一", 1)
+        return {"days": max(1, min(months * 30, 366)), "label": f"最近 {months} 个月"}
+
+    week_match = re.search(r"(?:最近)?([0-9一二两三四五六七八九十]+)?周(?:内|以内|之内)?", normalized)
+    if week_match:
+        weeks = _chinese_number_to_int(week_match.group(1) or "一", 1)
+        return {"days": max(1, min(weeks * 7, 366)), "label": f"最近 {weeks} 周"}
+
+    day_match = re.search(r"(?:最近)?([0-9一二两三四五六七八九十]+)天(?:内|以内|之内)?", normalized)
+    if day_match:
+        days = _chinese_number_to_int(day_match.group(1), 1)
+        return {"days": max(1, min(days, 366)), "label": f"最近 {days} 天"}
+
+    return {"label": "今日"}
+
+
+def _render_token_usage_report(text: str) -> str:
+    from tools.local_repair_tool import render_token_usage_report
+
+    return render_token_usage_report(
         scope=_today_token_usage_scope(text),
         top_n=_parse_top_n(text),
+        **_parse_token_usage_window(text),
     )
 
 
@@ -160,21 +259,21 @@ KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
         description="Explain Hermes/OpenClaw diagnostic-loop state without starting another broad diagnostic turn.",
     ),
     KnownOpsTask(
-        name="today_token_usage_report",
+        name="token_usage_report",
         platforms=frozenset({"feishu"}),
-        detector=_looks_like_today_token_usage_request,
-        handler=_render_today_token_usage_report,
+        detector=_looks_like_token_usage_request,
+        handler=_render_token_usage_report,
         verification=(
             "unit: tests/gateway/test_known_ops_tasks.py",
             "unit: tests/tools/test_local_repair_tool.py",
             "runtime: hermes gateway restart && hermes gateway status",
         ),
         promotion_hint=(
-            "Repeated Feishu requests for same-day token usage should stay on this "
-            "deterministic state.db report path; add adjacent usage reports as new "
-            "KnownOpsTask entries instead of adding one-off gateway conditionals."
+            "Repeated Feishu requests for token usage over common time windows should "
+            "stay on this deterministic state.db report path; extend the time-window "
+            "parser instead of adding one-off scripts."
         ),
-        description="Render today's Hermes input/output token usage and top sessions.",
+        description="Render Hermes input/output token usage and top sessions for common time windows.",
     ),
 )
 

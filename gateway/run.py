@@ -2323,6 +2323,16 @@ def _platform_budget_key_for_message(platform: str, message: str) -> str:
     return "feishu"
 
 
+def _platform_task_mode_for_message(platform: str, budget_key: str, message: str) -> str:
+    try:
+        from agent.install_success_stop import is_install_task_message
+        if is_install_task_message(platform, budget_key, message):
+            return "install"
+    except Exception:
+        pass
+    return ""
+
+
 def _max_iterations_for_platform_budget(default_max: int, platform_budget_key: str) -> int:
     if platform_budget_key == "feishu":
         return min(default_max, 6)
@@ -13376,6 +13386,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             platform_key = _platform_config_key(source.platform)
             platform_budget_key = _platform_budget_key_for_message(platform_key, prompt)
+            platform_task_mode = _platform_task_mode_for_message(
+                platform_key,
+                platform_budget_key,
+                prompt,
+            )
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -13441,6 +13456,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     fallback_model=self._refresh_fallback_model(),
                 )
                 agent._platform_budget_key = platform_budget_key
+                agent._platform_task_mode = platform_task_mode
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -17999,6 +18015,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
             platform_budget_key = _platform_budget_key_for_message(platform_key, message)
+            platform_task_mode = _platform_task_mode_for_message(
+                platform_key,
+                platform_budget_key,
+                message,
+            )
 
             # Read from env var or use default (same as CLI). Messaging
             # platforms can narrow or widen this per explicit diagnostic mode.
@@ -18371,6 +18392,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.status_callback = _status_callback_sync
             agent.platform = platform_key
             agent._platform_budget_key = platform_budget_key
+            agent._platform_task_mode = platform_task_mode
             agent.max_iterations = max_iterations
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a

@@ -114,6 +114,39 @@ class TestResolvePiperVoicePath:
         result = _resolve_piper_voice_path("", tmp_path)
         assert result.endswith(f"{DEFAULT_PIPER_VOICE}.onnx")
 
+    def test_bare_onnx_filename_in_voices_dir_resolved_without_download(self, tmp_path):
+        """If ``voice`` is a bare ``.onnx`` filename (no directory component)
+        and ``download_dir`` already contains both ``<name>.onnx`` and
+        ``<name>.onnx.json``, return the local file without spawning the
+        piper downloader. Regression test for the case where the user sets
+        ``tts.piper.voice`` to a fully-qualified filename in their config."""
+        voice = "en_US-libritts_r-medium.onnx"
+        (tmp_path / voice).write_bytes(b"model")
+        (tmp_path / f"{voice}.json").write_text("{}")
+
+        with patch("tools.tts_tool.subprocess.run") as mock_run:
+            result = _resolve_piper_voice_path(voice, tmp_path)
+
+        mock_run.assert_not_called()
+        assert result == str(tmp_path / voice)
+
+    def test_bare_onnx_filename_falls_through_to_download_when_missing(self, tmp_path):
+        """If ``voice`` is a bare ``.onnx`` filename that is *not* present
+        in ``download_dir``, the downloader is invoked (preserves existing
+        behaviour for genuinely missing voices)."""
+        voice = "en_US-missing-medium.onnx"
+
+        def fake_run(cmd, *a, **kw):
+            (tmp_path / voice).write_bytes(b"model")
+            (tmp_path / f"{voice}.json").write_text("{}")
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        with patch("tools.tts_tool.subprocess.run", side_effect=fake_run) as mock_run:
+            result = _resolve_piper_voice_path(voice, tmp_path)
+
+        mock_run.assert_called_once()
+        assert result == str(tmp_path / voice)
+
 
 # ---------------------------------------------------------------------------
 # _generate_piper_tts — stubbed so we don't need piper-tts installed

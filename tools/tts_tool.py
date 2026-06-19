@@ -1823,6 +1823,8 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
 
     Accepts any of:
       - Absolute / expanded path to an .onnx file the user already has
+      - A bare ``.onnx`` filename present in ``download_dir`` (sibling
+        ``<name>.onnx.json`` must also exist)
       - A voice *name* like ``en_US-lessac-medium`` (downloads to
         ``download_dir`` on first use via ``python -m piper.download_voices``)
 
@@ -1831,15 +1833,23 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
     if not voice:
         voice = DEFAULT_PIPER_VOICE
 
-    # Case 1: user gave a direct file path.
+    # Canonical on-disk path: Piper writes models as ``<name>.onnx`` plus a
+    # sibling ``<name>.onnx.json``, so we pick the form the user gave us.
+    if voice.lower().endswith(".onnx"):
+        on_disk = download_dir / voice
+        on_disk_json = download_dir / f"{voice}.json"
+    else:
+        on_disk = download_dir / f"{voice}.onnx"
+        on_disk_json = download_dir / f"{voice}.onnx.json"
+
+    # Case 1: user gave an absolute / expanded path to a .onnx file.
     candidate = Path(voice).expanduser()
-    if candidate.suffix.lower() == ".onnx" and candidate.exists():
+    if candidate.suffix.lower() == ".onnx" and candidate.is_absolute() and candidate.exists():
         return str(candidate)
 
-    # Case 2: user gave a voice *name*. See if it's already downloaded.
-    cached = download_dir / f"{voice}.onnx"
-    if cached.exists() and (download_dir / f"{voice}.onnx.json").exists():
-        return str(cached)
+    # Case 2: bare .onnx filename or voice name in the configured voices_dir.
+    if on_disk.exists() and on_disk_json.exists():
+        return str(on_disk)
 
     # Case 3: download the voice. piper ships a download helper module.
     import sys as _sys
@@ -1862,13 +1872,13 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
             f"Piper voice download failed for '{voice}': {stderr[:400]}"
         )
 
-    if not cached.exists():
+    if not on_disk.exists():
         raise RuntimeError(
-            f"Piper voice download completed but {cached} is missing — "
+            f"Piper voice download completed but {on_disk} is missing — "
             f"check voice name (see: https://github.com/OHF-Voice/piper1-gpl/"
             f"blob/main/docs/VOICES.md)"
         )
-    return str(cached)
+    return str(on_disk)
 
 
 def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:

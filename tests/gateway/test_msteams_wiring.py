@@ -191,11 +191,13 @@ def test_send_message_parses_teams_conversation_id():
 
 
 def test_send_message_platform_map_includes_msteams():
-    # Indirect: inspect the source since platform_map is built inside _handle_send.
+    # _handle_send resolves the platform name through the Platform enum
+    # (``Platform(platform_name)``) rather than a hand-maintained dict, so
+    # verify "msteams" resolves to the MSTEAMS member.
     import inspect
     from tools import send_message_tool
-    src = inspect.getsource(send_message_tool._handle_send)
-    assert '"msteams": Platform.MSTEAMS' in src
+    from gateway.config import Platform
+    assert Platform("msteams") is Platform.MSTEAMS
 
     dispatch_src = inspect.getsource(send_message_tool._send_to_platform)
     assert "Platform.MSTEAMS" in dispatch_src

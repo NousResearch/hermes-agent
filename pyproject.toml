@@ -301,6 +301,11 @@ all = [
   "hermes-agent[google]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
+  # MS Teams ships pure-Python wheels (botbuilder/msal/azure-identity/
+  # msgraph-sdk) that install cleanly on every platform, and the adapter's
+  # test suite imports them directly — so unlike the lazy-installed backends
+  # above, it stays eager here.
+  "hermes-agent[msteams]",
 ]
 
 [project.scripts]

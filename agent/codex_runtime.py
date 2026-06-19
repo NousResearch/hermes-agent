@@ -319,6 +319,16 @@ def run_codex_app_server_turn(
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
+        # Signal that the codex app-server runtime did NOT self-persist
+        # its turn messages to the session DB.  The standard conversation_loop
+        # path flushes messages via _flush_messages_to_session_db(), but
+        # run_codex_app_server_turn is an early-return that bypasses that
+        # loop entirely.  Without this flag, gateway/run.py assumes
+        # self._session_db is not None → skip_db=True on every
+        # append_to_transcript call, leaving codex turns persisted nowhere
+        # (state.db gets only session_meta rows, so session_search and
+        # conversation-distill are blind to real gateway conversations).
+        "agent_persisted": False,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
         **usage_result,

@@ -252,8 +252,10 @@ class TestFallbackTransport:
 
         resp = await transport.handle_async_request(_telegram_request())
         assert resp.status_code == 200
-        # Tried sticky (.220) first, then fell through to .221
-        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        # After #24511: when sticky fails the transport also resets and
+        # re-tries the primary DNS path before falling through to other IPs.
+        # Path: sticky (.220) → primary (api.telegram.org) → .221
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org", "149.154.167.221"]
         assert transport._sticky_ip == "149.154.167.221"
 
 

@@ -45,13 +45,13 @@ This installs the `agent-client-protocol` dependency and enables:
 - `hermes-acp`
 - `python -m acp_adapter`
 
-For Zed registry installs, Zed launches Hermes through the official ACP Registry entry. That entry uses the npm launcher package `@nousresearch/hermes-agent-acp`, which runs:
+For Zed registry installs, Zed launches Hermes through the official ACP Registry entry. That entry uses a `uvx` distribution that runs:
 
 ```bash
 uvx --from 'hermes-agent[acp]==<version>' hermes-acp
 ```
 
-Make sure `uv` or `uvx` is available on `PATH` before using the registry install path.
+Make sure `uv` is available on `PATH` before using the registry install path.
 
 ## Launching the ACP server
 
@@ -77,6 +77,27 @@ For non-interactive checks:
 hermes acp --version
 hermes acp --check
 ```
+
+### Browser tools (optional)
+
+Browser tools (`browser_navigate`, `browser_click`, etc.) depend on the
+`agent-browser` npm package and Chromium, which aren't part of the Python
+wheel. Install them with:
+
+```bash
+hermes acp --setup-browser           # interactive (prompts before ~400 MB download)
+hermes acp --setup-browser --yes     # accept the download non-interactively
+```
+
+This is the standalone command. The Zed registry's terminal-auth flow (`hermes acp --setup`) also offers the browser bootstrap as a follow-up question after model selection, so most users never need to run `--setup-browser` directly.
+
+What it does:
+
+- Installs Node.js 22 LTS into `~/.hermes/node/` if missing
+- `npm install -g agent-browser @askjo/camofox-browser` into that prefix (no sudo needed — `npm`'s `--prefix` points at the user-writable Hermes-managed Node)
+- Installs Playwright Chromium, or uses a detected system Chrome/Chromium when available
+
+The bootstrap is idempotent — re-running it is fast and skips work that's already done.
 
 ## Editor setup
 
@@ -150,13 +171,13 @@ acp_registry/icon.svg
 
 The upstream registry PR copies those files into the top-level `hermes-agent/` directory in `agentclientprotocol/registry`.
 
-The registry entry uses an `npx` distribution:
+The registry entry uses a `uvx` distribution that points directly at the `hermes-agent` PyPI release:
 
 ```text
-npx @nousresearch/hermes-agent-acp@<version>
+uvx --from 'hermes-agent[acp]==<version>' hermes-acp
 ```
 
-The launcher then runs `hermes-acp` from the matching Python package version.
+The registry CI verifies that the pinned version exists on PyPI, so the manifest's `version` and uvx `package` pin must always match `pyproject.toml`. `scripts/release.py` keeps them in lockstep automatically.
 
 ## Configuration and credentials
 
@@ -197,6 +218,21 @@ Dangerous terminal commands can be routed back to the editor as approval prompts
 
 On timeout or error, the approval bridge denies the request.
 
+### Session-scoped edit auto-approval
+
+ACP exposes a third tier between *allow once* and *allow always*: **Allow for session**. Picking it from the editor's permission prompt records the approval inside the current ACP session only — every subsequent matching command in that session goes through without prompting, but a new ACP session (or restarting the editor) resets the slate and re-prompts the first time.
+
+| Option | Editor label | Scope | Persisted across restarts |
+|---|---|---|---|
+| `allow_once` | Allow once | This one tool call | No |
+| `allow_session` | Allow for session | All matching calls in this ACP session | No — cleared when the session ends |
+| `allow_always` | Allow always | All future sessions | Yes (written to the Hermes permanent allowlist) |
+| `deny` | Deny | This one tool call | No |
+
+`allow_session` is the right default for an editor workflow where you trust an agent for the duration of a task but don't want to grant a long-lived allowlist entry. The safety trade-off is straightforward: the broader the scope, the less the editor will interrupt you, and the more damage a misbehaving agent (or prompt injection) can do before you notice. Start with `allow_once` for unfamiliar commands; promote to `allow_session` once you've seen the agent run the same pattern correctly a few times; reserve `allow_always` for truly idempotent commands you trust forever (e.g. `git status`).
+
+The ACP bridge maps these options onto Hermes' internal approval semantics — `allow_always` writes a permanent allowlist entry the same way the CLI does, while `allow_session` only affects the in-process approval cache for the current ACP session.
+
 ## Troubleshooting
 
 ### ACP agent does not appear in the editor
@@ -207,7 +243,7 @@ Check:
 - For manual/local development, verify the custom `agent_servers` command points to `hermes acp`.
 - Hermes is installed and on your PATH.
 - The ACP extra is installed (`pip install -e '.[acp]'`).
-- `uv` or `uvx` is installed if launching from the official Zed registry entry.
+- `uv` is installed if launching from the official Zed registry entry.
 
 ### ACP starts but immediately errors
 

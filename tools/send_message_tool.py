@@ -13,7 +13,6 @@ import re
 import ssl
 import time
 from email.utils import formatdate
-from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -27,7 +26,9 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 # because the API requires a conversation ID. To DM a user you must first call
 # conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
 # through to channel-name resolution, which only matches by name and fails.
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
+# Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
+_SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -37,8 +38,25 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # below and falls through to channel-name resolution, which has no way to
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
-_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# WhatsApp JIDs: group chats (<digits>@g.us), individual users
+# (<phone>@s.whatsapp.net), linked identities (<id>@lid), and broadcast /
+# newsletter chats. These are explicit native targets the bridge accepts
+# verbatim — they must NOT fall through to home-channel resolution.
+_WHATSAPP_JID_RE = re.compile(
+    r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
+    re.IGNORECASE,
+)
+# Email addresses — a valid email like "user@domain.com" should be treated as
+# an explicit target for the email platform, not fall through to channel-name
+# resolution which has no way to resolve a raw address.
+_EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
+# Most platforms read their home channel from "<PLATFORM>_HOME_CHANNEL", but a
+# few diverge. Email reads EMAIL_HOME_ADDRESS (see gateway/config.py), so the
+# generic "<PLATFORM>_HOME_CHANNEL" hint would point users at a variable that is
+# never read. Map the exceptions so the error guidance is actually actionable.
+_HOME_CHANNEL_ENV_OVERRIDES = {"email": "EMAIL_HOME_ADDRESS"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -128,16 +146,24 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "react", "unreact"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "emoji": {
+                "type": "string",
+                "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
             }
         },
         "required": []
@@ -152,6 +178,12 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
+    if action == "react":
+        return _handle_react(args)
+
+    if action == "unreact":
+        return _handle_react(args, remove=True)
+
     return _handle_send(args)
 
 
@@ -162,6 +194,98 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+def _handle_react(args, remove=False):
+    """Attach (or with ``remove=True`` retract) an emoji reaction on a message
+    via a live gateway adapter.
+
+    Only adapters that expose ``add_reaction(chat_id, emoji, message_id)`` /
+    ``remove_reaction(chat_id, message_id)`` coroutines support this (e.g.
+    photon/iMessage tapbacks). Requires the gateway to be running in this
+    process — there is no standalone fallback, since reacting needs the
+    adapter's live message-id state.
+    """
+    target = args.get("target", "")
+    emoji = (args.get("emoji") or "").strip()
+    message_id = (args.get("message_id") or "").strip() or None
+    if not target or (not remove and not emoji):
+        return tool_error(
+            "Both 'target' and 'emoji' are required when action='react'"
+            if not remove
+            else "'target' is required when action='unreact'"
+        )
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    if target_ref:
+        chat_id, _thread_id, _ = _parse_target_ref(platform_name, target_ref)
+        if not chat_id:
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, target_ref)
+            except Exception:
+                resolved = None
+            # Opaque platform-native ids (e.g. photon space GUIDs like
+            # 'any;-;+1555...') match no parser pattern and no directory
+            # entry — pass them through verbatim; the adapter validates.
+            chat_id = resolved or target_ref
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    if not chat_id:
+        try:
+            config = load_gateway_config()
+            home = config.get_home_channel(platform)
+        except Exception:
+            home = None
+        if not home:
+            return tool_error(
+                f"No chat specified and no home channel set for {platform_name}. "
+                f"Use '{platform_name}:chat_id'."
+            )
+        chat_id = home.chat_id
+
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    adapter = runner.adapters.get(platform) if runner is not None else None
+    if adapter is None:
+        return tool_error(
+            f"Reactions require a live {platform_name} adapter in the running "
+            "gateway (not available from cron/standalone contexts)."
+        )
+    fn_name = "remove_reaction" if remove else "add_reaction"
+    react_fn = getattr(adapter, fn_name, None)
+    if not callable(react_fn):
+        return tool_error(
+            f"Platform '{platform_name}' does not support message reactions."
+        )
+
+    try:
+        from model_tools import _run_async
+        if remove:
+            result = _run_async(
+                react_fn(chat_id=chat_id, message_id=message_id)
+            )
+        else:
+            result = _run_async(
+                react_fn(chat_id=chat_id, emoji=emoji, message_id=message_id)
+            )
+    except Exception as e:
+        return json.dumps(_error(f"Reaction failed: {e}"))
+    if isinstance(result, dict):
+        return json.dumps(result)
+    return json.dumps({"success": bool(result)})
 
 
 def _handle_send(args):
@@ -249,6 +373,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -263,15 +388,40 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
+            home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
+                platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
+            )
             return json.dumps({
                 "error": f"No home channel set for {platform_name} to determine where to send the message. "
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                f"or set a home channel via: hermes config set {home_env} <channel_id>"
             })
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
         return json.dumps(duplicate_skip)
+
+    # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
+    if platform_name == "slack" and chat_id and chat_id.startswith("U"):
+        try:
+            import aiohttp
+            async def _open_slack_dm(token, user_id):
+                url = "https://slack.com/api/conversations.open"
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                    async with session.post(url, headers=headers, json={"users": [user_id]}) as resp:
+                        data = await resp.json()
+                        if data.get("ok"):
+                            return data["channel"]["id"]
+                        return None
+            from model_tools import _run_async
+            dm_channel = _run_async(_open_slack_dm(pconfig.token, chat_id))
+            if dm_channel:
+                chat_id = dm_channel
+            else:
+                return json.dumps({"error": f"Could not open DM with Slack user {chat_id}. Check bot permissions (im:write)."})
+        except Exception as e:
+            return json.dumps({"error": f"Failed to open Slack DM: {e}"})
 
     try:
         from model_tools import _run_async
@@ -330,9 +480,24 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             return match.group(1), match.group(2), True
     if platform_name == "slack":
+        match = _SLACK_THREAD_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
-            return match.group(1), None, True
+            chat_id = match.group(1)
+            # Slack user IDs (U...) and workspace IDs (W...) are NOT valid
+            # explicit send targets — chat.postMessage rejects them. A DM
+            # must be opened first via conversations.open to get a D...
+            # conversation ID. Caller still gets the chat_id so the U→D
+            # resolution path in send_message() can run.
+            is_explicit = chat_id[0] not in {"U", "W"}
+            return chat_id, None, is_explicit
+    if platform_name == "matrix":
+        trimmed = target_ref.strip()
+        split_idx = trimmed.rfind(":$")
+        if split_idx > 0:
+            return trimmed[:split_idx], trimmed[split_idx + 1 :], True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -344,6 +509,20 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "ntfy":
+        topic = target_ref.strip()
+        if topic:
+            return topic, None, True
+    if platform_name == "email":
+        match = _EMAIL_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        # Native WhatsApp JIDs (group @g.us, user @s.whatsapp.net, @lid, etc.)
+        # are explicit targets — pass through verbatim. E.164 '+' numbers fall
+        # through to the _PHONE_PLATFORMS handler below.
+        if _WHATSAPP_JID_RE.fullmatch(target_ref):
+            return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -447,6 +626,7 @@ async def _send_via_adapter(
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
     """
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -461,7 +641,13 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {"thread_id": thread_id} if thread_id else None
+                metadata = {}
+                if thread_id:
+                    metadata["thread_id"] = thread_id
+                if platform_name == "ntfy" and chat_id:
+                    metadata["publish_topic"] = chat_id
+                if not metadata:
+                    metadata = None
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise
@@ -471,7 +657,6 @@ async def _send_via_adapter(
                 return {"success": True, "message_id": result.message_id}
             return {"error": f"Adapter send failed: {result.error}"}
 
-    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     entry = None
     try:
         from gateway.platform_registry import platform_registry
@@ -523,8 +708,17 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+
+    media_files = media_files or []
+
+    # Weixin handles text/media delivery inside its native helper and does not
+    # need the optional platform adapter imports below. Keep this branch early
+    # so a Weixin send is not blocked by unrelated optional dependencies (for
+    # example lark-oapi's heavy Feishu import path).
+    if platform == Platform.WEIXIN:
+        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
+
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
 
     # Telegram adapter import is optional (requires python-telegram-bot)
@@ -541,8 +735,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _feishu_available = False
 
-    media_files = media_files or []
-
     if platform == Platform.SLACK and message:
         try:
             slack_adapter = SlackAdapter.__new__(SlackAdapter)
@@ -550,10 +742,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         except Exception:
             logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
 
-    # Platform message length limits (from adapter class attributes)
+    # Platform message length limits (from adapter class attributes for
+    # built-in platforms; from PlatformEntry.max_message_length for plugins).
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
-        Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
     if _feishu_available:
@@ -599,21 +791,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Weixin: use the native one-shot adapter helper for text + media ---
-    if platform == Platform.WEIXIN:
-        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
-
-    # --- Discord: special handling for media attachments ---
+    # --- Discord: chunked delivery via the registry's standalone_sender_fn.
+    # The plugin's ``_standalone_send`` (registered in
+    # plugins/platforms/discord/adapter.py) handles forum channels, threads,
+    # and multipart media uploads.  ``_send_via_adapter`` tries the live
+    # in-process adapter first via ``adapter.send()``, but Discord's elif
+    # historically went straight to the HTTP path; we preserve that by
+    # explicitly invoking the registry hook here so behavior is unchanged.
     if platform == Platform.DISCORD:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get("discord")
+        if entry is None or entry.standalone_sender_fn is None:
+            return {"error": "Discord plugin not registered or missing standalone_sender_fn"}
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
-            result = await _send_discord(
-                pconfig.token,
+            result = await entry.standalone_sender_fn(
+                pconfig,
                 chat_id,
                 chunk,
-                media_files=media_files if is_last else [],
                 thread_id=thread_id,
+                media_files=media_files if is_last else [],
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -703,7 +901,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_ts=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -712,12 +910,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
-        elif platform == Platform.MATTERMOST:
-            result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
-        elif platform == Platform.HOMEASSISTANT:
-            result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
@@ -754,6 +948,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
+def _is_telegram_thread_not_found(error: Exception) -> bool:
+    """Check if a Telegram error is a thread-not-found failure.
+
+    Matches the gateway adapter's ``_is_thread_not_found_error`` for
+    the standalone ``_send_telegram`` path (issue #27012).
+    """
+    return "thread not found" in str(error).lower()
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
@@ -784,7 +987,30 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        bot = Bot(token=token)
+        # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
+        # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
+        # standalone send path bypasses the proxy and times out in regions
+        # where api.telegram.org is blocked. The in-gateway adapter does the
+        # same thing in gateway/platforms/telegram.py.
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception:
+            _tg_proxy = None
+        if _tg_proxy:
+            try:
+                from telegram.request import HTTPXRequest
+                logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
+                bot = Bot(
+                    token=token,
+                    request=HTTPXRequest(proxy=_tg_proxy),
+                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
+                )
+            except Exception as _proxy_err:
+                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
+                bot = Bot(token=token)
+        else:
+            bot = Bot(token=token)
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
@@ -810,8 +1036,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 )
             if effective_thread_id is not None:
                 thread_kwargs["message_thread_id"] = effective_thread_id
+        # disable_web_page_preview is only valid for send_message, not
+        # send_photo/send_video/etc.  Keep it separate so media sends
+        # don't inherit an invalid parameter (issue #27012).
+        text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
-            thread_kwargs["disable_web_page_preview"] = True
+            text_kwargs["disable_web_page_preview"] = True
 
         last_msg = None
         warnings = []
@@ -821,11 +1051,24 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
                     chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
+                    parse_mode=send_parse_mode, **text_kwargs
                 )
             except Exception as md_error:
-                # Parse failed, fall back to plain text
-                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                # Thread not found — retry without message_thread_id so the
+                # message still delivers (matching the gateway adapter's
+                # fallback behaviour, issue #27012).
+                if _is_telegram_thread_not_found(md_error) and thread_kwargs:
+                    logger.warning(
+                        "Thread %s not found in _send_telegram, retrying without message_thread_id",
+                        thread_kwargs.get("message_thread_id"),
+                    )
+                    text_kwargs.pop("message_thread_id", None)
+                    last_msg = await _send_telegram_message_with_retry(
+                        bot,
+                        chat_id=int_chat_id, text=formatted,
+                        parse_mode=send_parse_mode, **text_kwargs
+                    )
+                elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                     logger.warning(
                         "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
                         send_parse_mode,
@@ -842,7 +1085,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
                         chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
+                        parse_mode=None, **text_kwargs
                     )
                 else:
                     raise
@@ -857,26 +1100,61 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             ext = os.path.splitext(media_path)[1].lower()
             try:
                 with open(media_path, "rb") as f:
-                    if ext in _IMAGE_EXTS and not force_document:
-                        last_msg = await bot.send_photo(
-                            chat_id=int_chat_id, photo=f, **thread_kwargs
-                        )
-                    elif ext in _VIDEO_EXTS:
-                        last_msg = await bot.send_video(
-                            chat_id=int_chat_id, video=f, **thread_kwargs
-                        )
-                    elif ext in _VOICE_EXTS and is_voice:
-                        last_msg = await bot.send_voice(
-                            chat_id=int_chat_id, voice=f, **thread_kwargs
-                        )
-                    elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
-                        last_msg = await bot.send_audio(
-                            chat_id=int_chat_id, audio=f, **thread_kwargs
-                        )
-                    else:
-                        last_msg = await bot.send_document(
-                            chat_id=int_chat_id, document=f, **thread_kwargs
-                        )
+                    media_kwargs = dict(thread_kwargs)
+                    try:
+                        if ext in _IMAGE_EXTS and not force_document:
+                            last_msg = await bot.send_photo(
+                                chat_id=int_chat_id, photo=f, **media_kwargs
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            last_msg = await bot.send_video(
+                                chat_id=int_chat_id, video=f, **media_kwargs
+                            )
+                        elif ext in _VOICE_EXTS and is_voice:
+                            last_msg = await bot.send_voice(
+                                chat_id=int_chat_id, voice=f, **media_kwargs
+                            )
+                        elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                            last_msg = await bot.send_audio(
+                                chat_id=int_chat_id, audio=f, **media_kwargs
+                            )
+                        else:
+                            last_msg = await bot.send_document(
+                                chat_id=int_chat_id, document=f, **media_kwargs
+                            )
+                    except Exception as media_err:
+                        if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
+                            # Thread not found for media — retry without
+                            # message_thread_id (issue #27012).
+                            logger.warning(
+                                "Thread %s not found for media send, retrying without message_thread_id",
+                                media_kwargs["message_thread_id"],
+                            )
+                            # Re-seek the file since the first attempt consumed it
+                            f.seek(0)
+                            media_kwargs.pop("message_thread_id", None)
+                            if ext in _IMAGE_EXTS and not force_document:
+                                last_msg = await bot.send_photo(
+                                    chat_id=int_chat_id, photo=f, **media_kwargs
+                                )
+                            elif ext in _VIDEO_EXTS:
+                                last_msg = await bot.send_video(
+                                    chat_id=int_chat_id, video=f, **media_kwargs
+                                )
+                            elif ext in _VOICE_EXTS and is_voice:
+                                last_msg = await bot.send_voice(
+                                    chat_id=int_chat_id, voice=f, **media_kwargs
+                                )
+                            elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
+                                last_msg = await bot.send_audio(
+                                    chat_id=int_chat_id, audio=f, **media_kwargs
+                                )
+                            else:
+                                last_msg = await bot.send_document(
+                                    chat_id=int_chat_id, document=f, **media_kwargs
+                                )
+                        else:
+                            raise
             except Exception as e:
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)
@@ -903,228 +1181,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-def _derive_forum_thread_name(message: str) -> str:
-    """Derive a thread name from the first line of the message, capped at 100 chars."""
-    first_line = message.strip().split("\n", 1)[0].strip()
-    # Strip common markdown heading prefixes
-    first_line = first_line.lstrip("#").strip()
-    if not first_line:
-        first_line = "New Post"
-    return first_line[:100]
-
-
-# Process-local cache for Discord channel-type probes.  Avoids re-probing the
-# same channel on every send when the directory cache has no entry (e.g. fresh
-# install, or channel created after the last directory build).
-_DISCORD_CHANNEL_TYPE_PROBE_CACHE: Dict[str, bool] = {}
-
-
-def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
-    _DISCORD_CHANNEL_TYPE_PROBE_CACHE[str(chat_id)] = bool(is_forum)
-
-
-def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
-    return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
-
-
-async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
-    """Send a single message via Discord REST API (no websocket client needed).
-
-    Chunking is handled by _send_to_platform() before this is called.
-
-    When thread_id is provided, the message is sent directly to that thread
-    via the /channels/{thread_id}/messages endpoint.
-
-    Media files are uploaded one-by-one via multipart/form-data after the
-    text message is sent (same pattern as Telegram).
-
-    Forum channels (type 15) reject POST /messages — a thread post is created
-    automatically via POST /channels/{id}/threads.  Media files are uploaded
-    as multipart attachments on the starter message of the new thread.
-
-    Channel type is resolved from the channel directory first, then a
-    process-local probe cache, and only as a last resort with a live
-    GET /channels/{id} probe (whose result is memoized).
-    """
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        auth_headers = {"Authorization": f"Bot {token}"}
-        json_headers = {**auth_headers, "Content-Type": "application/json"}
-        media_files = media_files or []
-        last_data = None
-        warnings = []
-
-        # Thread endpoint: Discord threads are channels; send directly to the thread ID.
-        if thread_id:
-            url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
-        else:
-            # Check if the target channel is a forum channel (type 15).
-            # Forum channels reject POST /messages — create a thread post instead.
-            # Three-layer detection: directory cache → process-local probe
-            # cache → GET /channels/{id} probe (with result memoized).
-            _channel_type = None
-            try:
-                from gateway.channel_directory import lookup_channel_type
-                _channel_type = lookup_channel_type("discord", chat_id)
-            except Exception:
-                pass
-
-            if _channel_type == "forum":
-                is_forum = True
-            elif _channel_type is not None:
-                is_forum = False
-            else:
-                cached = _probe_is_forum_cached(chat_id)
-                if cached is not None:
-                    is_forum = cached
-                else:
-                    is_forum = False
-                    try:
-                        info_url = f"https://discord.com/api/v10/channels/{chat_id}"
-                        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **_sess_kw) as info_sess:
-                            async with info_sess.get(info_url, headers=json_headers, **_req_kw) as info_resp:
-                                if info_resp.status == 200:
-                                    info = await info_resp.json()
-                                    is_forum = info.get("type") == 15
-                                    _remember_channel_is_forum(chat_id, is_forum)
-                    except Exception:
-                        logger.debug("Failed to probe channel type for %s", chat_id, exc_info=True)
-
-            if is_forum:
-                thread_name = _derive_forum_thread_name(message)
-                thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
-
-                # Filter to readable media files up front so we can pick the
-                # right code path (JSON vs multipart) before opening a session.
-                valid_media = []
-                for media_path, _is_voice in media_files:
-                    if not os.path.exists(media_path):
-                        warning = f"Media file not found, skipping: {media_path}"
-                        logger.warning(warning)
-                        warnings.append(warning)
-                        continue
-                    valid_media.append(media_path)
-
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
-                    if valid_media:
-                        # Multipart: payload_json + files[N] creates a forum
-                        # thread with the starter message plus attachments in
-                        # a single API call.
-                        attachments_meta = [
-                            {"id": str(idx), "filename": os.path.basename(path)}
-                            for idx, path in enumerate(valid_media)
-                        ]
-                        starter_message = {"content": message, "attachments": attachments_meta}
-                        payload_json = json.dumps({"name": thread_name, "message": starter_message})
-
-                        form = aiohttp.FormData()
-                        form.add_field("payload_json", payload_json, content_type="application/json")
-
-                        # Buffer file bytes up front — aiohttp's FormData can
-                        # read lazily and we don't want handles closing under
-                        # it on retry.
-                        try:
-                            for idx, media_path in enumerate(valid_media):
-                                with open(media_path, "rb") as fh:
-                                    form.add_field(
-                                        f"files[{idx}]",
-                                        fh.read(),
-                                        filename=os.path.basename(media_path),
-                                    )
-                            async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
-                                if resp.status not in {200, 201}:
-                                    body = await resp.text()
-                                    return _error(f"Discord forum thread creation error ({resp.status}): {body}")
-                                data = await resp.json()
-                        except Exception as e:
-                            return _error(_sanitize_error_text(f"Discord forum thread upload failed: {e}"))
-                    else:
-                        # No media — simple JSON POST creates the thread with
-                        # just the text starter.
-                        async with session.post(
-                            thread_url,
-                            headers=json_headers,
-                            json={
-                                "name": thread_name,
-                                "message": {"content": message},
-                            },
-                            **_req_kw,
-                        ) as resp:
-                            if resp.status not in {200, 201}:
-                                body = await resp.text()
-                                return _error(f"Discord forum thread creation error ({resp.status}): {body}")
-                            data = await resp.json()
-
-                thread_id_created = data.get("id")
-                starter_msg_id = (data.get("message") or {}).get("id", thread_id_created)
-                result = {
-                    "success": True,
-                    "platform": "discord",
-                    "chat_id": chat_id,
-                    "thread_id": thread_id_created,
-                    "message_id": starter_msg_id,
-                }
-                if warnings:
-                    result["warnings"] = warnings
-                return result
-
-            url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
-
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            # Send text message (skip if empty and media is present)
-            if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    if resp.status not in {200, 201}:
-                        body = await resp.text()
-                        return _error(f"Discord API error ({resp.status}): {body}")
-                    last_data = await resp.json()
-
-            # Send each media file as a separate multipart upload
-            for media_path, _is_voice in media_files:
-                if not os.path.exists(media_path):
-                    warning = f"Media file not found, skipping: {media_path}"
-                    logger.warning(warning)
-                    warnings.append(warning)
-                    continue
-                try:
-                    form = aiohttp.FormData()
-                    filename = os.path.basename(media_path)
-                    with open(media_path, "rb") as f:
-                        form.add_field("files[0]", f, filename=filename)
-                        async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
-                            if resp.status not in {200, 201}:
-                                body = await resp.text()
-                                warning = _sanitize_error_text(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
-                                logger.error(warning)
-                                warnings.append(warning)
-                                continue
-                            last_data = await resp.json()
-                except Exception as e:
-                    warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
-                    logger.error(warning)
-                    warnings.append(warning)
-
-        if last_data is None:
-            error = "No deliverable text or media remained after processing"
-            if warnings:
-                return {"error": error, "warnings": warnings}
-            return {"error": error}
-
-        result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
-        if warnings:
-            result["warnings"] = warnings
-        return result
-    except Exception as e:
-        return _error(f"Discord send failed: {e}")
-
-
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_ts=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -1138,6 +1195,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_ts:
+                payload["thread_ts"] = thread_ts
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
@@ -1360,7 +1419,6 @@ async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
     import smtplib
     from email.mime.text import MIMEText
-    from email.utils import formatdate
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
@@ -1444,30 +1502,6 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return _error(f"SMS send failed: {e}")
-
-
-async def _send_mattermost(token, extra, chat_id, message):
-    """Send via Mattermost REST API."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        base_url = (extra.get("url") or os.getenv("MATTERMOST_URL", "")).rstrip("/")
-        token = token or os.getenv("MATTERMOST_TOKEN", "")
-        if not base_url or not token:
-            return {"error": "Mattermost not configured (MATTERMOST_URL, MATTERMOST_TOKEN required)"}
-        url = f"{base_url}/api/v4/posts"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"channel_id": chat_id, "message": message}) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Mattermost API error ({resp.status}): {body}")
-                data = await resp.json()
-        return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
-    except Exception as e:
-        return _error(f"Mattermost send failed: {e}")
 
 
 async def _send_matrix(token, extra, chat_id, message):
@@ -1572,29 +1606,6 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             await adapter.disconnect()
         except Exception:
             pass
-
-
-async def _send_homeassistant(token, extra, chat_id, message):
-    """Send via Home Assistant notify service."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-        token = token or os.getenv("HASS_TOKEN", "")
-        if not hass_url or not token:
-            return {"error": "Home Assistant not configured (HASS_URL, HASS_TOKEN required)"}
-        url = f"{hass_url}/api/services/notify/notify"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"message": message, "target": chat_id}) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Home Assistant API error ({resp.status}): {body}")
-        return {"success": True, "platform": "homeassistant", "chat_id": chat_id}
-    except Exception as e:
-        return _error(f"Home Assistant send failed: {e}")
 
 
 async def _send_dingtalk(extra, chat_id, message):
@@ -1888,13 +1899,16 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import tool_error
 
-registry.register(
-    name="send_message",
-    toolset="messaging",
-    schema=SEND_MESSAGE_SCHEMA,
-    handler=send_message_tool,
-    check_fn=_check_send_message,
-    emoji="📨",
-)
+# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable
+# model tool. The agent should not decide on its own to fire off cross-platform
+# messages or reactions. The send engine in this module (``_send_to_platform``,
+# ``_send_via_adapter``, ``_parse_target_ref``, the per-platform ``_send_*``
+# helpers) remains the shared transport used by:
+#   - cron delivery (cron/scheduler.py)
+#   - the ``hermes send`` CLI command (hermes_cli/send_cmd.py)
+#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
+#   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
+# Those callers import the helpers directly; none of them need the registry
+# entry.

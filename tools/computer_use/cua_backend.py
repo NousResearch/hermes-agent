@@ -22,13 +22,10 @@ import base64
 import json
 import logging
 import os
-import platform
 import re
 import shutil
-import subprocess
 import sys
 import threading
-from concurrent.futures import Future
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -57,10 +54,18 @@ _WINDOW_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
-# Regex to parse element lines from get_window_state AX tree markdown:
-#   "  - [N] AXRole "label""
+# Regex to parse element lines from get_window_state AX tree markdown.
+#
+# Handles two output formats from different cua-driver versions:
+#   Classic:  "  - [N] AXRole \"label\""
+#   New:       "[N] AXRole (order) id=Label"
+#
+# Group 1: element index
+# Group 2: AX role
+# Group 3: quoted label (classic format)
+# Group 4: id= label (new format)
 _ELEMENT_LINE_RE = re.compile(
-    r'^\s*-\s+\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)")?',
+    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)"|(?:\s+\(\d+\))?\s+id=([^\s\[\]]*))?' ,
     re.MULTILINE,
 )
 
@@ -71,10 +76,6 @@ _ELEMENT_LINE_RE = re.compile(
 
 def _is_macos() -> bool:
     return sys.platform == "darwin"
-
-
-def _is_arm_mac() -> bool:
-    return _is_macos() and platform.machine() == "arm64"
 
 
 def cua_driver_binary_available() -> bool:
@@ -107,16 +108,61 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
 
 
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
-    """Parse UIElement list from get_window_state AX tree markdown."""
+    """Parse UIElement list from get_window_state AX tree markdown.
+
+    Handles both the classic ``"label"``-quoted format and the newer
+    ``id=Label`` format introduced in cua-driver v0.1.6.
+    """
     elements = []
     for m in _ELEMENT_LINE_RE.finditer(markdown):
+        # group(3) = quoted label (classic); group(4) = id= label (new)
+        label = m.group(3) or m.group(4) or ""
         elements.append(UIElement(
             index=int(m.group(1)),
             role=m.group(2),
-            label=m.group(3) or "",
+            label=label,
             bounds=(0, 0, 0, 0),
         ))
     return elements
+
+
+def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
+    """Best-effort PNG/JPEG dimension sniffing without extra dependencies."""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+        width = int.from_bytes(raw[16:20], "big")
+        height = int.from_bytes(raw[20:24], "big")
+        if width > 0 and height > 0:
+            return width, height
+
+    if raw.startswith(b"\xff\xd8"):
+        i = 2
+        n = len(raw)
+        while i + 9 < n:
+            if raw[i] != 0xFF:
+                i += 1
+                continue
+            marker = raw[i + 1]
+            i += 2
+            if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+                continue
+            if i + 2 > n:
+                break
+            segment_len = int.from_bytes(raw[i:i + 2], "big")
+            if segment_len < 2 or i + segment_len > n:
+                break
+            if marker in {
+                0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+            }:
+                if segment_len >= 7:
+                    height = int.from_bytes(raw[i + 3:i + 5], "big")
+                    width = int.from_bytes(raw[i + 5:i + 7], "big")
+                    if width > 0 and height > 0:
+                        return width, height
+                break
+            i += segment_len
+
+    return 0, 0
 
 
 def _split_tree_text(full_text: str) -> Tuple[str, str]:
@@ -183,9 +229,14 @@ class _AsyncBridge:
             raise RuntimeError("cua-driver asyncio bridge failed to start")
 
     def run(self, coro, timeout: Optional[float] = 30.0) -> Any:
+        from agent.async_utils import safe_schedule_threadsafe
         if not self._loop or not self._thread or not self._thread.is_alive():
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise RuntimeError("cua-driver bridge not started")
-        fut: Future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        fut = safe_schedule_threadsafe(coro, self._loop)
+        if fut is None:
+            raise RuntimeError("cua-driver bridge not started")
         return fut.result(timeout=timeout)
 
     def stop(self) -> None:
@@ -219,6 +270,7 @@ class _CuaDriverSession:
         from contextlib import AsyncExitStack
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
+        from tools.environments.local import _sanitize_subprocess_env
 
         if not cua_driver_binary_available():
             raise RuntimeError(cua_driver_install_hint())
@@ -226,7 +278,7 @@ class _CuaDriverSession:
         params = StdioServerParameters(
             command=_CUA_DRIVER_CMD,
             args=_CUA_DRIVER_ARGS,
-            env={**os.environ},
+            env=_sanitize_subprocess_env(dict(os.environ)),
         )
         stack = AsyncExitStack()
         read, write = await stack.enter_async_context(stdio_client(params))
@@ -265,9 +317,42 @@ class _CuaDriverSession:
         result = await self._session.call_tool(name, args)
         return _extract_tool_result(result)
 
+    @staticmethod
+    def _is_closed_session_error(exc: Exception) -> bool:
+        """Return True for MCP/stdio failures that are recoverable by reconnecting."""
+        name = exc.__class__.__name__
+        module = getattr(exc.__class__, "__module__", "")
+        return (
+            name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+            or (module.startswith("anyio") and "Resource" in name)
+            or isinstance(exc, (BrokenPipeError, EOFError))
+        )
+
+    def _restart_session_locked(self) -> None:
+        """Recreate the MCP session after the daemon/stdin transport was closed."""
+        try:
+            if self._started:
+                self._bridge.run(self._aexit(), timeout=5.0)
+        except Exception as e:
+            logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
+        self._started = False
+        self._bridge.run(self._aenter(), timeout=15.0)
+        self._started = True
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
-        return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        try:
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        except Exception as e:
+            if not self._is_closed_session_error(e):
+                raise
+            # Daemon restart closes the cached stdio channel. Reconnect once and
+            # retry exactly one more time — never loop, to avoid hammering a
+            # genuinely dead daemon.
+            logger.warning("cua-driver MCP session closed during %s; reconnecting once", name)
+            with self._lock:
+                self._restart_session_locked()
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
 
 
 def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
@@ -320,6 +405,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # Sticky context — updated by capture(), used by action tools.
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
+        self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -373,17 +459,37 @@ class CuaDriverBackend(ComputerUseBackend):
                                  elements=[], app="", window_title="", png_bytes_len=0)
 
         # Filter by app name (case-insensitive substring) if requested.
+        # When the filter matches nothing, surface that explicitly instead of
+        # silently capturing the frontmost window — on macOS the `app_name`
+        # returned by list_windows is the localized name (e.g. "計算機"), so
+        # `app="Calculator"` legitimately matches no windows on a non-English
+        # system and the caller needs to retry with the localized name.
         if app:
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
-            if filtered:
-                windows = filtered
+            if not filtered:
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app="",
+                    window_title=(
+                        f"<no on-screen window matched app={app!r}; "
+                        f"call list_apps to see available app names "
+                        f"(macOS reports localized names, e.g. '計算機' "
+                        f"instead of 'Calculator')>"
+                    ),
+                    png_bytes_len=0,
+                )
+            windows = filtered
 
         # Pick first on-screen window (sorted by z_index / z-order above).
         target = next((w for w in windows if not w["off_screen"]), windows[0])
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
+        # Record the resolved app name so capture_after= follow-ups can re-target
+        # the same app rather than falling back to the frontmost window.
+        if app or not self._last_app:
+            self._last_app = app_name
 
         # Step 2: capture.
         png_b64: Optional[str] = None
@@ -425,7 +531,12 @@ class CuaDriverBackend(ComputerUseBackend):
         png_bytes_len = 0
         if png_b64:
             try:
-                png_bytes_len = len(base64.b64decode(png_b64, validate=False))
+                raw = base64.b64decode(png_b64, validate=False)
+                png_bytes_len = len(raw)
+                detected_width, detected_height = _image_dimensions_from_bytes(raw)
+                if detected_width and detected_height:
+                    width = detected_width
+                    height = detected_height
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
 
@@ -492,9 +603,25 @@ class CuaDriverBackend(ComputerUseBackend):
         button: str = "left",
         modifiers: Optional[List[str]] = None,
     ) -> ActionResult:
-        # cua-driver does not expose a drag tool.
-        return ActionResult(ok=False, action="drag",
-                            message="drag is not supported by the cua-driver backend.")
+        pid = self._active_pid
+        if pid is None:
+            return ActionResult(ok=False, action="drag",
+                                message="No active window — call capture() first.")
+        args: Dict[str, Any] = {"pid": pid}
+        if from_element is not None and to_element is not None:
+            if self._active_window_id is None:
+                return ActionResult(ok=False, action="drag",
+                                    message="No active window_id for element-based drag.")
+            args["from_element"] = from_element
+            args["to_element"] = to_element
+            args["window_id"] = self._active_window_id
+        elif from_xy is not None and to_xy is not None:
+            args["from_x"], args["from_y"] = int(from_xy[0]), int(from_xy[1])
+            args["to_x"], args["to_y"] = int(to_xy[0]), int(to_xy[1])
+        else:
+            return ActionResult(ok=False, action="drag",
+                                message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        return self._action("drag", args)
 
     def scroll(
         self,
@@ -529,10 +656,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if pid is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        # Safari WebKit AXTextField does not accept AX attribute writes (type_text),
-        # so use type_text_chars which synthesises individual key events instead.
-        # This works universally across all macOS apps in background mode.
-        return self._action("type_text_chars", {"pid": pid, "text": text})
+        return self._action("type_text", {"pid": pid, "text": text})
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid
@@ -621,10 +745,15 @@ class CuaDriverBackend(ComputerUseBackend):
 
         app_lower = app.lower()
         matched = [w for w in windows if app_lower in w["app_name"].lower()]
-        target = matched[0] if matched else (windows[0] if windows else None)
+        # Don't silently fall back to the frontmost window when the filter
+        # matches nothing — that hides the real failure (often a localized
+        # macOS app name mismatch, e.g. caller passed "Calculator" but
+        # list_windows returns "計算機").
+        target = matched[0] if matched else None
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
+            self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
             return ActionResult(
                 ok=True, action="focus_app",
                 message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
@@ -649,29 +778,3 @@ class CuaDriverBackend(ComputerUseBackend):
             message = data
         return ActionResult(ok=ok, action=name, message=message,
                             meta=data if isinstance(data, dict) else {})
-
-
-def _parse_element(d: Dict[str, Any]) -> UIElement:
-    bounds = d.get("bounds") or (0, 0, 0, 0)
-    if isinstance(bounds, dict):
-        bounds = (
-            int(bounds.get("x", 0)),
-            int(bounds.get("y", 0)),
-            int(bounds.get("w", bounds.get("width", 0))),
-            int(bounds.get("h", bounds.get("height", 0))),
-        )
-    elif isinstance(bounds, (list, tuple)) and len(bounds) == 4:
-        bounds = tuple(int(v) for v in bounds)
-    else:
-        bounds = (0, 0, 0, 0)
-    return UIElement(
-        index=int(d.get("index", 0)),
-        role=str(d.get("role", "") or ""),
-        label=str(d.get("label", "") or ""),
-        bounds=bounds,  # type: ignore[arg-type]
-        app=str(d.get("app", "") or ""),
-        pid=int(d.get("pid", 0) or 0),
-        window_id=int(d.get("windowId", 0) or 0),
-        attributes={k: v for k, v in d.items()
-                    if k not in {"index", "role", "label", "bounds", "app", "pid", "windowId"}},
-    )

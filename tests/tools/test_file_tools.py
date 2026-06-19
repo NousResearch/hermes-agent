@@ -9,10 +9,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
-    READ_FILE_SCHEMA,
-    WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
-    SEARCH_FILES_SCHEMA,
 )
 
 
@@ -211,6 +208,45 @@ class TestPatchHandler:
         assert "error" in result
         assert "Unknown mode" in result["error"]
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_update_header(self, mock_get):
+        """V4A '*** Update File:' headers come from patch content, which can
+        carry prompt-injection-controlled paths (skill content, web extract).
+        ``..`` traversal in the header must be rejected before the patch is
+        applied, even though the explicit ``path=`` arg is allowed to use
+        ``..`` for legitimate cross-worktree edits."""
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Update File: ../../../etc/shadow\n"
+                "@@ -1,3 +1,3 @@\n"
+                "-old\n"
+                "+new\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        # patch_v4a must not be invoked when the header is rejected
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_add_header(self, mock_get):
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Add File: ../../../tmp/dropped.py\n"
+                "+print('pwned')\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+
 
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -364,6 +400,70 @@ class TestSearchHints:
 # ---------------------------------------------------------------------------
 # PATCH_SCHEMA shape tests (issue #15524)
 # ---------------------------------------------------------------------------
+
+
+class TestSensitivePathCheck:
+    """Verify that _check_sensitive_path blocks writes to protected locations."""
+
+    def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+
+    def test_hermes_config_blocked_via_tilde_path(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+
+    def test_hermes_config_blocked_for_patch(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        fake_config.write_text("approvals:\n  mode: manual\n")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace",
+            path=str(fake_config),
+            old_string="mode: manual",
+            new_string="mode: off",
+        ))
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+
+    def test_system_path_still_blocked(self, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("/etc/passwd", "evil"))
+        assert "error" in result
+        assert "sensitive system path" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_normal_file_not_blocked(self, mock_get, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("/tmp/other.txt", "hello"))
+        assert result["status"] == "ok"
+
 
 class TestPatchSchemaShape:
     """PATCH_SCHEMA must advertise per-mode required params via description

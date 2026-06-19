@@ -15,7 +15,6 @@ The gateway classifier must distinguish:
 * everything else that fails → transient → persist the user message
 """
 
-import pytest
 
 
 def _classify(agent_result: dict, history_len: int) -> tuple[bool, bool]:

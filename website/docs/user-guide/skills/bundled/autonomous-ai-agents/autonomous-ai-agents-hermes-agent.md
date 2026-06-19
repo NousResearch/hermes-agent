@@ -21,7 +21,7 @@ Configure, extend, or contribute to Hermes Agent.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `hermes`, `setup`, `configuration`, `multi-agent`, `spawning`, `cli`, `gateway`, `development` |
-| Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
+| Related skills | `claude-code`, `codex`, `opencode` |
 
 ## Reference: full SKILL.md
 
@@ -360,7 +360,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 
 ```
 ~/.hermes/config.yaml       Main configuration
-~/.hermes/.env              API keys and secrets
+~/.hermes/.env              API keys and secrets (under $HERMES_HOME if set)
 $HERMES_HOME/skills/        Installed skills
 ~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
 ~/.hermes/state.db          Canonical session store (SQLite + FTS5)
@@ -896,6 +896,18 @@ hermes config set auxiliary.vision.model <model_name>
 | Session files | `hermes sessions browse` (reads state.db) |
 | Source code | `~/.hermes/hermes-agent/` |
 
+## Skill authoring and curation
+
+Use Hermes skills for reusable class-level procedures, not one-session bug notes. A good skill has YAML frontmatter, a clear trigger in `description`, concise workflow steps, pitfalls, and verification. Put session-specific knowledge in `references/`, starter artifacts in `templates/`, and reusable probes in `scripts/`.
+
+When editing skills in this repository:
+
+- Keep skill roots under `skills/<category>/<skill-name>/`.
+- Use `SKILL.md` plus optional `references/`, `templates/`, `scripts/`, and `assets/`.
+- Do not flatten a skill package into another skill without re-homing every referenced support file and updating paths.
+- Prefer broad class-level umbrellas with labeled subsections over many one-session micro-skills.
+- Validate frontmatter and linked files before finishing.
+
 ---
 
 ## Contributor Quick Reference
@@ -927,7 +939,7 @@ hermes-agent/
 ```
 <!-- ascii-guard-ignore-end -->
 
-Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys).
+Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.
 
 ### Adding a Tool (3 files)
 

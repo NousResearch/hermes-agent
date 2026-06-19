@@ -369,6 +369,77 @@ class TestTranscribeOpenAIExtended:
         mock_client.close.assert_called_once()
 
 
+class TestTranscribeOpenAIAzure:
+    """Azure Foundry support in _transcribe_openai."""
+
+    def test_azure_endpoint_uses_azure_openai_client(self, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch(
+            "tools.transcription_tools._resolve_openai_audio_client_config",
+            return_value=("azure-key", "https://hh234.openai.azure.com?api-version=2024-06-01"),
+        ), patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.AzureOpenAI", return_value=mock_client) as mock_azure_cls, \
+             patch("openai.OpenAI") as mock_openai_cls:
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "whisper")
+
+        assert result["success"] is True
+        mock_azure_cls.assert_called_once()
+        mock_openai_cls.assert_not_called()
+        call_kwargs = mock_azure_cls.call_args.kwargs
+        assert call_kwargs["azure_endpoint"] == "https://hh234.openai.azure.com"
+        assert call_kwargs["api_version"] == "2024-06-01"
+        assert call_kwargs["api_key"] == "azure-key"
+
+    def test_azure_endpoint_api_version_default(self, monkeypatch, sample_wav):
+        monkeypatch.delenv("AZURE_OPENAI_API_VERSION", raising=False)
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch(
+            "tools.transcription_tools._resolve_openai_audio_client_config",
+            return_value=("k", "https://x.openai.azure.com"),
+        ), patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.AzureOpenAI", return_value=mock_client) as mock_azure_cls:
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "whisper")
+
+        assert mock_azure_cls.call_args.kwargs["api_version"] == "2024-06-01"
+
+    def test_azure_endpoint_api_version_from_env(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch(
+            "tools.transcription_tools._resolve_openai_audio_client_config",
+            return_value=("k", "https://x.openai.azure.com"),
+        ), patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.AzureOpenAI", return_value=mock_client) as mock_azure_cls:
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "whisper")
+
+        assert mock_azure_cls.call_args.kwargs["api_version"] == "2024-10-21"
+
+    def test_non_azure_endpoint_still_uses_plain_openai(self, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch(
+            "tools.transcription_tools._resolve_openai_audio_client_config",
+            return_value=("sk-test", "https://api.openai.com/v1"),
+        ), patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client) as mock_openai_cls, \
+             patch("openai.AzureOpenAI") as mock_azure_cls:
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "whisper-1")
+
+        mock_openai_cls.assert_called_once()
+        mock_azure_cls.assert_not_called()
+
+
 class TestTranscribeLocalCommand:
     def test_auto_detects_local_whisper_binary(self, monkeypatch):
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)

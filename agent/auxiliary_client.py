@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -1041,7 +1042,11 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        response = _translate_azure_deployment_error(
+            lambda: self._client.messages.create(**anthropic_kwargs),
+            base_url=getattr(self._client, "base_url", None),
+            model=model,
+        )
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth
@@ -1153,6 +1158,107 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return True
     return False
+
+
+# ── Azure DeploymentNotFound translation ──────────────────────────────────
+#
+# When an Azure Foundry deployment doesn't exist (typo in deployment name,
+# or model not deployed in this resource), the Anthropic / OpenAI SDKs raise
+# a generic 404 wrapping an Azure error body like::
+#
+#     {"error": {"code": "DeploymentNotFound", "message":
+#      "The API deployment for this resource does not exist..."}}
+#
+# Surface this to the user with a clearer, actionable message instead of an
+# opaque ``status_code: 404`` traceback.  Triggered only when the SDK call
+# target is an Azure-hosted endpoint (``*.openai.azure.com``).
+
+_AZURE_DEPLOYMENT_NOT_FOUND_PATTERNS = (
+    "deploymentnotfound",
+    "the api deployment for this resource does not exist",
+)
+
+
+def _is_azure_endpoint(base_url: Any) -> bool:
+    if not base_url:
+        return False
+    try:
+        return base_url_host_matches(str(base_url), "openai.azure.com")
+    except Exception:
+        return False
+
+
+def _extract_azure_error_body(exc: BaseException) -> str:
+    """Best-effort extraction of the Azure error body from an SDK exception."""
+    parts: list[str] = []
+    for attr in ("message", "body"):
+        value = getattr(exc, attr, None)
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            try:
+                parts.append(json.dumps(value))
+            except Exception:
+                parts.append(str(value))
+        else:
+            parts.append(str(value))
+    response = getattr(exc, "response", None)
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        parts.append(text)
+    parts.append(str(exc))
+    return "\n".join(p for p in parts if p)
+
+
+def _detect_azure_deployment_not_found(exc: BaseException) -> bool:
+    """Return True when ``exc`` looks like an Azure DeploymentNotFound 404."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        # Some SDKs nest the status on .response.status_code. If no status is
+        # exposed at all, fall back to the body marker for SDK compatibility.
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status not in (None, 404):
+        return False
+    body = _extract_azure_error_body(exc).lower()
+    return any(token in body for token in _AZURE_DEPLOYMENT_NOT_FOUND_PATTERNS)
+
+
+def _log_azure_deployment_not_found(
+    *, base_url: Any, model: Any, exc: BaseException,
+) -> None:
+    """Emit a single WARNING that names the missing deployment + base_url.
+
+    Caller is responsible for re-raising the original exception — this helper
+    only translates the diagnostic surface, it does not swallow the failure.
+    """
+    logger.warning(
+        "Azure Foundry: deployment %r not found at %s — verify the deployment "
+        "name exists in the Azure portal (Foundry → Deployments) or run "
+        "`hermes model` to pick a deployed model. Upstream said: %s",
+        model, base_url, _extract_azure_error_body(exc).strip()[:400],
+    )
+
+
+def _translate_azure_deployment_error(
+    fn,
+    *,
+    base_url: Any,
+    model: Any,
+):
+    """Run ``fn()``; on Azure DeploymentNotFound, log a clear WARNING and
+    re-raise the original exception unchanged.
+
+    Narrow trigger: only fires when ``base_url`` matches ``*.openai.azure.com``
+    and the exception body contains an Azure DeploymentNotFound marker. All
+    other errors pass through untouched.
+    """
+    try:
+        return fn()
+    except Exception as exc:
+        if _is_azure_endpoint(base_url) and _detect_azure_deployment_not_found(exc):
+            _log_azure_deployment_not_found(base_url=base_url, model=model, exc=exc)
+        raise
 
 
 def _maybe_wrap_anthropic(
@@ -3932,15 +4038,79 @@ def resolve_provider_client(
             return None, None
 
         raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
-        base_url = _to_openai_base_url(raw_base_url)
-        # Honour an explicit base_url override from the caller — used when a
-        # fallback_model entry (or custom_providers lookup) routes through a
-        # built-in provider name but targets a user-specified endpoint.
-        if explicit_base_url:
-            base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
 
-        default_model = _get_aux_model_for_provider(provider)
-        final_model = _normalize_resolved_model(model or default_model, provider)
+        # ── Azure Foundry special-case ────────────────────────────────
+        # Mirror hermes_cli.runtime_provider._resolve_runtime_from_pool_entry:
+        # honour `model.base_url` and `model.api_mode` from config.yaml so an
+        # Anthropic-on-Azure deployment (api_mode=anthropic_messages, base_url
+        # ending in /anthropic) routes through the Anthropic Messages SDK
+        # instead of being rewritten to /openai/v1 (which yields 404/403).
+        # Explicit per-task overrides (explicit_base_url / api_mode /
+        # explicit_api_key) still win over the model.* config.
+        if provider == "azure-foundry":
+            try:
+                from hermes_cli.runtime_provider import _get_model_config, _parse_api_mode
+                _azure_cfg = _get_model_config() or {}
+            except ImportError:
+                _azure_cfg = {}
+                _parse_api_mode = None  # type: ignore[assignment]
+            _cfg_provider = str(_azure_cfg.get("provider") or "").strip().lower()
+            _cfg_base_url = ""
+            _cfg_api_mode: Optional[str] = None
+            if _cfg_provider == "azure-foundry":
+                _cfg_base_url = str(_azure_cfg.get("base_url") or "").strip().rstrip("/")
+                if _parse_api_mode is not None:
+                    _cfg_api_mode = _parse_api_mode(_azure_cfg.get("api_mode"))
+            # explicit per-task base_url wins; otherwise prefer the
+            # model.base_url config over the pool/default URL.
+            if explicit_base_url:
+                raw_base_url = explicit_base_url.strip().rstrip("/")
+            elif _cfg_base_url:
+                raw_base_url = _cfg_base_url
+            # Resolve effective api_mode: explicit per-task > model.api_mode.
+            effective_api_mode = (api_mode or "").strip().lower() or _cfg_api_mode
+
+            default_model = _get_aux_model_for_provider(provider)
+            final_model = _normalize_resolved_model(model or default_model, provider)
+
+            if effective_api_mode == "anthropic_messages":
+                # Strip a trailing /v1 (mirrors runtime_provider behaviour) so
+                # the Anthropic SDK targets /anthropic, not /anthropic/v1.
+                azure_anthropic_base = re.sub(r"/v1/?$", "", raw_base_url)
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(api_key, azure_anthropic_base)
+                except ImportError:
+                    logger.warning(
+                        "azure-foundry requested api_mode=anthropic_messages but "
+                        "the anthropic SDK is not installed — falling back to "
+                        "OpenAI-wire.",
+                    )
+                else:
+                    sync_anthropic = AnthropicAuxiliaryClient(
+                        real_client, final_model, api_key,
+                        azure_anthropic_base, is_oauth=False,
+                    )
+                    logger.debug(
+                        "resolve_provider_client: azure-foundry "
+                        "(%s, anthropic_messages, %s)",
+                        final_model, azure_anthropic_base,
+                    )
+                    if async_mode:
+                        return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
+                    return sync_anthropic, final_model
+            # Fall through to OpenAI-wire path (chat_completions / auto).
+            base_url = _to_openai_base_url(raw_base_url)
+        else:
+            base_url = _to_openai_base_url(raw_base_url)
+            # Honour an explicit base_url override from the caller — used when a
+            # fallback_model entry (or custom_providers lookup) routes through a
+            # built-in provider name but targets a user-specified endpoint.
+            if explicit_base_url:
+                base_url = _to_openai_base_url(explicit_base_url.strip().rstrip("/"))
+
+            default_model = _get_aux_model_for_provider(provider)
+            final_model = _normalize_resolved_model(model or default_model, provider)
 
         if provider == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url

@@ -1347,7 +1347,29 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        # Azure Foundry hosts Whisper under /openai/deployments/<name>/audio/transcriptions
+        # with an api-version query param — incompatible with the stock OpenAI client.
+        # Detect Azure hostnames and use AzureOpenAI instead so the SDK builds
+        # the correct URL automatically.
+        _is_azure = "openai.azure.com" in (base_url or "").lower()
+        if _is_azure:
+            from openai import AzureOpenAI
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(base_url)
+            qs = parse_qs(parsed.query)
+            api_version = (qs.get("api-version", [None])[0]
+                           or os.getenv("AZURE_OPENAI_API_VERSION")
+                           or "2024-06-01")
+            azure_endpoint = f"{parsed.scheme}://{parsed.netloc}"
+            client = AzureOpenAI(
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=api_version,
+                timeout=30,
+                max_retries=0,
+            )
+        else:
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(

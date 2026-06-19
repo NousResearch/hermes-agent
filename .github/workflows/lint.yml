@@ -41,16 +41,26 @@ jobs:
         with:
           fetch-depth: 0 # need full history for merge-base + worktree
 
+      # Skip linting on PRs with no Python changes. The job still reports
+      # green (only the steps below are skipped) so the required check never
+      # hangs the way an `on.paths` filter would.
+      - name: Detect affected areas
+        id: changes
+        uses: ./.github/actions/detect-changes
+
       - name: Install uv
+        if: steps.changes.outputs.python == 'true'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install ruff + ty
+        if: steps.changes.outputs.python == 'true'
         run: |
           uv tool install ruff
           uv tool install ty
 
       - name: Determine base ref
         id: base
+        if: steps.changes.outputs.python == 'true'
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
@@ -67,6 +77,7 @@ jobs:
           echo "Base ref: ${BASE_REF}"
 
       - name: Run ruff + ty on HEAD
+        if: steps.changes.outputs.python == 'true'
         run: |
           mkdir -p .lint-reports/head
           ruff check --output-format json --exit-zero \
@@ -77,6 +88,7 @@ jobs:
           echo "HEAD ty:   $(wc -c < .lint-reports/head/ty.json) bytes"
 
       - name: Run ruff + ty on base (via git worktree)
+        if: steps.changes.outputs.python == 'true'
         run: |
           mkdir -p .lint-reports/base
           # Use a worktree so we don't clobber the main checkout. If the basex
@@ -103,6 +115,7 @@ jobs:
           echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
 
       - name: Generate diff summary
+        if: steps.changes.outputs.python == 'true'
         run: |
           python scripts/lint_diff.py \
             --base-ruff .lint-reports/base/ruff.json \
@@ -115,6 +128,7 @@ jobs:
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reports as artifact
+        if: steps.changes.outputs.python == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lint-reports
@@ -122,7 +136,7 @@ jobs:
           retention-days: 14
 
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.changes.outputs.python == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
@@ -167,14 +181,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # full history so detect-changes can diff base...head
+
+      - name: Detect affected areas
+        id: changes
+        uses: ./.github/actions/detect-changes
 
       - name: Install uv
+        if: steps.changes.outputs.python == 'true'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install ruff
+        if: steps.changes.outputs.python == 'true'
         run: uv tool install ruff
 
       - name: ruff check .
+        if: steps.changes.outputs.python == 'true'
         # No --exit-zero, no || true. Exit code propagates to the job,
         # which propagates to the required-check gate.
         run: |
@@ -191,11 +214,19 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # full history so detect-changes can diff base...head
+
+      - name: Detect affected areas
+        id: changes
+        uses: ./.github/actions/detect-changes
 
       - name: Set up Python
+        if: steps.changes.outputs.python == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
         with:
           python-version: "3.11"
 
       - name: Run footgun checker
+        if: steps.changes.outputs.python == 'true'
         run: python scripts/check-windows-footguns.py --all

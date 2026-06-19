@@ -547,6 +547,43 @@ def test_slack_settings_migrated(tmp_path: Path):
     assert "SLACK_ALLOWED_USERS=U111,U222" in env_text
 
 
+def test_slack_settings_migrated_from_named_account(tmp_path: Path):
+    """Slack settings fall back to the first named account when no flat/default exists."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    source.mkdir()
+
+    (source / "openclaw.json").write_text(
+        json.dumps({
+            "channels": {
+                "slack": {
+                    "accounts": {
+                        "workspace-prod": {
+                            "botToken": "xoxb-named-bot",
+                            "appToken": "xapp-named-app",
+                            "allowFrom": ["U999"],
+                        }
+                    }
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
+        selected_options={"slack-settings"},
+    )
+    migrator.migrate()
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    assert "SLACK_BOT_TOKEN=xoxb-named-bot" in env_text
+    assert "SLACK_APP_TOKEN=xapp-named-app" in env_text
+    assert "SLACK_ALLOWED_USERS=U999" in env_text
+
+
 def test_signal_settings_migrated(tmp_path: Path):
     """Signal account, HTTP URL, and allowlist migrate to .env."""
     mod = load_module()

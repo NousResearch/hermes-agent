@@ -1410,7 +1410,7 @@ class Migrator:
 
     @staticmethod
     def _get_channel_field(ch_cfg: Dict[str, Any], field: str) -> Any:
-        """Get a field from channel config, checking both flat and accounts.default layout."""
+        """Get a field from channel config, checking flat and account-scoped layouts."""
         val = ch_cfg.get(field)
         if val is not None:
             return val
@@ -1418,7 +1418,14 @@ class Migrator:
         if isinstance(accounts, dict):
             default = accounts.get("default")
             if isinstance(default, dict):
-                return default.get(field)
+                val = default.get(field)
+                if val is not None:
+                    return val
+            for account in accounts.values():
+                if isinstance(account, dict):
+                    val = account.get(field)
+                    if val is not None:
+                        return val
         return None
 
     def migrate_discord_settings(self, config: Optional[Dict[str, Any]] = None) -> None:

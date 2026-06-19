@@ -80,6 +80,52 @@ run_agent.py, cli.py, batch_runner.py, environments/
 
 ---
 
+## Investment Assistant Plugin Rules
+
+These rules apply to `plugins/investment_assistant/` and its tests/tickets.
+
+1. **Portfolio recommendations are AI-agent authored.** The target portfolio
+   map architect is a PydanticAI agent, not a deterministic allocation engine.
+   Do not add code that silently falls back to deterministic portfolio maps,
+   canned allocations, keyword-matched recommendations, or hardcoded strategy
+   templates when the AI architect is unavailable.
+
+2. **Fail explicitly instead of faking a recommendation.** If `pydantic_ai`,
+   the configured model, the API key, live market data, or typed output
+   validation fails, the workflow must surface a recoverable failure artifact
+   and wait for retry/fix/refresh. It must not generate a plausible-looking
+   target map just to keep the flow moving.
+
+3. **Deterministic code is allowed only as infrastructure.** Deterministic
+   candidate-pool construction, data normalization, symbol validation,
+   freshness checks, Pydantic model validation, output guards, and risk
+   constraint checks are appropriate. They may constrain or reject an AI
+   answer, but they must not author the investment conclusion.
+
+4. **Do not hardcode theme seed universes.** Avoid static tables like
+   `_THEME_SEEDS` or hardcoded theme plate keywords for candidate discovery.
+   Theme discovery should be agent-authored, then validated through live market
+   data and structured artifacts. User-required symbols are constraints, not
+   recommendations, and may be inserted explicitly.
+
+5. **Use artifacts as the agent's evidence boundary.** The AI architect should
+   receive compact structured artifacts such as candidate pool, market regime,
+   technical/fundamental summaries, SEC/event context, liquidity, valuation,
+   diversification, and options-surface summaries. Do not ask the model to
+   invent missing market facts from prompt memory.
+
+6. **Tests must guard the no-fallback contract.** Keep coverage that proves
+   PydanticAI architect failure does not create `portfolio_maps`; it should
+   create `workflow_error` and mark the workflow failed. Any future revision or
+   HITL path must preserve this contract.
+
+7. **Natural-language fallback is not strategy fallback.** `fallback_response`
+   in the output guard is only a safe explanation of existing workflow
+   artifacts when Hermes' final response drifts. It must not be used to
+   generate or replace portfolio strategy artifacts.
+
+---
+
 ## AIAgent Class (run_agent.py)
 
 The real `AIAgent.__init__` takes ~60 parameters (credentials, routing, callbacks,

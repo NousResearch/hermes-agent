@@ -1,0 +1,9 @@
+name: investment_assistant
+version: 0.1.0
+kind: standalone
+description: "Stateful investment assistant workflows."
+author: "Hermes Agent"
+provides_tools:
+  - ia_portfolio_workflow
+provides_hooks:
+  - transform_llm_output

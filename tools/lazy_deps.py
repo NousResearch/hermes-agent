@@ -165,6 +165,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
     ),
+
+    # ─── Investment assistant providers ───────────────────────────────────
+    "investment.edgartools": ("edgartools==5.31.3",),
+    "investment.pydantic_ai": ("pydantic-ai-slim[openai,duckduckgo,web-fetch]==1.96.0",),
+    "investment.pydantic_ai_skills": ("pydantic-ai-skills==0.11.0",),
 }
 
 
@@ -405,7 +410,7 @@ def feature_missing(feature: str) -> tuple[str, ...]:
     return tuple(s for s in feature_specs(feature) if not _is_satisfied(s))
 
 
-def ensure(feature: str, *, prompt: bool = True) -> None:
+def ensure(feature: str, *, prompt: bool = True, force: bool = False) -> None:
     """Make sure all packages for ``feature`` are importable.
 
     If they're missing, attempts to install them in the active venv. Raises
@@ -416,13 +421,17 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     confirm before installing. Non-interactive callers (gateway, cron,
     batch) get prompt=False and skip the confirmation — config flag is
     the gate in that case.
+
+    ``force``: reinstall the allowlisted specs even when the base package
+    appears satisfied. This is for extras-based specs where the distribution
+    is already present but an optional group dependency is missing.
     """
     if feature not in LAZY_DEPS:
         raise FeatureUnavailable(
             feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist"
         )
 
-    missing = feature_missing(feature)
+    missing = feature_specs(feature) if force else feature_missing(feature)
     if not missing:
         return
 
@@ -478,13 +487,14 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     except Exception:
         pass
 
-    still_missing = feature_missing(feature)
-    if still_missing:
-        raise FeatureUnavailable(
-            feature, still_missing,
-            "install reported success but packages still not importable "
-            "(may require Python restart)"
-        )
+    if not force:
+        still_missing = feature_missing(feature)
+        if still_missing:
+            raise FeatureUnavailable(
+                feature, still_missing,
+                "install reported success but packages still not importable "
+                "(may require Python restart)"
+            )
 
     logger.info("Lazy install complete for feature %r", feature)
 

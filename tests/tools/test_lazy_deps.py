@@ -101,6 +101,9 @@ class TestAllowlist:
         assert cmd.startswith("uv pip install")
         assert "honcho-ai" in cmd
 
+    def test_investment_pydantic_ai_skills_is_pinned(self):
+        assert ld.LAZY_DEPS["investment.pydantic_ai_skills"] == ("pydantic-ai-skills==0.11.0",)
+
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
 
@@ -163,6 +166,22 @@ class TestEnsure:
             lambda *a, **kw: pytest.fail("pip should not be called"),
         )
         ld.ensure("test.satisfied", prompt=False)  # no exception
+
+    def test_force_install_runs_even_when_base_package_is_satisfied(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.extras", ("zzzfake[extra]==1.0.0",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        installed = []
+
+        def fake_install(specs, **kw):
+            installed.extend(specs)
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        ld.ensure("test.extras", prompt=False, force=True)
+
+        assert installed == ["zzzfake[extra]==1.0.0"]
 
     def test_install_success_path(self, monkeypatch):
         monkeypatch.setitem(ld.LAZY_DEPS, "test.install", ("zzzfake>=1",))

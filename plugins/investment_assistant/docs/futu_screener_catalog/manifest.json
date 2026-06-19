@@ -1,0 +1,545 @@
+{
+  "documents": [
+    {
+      "kind": "root_index",
+      "path": "index.md",
+      "title": "Futu Screener Catalog Index"
+    },
+    {
+      "kind": "market_index",
+      "market": "HK",
+      "path": "markets/HK/index.md",
+      "title": "HK Screener Catalog"
+    },
+    {
+      "category": "market_quote",
+      "kind": "app_category",
+      "market": "HK",
+      "path": "markets/HK/filters/market_quote.md",
+      "title": "HK 行情 Screener Options"
+    },
+    {
+      "category": "valuation",
+      "kind": "app_category",
+      "market": "HK",
+      "path": "markets/HK/filters/valuation.md",
+      "title": "HK 估值 Screener Options"
+    },
+    {
+      "category": "dividend",
+      "kind": "app_category",
+      "market": "HK",
+      "path": "markets/HK/filters/dividend.md",
+      "title": "HK 分红 Screener Options"
+    },
+    {
+      "category": "technical",
+      "kind": "app_category",
+      "market": "HK",
+      "path": "markets/HK/filters/technical.md",
+      "title": "HK 技术 Screener Options"
+    },
+    {
+      "category": "financial",
+      "kind": "app_category",
+      "market": "HK",
+      "path": "markets/HK/filters/financial.md",
+      "title": "HK 财务 Screener Options"
+    },
+    {
+      "category": "analysis",
+      "kind": "app_category",
+      "market": "HK",
+      "path": "markets/HK/filters/analysis.md",
+      "title": "HK 分析 Screener Options"
+    },
+    {
+      "category": "options",
+      "kind": "app_category",
+      "market": "HK",
+      "path": "markets/HK/filters/options.md",
+      "title": "HK 期权 Screener Options"
+    },
+    {
+      "category": "simple",
+      "count": 21,
+      "kind": "stock_field_group",
+      "market": "HK",
+      "path": "markets/HK/filters/stock_fields/simple.md",
+      "title": "HK StockField simple"
+    },
+    {
+      "category": "accumulate",
+      "count": 5,
+      "kind": "stock_field_group",
+      "market": "HK",
+      "path": "markets/HK/filters/stock_fields/accumulate.md",
+      "title": "HK StockField accumulate"
+    },
+    {
+      "category": "financial",
+      "count": 46,
+      "kind": "stock_field_group",
+      "market": "HK",
+      "path": "markets/HK/filters/stock_fields/financial.md",
+      "title": "HK StockField financial"
+    },
+    {
+      "category": "pattern",
+      "count": 20,
+      "kind": "stock_field_group",
+      "market": "HK",
+      "path": "markets/HK/filters/stock_fields/pattern.md",
+      "title": "HK StockField pattern"
+    },
+    {
+      "category": "custom_indicator",
+      "count": 28,
+      "kind": "stock_field_group",
+      "market": "HK",
+      "path": "markets/HK/filters/stock_fields/custom_indicator.md",
+      "title": "HK StockField custom_indicator"
+    },
+    {
+      "kind": "enum",
+      "market": "HK",
+      "path": "markets/HK/filters/enums.md",
+      "title": "HK Filter Enums"
+    },
+    {
+      "category": "ALL",
+      "count": 295,
+      "kind": "plate_list",
+      "market": "HK",
+      "path": "markets/HK/plates/all.md",
+      "title": "HK Futu Plate ALL"
+    },
+    {
+      "category": "CONCEPT",
+      "count": 117,
+      "kind": "plate_list",
+      "market": "HK",
+      "path": "markets/HK/plates/concept.md",
+      "title": "HK Futu Plate CONCEPT"
+    },
+    {
+      "category": "INDUSTRY",
+      "count": 111,
+      "kind": "plate_list",
+      "market": "HK",
+      "path": "markets/HK/plates/industry.md",
+      "title": "HK Futu Plate INDUSTRY"
+    },
+    {
+      "category": "REGION",
+      "count": 0,
+      "kind": "plate_list",
+      "market": "HK",
+      "path": "markets/HK/plates/region.md",
+      "title": "HK Futu Plate REGION"
+    },
+    {
+      "kind": "market_index",
+      "market": "SH",
+      "path": "markets/SH/index.md",
+      "title": "SH Screener Catalog"
+    },
+    {
+      "category": "market_quote",
+      "kind": "app_category",
+      "market": "SH",
+      "path": "markets/SH/filters/market_quote.md",
+      "title": "SH 行情 Screener Options"
+    },
+    {
+      "category": "valuation",
+      "kind": "app_category",
+      "market": "SH",
+      "path": "markets/SH/filters/valuation.md",
+      "title": "SH 估值 Screener Options"
+    },
+    {
+      "category": "dividend",
+      "kind": "app_category",
+      "market": "SH",
+      "path": "markets/SH/filters/dividend.md",
+      "title": "SH 分红 Screener Options"
+    },
+    {
+      "category": "technical",
+      "kind": "app_category",
+      "market": "SH",
+      "path": "markets/SH/filters/technical.md",
+      "title": "SH 技术 Screener Options"
+    },
+    {
+      "category": "financial",
+      "kind": "app_category",
+      "market": "SH",
+      "path": "markets/SH/filters/financial.md",
+      "title": "SH 财务 Screener Options"
+    },
+    {
+      "category": "analysis",
+      "kind": "app_category",
+      "market": "SH",
+      "path": "markets/SH/filters/analysis.md",
+      "title": "SH 分析 Screener Options"
+    },
+    {
+      "category": "options",
+      "kind": "app_category",
+      "market": "SH",
+      "path": "markets/SH/filters/options.md",
+      "title": "SH 期权 Screener Options"
+    },
+    {
+      "category": "simple",
+      "count": 21,
+      "kind": "stock_field_group",
+      "market": "SH",
+      "path": "markets/SH/filters/stock_fields/simple.md",
+      "title": "SH StockField simple"
+    },
+    {
+      "category": "accumulate",
+      "count": 5,
+      "kind": "stock_field_group",
+      "market": "SH",
+      "path": "markets/SH/filters/stock_fields/accumulate.md",
+      "title": "SH StockField accumulate"
+    },
+    {
+      "category": "financial",
+      "count": 46,
+      "kind": "stock_field_group",
+      "market": "SH",
+      "path": "markets/SH/filters/stock_fields/financial.md",
+      "title": "SH StockField financial"
+    },
+    {
+      "category": "pattern",
+      "count": 20,
+      "kind": "stock_field_group",
+      "market": "SH",
+      "path": "markets/SH/filters/stock_fields/pattern.md",
+      "title": "SH StockField pattern"
+    },
+    {
+      "category": "custom_indicator",
+      "count": 28,
+      "kind": "stock_field_group",
+      "market": "SH",
+      "path": "markets/SH/filters/stock_fields/custom_indicator.md",
+      "title": "SH StockField custom_indicator"
+    },
+    {
+      "kind": "enum",
+      "market": "SH",
+      "path": "markets/SH/filters/enums.md",
+      "title": "SH Filter Enums"
+    },
+    {
+      "category": "ALL",
+      "count": 639,
+      "kind": "plate_list",
+      "market": "SH",
+      "path": "markets/SH/plates/all.md",
+      "title": "SH Futu Plate ALL"
+    },
+    {
+      "category": "CONCEPT",
+      "count": 1,
+      "kind": "plate_list",
+      "market": "SH",
+      "path": "markets/SH/plates/concept.md",
+      "title": "SH Futu Plate CONCEPT"
+    },
+    {
+      "category": "INDUSTRY",
+      "count": 131,
+      "kind": "plate_list",
+      "market": "SH",
+      "path": "markets/SH/plates/industry.md",
+      "title": "SH Futu Plate INDUSTRY"
+    },
+    {
+      "category": "REGION",
+      "count": 1,
+      "kind": "plate_list",
+      "market": "SH",
+      "path": "markets/SH/plates/region.md",
+      "title": "SH Futu Plate REGION"
+    },
+    {
+      "kind": "market_index",
+      "market": "SZ",
+      "path": "markets/SZ/index.md",
+      "title": "SZ Screener Catalog"
+    },
+    {
+      "category": "market_quote",
+      "kind": "app_category",
+      "market": "SZ",
+      "path": "markets/SZ/filters/market_quote.md",
+      "title": "SZ 行情 Screener Options"
+    },
+    {
+      "category": "valuation",
+      "kind": "app_category",
+      "market": "SZ",
+      "path": "markets/SZ/filters/valuation.md",
+      "title": "SZ 估值 Screener Options"
+    },
+    {
+      "category": "dividend",
+      "kind": "app_category",
+      "market": "SZ",
+      "path": "markets/SZ/filters/dividend.md",
+      "title": "SZ 分红 Screener Options"
+    },
+    {
+      "category": "technical",
+      "kind": "app_category",
+      "market": "SZ",
+      "path": "markets/SZ/filters/technical.md",
+      "title": "SZ 技术 Screener Options"
+    },
+    {
+      "category": "financial",
+      "kind": "app_category",
+      "market": "SZ",
+      "path": "markets/SZ/filters/financial.md",
+      "title": "SZ 财务 Screener Options"
+    },
+    {
+      "category": "analysis",
+      "kind": "app_category",
+      "market": "SZ",
+      "path": "markets/SZ/filters/analysis.md",
+      "title": "SZ 分析 Screener Options"
+    },
+    {
+      "category": "options",
+      "kind": "app_category",
+      "market": "SZ",
+      "path": "markets/SZ/filters/options.md",
+      "title": "SZ 期权 Screener Options"
+    },
+    {
+      "category": "simple",
+      "count": 21,
+      "kind": "stock_field_group",
+      "market": "SZ",
+      "path": "markets/SZ/filters/stock_fields/simple.md",
+      "title": "SZ StockField simple"
+    },
+    {
+      "category": "accumulate",
+      "count": 5,
+      "kind": "stock_field_group",
+      "market": "SZ",
+      "path": "markets/SZ/filters/stock_fields/accumulate.md",
+      "title": "SZ StockField accumulate"
+    },
+    {
+      "category": "financial",
+      "count": 46,
+      "kind": "stock_field_group",
+      "market": "SZ",
+      "path": "markets/SZ/filters/stock_fields/financial.md",
+      "title": "SZ StockField financial"
+    },
+    {
+      "category": "pattern",
+      "count": 20,
+      "kind": "stock_field_group",
+      "market": "SZ",
+      "path": "markets/SZ/filters/stock_fields/pattern.md",
+      "title": "SZ StockField pattern"
+    },
+    {
+      "category": "custom_indicator",
+      "count": 28,
+      "kind": "stock_field_group",
+      "market": "SZ",
+      "path": "markets/SZ/filters/stock_fields/custom_indicator.md",
+      "title": "SZ StockField custom_indicator"
+    },
+    {
+      "kind": "enum",
+      "market": "SZ",
+      "path": "markets/SZ/filters/enums.md",
+      "title": "SZ Filter Enums"
+    },
+    {
+      "category": "ALL",
+      "count": 1,
+      "kind": "plate_list",
+      "market": "SZ",
+      "path": "markets/SZ/plates/all.md",
+      "title": "SZ Futu Plate ALL"
+    },
+    {
+      "category": "CONCEPT",
+      "count": 1,
+      "kind": "plate_list",
+      "market": "SZ",
+      "path": "markets/SZ/plates/concept.md",
+      "title": "SZ Futu Plate CONCEPT"
+    },
+    {
+      "category": "INDUSTRY",
+      "count": 1,
+      "kind": "plate_list",
+      "market": "SZ",
+      "path": "markets/SZ/plates/industry.md",
+      "title": "SZ Futu Plate INDUSTRY"
+    },
+    {
+      "category": "REGION",
+      "count": 1,
+      "kind": "plate_list",
+      "market": "SZ",
+      "path": "markets/SZ/plates/region.md",
+      "title": "SZ Futu Plate REGION"
+    },
+    {
+      "kind": "market_index",
+      "market": "US",
+      "path": "markets/US/index.md",
+      "title": "US Screener Catalog"
+    },
+    {
+      "category": "market_quote",
+      "kind": "app_category",
+      "market": "US",
+      "path": "markets/US/filters/market_quote.md",
+      "title": "US 行情 Screener Options"
+    },
+    {
+      "category": "valuation",
+      "kind": "app_category",
+      "market": "US",
+      "path": "markets/US/filters/valuation.md",
+      "title": "US 估值 Screener Options"
+    },
+    {
+      "category": "dividend",
+      "kind": "app_category",
+      "market": "US",
+      "path": "markets/US/filters/dividend.md",
+      "title": "US 分红 Screener Options"
+    },
+    {
+      "category": "technical",
+      "kind": "app_category",
+      "market": "US",
+      "path": "markets/US/filters/technical.md",
+      "title": "US 技术 Screener Options"
+    },
+    {
+      "category": "financial",
+      "kind": "app_category",
+      "market": "US",
+      "path": "markets/US/filters/financial.md",
+      "title": "US 财务 Screener Options"
+    },
+    {
+      "category": "analysis",
+      "kind": "app_category",
+      "market": "US",
+      "path": "markets/US/filters/analysis.md",
+      "title": "US 分析 Screener Options"
+    },
+    {
+      "category": "options",
+      "kind": "app_category",
+      "market": "US",
+      "path": "markets/US/filters/options.md",
+      "title": "US 期权 Screener Options"
+    },
+    {
+      "category": "simple",
+      "count": 21,
+      "kind": "stock_field_group",
+      "market": "US",
+      "path": "markets/US/filters/stock_fields/simple.md",
+      "title": "US StockField simple"
+    },
+    {
+      "category": "accumulate",
+      "count": 5,
+      "kind": "stock_field_group",
+      "market": "US",
+      "path": "markets/US/filters/stock_fields/accumulate.md",
+      "title": "US StockField accumulate"
+    },
+    {
+      "category": "financial",
+      "count": 46,
+      "kind": "stock_field_group",
+      "market": "US",
+      "path": "markets/US/filters/stock_fields/financial.md",
+      "title": "US StockField financial"
+    },
+    {
+      "category": "pattern",
+      "count": 20,
+      "kind": "stock_field_group",
+      "market": "US",
+      "path": "markets/US/filters/stock_fields/pattern.md",
+      "title": "US StockField pattern"
+    },
+    {
+      "category": "custom_indicator",
+      "count": 28,
+      "kind": "stock_field_group",
+      "market": "US",
+      "path": "markets/US/filters/stock_fields/custom_indicator.md",
+      "title": "US StockField custom_indicator"
+    },
+    {
+      "kind": "enum",
+      "market": "US",
+      "path": "markets/US/filters/enums.md",
+      "title": "US Filter Enums"
+    },
+    {
+      "category": "ALL",
+      "count": 350,
+      "kind": "plate_list",
+      "market": "US",
+      "path": "markets/US/plates/all.md",
+      "title": "US Futu Plate ALL"
+    },
+    {
+      "category": "CONCEPT",
+      "count": 116,
+      "kind": "plate_list",
+      "market": "US",
+      "path": "markets/US/plates/concept.md",
+      "title": "US Futu Plate CONCEPT"
+    },
+    {
+      "category": "INDUSTRY",
+      "count": 145,
+      "kind": "plate_list",
+      "market": "US",
+      "path": "markets/US/plates/industry.md",
+      "title": "US Futu Plate INDUSTRY"
+    },
+    {
+      "category": "REGION",
+      "count": 0,
+      "kind": "plate_list",
+      "market": "US",
+      "path": "markets/US/plates/region.md",
+      "title": "US Futu Plate REGION"
+    }
+  ],
+  "generated_at": "2026-05-21T15:25:17.432515+00:00",
+  "index": "index.md",
+  "root": "/Users/roy_li/gits/hermes-agent/plugins/investment_assistant/docs/futu_screener_catalog",
+  "schema_version": 1
+}

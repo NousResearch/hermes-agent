@@ -112,6 +112,7 @@ class TestGenerateTitle:
         # The user content in the messages should be truncated
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
+        assert captured_kwargs["temperature"] is None
 
 
 class TestAutoTitleSession:

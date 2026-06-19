@@ -10546,6 +10546,120 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
+# System components status — read-only health snapshot of the local AI stack
+# (gateway, dashboard, n8n, Letta, Qdrant, LiteLLM, Langfuse, …) plus the
+# auxiliary-model cost guardrails. The snapshot is produced out-of-band by
+# ``scripts/publish_system_components_status.py`` (run from cron or by hand)
+# and written to ``~/.hermes/system_components_status.json``. This endpoint
+# only *reads* that file — it never probes services itself, so a slow or
+# hung local service can't stall a dashboard request. Gated like the other
+# ``/api/analytics/*`` endpoints (NOT in PUBLIC_API_PATHS): it can name
+# internal hosts/ports, so it stays behind dashboard auth.
+# ---------------------------------------------------------------------------
+
+# Snapshot is considered stale once it is older than this. The publisher is
+# expected to run on a shorter cadence; past this we surface a warning rather
+# than present possibly-wrong "up" badges as current.
+_SYSTEM_COMPONENTS_STALE_AFTER_SECONDS = 2 * 60 * 60
+
+# Substrings that mark a JSON key as credential-shaped. The publisher is
+# written to never emit secrets, but the endpoint redacts defensively in
+# case a hand-edited snapshot or a future publisher change leaks one.
+_SECRET_KEY_HINTS = (
+    "key", "token", "secret", "password", "passwd", "credential",
+    "authorization", "auth_header", "bearer", "apikey", "api_key",
+)
+
+
+def _redact_secret_values(value: Any) -> Any:
+    """Recursively redact values under credential-shaped keys.
+
+    Defense-in-depth: the snapshot file is the publisher's own output and is
+    not supposed to contain secrets, but we never want this read-only
+    endpoint to become a credential exfiltration path if the file is
+    hand-edited or the publisher regresses.
+    """
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            key_l = str(k).lower()
+            if (
+                any(hint in key_l for hint in _SECRET_KEY_HINTS)
+                and isinstance(v, (str, int, float))
+                and not isinstance(v, bool)
+            ):
+                out[k] = "***redacted***"
+            else:
+                out[k] = _redact_secret_values(v)
+        return out
+    if isinstance(value, list):
+        return [_redact_secret_values(v) for v in value]
+    return value
+
+
+@app.get("/api/analytics/system-components")
+async def get_system_components_analytics():
+    """Read the local-stack health snapshot, annotated with staleness.
+
+    Returns a safe default (never 500) when the snapshot file is missing or
+    unreadable, so the dashboard can render an actionable "run the publisher"
+    message instead of an error.
+    """
+    snapshot_path = get_hermes_home() / "system_components_status.json"
+
+    default_payload: Dict[str, Any] = {
+        "timestamp": None,
+        "source": "default",
+        "components": [],
+        "auxiliary_routes": None,
+        "stale": True,
+        "missing": True,
+        "age_seconds": None,
+        "message": (
+            "No system-components snapshot found. Run "
+            "scripts/publish_system_components_status.py "
+            "(e.g. from cron) to populate "
+            "~/.hermes/system_components_status.json."
+        ),
+    }
+
+    if not snapshot_path.exists():
+        return default_payload
+
+    try:
+        raw = snapshot_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("snapshot root is not a JSON object")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        bad = dict(default_payload)
+        bad["source"] = "error"
+        bad["message"] = f"Could not read system-components snapshot: {exc}"
+        return bad
+
+    data = _redact_secret_values(data)
+
+    # Staleness is computed from the snapshot's ``timestamp`` (epoch seconds),
+    # which the publisher and this endpoint share. We don't trust the
+    # publisher to self-report ``stale`` — it's derived here against the
+    # current clock so a long-dead publisher can't claim freshness.
+    ts = data.get("timestamp")
+    age_seconds: Optional[float] = None
+    stale = True
+    if isinstance(ts, (int, float)) and ts > 0:
+        age_seconds = max(0.0, time.time() - float(ts))
+        stale = age_seconds > _SYSTEM_COMPONENTS_STALE_AFTER_SECONDS
+
+    data["age_seconds"] = age_seconds
+    data["stale"] = stale
+    data["missing"] = False
+    data.setdefault("source", "snapshot")
+    data.setdefault("components", [])
+    data.setdefault("auxiliary_routes", None)
+    return data
+
+
+# ---------------------------------------------------------------------------
 # /api/pty — PTY-over-WebSocket bridge for the dashboard "Chat" tab.
 #
 # The endpoint spawns the same ``hermes --tui`` binary the CLI uses, behind

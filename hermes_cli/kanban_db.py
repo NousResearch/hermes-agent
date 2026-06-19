@@ -283,6 +283,7 @@ _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
 _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
+_CTX_MAX_TASK_CONTEXT_FILES  = 16 * 1024  # 16 KB total across all injected context files
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 
 
@@ -879,6 +880,13 @@ class Task:
     # the defaults; empty list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    # Paths to files whose contents are injected verbatim into the worker
+    # context (after the task body, before prior attempts). Useful for
+    # project briefs, checklists, or conventions the worker should always
+    # read without having access to the full project directory.
+    # Stored as a JSON array of absolute path strings. Capped at
+    # _CTX_MAX_TASK_CONTEXT_FILES bytes total across all files.
+    task_context_files: Optional[list[str]] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -977,6 +985,11 @@ class Task:
             ),
             skills=skills_value,
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
+            task_context_files=(
+                json.loads(row["task_context_files"])
+                if "task_context_files" in keys and row["task_context_files"]
+                else None
+            ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
@@ -1174,7 +1187,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- JSON array of absolute file paths whose contents are injected into
+    -- the worker's context (after task body, before prior attempts). Lets
+    -- orchestrators attach project briefs or checklists to specific tasks
+    -- without giving the worker a full directory workspace. NULL = no
+    -- extra files injected.
+    task_context_files   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1985,6 +2004,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "task_context_files" not in cols:
+        # JSON array of file paths to inject into worker context. NULL for
+        # existing rows is correct (no change in behaviour for existing tasks).
+        # This field was originally named "context_files"; it was renamed to
+        # "task_context_files" to avoid colliding with the agent-level
+        # context-files concept. On DBs created before the rename, migrate the
+        # old column in place so existing data is preserved; otherwise add fresh.
+        if "context_files" in cols:
+            conn.execute(
+                "ALTER TABLE tasks RENAME COLUMN context_files TO task_context_files"
+            )
+        else:
+            _add_column_if_missing(conn, "tasks", "task_context_files", "task_context_files TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2365,6 +2398,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    task_context_files: Optional[Iterable[str]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2388,6 +2422,15 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``task_context_files`` is an optional list of absolute file paths whose
+    contents are injected verbatim into the worker's context (after the
+    task body, before prior attempts). Useful for attaching project
+    briefs, checklists, or conventions that the worker should always
+    read — without giving it a full directory workspace. Paths that
+    cannot be read at dispatch time are skipped with a warning in the
+    worker context. Total injection is capped at
+    ``_CTX_MAX_TASK_CONTEXT_FILES`` bytes across all files.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2494,6 +2537,13 @@ def create_task(
             )
         skills_list = cleaned
 
+    # Normalise task_context_files: convert to list of non-empty strings.
+    context_files_list: Optional[list[str]] = None
+    if task_context_files is not None:
+        context_files_list = [str(p).strip() for p in task_context_files if str(p).strip()]
+        if not context_files_list:
+            context_files_list = None
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -2593,8 +2643,8 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id, task_context_files
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2617,6 +2667,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        json.dumps(context_files_list) if context_files_list is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -7938,6 +7989,26 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             ctype = f", {att.content_type}" if att.content_type else ""
             lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
         lines.append("")
+
+    if task.task_context_files:
+        budget = _CTX_MAX_TASK_CONTEXT_FILES
+        injected: list[tuple[str, str]] = []
+        for fpath in task.task_context_files:
+            if budget <= 0:
+                break
+            try:
+                with open(fpath, "r", errors="replace") as fh:
+                    raw = fh.read(budget)
+                injected.append((fpath, raw))
+                budget -= len(raw)
+            except OSError as exc:
+                injected.append((fpath, f"[unreadable: {exc}]"))
+        if injected:
+            lines.append("## Context files")
+            for fpath, content in injected:
+                lines.append(f"### {fpath}")
+                lines.append(content.rstrip())
+                lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the
     # history. Skip the currently-active run (that's this worker).

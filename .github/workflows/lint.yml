@@ -54,9 +54,9 @@ jobs:
 
       - name: Install ruff + ty
         if: steps.changes.outputs.python == 'true'
-        run: |
-          uv tool install ruff
-          uv tool install ty
+        uses: ./.github/actions/retry
+        with:
+          command: uv tool install ruff && uv tool install ty
 
       - name: Determine base ref
         id: base
@@ -194,7 +194,9 @@ jobs:
 
       - name: Install ruff
         if: steps.changes.outputs.python == 'true'
-        run: uv tool install ruff
+        uses: ./.github/actions/retry
+        with:
+          command: uv tool install ruff
 
       - name: ruff check .
         if: steps.changes.outputs.python == 'true'

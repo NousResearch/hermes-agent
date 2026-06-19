@@ -23,7 +23,7 @@ class TestGenericProviderLiveCuratedMerge:
         return p
 
     def test_live_models_merged_with_curated(self):
-        """Curated models come first; live-only models are appended."""
+        """Live models come first; curated-only models are appended."""
         live = ["glm-5.2", "glm-5.1", "glm-5"]
         curated = _PROVIDER_MODELS["zai"]  # includes glm-5.1, glm-5, glm-4.5, etc.
         profile = self._make_profile(live)
@@ -34,9 +34,9 @@ class TestGenericProviderLiveCuratedMerge:
         ):
             result = provider_model_ids("zai")
 
-        # Curated entries first, in catalog order (keeps newest curated models
-        # like glm-5.2 at the top of the picker — see #46309).
-        assert result[: len(curated)] == list(curated)
+        # Live entries first (provider's authoritative catalog),
+        # curated-only entries appended afterwards.
+        assert result[: len(live)] == list(live)
         assert result[0] == "glm-5.2"
         # Models present in both live and curated are not duplicated.
         assert result.count("glm-5.2") == 1
@@ -76,8 +76,8 @@ class TestGenericProviderLiveCuratedMerge:
         ):
             result = provider_model_ids("zai")
 
-        # Curated-first: curated casing wins for models present in both.
-        assert result == ["glm-5.1", "GLM-5", "glm-4.5"]
+        # Live-first: live casing wins for models present in both.
+        assert result == ["GLM-5.1", "glm-5", "glm-4.5"]
 
     def test_empty_curated_returns_live_only(self):
         """When no curated list exists, live is returned as-is."""

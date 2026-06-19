@@ -702,3 +702,150 @@ class TestMcpAutoRegistration:
         assert len(result) == 2
         assert isinstance(result[0], bool)
         assert isinstance(result[1], str)
+
+
+class TestArdAdditionalCaches:
+    def test_load_ard_cache_reads_profile_hub_and_additional_cache_files(self, tmp_path, monkeypatch):
+        import tools.skills_hub as mod
+
+        profile_hub = tmp_path / ".hub"
+        profile_hub.mkdir(parents=True)
+        (profile_hub / "ard-mcp-registry-cache.json").write_text(json.dumps({
+            "entries": [{
+                "identifier": "urn:ai:registry.modelcontextprotocol.io:mcp:example",
+                "displayName": "Example MCP Registry Server",
+                "type": "application/mcp-server-card+json",
+                "url": "https://example.com/mcp",
+                "description": "registry-backed port scanning helper",
+                "tags": ["mcp", "port-scanning"],
+                "metadata": {"transport": "streamable-http"},
+            }]
+        }))
+        (profile_hub / "ard-gitdb-candidates.json").write_text(json.dumps({
+            "entries": [{
+                "identifier": "urn:ai:gitdb.local:tool-candidate:tophant-ai:promptbeat",
+                "displayName": "tophant-ai/promptbeat",
+                "type": "application/vnd.hermes.tool-candidate+json",
+                "url": "https://github.com/tophant-ai/promptbeat",
+                "description": "Break your AI before they do",
+                "tags": ["gitdb", "watch", "ai-security"],
+            }]
+        }))
+
+        monkeypatch.setattr(mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setattr(mod, "HUB_DIR", tmp_path / "skills" / ".hub")
+        monkeypatch.setattr(mod, "_ARD_CACHE", None)
+
+        entries = mod._load_ard_cache()
+        identifiers = {e["identifier"] for e in entries}
+        assert "urn:ai:registry.modelcontextprotocol.io:mcp:example" in identifiers
+        assert "urn:ai:gitdb.local:tool-candidate:tophant-ai:promptbeat" in identifiers
+
+    def test_ard_source_search_uses_additional_profile_cache_without_network(self, tmp_path, monkeypatch):
+        import tools.skills_hub as mod
+
+        profile_hub = tmp_path / ".hub"
+        profile_hub.mkdir(parents=True)
+        (profile_hub / "ard-mcp-registry-cache.json").write_text(json.dumps({
+            "entries": [{
+                "identifier": "urn:ai:registry.modelcontextprotocol.io:mcp:nmap",
+                "displayName": "Nmap MCP",
+                "type": "application/mcp-server-card+json",
+                "url": "https://example.com/mcp",
+                "description": "port scanning helper",
+                "tags": ["mcp", "port-scanning"],
+                "metadata": {"transport": "streamable-http"},
+            }]
+        }))
+
+        monkeypatch.setattr(mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setattr(mod, "HUB_DIR", tmp_path / "skills" / ".hub")
+        monkeypatch.setattr(mod, "_ARD_CACHE", None)
+        with patch("tools.skills_hub._guarded_http_post_json") as post:
+            results = ArdSource(registries=["https://registry.modelcontextprotocol.io"]).search("port scanning", limit=5)
+
+        assert post.call_count == 0
+        assert [r.identifier for r in results] == ["urn:ai:registry.modelcontextprotocol.io:mcp:nmap"]
+        assert results[0].extra["mcp"]["url"] == "https://example.com/mcp"
+        assert results[0].extra["from_cache"] is True
+
+
+class TestArdSkillSearchEnrichment:
+    def test_generate_skill_entries_adds_aliases_and_representative_queries(self):
+        entries = _generate_ard_skill_entries([
+            {
+                "name": "youtube-content",
+                "description": "YouTube transcripts to summaries, threads, blogs.",
+                "category": "media",
+            }
+        ], "test.local")
+        entry = entries[0]
+        assert "youtube" in entry["aliases"]
+        assert "content" in entry["aliases"]
+        assert "media" in entry["tags"]
+        assert any("youtube content" in q for q in entry["representativeQueries"])
+        assert entry["data"]["aliases"] == entry["aliases"]
+
+    def test_local_search_uses_aliases_and_representative_queries(self, monkeypatch):
+        import tools.skills_hub as mod
+
+        monkeypatch.setattr(mod, "generate_ard_catalog", lambda: {
+            "entries": [
+                {
+                    "identifier": "urn:ai:test:skill:youtube-content",
+                    "displayName": "youtube-content",
+                    "type": ARD_TYPE_SKILL,
+                    "description": "Video transcript workflow",
+                    "tags": ["media"],
+                    "aliases": ["youtube", "yt", "transcript"],
+                    "representativeQueries": ["summarize youtube video transcript"],
+                    "data": {"name": "youtube-content"},
+                }
+            ]
+        })
+
+        results = mod.ard_local_search("summarize yt video", limit=5)
+        assert results
+        assert results[0]["identifier"] == "urn:ai:test:skill:youtube-content"
+        assert results[0]["score"] > 0
+
+
+class TestArdCatalogVisibility:
+    def test_generate_mcp_entries_private_includes_stdio_without_secrets(self):
+        servers = {
+            "local-sec-tools": {
+                "command": "python3",
+                "args": ["scripts/security_tools_mcp.py"],
+                "env": {"API_TOKEN": "should-not-leak"},
+                "workdir": "/home/private/project",
+                "transport": "stdio",
+            }
+        }
+        entries = _generate_ard_mcp_entries(servers, "test.local", visibility="private")
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["url"] == "stdio:local-sec-tools"
+        assert entry["metadata"]["transport"] == "stdio"
+        raw = json.dumps(entry)
+        assert "should-not-leak" not in raw
+        assert "/home/private" not in raw
+        assert "scripts/security_tools_mcp.py" not in raw
+
+    def test_generate_mcp_entries_public_omits_stdio(self):
+        servers = {"local-sec-tools": {"command": "python3", "transport": "stdio"}}
+        assert _generate_ard_mcp_entries(servers, "test.local", visibility="public") == []
+
+    def test_generate_catalog_rejects_unknown_visibility(self):
+        with pytest.raises(ValueError):
+            generate_ard_catalog(visibility="partner")
+
+
+class TestArdPublishVisibilityOutput:
+    def test_publish_ard_catalog_accepts_visibility_and_output_path(self, tmp_path):
+        out = tmp_path / "private-ai-catalog.json"
+        path = publish_ard_catalog(domain="test.local", visibility="private", output_path=out)
+        assert path == out
+        data = json.loads(out.read_text())
+        assert data["specVersion"] == "1.0"
+        assert data["host"]["identifier"] == "did:web:test.local"
+        assert isinstance(data["entries"], list)

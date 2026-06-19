@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 HUB_DIR = SKILLS_DIR / ".hub"
+PROFILE_HUB_DIR = HERMES_HOME / ".hub"
 LOCK_FILE = HUB_DIR / "lock.json"
 QUARANTINE_DIR = HUB_DIR / "quarantine"
 AUDIT_LOG = HUB_DIR / "audit.log"
@@ -3930,6 +3931,12 @@ class ArdSource(SkillSource):
             "pageSize": min(limit, 20),
         }
 
+        # Try local cache first (offline/fast path). This includes imported MCP
+        # Registry and GitDB candidate catalogs, not only registry-specific cache.
+        cached = _search_ard_cache(query, limit, registry_url)
+        if cached is not None:
+            return cached, []
+
         data = _guarded_http_post_json(search_url, body, timeout=20)
         if data is None:
             # Fallback: try static catalog
@@ -4286,25 +4293,100 @@ def is_mcp_bundle(bundle: SkillBundle) -> bool:
 _ARD_CACHE: Optional[List[Dict[str, Any]]] = None
 
 
-def _load_ard_cache() -> List[Dict[str, Any]]:
-    """Load cached ARD entries from disk (built by scripts/build_ard_cache.py).
+def _ard_cache_paths() -> List[Path]:
+    """Return ARD cache files in precedence order.
 
+    Historical builds wrote `ard-cache.json` under `skills/.hub`; newer ARD
+    importers write profile-level catalogs under `~/.hermes/.hub`. Search should
+    read all of them so imported MCP Registry and GitDB candidates are usable
+    without re-querying remote registries.
+    """
+    profile_hub = HERMES_HOME / ".hub"
+    candidates = [
+        HUB_DIR / "ard-cache.json",
+        profile_hub / "ard-cache.json",
+        profile_hub / "ard-mcp-registry-cache.json",
+        profile_hub / "ard-gitdb-candidates.json",
+    ]
+    seen: set[Path] = set()
+    paths: List[Path] = []
+    for path in candidates:
+        if path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _load_ard_cache() -> List[Dict[str, Any]]:
+    """Load cached ARD entries from disk.
+
+    Supports the legacy `scripts/build_ard_cache.py` cache and newer imported
+    ARD catalogs (`mcp_registry_to_ard_cache.py`, `gitdb_to_ard_catalog.py`).
     Returns empty list if no cache exists. Cache is loaded once per session.
     """
     global _ARD_CACHE
     if _ARD_CACHE is not None:
         return _ARD_CACHE
-    cache_path = HUB_DIR / "ard-cache.json"
-    if not cache_path.exists():
-        _ARD_CACHE = []
-        return _ARD_CACHE
-    try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        entries = data.get("entries", []) if isinstance(data, dict) else []
-        _ARD_CACHE = entries if isinstance(entries, list) else []
-    except (ValueError, OSError):
-        _ARD_CACHE = []
+
+    entries_by_id: Dict[str, Dict[str, Any]] = {}
+    for cache_path in _ard_cache_paths():
+        if not cache_path.exists():
+            continue
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            entries = data.get("entries", []) if isinstance(data, dict) else []
+        except (ValueError, OSError):
+            continue
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            identifier = str(entry.get("identifier") or "")
+            if identifier and identifier not in entries_by_id:
+                enriched = dict(entry)
+                enriched.setdefault("cache_file", str(cache_path))
+                entries_by_id[identifier] = enriched
+    _ARD_CACHE = list(entries_by_id.values())
     return _ARD_CACHE
+
+
+def _ard_entry_search_text(entry: Dict[str, Any]) -> str:
+    """Return normalized text used by ARD keyword/embedding search."""
+    parts: List[str] = [
+        str(entry.get("displayName", "")),
+        str(entry.get("description", "")),
+        " ".join(str(t) for t in entry.get("tags", [])),
+        " ".join(str(a) for a in entry.get("aliases", [])),
+        " ".join(str(q) for q in entry.get("representativeQueries", [])),
+    ]
+    data = entry.get("data")
+    if isinstance(data, dict):
+        parts.extend([
+            " ".join(str(a) for a in data.get("aliases", []) if isinstance(data.get("aliases", []), list)),
+            " ".join(str(q) for q in data.get("representativeQueries", []) if isinstance(data.get("representativeQueries", []), list)),
+        ])
+    metadata = entry.get("metadata")
+    if isinstance(metadata, dict):
+        parts.append(" ".join(str(t) for t in metadata.get("keywords", []) if isinstance(metadata.get("keywords", []), list)))
+    return " ".join(p for p in parts if p).lower()
+
+
+def _cache_entry_matches_registry(entry: Dict[str, Any], registry_url: str) -> bool:
+    """Return whether a cached ARD entry should satisfy a registry-specific query."""
+    explicit_registry = entry.get("registry")
+    if explicit_registry:
+        return registry_url in str(explicit_registry)
+    metadata_raw = entry.get("metadata")
+    metadata: Dict[str, Any] = metadata_raw if isinstance(metadata_raw, dict) else {}
+    source = str(metadata.get("source", ""))
+    identifier = str(entry.get("identifier", ""))
+    registry_lower = registry_url.lower()
+    if "registry.modelcontextprotocol.io" in registry_lower:
+        return source == "official-mcp-registry" or "registry.modelcontextprotocol.io" in identifier
+    if "gitdb" in registry_lower:
+        return source == "gitdb-github-watch" or identifier.startswith("urn:ai:gitdb.local:")
+    return False
 
 
 def _search_ard_cache(
@@ -4319,11 +4401,13 @@ def _search_ard_cache(
     if not entries:
         return None
 
-    # Check if cache has entries for this registry
+    # If legacy cache entries are explicitly tied to a registry, honor that.
+    # Imported catalog caches (MCP Registry, GitDB candidates) intentionally do
+    # not carry `registry`; they should be globally searchable.
     if registry_url:
         reg_entries = [
             e for e in entries
-            if isinstance(e, dict) and registry_url in str(e.get("registry", ""))
+            if isinstance(e, dict) and _cache_entry_matches_registry(e, registry_url)
         ]
         if not reg_entries:
             return None
@@ -4344,11 +4428,22 @@ def _search_ard_cache(
         if not query_words:
             score = 50
         else:
-            haystack = f"{name} {desc} {tags}".lower()
+            haystack = _ard_entry_search_text(entry)
             matches = sum(1 for w in query_words if w in haystack)
             if matches == 0:
                 continue
             score = int((matches / max(len(query_words), 1)) * 100)
+
+        metadata = entry.get("metadata", {}) if isinstance(entry.get("metadata"), dict) else {}
+        entry_type = str(entry.get("type", ARD_TYPE_SKILL))
+        mcp = entry.get("mcp")
+        if mcp is None and entry_type in _ARD_MCP_TYPES:
+            transport = str(metadata.get("transport") or "streamable_http").replace("-", "_")
+            mcp = {
+                "name": name,
+                "url": entry.get("url", ""),
+                "transport": transport,
+            }
 
         meta = SkillMeta(
             name=name,
@@ -4358,10 +4453,11 @@ def _search_ard_cache(
             trust_level="community",
             tags=entry.get("tags", []),
             extra={
-                "ard_type": entry.get("type", ARD_TYPE_SKILL),
+                "ard_type": entry_type,
                 "ard_registry": entry.get("registry", registry_url),
-                "source_url": entry.get("source_url", ""),
-                "mcp": entry.get("mcp"),
+                "source_url": entry.get("source_url") or entry.get("url", ""),
+                "cache_file": entry.get("cache_file", ""),
+                "mcp": mcp,
                 "from_cache": True,
             },
         )
@@ -4553,6 +4649,42 @@ def unified_search(query: str, sources: List[SkillSource],
 # ARD Publisher — export Hermes capabilities as ai-catalog.json
 # ---------------------------------------------------------------------------
 
+def _ard_terms_from_name(name: str) -> List[str]:
+    """Split skill/tool names into reusable ARD alias terms."""
+    terms = [t for t in re.split(r"[^A-Za-z0-9]+", name.lower()) if len(t) >= 2]
+    aliases: List[str] = []
+    for term in terms:
+        if term not in aliases:
+            aliases.append(term)
+    if len(terms) >= 2:
+        joined = " ".join(terms)
+        if joined not in aliases:
+            aliases.append(joined)
+    return aliases[:12]
+
+
+def _ard_representative_queries(name: str, description: str, category: str = "") -> List[str]:
+    """Generate lightweight retrieval hints for local ARD/skill search."""
+    aliases = _ard_terms_from_name(name)
+    base = aliases[-1] if aliases else name.replace("-", " ")
+    queries = [
+        base,
+        f"use {base}",
+        f"find {base} capability",
+    ]
+    if category:
+        queries.append(f"{category} {base}")
+    desc_terms = [t for t in re.split(r"[^A-Za-z0-9]+", description.lower()) if len(t) >= 4][:8]
+    if desc_terms:
+        queries.append(" ".join(desc_terms))
+    deduped: List[str] = []
+    for q in queries:
+        q = q.strip()
+        if q and q not in deduped:
+            deduped.append(q)
+    return deduped[:8]
+
+
 def _generate_ard_skill_entries(
     skills_data: List[Dict[str, Any]],
     domain: str,
@@ -4570,22 +4702,32 @@ def _generate_ard_skill_entries(
         path_parts = [p for p in [category, name] if p]
         urn = f"urn:ai:{domain}:skill:{':'.join(path_parts)}"
 
+        aliases = _ard_terms_from_name(name)
+        representative_queries = _ard_representative_queries(name, description, category)
+        tags = [category] if category else []
+        for alias in aliases[:6]:
+            if alias not in tags:
+                tags.append(alias)
+
         entry = {
             "identifier": urn,
             "displayName": name,
             "type": ARD_TYPE_SKILL,
             "description": description[:500],
+            "tags": tags,
+            "aliases": aliases,
+            "representativeQueries": representative_queries,
             # Local skills are embedded because there is no stable public HTTP
             # artifact URL for arbitrary profile-local SKILL.md files.
             "data": {
                 "name": name,
                 "description": description,
                 "category": category,
+                "aliases": aliases,
+                "representativeQueries": representative_queries,
                 "source": "hermes-skill",
             },
         }
-        if category:
-            entry["tags"] = [category]
         entries.append(entry)
     return entries
 
@@ -4593,6 +4735,7 @@ def _generate_ard_skill_entries(
 def _generate_ard_mcp_entries(
     mcp_servers: Dict[str, dict],
     domain: str,
+    visibility: str = "public",
 ) -> List[Dict[str, Any]]:
     """Convert MCP server config to ARD catalog entries."""
     entries = []
@@ -4601,11 +4744,25 @@ def _generate_ard_mcp_entries(
             continue
         url = cfg.get("url", "")
         if not url:
-            # Local stdio MCP servers are not externally discoverable artifacts:
-            # publishing command/env/workdir can leak workstation paths or
-            # secrets, and remote clients cannot execute them anyway.  Stdio
-            # ARD entries should be exposed by an explicit local registry
-            # (e.g. scripts/security_ard_registry.py), not by the public
+            if visibility == "private" and (cfg.get("command") or cfg.get("transport") == "stdio"):
+                urn = f"urn:ai:{domain}:mcp:{name}"
+                entries.append({
+                    "identifier": urn,
+                    "displayName": f"{name} (Local MCP Server)",
+                    "type": ARD_TYPE_MCP_SERVER_CARD,
+                    "description": f"Local/private stdio MCP server: {name}",
+                    "tags": ["mcp-server", "local", "stdio", "private"],
+                    "url": f"stdio:{name}",
+                    "metadata": {
+                        "transport": "stdio",
+                        "visibility": "private",
+                        "source": "hermes-local-mcp",
+                    },
+                })
+            # Public catalogs omit local stdio MCP servers: publishing command,
+            # env, args, or workdir can leak workstation paths/secrets and remote
+            # clients cannot execute them anyway. Stdio ARD entries should be
+            # exposed publicly by an explicit local registry, not by the
             # ai-catalog publisher.
             continue
 
@@ -4625,6 +4782,7 @@ def _generate_ard_mcp_entries(
 def generate_ard_catalog(
     domain: str = "hermes.local",
     output_path: Optional[str] = None,
+    visibility: str = "public",
 ) -> Dict[str, Any]:
     """Generate an ARD-compatible ai-catalog.json from Hermes capabilities.
 
@@ -4639,6 +4797,9 @@ def generate_ard_catalog(
     Returns:
         The catalog dict (also written to disk if output_path is set).
     """
+    if visibility not in {"public", "private"}:
+        raise ValueError("visibility must be 'public' or 'private'")
+
     catalog: Dict[str, Any] = {
         "specVersion": "1.0",
         "host": {
@@ -4670,7 +4831,7 @@ def generate_ard_catalog(
                 cfg = _yaml.safe_load(f) or {}
             mcp_servers = cfg.get("mcp_servers", {})
             if isinstance(mcp_servers, dict):
-                mcp_entries = _generate_ard_mcp_entries(mcp_servers, domain)
+                mcp_entries = _generate_ard_mcp_entries(mcp_servers, domain, visibility=visibility)
                 catalog["entries"].extend(mcp_entries)
     except Exception as e:
         logger.debug("Failed to collect MCP servers for ARD catalog: %s", e)
@@ -4709,17 +4870,31 @@ def generate_ard_catalog(
     return catalog
 
 
-def publish_ard_catalog(domain: str = "hermes.local") -> Path:
-    """Generate and write ai-catalog.json to ~/.hermes/.well-known/.
+def publish_ard_catalog(
+    domain: str = "hermes.local",
+    visibility: str = "public",
+    output_path: Optional[Union[str, Path]] = None,
+) -> Path:
+    """Generate and write ai-catalog.json.
 
-    Returns the path to the written file.
+    Public catalogs default to ~/.hermes/.well-known/ai-catalog.json. Private
+    catalogs require an explicit output path or are written under ~/.hermes/.hub
+    to avoid accidentally exposing local/private stdio entries via .well-known.
     """
     from hermes_constants import get_hermes_home
 
-    well_known_dir = get_hermes_home() / ".well-known"
-    catalog_path = well_known_dir / "ai-catalog.json"
+    if visibility not in {"public", "private"}:
+        raise ValueError("visibility must be 'public' or 'private'")
 
-    generate_ard_catalog(domain=domain, output_path=str(catalog_path))
+    if output_path is not None:
+        catalog_path = Path(output_path)
+    elif visibility == "public":
+        well_known_dir = get_hermes_home() / ".well-known"
+        catalog_path = well_known_dir / "ai-catalog.json"
+    else:
+        catalog_path = get_hermes_home() / ".hub" / "private-ai-catalog.json"
+
+    generate_ard_catalog(domain=domain, output_path=str(catalog_path), visibility=visibility)
     logger.info("ARD catalog published: %d entries at %s",
                 len(json.loads(catalog_path.read_text())["entries"]),
                 catalog_path)
@@ -4769,11 +4944,7 @@ def ard_local_search(
 
     scored = []
     for entry in entries:
-        haystack = " ".join([
-            str(entry.get("displayName", "")),
-            str(entry.get("description", "")),
-            " ".join(str(t) for t in entry.get("tags", [])),
-        ]).lower()
+        haystack = _ard_entry_search_text(entry)
 
         if not query_words:
             score = 50  # neutral score for empty query (browse mode)

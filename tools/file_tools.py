@@ -474,6 +474,27 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     )
 
 
+def _check_skill_write_bypass(filepath: str, task_id: str = "default") -> str | None:
+    """Return a soft-guard warning when ``filepath`` lands inside a
+    Hermes skills directory that should be managed via skill_manage.
+
+    Same pattern as ``_check_cross_profile_path``: the agent can override
+    by passing ``force_skill_write=True`` after explicit user direction.
+    Returns ``None`` when the path is outside any known skills directory.
+    """
+    try:
+        from agent.file_safety import get_skill_write_bypass_warning
+    except Exception:
+        return None
+
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = filepath
+
+    return get_skill_write_bypass_warning(resolved)
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -1179,7 +1200,8 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
-                    cross_profile: bool = False) -> str:
+                    cross_profile: bool = False,
+                    force_skill_write: bool = False) -> str:
     """Write content to a file.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
@@ -1187,6 +1209,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     skills/plugins/cron/memories directory; everything else is unaffected.
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
+
+    ``force_skill_write`` bypasses the skill-write bypass guard. Set ``True``
+    after explicit user direction to write to a skill directory via
+    write_file/patch instead of skill_manage.
     """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
@@ -1195,6 +1221,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
+    if not force_skill_write:
+        skill_warning = _check_skill_write_bypass(path, task_id)
+        if skill_warning:
+            return tool_error(skill_warning)
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -1258,12 +1288,17 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default", cross_profile: bool = False) -> str:
+               task_id: str = "default", cross_profile: bool = False,
+               force_skill_write: bool = False) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
+
+    ``force_skill_write`` bypasses the skill-write bypass guard. Set ``True``
+    after explicit user direction to write to a skill directory via
+    write_file/patch instead of skill_manage.
     """
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
@@ -1297,6 +1332,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
+        if not force_skill_write:
+            skill_warning = _check_skill_write_bypass(_p, task_id)
+            if skill_warning:
+                return tool_error(skill_warning)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -1537,6 +1576,11 @@ WRITE_FILE_SCHEMA = {
                 "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
                 "default": False,
             },
+            "force_skill_write": {
+                "type": "boolean",
+                "description": "Bypass the skill-write bypass guard. Defaults to false. Set true ONLY after explicit user direction to write to a skill directory via write_file/patch instead of skill_manage.",
+                "default": False,
+            },
         },
         "required": ["path", "content"]
     }
@@ -1586,6 +1630,11 @@ PATCH_SCHEMA = {
             "cross_profile": {
                 "type": "boolean",
                 "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories.",
+                "default": False,
+            },
+            "force_skill_write": {
+                "type": "boolean",
+                "description": "Bypass the skill-write bypass guard. Defaults to false. Set true ONLY after explicit user direction to write to a skill directory via write_file/patch instead of skill_manage.",
                 "default": False,
             },
         },
@@ -1641,6 +1690,7 @@ def _handle_write_file(args, **kw):
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        force_skill_write=bool(args.get("force_skill_write", False)),
     )
 
 
@@ -1651,6 +1701,7 @@ def _handle_patch(args, **kw):
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        force_skill_write=bool(args.get("force_skill_write", False)),
     )
 
 

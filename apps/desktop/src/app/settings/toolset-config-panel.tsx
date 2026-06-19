@@ -1,14 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
+import {
+  deleteEnvVar,
+  getActionStatus,
+  getToolsetConfig,
+  revealEnvVar,
+  runToolsetPostSetup,
+  selectToolsetProvider,
+  setEnvVar
+} from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Check, Loader2, Save } from '@/lib/icons'
+import { Check, Loader2, Save, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { upsertDesktopActionTask } from '@/store/activity'
 import { notify, notifyError } from '@/store/notifications'
-import type { ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
+import type { ActionStatusResponse, ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
 
 import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
 import { Pill } from './primitives'
@@ -152,6 +161,123 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             {t.common.cancel}
           </Button>
         </div>
+      )}
+    </div>
+  )
+}
+
+interface PostSetupRunnerProps {
+  toolset: string
+  /** The provider's post_setup hook key (e.g. "camofox", "ddgs"). */
+  postSetupKey: string
+  /** Refresh the parent config after the install finishes (a backend may now
+   *  report itself configured). */
+  onComplete?: () => void
+}
+
+/**
+ * Runs a provider's post-setup install hook (npm / pip / binary) via the
+ * `/api/tools/toolsets/{name}/post-setup` spawn-action and tails the resulting
+ * log inline — the GUI equivalent of the install step `hermes tools` runs
+ * after you pick a backend that needs extra dependencies.
+ */
+function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerProps) {
+  const { t } = useI18n()
+  const copy = t.settings.toolsets
+  const [running, setRunning] = useState(false)
+  const [status, setStatus] = useState<ActionStatusResponse | null>(null)
+  // Guard against overlapping polls / state updates after unmount.
+  const activeRef = useRef(false)
+
+  useEffect(() => {
+    return () => {
+      activeRef.current = false
+    }
+  }, [])
+
+  const run = useCallback(async () => {
+    setRunning(true)
+    setStatus(null)
+    activeRef.current = true
+
+    try {
+      const started = await runToolsetPostSetup(toolset, postSetupKey)
+
+      // The spawn endpoint reports ok:false if it couldn't launch the action
+      // (e.g. unknown key, server-side spawn failure). Don't poll a status
+      // that will never exist — surface the failure and stop.
+      if (!started.ok) {
+        notifyError(new Error('spawn failed'), copy.postSetupFailed(postSetupKey))
+
+        return
+      }
+
+      let last: ActionStatusResponse | null = null
+
+      // Mirror command-center's runSystemAction poll loop: poll the action log
+      // until it exits (or we hit the attempt ceiling), feeding the global
+      // activity rail as we go.
+      for (let attempt = 0; attempt < 150 && activeRef.current; attempt += 1) {
+        await new Promise(resolve => window.setTimeout(resolve, 1200))
+
+        if (!activeRef.current) {
+          break
+        }
+
+        const polled = await getActionStatus(started.name, 300)
+        last = polled
+        setStatus(polled)
+        upsertDesktopActionTask(polled)
+
+        if (!polled.running) {
+          break
+        }
+      }
+
+      if (activeRef.current) {
+        const ok = last?.exit_code === 0
+
+        notify(
+          ok
+            ? {
+                kind: 'success',
+                title: copy.postSetupCompleteTitle,
+                message: copy.postSetupCompleteMessage(postSetupKey)
+              }
+            : { kind: 'error', title: copy.postSetupErrorTitle, message: copy.postSetupErrorMessage(postSetupKey) }
+        )
+        onComplete?.()
+      }
+    } catch (err) {
+      if (activeRef.current) {
+        notifyError(err, copy.postSetupFailed(postSetupKey))
+      }
+    } finally {
+      if (activeRef.current) {
+        setRunning(false)
+      }
+    }
+  }, [toolset, postSetupKey, onComplete, copy])
+
+  return (
+    <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[0.72rem] text-muted-foreground">{copy.postSetupHint(postSetupKey)}</p>
+        </div>
+        <Button disabled={running} onClick={() => void run()} size="sm">
+          {running ? <Loader2 className="size-3.5 animate-spin" /> : <Terminal className="size-3.5" />}
+          {running ? copy.postSetupRunning : copy.postSetupRun}
+        </Button>
+      </div>
+
+      {status && (status.lines.length > 0 || status.running) && (
+        <pre
+          className="max-h-48 overflow-y-auto rounded-md bg-background px-2.5 py-1.5 font-mono text-[0.7rem] leading-relaxed text-muted-foreground whitespace-pre-wrap"
+          data-selectable-text="true"
+        >
+          {status.lines.length > 0 ? status.lines.join('\n') : copy.postSetupStarting}
+        </pre>
       )}
     </div>
   )
@@ -310,9 +436,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                   ))
                 )}
                 {provider.post_setup && (
-                  <p className="text-[0.72rem] text-muted-foreground">
-                    {copy.postSetup(provider.post_setup)}
-                  </p>
+                  <PostSetupRunner
+                    onComplete={() => void refresh()}
+                    postSetupKey={provider.post_setup}
+                    toolset={toolset}
+                  />
                 )}
               </div>
             )}

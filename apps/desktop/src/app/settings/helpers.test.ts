@@ -3,9 +3,15 @@ import { describe, expect, it } from 'vitest'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
-import { getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
+import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
 
 describe('settings helpers', () => {
+  it('lists Hindsight as a built-in desktop memory provider option', () => {
+    const options = enumOptionsFor('memory.provider', '', {})
+
+    expect(options).toContain('hindsight')
+  })
+
   describe('defineFieldCopy', () => {
     it('flattens nested field copy paths', () => {
       const copy = defineFieldCopy({
@@ -133,6 +139,40 @@ describe('settings helpers', () => {
 
     it('falls back to "Other" for un-grouped env vars', () => {
       expect(providerGroup('SOMETHING_RANDOM')).toBe('Other')
+    })
+  })
+
+  describe('enumOptionsFor — backend selector dropdowns', () => {
+    const config: HermesConfigRecord = {}
+
+    it('renders a dropdown for the TTS provider including xAI (Grok)', () => {
+      const opts = enumOptionsFor('tts.provider', 'edge', config)
+      expect(opts).toBeDefined()
+      expect(opts).toContain('xai')
+      expect(opts).toContain('edge')
+      expect(opts).toContain('elevenlabs')
+    })
+
+    it('renders a dropdown for the STT provider including xAI (Grok)', () => {
+      const opts = enumOptionsFor('stt.provider', 'local', config)
+      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
+    })
+
+    it('renders dropdowns for per-backend model/device sub-fields', () => {
+      expect(enumOptionsFor('stt.openai.model', 'whisper-1', config)).toContain('gpt-4o-transcribe')
+      expect(enumOptionsFor('tts.openai.model', 'gpt-4o-mini-tts', config)).toContain('tts-1-hd')
+      expect(enumOptionsFor('tts.neutts.device', 'cpu', config)).toEqual(['cpu', 'cuda', 'mps'])
+    })
+
+    it('renders a dropdown for the terminal execution backend', () => {
+      const opts = enumOptionsFor('terminal.backend', 'local', config)
+      expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
+    })
+
+    it('appends a hand-typed value not in the known list so it stays selected', () => {
+      const opts = enumOptionsFor('tts.provider', 'my-custom-command-tts', config)
+      expect(opts).toContain('my-custom-command-tts')
+      expect(opts).toContain('xai')
     })
   })
 })

@@ -86,7 +86,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/tools [list\|disable\|enable] [name...]` | Manage tools: list available tools, or disable/enable specific tools for the current session. Disabling a tool removes it from the agent's toolset and triggers a session reset. |
 | `/toolsets` | List available toolsets |
 | `/browser [connect\|disconnect\|status]` | Manage a local Chromium-family CDP connection. `connect` attaches browser tools to a running Chrome, Brave, Chromium, or Edge instance (default: `http://127.0.0.1:9222`). `disconnect` detaches. `status` shows current connection. Auto-launches a supported Chromium-family browser if no debugger is detected. |
-| `/skills` | Search, install, inspect, or manage skills from online registries |
+| `/skills` | Search, install, inspect, or manage skills from online registries. Also the review surface for the skill write-approval gate: `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>`, `/skills approval on\|off`. See [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval). |
+| `/memory [pending\|approve\|reject\|approval]` | Review pending memory writes staged by the write-approval gate (`memory.write_approval`) and toggle the gate. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval). |
 | `/bundles` | List configured skill bundles — `/<name>` slash aliases that preload several skills at once. Configure under `bundles:` in `~/.hermes/config.yaml`. See [Skill Bundles](/user-guide/features/skills#skill-bundles). |
 | `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
 | `/curator` | Background skill maintenance — `status`, `run`, `pin`, `archive`. See [Curator](/user-guide/features/curator). |
@@ -101,6 +102,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/help` | Show this help message |
+| `/version` | Show Hermes Agent version, build, and environment info. |
 | `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
@@ -221,6 +223,8 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. A judge model checks after each turn; if not done, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. See [Persistent Goals](/user-guide/features/goals). |
 | `/footer [on\|off\|status]` | Toggle the runtime-metadata footer on final replies (shows model, context %, and cwd). |
 | `/curator [status\|run\|pin\|archive]` | Background skill maintenance controls. |
+| `/memory [pending\|approve\|reject\|approval]` | Review pending memory writes staged by the write-approval gate (`memory.write_approval`) — approve or reject them right in chat — and toggle the gate with `/memory approval on\|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval). |
+| `/skills [pending\|approve\|reject\|diff\|approval]` | Review pending **skill** writes staged by the write-approval gate (`skills.write_approval`). Shows a one-line gist per staged write; `/skills diff <id>` is truncated for chat — read the full diff on the CLI or in `~/.hermes/pending/skills/<id>.json`. Only appears when the gate is on (or staged writes remain); search/install stay CLI-only. |
 | `/kanban <action>` | Drive the multi-profile, multi-project collaboration board from chat — identical argument surface to the CLI. Bypasses the running-agent guard, so `/kanban unblock t_abc`, `/kanban comment t_abc "…"`, `/kanban list --mine`, `/kanban boards switch <slug>`, etc. work mid-turn. `/kanban create …` auto-subscribes the originating chat to the new task's terminal events. See [Kanban slash command](/user-guide/features/kanban#kanban-slash-command). |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config. |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
@@ -235,10 +239,11 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, and `/quit` are **CLI-only** commands.
+- `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, and `/quit` are **CLI-only** commands.
+- `/skills` is **CLI-only for search/browse/install**; its write-approval review subcommands (`pending`, `approve`, `reject`, `diff`, `approval`) also work on messaging platforms when `skills.write_approval` is on. `/memory` works on **both** surfaces.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, and `/commands` are **messaging-only** commands.
-- `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
+- `/status`, `/version`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
 - In the TUI, `/sessions` shows live sessions in the current TUI process. Use `/resume [name]` or `hermes --tui --resume <id-or-title>` for saved or closed transcripts.
 

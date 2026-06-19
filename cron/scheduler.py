@@ -15,11 +15,11 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
-from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -44,6 +44,59 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
+    """Return a compact one-line failure message for chat delivery.
+
+    Full details stay in the cron output directory and the logs. Chat should
+    show the operator what broke without dumping provider JSON, retry noise, or
+    stack traces into the delivery channel.
+    """
+    job_name = job.get("name") or job.get("id") or "cron job"
+    text = (error or "unknown error").strip()
+    lower = text.lower()
+
+    # Provider/API failures are the common noisy path. Keep these short.
+    if "429" in text or "rate limit" in lower or "usage limit" in lower:
+        reason = "rate limit"
+        if "weekly usage limit" in lower:
+            reason = "weekly usage limit"
+        elif "quota" in lower:
+            reason = "quota limit"
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider {reason}. "
+            "Fallback chain was exhausted or unavailable. "
+            "Full details saved in cron output."
+        )
+
+    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider timeout. "
+            "Fallback chain was exhausted or unavailable. "
+            "Full details saved in cron output."
+        )
+
+    # Match authentication/authorization wording at a word boundary and the
+    # 401/403 status codes as whole tokens, so "oauth", "4015" and similar do
+    # not trip a misleading auth message.
+    if re.search(r"authenticat|authoriz", lower) or re.search(r"\b(401|403)\b", text):
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider authentication error. "
+            "Full details saved in cron output."
+        )
+
+    # Strip common exception wrappers and collapse provider payloads. Bound
+    # the input first so a multi-KB provider blob cannot slow the
+    # substitutions.
+    cleaned = re.sub(
+        r"^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*",
+        "", text[:2000],
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > 180:
+        cleaned = cleaned[:177].rstrip() + "..."
+    return f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -139,6 +192,7 @@ _HOME_TARGET_ENV_VARS = {
     "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
     "qqbot": "QQBOT_HOME_CHANNEL",
     "whatsapp": "WHATSAPP_HOME_CHANNEL",
+    "whatsapp_cloud": "WHATSAPP_CLOUD_HOME_CHANNEL",
 }
 
 # Legacy env var names kept for back-compat.  Each entry is the current
@@ -166,7 +220,7 @@ _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
-# Sequential (env/context-mutating) cron jobs — workdir/profile jobs that touch
+# Sequential (env-mutating) cron jobs — workdir jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
 # ticker thread.  A persistent single-thread executor preserves ordering across
 # ticks while keeping dispatch fire-and-forget, the same as the parallel pool.
@@ -190,10 +244,10 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
 def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent single-thread sequential pool.
 
-    A single worker guarantees env/context-mutating jobs never overlap, even
+    A single worker guarantees env-mutating jobs never overlap, even
     across ticks: a job queued by a newer tick waits for the previous tick's
-    sequential jobs to finish rather than corrupting their os.environ /
-    profile state.
+    sequential jobs to finish rather than corrupting their os.environ
+    state.
     """
     global _sequential_pool
     if _sequential_pool is None:
@@ -233,71 +287,6 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
-
-
-@contextmanager
-def _job_profile_context(job_id: str, profile: Optional[str]):
-    """Temporarily run a job under a specific Hermes profile.
-
-    Cron jobs are stored and scheduled by the profile running the scheduler, but
-    an individual job can opt into a different runtime profile. While active,
-    the scheduler's test/override hook and a context-local Hermes home override
-    both point at the resolved profile directory so _get_hermes_home(),
-    .env/config loading, script resolution, AIAgent construction, and downstream
-    get_hermes_home() callers agree on the same home.
-
-    Some existing provider/config paths still load profile .env values through
-    os.environ, so profile jobs also snapshot and restore the process
-    environment on exit. tick() runs profile jobs sequentially to keep that
-    temporary mutation isolated from other scheduled jobs.
-    """
-    raw_profile = str(profile or "").strip()
-    if not raw_profile:
-        yield None
-        return
-
-    global _hermes_home
-    prior_override = _hermes_home
-    env_snapshot = os.environ.copy()
-
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-    normalized_profile = normalize_profile_name(raw_profile)
-    try:
-        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
-    except (FileNotFoundError, ValueError) as exc:
-        logger.warning(
-            "Job '%s': configured profile %r no longer valid (%s) — "
-            "falling back to scheduler default",
-            job_id, raw_profile, exc,
-        )
-        yield None
-        return
-
-    override_token = None
-    try:
-        override_token = set_hermes_home_override(profile_home)
-        _hermes_home = profile_home
-        logger.info(
-            "Job '%s': using Hermes profile '%s' (%s)",
-            job_id,
-            normalized_profile,
-            profile_home,
-        )
-        yield normalized_profile
-    finally:
-        _hermes_home = prior_override
-        if override_token is not None:
-            reset_hermes_home_override(override_token)
-        # Delta-based restore: remove added keys, restore changed keys.
-        # Avoids a brief window where other threads see an empty env.
-        added = set(os.environ.keys()) - set(env_snapshot.keys())
-        for k in added:
-            os.environ.pop(k, None)
-        for k, v in env_snapshot.items():
-            if os.environ.get(k) != v:
-                os.environ[k] = v
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1032,17 +1021,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     else:
         argv = [sys.executable, str(path)]
 
-    run_env = os.environ.copy()
-    run_env["HERMES_HOME"] = str(_get_hermes_home())
-    try:
-        from hermes_constants import get_subprocess_home
-
-        profile_home = get_subprocess_home()
-        if profile_home:
-            run_env["HOME"] = profile_home
-    except Exception:
-        pass
-
     try:
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
@@ -1051,7 +1029,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=run_env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -1118,8 +1095,15 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
     """
-    prompt = str(job.get("prompt") or "")
+    user_prompt = str(job.get("prompt") or "")
+    prompt = user_prompt
     skills = job.get("skills")
+    # True when runtime-collected DATA (script stdout, upstream-job output)
+    # has been injected into the prompt. Data content legitimately quotes
+    # command-shape strings (a triage feed ingesting a bug report that
+    # pastes `rm -rf /`), so it must not be scanned with the strict
+    # user-prompt pattern set — see _scan_assembled_cron_prompt.
+    has_injected_data = False
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
@@ -1137,6 +1121,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                     f"```\n{script_output}\n```\n\n"
                     f"{prompt}"
                 )
+                has_injected_data = True
             else:
                 # Script produced no output — nothing to report, skip AI call.
                 return None
@@ -1147,6 +1132,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 f"```\n{script_output}\n```\n\n"
                 f"{prompt}"
             )
+            has_injected_data = True
 
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
@@ -1189,6 +1175,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                         f"```\n{latest_output}\n```\n\n"
                         f"{prompt}"
                     )
+                    has_injected_data = True
                 else:
                     continue  # silent skip — empty output
             except (OSError, PermissionError) as e:
@@ -1217,7 +1204,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
-        return _scan_assembled_cron_prompt(prompt, job, has_skills=False)
+        return _scan_assembled_cron_prompt(
+            prompt,
+            job,
+            has_skills=False,
+            has_injected_data=has_injected_data,
+            user_prompt=user_prompt,
+        )
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
@@ -1294,7 +1287,14 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
 
 
-def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool = False) -> str:
+def _scan_assembled_cron_prompt(
+    assembled: str,
+    job: dict,
+    *,
+    has_skills: bool = False,
+    has_injected_data: bool = False,
+    user_prompt: Optional[str] = None,
+) -> str:
     """Scan the fully-assembled cron prompt for injection patterns. Raises
     ``CronPromptInjectionBlocked`` when a match fires so ``run_job`` can
     surface a clear refusal to the operator.
@@ -1305,29 +1305,45 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     (auto-approves tool calls), a malicious skill carrying an injection
     payload bypassed every gate.
 
-    Two pattern tiers:
+    Two pattern tiers, selected by what the assembled prompt CONTAINS,
+    not just whether skills are attached:
 
-    - When ``has_skills=False`` (no skills attached) the assembled prompt
-      is essentially the user prompt + the cron hint, so the STRICT
-      ``_scan_cron_prompt`` patterns apply.
-    - When ``has_skills=True`` the assembled prompt includes loaded skill
-      markdown — often security docs / runbooks that *describe* attack
-      commands in prose. The LOOSER ``_scan_cron_skill_assembled``
-      pattern set is used: only unambiguous prompt-injection directives
-      block; command-shape patterns are dropped and invisible unicode is
-      sanitized (stripped + logged) rather than blocked, to avoid
-      false-positives that permanently kill a job. Skill bodies are
-      vetted at install time by ``skills_guard.py``.
+    - When the assembled prompt is essentially the user prompt + the cron
+      hint (no skills, no injected data), the STRICT ``_scan_cron_prompt``
+      patterns apply: a bare ``rm -rf /`` in a small directive prompt is a
+      smoking gun, not prose.
+    - When the assembled prompt includes runtime-loaded content — skill
+      markdown (``has_skills=True``) or DATA injected from a job script's
+      stdout / an upstream job's output (``has_injected_data=True``) — the
+      LOOSER ``_scan_cron_skill_assembled`` pattern set is used: only
+      unambiguous prompt-injection directives block; command-shape
+      patterns are dropped and invisible unicode is sanitized (stripped +
+      logged) rather than blocked, to avoid false-positives that
+      permanently kill a job. Skill bodies are vetted at install time by
+      ``skills_guard.py``; script output is produced by operator-authored
+      code, the same trust class — and data feeds (e.g. a triage bot
+      ingesting bug reports) legitimately quote dangerous commands.
+
+    When the looser tier is selected because of injected data only,
+    ``user_prompt`` (the raw, pre-assembly prompt) is additionally scanned
+    with the STRICT set so the user-authored surface keeps the full
+    create/update-time guarantee at runtime (defense-in-depth for legacy
+    jobs that predate the create-time scanner).
     """
     from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
 
-    if has_skills:
-        # Skill content is install-time vetted by skills_guard.py. Invisible
-        # unicode is sanitized (not blocked) so a stray zero-width space in a
-        # skill code example can't permanently kill the job; the cleaned
+    if has_skills or has_injected_data:
+        # Runtime-loaded content (vetted skill markdown and/or data from
+        # operator-authored scripts) legitimately contains command-shape
+        # strings. Invisible unicode is sanitized (not blocked) so a stray
+        # zero-width space can't permanently kill the job; the cleaned
         # prompt is what actually runs.
         cleaned, scan_error = _scan_cron_skill_assembled(assembled)
         assembled = cleaned
+        if not scan_error and not has_skills and user_prompt:
+            # Data-injection path: keep the strict guarantee on the
+            # user-authored prompt itself.
+            scan_error = _scan_cron_prompt(user_prompt)
     else:
         scan_error = _scan_cron_prompt(assembled)
     if scan_error:
@@ -1342,13 +1358,6 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
-    """Execute a single cron job, applying any per-job profile override."""
-    job_id = job["id"]
-    with _job_profile_context(job_id, job.get("profile")):
-        return _run_job_impl(job)
-
-
-def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -1585,9 +1594,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
-    # tick() serializes jobs that mutate process-global runtime state (workdir
-    # and/or profile jobs) outside the parallel pool, so mutating
-    # os.environ["TERMINAL_CWD"] here is safe for those jobs. For workdir-less
+    # tick() serializes workdir-jobs outside the parallel pool, so mutating
+    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
     # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
     _job_workdir = (job.get("workdir") or "").strip() or None
@@ -1633,6 +1641,15 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if os.path.exists(_cfg_path):
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
+                # Managed scope: a scheduled job must honor administrator-pinned
+                # model / reasoning / toolsets / provider_routing too. This loader
+                # builds its own dict, so overlay managed values via the shared
+                # helper (fail-open, no-op when no managed scope).
+                try:
+                    from hermes_cli import managed_scope
+                    _cfg = managed_scope.apply_managed_overlay(_cfg)
+                except Exception:
+                    pass
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
@@ -1973,6 +1990,18 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # Title the cron session from the job (name → short prompt → id) so
+            # sidebars/history show a meaningful label instead of the injected
+            # "[IMPORTANT: …]" hint that is the session's first message. Set here
+            # (not at create time) so the agent's own INSERT keeps model /
+            # system_prompt; this only UPDATEs the title column. The run-time
+            # suffix keeps it unique against the sessions.title index across runs.
+            try:
+                _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                _session_db.set_session_title(_cron_session_id, _cron_title)
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
@@ -1999,6 +2028,82 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             cleanup_stale_async_clients()
         except Exception as e:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+
+
+def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+    """Run ONE due job end-to-end: execute → save output → deliver → mark.
+
+    This is the shared firing body extracted from ``tick``'s per-job closure so
+    that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
+    Chronos) run the identical sequence — no duplicated correctness.
+
+    It does NOT decide whether the job is due, claim it, or compute the next
+    run — those are the caller's concern (``tick`` advances ``next_run_at``
+    under the file lock before dispatch; an external provider claims via the
+    store CAS). This function only fires the given job once.
+
+    Returns True if the job was processed (even if the job itself failed —
+    failure is recorded via ``mark_job_run``), False only if processing raised.
+    """
+    try:
+        success, output, final_response, error = run_job(job)
+
+        output_file = save_job_output(job["id"], output)
+        if verbose:
+            logger.info("Output saved to: %s", output_file)
+
+        # Deliver the final response to the origin/target chat.
+        # If the agent responded with [SILENT], skip delivery (but
+        # output is already saved above).  Failed jobs always deliver.
+        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+        # Treat whitespace-only final responses the same as empty
+        # responses: do not deliver a blank message, and let the
+        # empty-response guard below mark the run as a soft failure.
+        should_deliver = bool(deliver_content.strip())
+        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            should_deliver = False
+
+        delivery_error = None
+        if should_deliver:
+            try:
+                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+            except Exception as de:
+                delivery_error = str(de)
+                logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+        # Treat empty final_response as a soft failure so last_status
+        # is not "ok" — the agent ran but produced nothing useful.
+        # (issue #8585)
+        if success and not final_response.strip():
+            success = False
+            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        return True
+
+    except Exception as e:
+        logger.error("Error processing job %s: %s", job['id'], e)
+        mark_job_run(job["id"], False, str(e))
+        return False
+
+
+def _notify_provider_jobs_changed() -> None:
+    """Best-effort: tell the active scheduler provider the job set changed.
+
+    Called by the consumer surfaces (model tool / CLI / REST) AFTER a
+    successful store mutation (create/update/remove/pause/resume) so an external
+    provider (Chronos) can re-provision/cancel the affected one-shot via NAS.
+    No-op for the built-in (it re-reads jobs.json each tick), so the default
+    path is unchanged. Lives here (not in cron/jobs.py) to keep the store free
+    of provider imports — avoids an import cycle and keeps jobs.py low-coupling.
+    Never raises into the caller.
+    """
+    try:
+        from cron.scheduler_provider import resolve_cron_scheduler
+        resolve_cron_scheduler().on_jobs_changed()
+    except Exception as e:
+        logger.debug("on_jobs_changed notify failed: %s", e)
 
 
 def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
@@ -2079,64 +2184,18 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             )
 
         def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end: execute, save, deliver, mark."""
-            try:
-                success, output, final_response, error = run_job(job)
+            """Run one due job end-to-end. Thin wrapper around the shared
+            module-level ``run_one_job`` so ``tick`` and external providers
+            (Chronos ``fire_due``) use the identical execute→save→deliver→mark
+            body."""
+            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                # Treat whitespace-only final responses the same as empty
-                # responses: do not deliver a blank message, and let the
-                # empty-response guard below mark the run as a soft failure.
-                should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
-
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                # Treat empty final_response as a soft failure so last_status
-                # is not "ok" — the agent ran but produced nothing useful.
-                # (issue #8585)
-                if success and not final_response.strip():
-                    success = False
-                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                return True
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-                return False
-
-        # Partition due jobs: jobs with a per-job workdir and/or profile touch
-        # process-global runtime state inside run_job. Workdir jobs temporarily
-        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
-        # Hermes home override, scheduler _hermes_home hook, and temporary
-        # profile .env load into os.environ with snapshot/restore. They MUST run
-        # sequentially to avoid corrupting each other. Jobs without either field
-        # stay parallel-safe.
-        sequential_jobs = [
-            j for j in due_jobs
-            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
-        ]
-        parallel_jobs = [
-            j for j in due_jobs
-            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
-        ]
+        # Partition due jobs: those with a per-job workdir mutate
+        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
+        # so they MUST run sequentially to avoid corrupting each other.  Jobs
+        # without a workdir leave env untouched and stay parallel-safe.
+        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
+        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
 
         _results: list = []
         _all_futures: list = []
@@ -2165,9 +2224,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
             return pool.submit(_run_and_release)
 
-        # Sequential pass for env/context-mutating (workdir/profile) jobs.
+        # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time
-        # WITHOUT blocking the ticker thread — a long workdir/profile job no
+        # WITHOUT blocking the ticker thread — a long workdir job no
         # longer starves the rest of the schedule (same fix as the parallel
         # pass, just serialized).  The in-flight guard prevents a still-running
         # job from being re-queued on the next tick.

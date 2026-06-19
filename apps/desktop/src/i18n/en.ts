@@ -131,6 +131,18 @@ export const en: Translations = {
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable'
+    },
+    native: {
+      approvalTitle: 'Approval needed',
+      approveAction: 'Approve',
+      rejectAction: 'Reject',
+      inputTitle: 'Input needed',
+      inputBody: 'Hermes is waiting for your response.',
+      turnDoneTitle: 'Hermes finished',
+      turnDoneBody: 'The response is ready.',
+      turnErrorTitle: 'Turn failed',
+      backgroundDoneTitle: 'Background task finished',
+      backgroundFailedTitle: 'Background task failed'
     }
   },
 
@@ -177,8 +189,18 @@ export const en: Translations = {
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
+      'session.newWindow': 'New session in window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
+      'session.slot.1': 'Switch to recent session 1',
+      'session.slot.2': 'Switch to recent session 2',
+      'session.slot.3': 'Switch to recent session 3',
+      'session.slot.4': 'Switch to recent session 4',
+      'session.slot.5': 'Switch to recent session 5',
+      'session.slot.6': 'Switch to recent session 6',
+      'session.slot.7': 'Switch to recent session 7',
+      'session.slot.8': 'Switch to recent session 8',
+      'session.slot.9': 'Switch to recent session 9',
       'session.focusSearch': 'Search sessions',
       'session.togglePin': 'Pin / unpin current session',
       'composer.focus': 'Focus composer',
@@ -254,7 +276,46 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
-      about: 'About'
+      about: 'About',
+      notifications: 'Notifications'
+    },
+    notifications: {
+      title: 'Notifications',
+      intro:
+        'Native desktop notifications, separate from in-app toasts. These are device-local — each computer keeps its own settings.',
+      enableAll: 'Enable notifications',
+      enableAllDesc: 'Master switch. Turn this off to silence every notification below.',
+      focusedHint: 'Completion alerts only fire while Hermes is in the background.',
+      kinds: {
+        approval: {
+          label: 'Approval needed',
+          description: 'A command is waiting for you to approve or reject it.'
+        },
+        input: {
+          label: 'Input needed',
+          description: 'Hermes asked a question or needs a password or secret.'
+        },
+        turnDone: {
+          label: 'Response ready',
+          description: 'A turn finished while Hermes was in the background.'
+        },
+        turnError: {
+          label: 'Turn failed',
+          description: 'A turn ended with an error.'
+        },
+        backgroundDone: {
+          label: 'Background task finished',
+          description: 'A backgrounded terminal command completed.'
+        }
+      },
+      test: 'Send test notification',
+      testTitle: 'Hermes',
+      testBody: 'Notifications are working.',
+      testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
+      testUnsupported: 'This system does not support native notifications.',
+      completionSoundTitle: 'Completion Sound',
+      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
+      completionSoundPreview: 'Preview'
     },
     sections: {
       model: 'Model',
@@ -287,12 +348,25 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      translucencyTitle: 'Window Translucency',
+      translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
-      themeDesc: 'Desktop palettes only. The selected mode is applied on top.'
+      themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      installTitle: 'Install from VS Code',
+      installDesc:
+        'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'Install',
+      installing: 'Installing…',
+      installError: 'Could not install that theme.',
+      installed: name => `Installed “${name}”.`,
+      removeTheme: 'Remove theme',
+      importedBadge: 'Imported'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -464,6 +538,10 @@ export const en: Translations = {
       provider: 'Provider',
       model: 'Model',
       applying: 'Applying...',
+      defaultsLabel: 'Defaults',
+      reasoning: 'Reasoning',
+      reasoningOff: 'Off',
+      defaultsFailed: 'Failed to save model defaults',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
       auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
@@ -491,7 +569,20 @@ export const en: Translations = {
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
+      disconnect: 'Disconnect',
+      disconnectInTerminal: 'Disconnect (runs the removal command in the terminal)',
+      removeConfirm: provider => `Remove ${provider}?`,
+      removeExternalGeneric: provider => `${provider} is managed by its own CLI — remove it there.`,
+      removeKeyManaged: provider => `${provider} is configured from an API key. Remove it from API Keys.`,
+      removeTerminalConfirm: (provider, command) =>
+        `Disconnect ${provider}? This runs "${command}" in the terminal to clear the credential.`,
+      removeTerminalRunning: provider => `Running ${provider} disconnect in the terminal…`,
+      removedTitle: 'Account removed',
+      removedMessage: provider => `${provider} was removed.`,
+      failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
+      searchKeys: 'Search providers…',
+      noKeysMatch: 'No providers match your search.',
       loading: 'Loading providers...'
     },
     sessions: {
@@ -509,7 +600,7 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated',
+      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -542,8 +633,16 @@ export const en: Translations = {
       ready: 'Ready',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       noApiKeyRequired: 'No API key required.',
-      postSetup: step =>
-        `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`
+      postSetupHint: step =>
+        `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
+      postSetupRun: 'Run setup',
+      postSetupRunning: 'Installing…',
+      postSetupStarting: 'Starting…',
+      postSetupCompleteTitle: 'Setup complete',
+      postSetupCompleteMessage: step => `${step} installed.`,
+      postSetupErrorTitle: 'Setup finished with errors',
+      postSetupErrorMessage: step => `Check the ${step} log.`,
+      postSetupFailed: step => `Failed to run ${step} setup`
     }
   },
 
@@ -613,11 +712,23 @@ export const en: Translations = {
     back: 'Back',
     searchPlaceholder: 'Search sessions, views, and actions',
     goTo: 'Go to',
+    goToSession: 'Go to session',
     commandCenter: 'Command Center',
     appearance: 'Appearance',
     settings: 'Settings',
     changeTheme: 'Change theme...',
     changeColorMode: 'Change color mode...',
+    installTheme: {
+      title: 'Install theme...',
+      placeholder: 'Search the VS Code Marketplace...',
+      loading: 'Searching the Marketplace...',
+      error: 'Could not reach the Marketplace.',
+      empty: 'No matching themes.',
+      install: 'Install',
+      installing: 'Installing...',
+      installed: 'Installed',
+      installs: count => `${count} installs`
+    },
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
@@ -652,7 +763,8 @@ export const en: Translations = {
     gatewayRunning: 'Messaging gateway running',
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,
-    restartMessaging: 'Restart messaging',
+    restartGateway: 'Restart gateway',
+    gatewayRestartFailed: 'Gateway restart failed.',
     updateHermes: 'Update Hermes',
     actionRunning: 'running',
     actionDone: 'done',
@@ -721,9 +833,9 @@ export const en: Translations = {
     disableAria: name => `Disable ${name}`,
     platformEnabled: name => `${name} enabled`,
     platformDisabled: name => `${name} disabled`,
-    restartToApply: 'Restart the gateway for this change to take effect.',
+    restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
-    restartToReconnect: 'Restart the gateway to reconnect with the new credentials.',
+    restartToReconnect: 'New credentials take effect after a gateway restart.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,
@@ -861,6 +973,9 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
+    cloneFrom: 'Clone from',
+    cloneFromNone: 'None (blank)',
+    cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
     cloneFromDefault: 'Clone from default',
     cloneFromDefaultDesc: 'Copy config, skills, and SOUL.md from your default profile.',
     invalidName: hint => `Invalid name. ${hint}`,
@@ -889,8 +1004,6 @@ export const en: Translations = {
   cron: {
     close: 'Close cron',
     search: 'Search cron jobs...',
-    refresh: 'Refresh cron jobs',
-    refreshing: 'Refreshing cron jobs',
     loading: 'Loading cron jobs...',
     states: {
       enabled: 'enabled',
@@ -943,9 +1056,7 @@ export const en: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `Monthly on day ${dayOfMonth} at ${time}`,
     topOfHour: 'At the top of every hour',
     everyHourAt: minute => `Every hour at :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} active`,
     newCron: 'New cron',
-    createFirst: 'Create first cron',
     emptyDescNew:
       'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.',
     emptyDescSearch: 'Try a broader search query.',
@@ -953,6 +1064,11 @@ export const en: Translations = {
     emptyTitleSearch: 'No matches',
     last: 'Last:',
     next: 'Next:',
+    noRuns: 'No runs yet',
+    manage: 'Manage',
+    showRuns: 'Show runs',
+    hideRuns: 'Hide runs',
+    runHistory: 'Run history',
     actionsFor: title => `Actions for ${title}`,
     actionsTitle: 'Cron job actions',
     resume: 'Resume cron',
@@ -1044,6 +1160,7 @@ export const en: Translations = {
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',
+    cronJobs: 'Cron jobs',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
@@ -1064,12 +1181,14 @@ export const en: Translations = {
       export: 'Export',
       rename: 'Rename',
       archive: 'Archive',
+      newWindow: 'New window',
       copyIdFailed: 'Could not copy session ID',
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
       waitingForAnswer: 'Waiting for your answer',
+      handoffOrigin: platform => `Handed off from ${platform}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',
       renameTitle: 'Rename session',
@@ -1108,7 +1227,7 @@ export const en: Translations = {
     ],
     startVoice: 'Start voice conversation',
     queueMessage: 'Queue message',
-    steer: 'Steer the current run (⌘⏎)',
+    steer: 'Steer the current run',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',
@@ -1141,14 +1260,14 @@ export const en: Translations = {
       '/quit': 'exit hermes'
     },
     hotkeyDescs: {
-      '@': 'reference files, folders, urls, git',
-      '/': 'slash command palette',
-      '?': 'this quick help (delete to dismiss)',
-      Enter: 'send · Shift+Enter for newline',
-      'Cmd/Ctrl+Shift+K': 'send next queued turn',
-      'Cmd/Ctrl+/': 'all keyboard shortcuts',
-      Esc: 'close popover · cancel run',
-      '↑ / ↓': 'cycle popover / history'
+      'composer.mention': 'reference files, folders, urls, git',
+      'composer.slash': 'slash command palette',
+      'composer.help': 'this quick help (delete to dismiss)',
+      'composer.sendNewline': 'send · Shift+Enter for newline',
+      'composer.sendQueued': 'send next queued turn',
+      'keybinds.openPanel': 'all keyboard shortcuts',
+      'composer.cancel': 'close popover · cancel run',
+      'composer.history': 'cycle popover / history'
     },
     attachUrlTitle: 'Attach a URL',
     attachUrlDesc: 'Hermes will fetch the page and include it as context for this turn.',
@@ -1161,10 +1280,12 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
-    editQueued: 'Edit queued turn',
-    sendQueuedNext: 'Send queued turn next',
-    sendQueuedNow: 'Send queued turn now',
-    deleteQueued: 'Delete queued turn',
+    queueEdit: 'Edit',
+    queueSendNext: 'Next',
+    queueSend: 'Send',
+    queueDelete: 'Delete',
+    queueStuckTitle: 'Queued message not sent',
+    queueStuckBody: 'A queued turn kept failing to send. It is still in the queue — try sending it again.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,
@@ -1209,6 +1330,17 @@ export const en: Translations = {
     }
   },
 
+  statusStack: {
+    agents: 'Agents',
+    background: count => `${count} Background`,
+    subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
+    todos: (done, total) => `Tasks ${done}/${total}`,
+    running: 'Running',
+    stop: 'Stop',
+    dismiss: 'Dismiss',
+    exit: code => `exit ${code}`
+  },
+
   updates: {
     stages: {
       idle: 'Getting ready…',
@@ -1227,9 +1359,13 @@ export const en: Translations = {
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
     connectionRetry: 'Check your connection and try again.',
     latestBody: 'You’re running the latest version.',
+    latestBodyBackend: 'The backend is running the latest version.',
     allSetTitle: 'You’re all set',
     availableTitle: 'New update available',
     availableBody: 'A new version of Hermes is ready to install.',
+    availableTitleBackend: 'Backend update available',
+    availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
+    availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
@@ -1240,10 +1376,20 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
+    applyingBodyBackend:
+      'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
-    notNow: 'Not now'
+    notNow: 'Not now',
+    applyStatus: {
+      preparing: 'Updating backend…',
+      pulling: 'Backend updating…',
+      restarting: 'Backend restarting to load the update…',
+      notAvailable: 'Update not available for this backend.',
+      failed: 'Backend update failed.',
+      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+    }
   },
 
   install: {
@@ -1316,6 +1462,7 @@ export const en: Translations = {
     getKey: 'Get a key',
     replaceCurrent: 'Replace current value',
     pasteApiKey: 'Paste API key',
+    localApiKeyPlaceholder: 'API key (optional — only if your endpoint requires one)',
     couldNotSave: 'Could not save credential.',
     connecting: 'Connecting',
     update: 'Update',
@@ -1363,8 +1510,6 @@ export const en: Translations = {
     unknown: '(unknown)',
     search: 'Filter providers and models...',
     noModels: 'No models found.',
-    persistGlobalSession: 'Persist globally (otherwise this session only)',
-    persistGlobal: 'Persist globally',
     addProvider: 'Add provider',
     loadFailed: 'Could not load models',
     noAuthenticatedProviders: 'No authenticated providers.',
@@ -1390,6 +1535,7 @@ export const en: Translations = {
       search: 'Search models',
       noModels: 'No models found',
       editModels: 'Edit Models…',
+      refreshModels: 'Refresh Models',
       fast: 'Fast',
       medium: 'Med'
     },
@@ -1429,16 +1575,22 @@ export const en: Translations = {
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `Backend v${version}`,
+      clientLabel: version => `client v${version}`,
+      backendLabel: version => `backend v${version}`,
       commit: sha => `commit ${sha}`,
       branch: branch => `branch ${branch}`,
       closeCommandCenter: 'Close Command Center',
       openCommandCenter: 'Open Command Center',
+      showTerminal: 'Show terminal',
+      hideTerminal: 'Hide terminal',
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
+      gatewayRestarting: 'restarting…',
       gatewayTitle: 'Hermes inference gateway status',
       agents: 'Agents',
       closeAgents: 'Close agents',
@@ -1453,8 +1605,8 @@ export const en: Translations = {
       contextUsage: 'Context usage',
       session: 'Session',
       runtimeSessionElapsed: 'Runtime session elapsed',
-      yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off.',
-      yoloOff: 'YOLO off — click to auto-approve dangerous commands.',
+      yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
+      yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
       modelNone: 'none',
       noModel: 'no model',
       switchModel: 'Switch model',
@@ -1471,6 +1623,9 @@ export const en: Translations = {
     terminal: 'Terminal',
     noFolderSelected: 'No folder selected',
     changeCwdTitle: 'Change working directory',
+    remotePickerTitle: 'Choose remote folder',
+    remotePickerDescription: 'Browse folders on the connected backend.',
+    remotePickerSelect: 'Select folder',
     folderTip: cwd => `${cwd} — click to change folder`,
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
@@ -1488,8 +1643,7 @@ export const en: Translations = {
     tryAgain: 'Try again',
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
-    terminalFocus: 'Focus terminal view',
-    terminalSplit: 'Return to split view',
+    terminalHide: 'Hide terminal',
     addToChat: 'Add to chat'
   },
 
@@ -1575,6 +1729,7 @@ export const en: Translations = {
   assistant: {
     thread: {
       loadingSession: 'Loading session',
+      showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
@@ -1583,26 +1738,34 @@ export const en: Translations = {
       refresh: 'Refresh',
       moreActions: 'More actions',
       branchNewChat: 'Branch in new chat',
+      dismissError: 'Dismiss error',
       readAloudFailed: 'Read aloud failed',
       preparingAudio: 'Preparing audio...',
       stopReading: 'Stop reading',
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
+      scrollToBottom: 'Scroll to bottom',
       stop: 'Stop',
-      editableCheckpoint: 'Editable checkpoint',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',
+      restoreFromHere: 'Restore checkpoint — rerun from this prompt',
+      restoreTitle: 'Restore to this checkpoint?',
+      restoreBody: 'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
+      restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
-      sendEdited: 'Send edited message'
+      sendEdited: 'Send edited message',
+      attachingFile: 'Attaching…'
     },
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send approval response',
       run: 'Run',
+      command: 'Command',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
       alwaysAllowMenu: 'Always allow…',
+      jumpToApproval: 'Approval needed',
       reject: 'Reject',
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
@@ -1616,7 +1779,7 @@ export const en: Translations = {
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
-      shortcut: '⌘/Ctrl + Enter to send',
+      shortcutSuffix: ' to send',
       back: 'Back',
       skip: 'Skip',
       send: 'Send'
@@ -1685,6 +1848,9 @@ export const en: Translations = {
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',
+    resumeStrandedTitle: "Couldn't load this session",
+    resumeStrandedBody: 'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',
     sessionBusy: 'Session busy',
@@ -1717,7 +1883,14 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
-    dropFiles: 'Drop files'
+    dropFiles: 'Drop files',
+    handoff: {
+      pickPlatform: 'Choose a destination',
+      success: platform => `Handed off to ${platform}. Resume here anytime.`,
+      systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
+      failed: error => `Handoff failed: ${error}`,
+      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
   },
 
   errors: {

@@ -210,6 +210,33 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
     thread.join(timeout=timeout)
 
 
+def mcp_discovery_in_flight() -> bool:
+    """Return True if the background MCP discovery thread is still running.
+
+    Used by the agent-build path to decide whether to schedule a late tool
+    snapshot refresh: if discovery didn't land within the bounded
+    ``wait_for_mcp_discovery`` join, the agent was built without those tools
+    and the banner/tool count will be stale until they arrive.
+    """
+    thread = _mcp_discovery_thread
+    return thread is not None and thread.is_alive()
+
+
+def join_mcp_discovery(timeout: float | None = None) -> bool:
+    """Block until background MCP discovery finishes, up to ``timeout`` seconds.
+
+    Returns True if discovery has completed (thread absent or no longer alive),
+    False if it is still running after the timeout. Unlike
+    ``wait_for_mcp_discovery`` this accepts an unbounded/long wait and reports
+    the outcome, for the off-critical-path late-refresh waiter.
+    """
+    thread = _mcp_discovery_thread
+    if thread is None:
+        return True
+    thread.join(timeout=timeout)
+    return not thread.is_alive()
+
+
 def main():
     _install_sidecar_publisher()
 

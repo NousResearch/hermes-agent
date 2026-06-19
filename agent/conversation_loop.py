@@ -28,7 +28,11 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.cyber_routing import classify_cyber_route
+from agent.cyber_routing import (
+    apply_agentcyber_route_guard,
+    classify_cyber_route,
+    restore_agentcyber_route_runtime,
+)
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -574,7 +578,9 @@ def run_conversation(
         summarize_user_message_for_log=_summarize_user_message_for_log,
         set_session_context=set_session_context,
         set_current_write_origin=set_current_write_origin,
+        restore_cyber_route_runtime=restore_agentcyber_route_runtime,
         capture_cyber_route_metadata=_capture_cyber_route_metadata,
+        apply_cyber_route_guard=apply_agentcyber_route_guard,
         ra=_ra,
     )
     user_message = _ctx.user_message
@@ -588,6 +594,25 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
+
+    _agentcyber_block_response = getattr(_ctx, "agentcyber_block_response", None)
+    if _agentcyber_block_response:
+        final_response = _agentcyber_block_response
+        messages.append({"role": "assistant", "content": final_response})
+        agent._persist_session(messages, conversation_history)
+        return {
+            "final_response": final_response,
+            "messages": messages,
+            "api_calls": 0,
+            "completed": False,
+            "failed": True,
+            "turn_exit_reason": "agentcyber_model_route_block",
+            "cyber_route": getattr(agent, "_current_cyber_route_metadata", None),
+            "model": agent.model,
+            "provider": agent.provider,
+            "base_url": agent.base_url,
+            "session_id": agent.session_id,
+        }
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0

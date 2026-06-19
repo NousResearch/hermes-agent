@@ -33,6 +33,12 @@ def _patch_bootstrap(monkeypatch):
         ],
     )
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    import agent.cyber_routing as cyber_routing
+    monkeypatch.setattr(
+        cyber_routing,
+        "_load_config_quietly",
+        lambda: {"agent_cyber": {"routing": {"require_local_for_sensitive": False}}},
+    )
 
 
 class _RouteCaptureAgent(run_agent.AIAgent):
@@ -96,6 +102,8 @@ def test_conversation_loop_captures_general_route_metadata(monkeypatch):
         "reason": "ordinary general task",
         "requires_hosted_secret_confirmation": False,
         "explicit_override": None,
+        "routing_action": "keep",
+        "routing_reason": "route does not require local/open-weight runtime",
     }
     assert result["cyber_route"] == getattr(agent, "_current_cyber_route_metadata")
 

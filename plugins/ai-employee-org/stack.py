@@ -95,7 +95,14 @@ def apply_stack_via_script(*, dry_run: bool = False) -> dict[str, Any]:
     ]
     if dry_run:
         cmd.append("--dry-run")
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+    )
     return {
         "ok": proc.returncode == 0,
         "stdout": proc.stdout.strip()[:500],

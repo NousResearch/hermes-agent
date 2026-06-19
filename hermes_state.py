@@ -75,8 +75,16 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     orchestrator subagent's own delegate children go too (FK safety).
     """
     df = _delegate_from_json()
-    found: set[str] = set()
-    frontier = [sid for sid in parent_ids if sid]
+    seeds = {sid for sid in parent_ids if sid}
+    # Seed the visited set with the parents themselves. A delegation marker
+    # chain can loop back onto a parent — a cycle, or a parent that is also
+    # another parent's delegate child when several ids are deleted at once —
+    # and without this guard that parent would be collected as one of its own
+    # descendants and cascade-deleted along with all of its messages. Callers
+    # delete the parents separately, so parents must never appear in the
+    # returned child set. (#49148)
+    found: set[str] = set(seeds)
+    frontier = list(seeds)
     while frontier:
         ph = ",".join("?" * len(frontier))
         cursor = conn.execute(
@@ -86,7 +94,8 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
         )
         frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
         found.update(frontier)
-    return list(found)
+    # Return only the discovered children — never the parents themselves.
+    return [sid for sid in found if sid not in seeds]
 
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:

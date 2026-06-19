@@ -10,6 +10,14 @@ $terminalTakeover.subscribe(active => persistBoolean(TAKEOVER_KEY, active))
 
 export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(active)
 
+// Which view the right sidebar shows: the project file tree or source control.
+// Both share the one right-sidebar pane (VS Code-style activity switch).
+export type RightSidebarView = 'files' | 'source-control'
+
+export const $rightSidebarView = atom<RightSidebarView>('files')
+
+export const setRightSidebarView = (view: RightSidebarView) => $rightSidebarView.set(view)
+
 /** A command queued to run in the embedded terminal. The terminal pane flushes
  *  (and clears) it once its session is live, so a value set before the pane
  *  mounts still runs. Cleared after flush so a later remount can't replay it. */

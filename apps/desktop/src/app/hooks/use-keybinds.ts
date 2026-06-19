@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { $terminalTakeover, setRightSidebarView, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
@@ -109,6 +109,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     setTerminalTakeover(false)
   }
 
+  const showSourceControl = () => {
+    setFileBrowserOpen(true)
+    setTerminalTakeover(false)
+    setRightSidebarView('source-control')
+  }
+
   handlersRef.current = {
     'keybinds.openPanel': toggleKeybindPanel,
 
@@ -155,6 +161,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'view.showFiles': showFiles,
+    'view.showSourceControl': showSourceControl,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     'view.flipPanes': togglePanesFlipped,
 

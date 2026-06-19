@@ -19,6 +19,8 @@ import { SidebarPanelLabel } from '../shell/sidebar-label'
 import { RemoteFolderPicker } from './files/remote-picker'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
+import { SourceControlPanel } from './source-control'
+import { $rightSidebarView, setRightSidebarView } from './store'
 
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
@@ -30,6 +32,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
+  const view = useStore($rightSidebarView)
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
 
@@ -92,28 +95,79 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      <RemoteFolderPicker />
-
-      <FilesystemTab
-        canCollapse={canCollapse}
-        collapseNonce={collapseNonce}
-        cwd={effectiveCwd}
-        cwdName={cwdName}
-        data={data}
-        error={rootError}
-        hasCwd={hasCwd}
-        loading={rootLoading}
-        onActivateFile={onActivateFile}
-        onActivateFolder={onActivateFolder}
-        onChangeFolder={chooseFolder}
-        onCollapseAll={collapseAll}
-        onLoadChildren={loadChildren}
-        onNodeOpenChange={setNodeOpen}
-        onPreviewFile={previewFile}
-        onRefresh={() => void refreshRoot()}
-        openState={openState}
+      <ViewSwitch
+        filesLabel={r.aria}
+        onSelect={setRightSidebarView}
+        sourceControlLabel={t.sourceControl.tab}
+        view={view}
       />
+
+      {view === 'source-control' ? (
+        <SourceControlPanel />
+      ) : (
+        <>
+          <RemoteFolderPicker />
+
+          <FilesystemTab
+            canCollapse={canCollapse}
+            collapseNonce={collapseNonce}
+            cwd={effectiveCwd}
+            cwdName={cwdName}
+            data={data}
+            error={rootError}
+            hasCwd={hasCwd}
+            loading={rootLoading}
+            onActivateFile={onActivateFile}
+            onActivateFolder={onActivateFolder}
+            onChangeFolder={chooseFolder}
+            onCollapseAll={collapseAll}
+            onLoadChildren={loadChildren}
+            onNodeOpenChange={setNodeOpen}
+            onPreviewFile={previewFile}
+            onRefresh={() => void refreshRoot()}
+            openState={openState}
+          />
+        </>
+      )}
     </aside>
+  )
+}
+
+interface ViewSwitchProps {
+  filesLabel: string
+  onSelect: (view: 'files' | 'source-control') => void
+  sourceControlLabel: string
+  view: 'files' | 'source-control'
+}
+
+// Compact VS Code-style activity switch between the file tree and source
+// control, pinned at the top of the shared right-sidebar pane.
+function ViewSwitch({ onSelect, sourceControlLabel, view }: ViewSwitchProps) {
+  const items: { id: 'files' | 'source-control'; icon: string; label: string }[] = [
+    { id: 'files', icon: 'files', label: 'Files' },
+    { id: 'source-control', icon: 'source-control', label: sourceControlLabel }
+  ]
+
+  return (
+    <div className="flex h-7 shrink-0 items-center gap-0.5 border-b border-(--ui-stroke-tertiary) px-1.5">
+      {items.map(item => (
+        <button
+          aria-label={item.label}
+          aria-pressed={view === item.id}
+          className={cn(
+            'grid size-6 place-items-center rounded-md transition-colors',
+            view === item.id
+              ? 'bg-(--ui-control-hover-background) text-foreground'
+              : 'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
+          )}
+          key={item.id}
+          onClick={() => onSelect(item.id)}
+          type="button"
+        >
+          <Codicon name={item.icon} size="0.85rem" />
+        </button>
+      ))}
+    </div>
   )
 }
 

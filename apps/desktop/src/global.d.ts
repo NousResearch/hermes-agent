@@ -75,6 +75,33 @@ declare global {
       // on-disk metadata locally. Returns null per cwd that isn't inside a
       // checkout (or can't be read — e.g. a remote backend's path).
       worktrees?: (cwds: string[]) => Promise<Record<string, HermesWorktreeInfo | null>>
+      // Git source control for the desktop Source Control panel. All ops resolve
+      // + harden the cwd to a git root in the main process and spawn `git` with
+      // an argument array (no shell). `ok:false` carries a human-readable error.
+      git?: {
+        status: (cwd: string) => Promise<HermesGitStatus>
+        diff: (cwd: string, filePath: string, staged: boolean) => Promise<{ ok: boolean; diff?: string; error?: string }>
+        stage: (cwd: string, paths: string[]) => Promise<HermesGitResult>
+        unstage: (cwd: string, paths: string[]) => Promise<HermesGitResult>
+        discard: (cwd: string, paths: string[]) => Promise<HermesGitResult>
+        commit: (cwd: string, message: string, options?: { amend?: boolean; all?: boolean }) => Promise<HermesGitResult>
+        push: (cwd: string, options?: { setUpstream?: boolean }) => Promise<HermesGitResult>
+        pull: (cwd: string) => Promise<HermesGitResult>
+        fetch: (cwd: string) => Promise<HermesGitResult>
+        branches: (cwd: string) => Promise<HermesGitBranches>
+        checkout: (cwd: string, branch: string) => Promise<HermesGitResult>
+        createBranch: (cwd: string, name: string, options?: { startPoint?: string }) => Promise<HermesGitResult>
+        deleteBranch: (cwd: string, name: string, options?: { force?: boolean }) => Promise<HermesGitResult>
+        log: (cwd: string, options?: { limit?: number }) => Promise<HermesGitLog>
+        commitDiff: (cwd: string, sha: string) => Promise<{ ok: boolean; diff?: string; error?: string }>
+        stashList: (cwd: string) => Promise<HermesGitStashList>
+        stashPush: (
+          cwd: string,
+          options?: { includeUntracked?: boolean; message?: string }
+        ) => Promise<HermesGitResult>
+        stashAction: (cwd: string, action: 'apply' | 'drop' | 'pop', ref: string) => Promise<HermesGitResult>
+        applyHunk: (cwd: string, patch: string, options?: { reverse?: boolean }) => Promise<HermesGitResult>
+      }
       terminal: {
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
@@ -450,6 +477,78 @@ export interface HermesReadFileTextResult {
 export interface HermesPreviewWatch {
   id: string
   path: string
+}
+
+export interface HermesGitFile {
+  path: string
+  origPath?: string
+  status: 'added' | 'conflicted' | 'copied' | 'deleted' | 'modified' | 'renamed' | 'typechange' | 'untracked'
+  staged: boolean
+}
+
+export interface HermesGitStatus {
+  ok: boolean
+  error?: string
+  root?: string
+  branch?: null | string
+  upstream?: null | string
+  ahead?: number
+  behind?: number
+  staged?: HermesGitFile[]
+  unstaged?: HermesGitFile[]
+  untracked?: HermesGitFile[]
+  conflicted?: HermesGitFile[]
+}
+
+export interface HermesGitResult {
+  ok: boolean
+  error?: string
+  output?: string
+}
+
+export interface HermesGitBranch {
+  name: string
+  current: boolean
+  upstream: null | string
+  ahead: number
+  behind: number
+  sha: string
+  subject: string
+}
+
+export interface HermesGitBranches {
+  ok: boolean
+  error?: string
+  current?: null | string
+  local?: HermesGitBranch[]
+  remote?: HermesGitBranch[]
+}
+
+export interface HermesGitCommit {
+  sha: string
+  shortSha: string
+  author: string
+  authorEmail: string
+  date: string
+  relativeDate: string
+  subject: string
+}
+
+export interface HermesGitLog {
+  ok: boolean
+  error?: string
+  commits?: HermesGitCommit[]
+}
+
+export interface HermesGitStash {
+  ref: string
+  subject: string
+}
+
+export interface HermesGitStashList {
+  ok: boolean
+  error?: string
+  stashes?: HermesGitStash[]
 }
 
 export interface HermesWorktreeInfo {

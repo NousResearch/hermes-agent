@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
-import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { setRightSidebarView, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
@@ -20,6 +20,7 @@ import {
   Clock,
   Cpu,
   Download,
+  GitBranch,
   Globe,
   type IconComponent,
   Info,
@@ -41,6 +42,7 @@ import {
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
+import { setFileBrowserOpen } from '@/store/layout'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -295,6 +297,18 @@ export function CommandPalette() {
             keywords: ['terminal', 'shell', 'console'],
             label: t.keybinds.actions['view.showTerminal'],
             run: () => setTerminalTakeover(true)
+          },
+          {
+            action: 'view.showSourceControl',
+            icon: GitBranch,
+            id: 'nav-source-control',
+            keywords: ['git', 'source control', 'commit', 'stage', 'push', 'pull', 'diff'],
+            label: t.keybinds.actions['view.showSourceControl'],
+            run: () => {
+              setFileBrowserOpen(true)
+              setTerminalTakeover(false)
+              setRightSidebarView('source-control')
+            }
           },
           {
             action: 'nav.settings',

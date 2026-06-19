@@ -43,6 +43,27 @@ const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-e
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
+const {
+  gitStatusForIpc,
+  gitDiffForIpc,
+  gitStageForIpc,
+  gitUnstageForIpc,
+  gitDiscardForIpc,
+  gitCommitForIpc,
+  gitPushForIpc,
+  gitPullForIpc,
+  gitFetchForIpc,
+  gitBranchesForIpc,
+  gitCheckoutForIpc,
+  gitCreateBranchForIpc,
+  gitDeleteBranchForIpc,
+  gitLogForIpc,
+  gitCommitDiffForIpc,
+  gitStashListForIpc,
+  gitStashPushForIpc,
+  gitStashActionForIpc,
+  gitApplyHunkForIpc
+} = require('./git-scm.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
@@ -6040,6 +6061,48 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dir
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
 ipcMain.handle('hermes:fs:worktrees', async (_event, cwds) => worktreesForIpc(cwds))
+
+// ─── Git source control (desktop Source Control panel) ────────────────────────
+// All operations resolve + harden the cwd to a git root inside git-scm.cjs and
+// spawn `git` with an argument array (never a shell string). resolveGitBinary()
+// finds PortableGit on Windows.
+ipcMain.handle('hermes:git:status', async (_event, cwd) => gitStatusForIpc(resolveGitBinary(), cwd))
+ipcMain.handle('hermes:git:diff', async (_event, cwd, filePath, staged) =>
+  gitDiffForIpc(resolveGitBinary(), cwd, filePath, Boolean(staged))
+)
+ipcMain.handle('hermes:git:stage', async (_event, cwd, paths) => gitStageForIpc(resolveGitBinary(), cwd, paths))
+ipcMain.handle('hermes:git:unstage', async (_event, cwd, paths) => gitUnstageForIpc(resolveGitBinary(), cwd, paths))
+ipcMain.handle('hermes:git:discard', async (_event, cwd, paths) => gitDiscardForIpc(resolveGitBinary(), cwd, paths))
+ipcMain.handle('hermes:git:commit', async (_event, cwd, message, options) =>
+  gitCommitForIpc(resolveGitBinary(), cwd, message, options || {})
+)
+ipcMain.handle('hermes:git:push', async (_event, cwd, options) =>
+  gitPushForIpc(resolveGitBinary(), cwd, options || {})
+)
+ipcMain.handle('hermes:git:pull', async (_event, cwd) => gitPullForIpc(resolveGitBinary(), cwd))
+ipcMain.handle('hermes:git:fetch', async (_event, cwd) => gitFetchForIpc(resolveGitBinary(), cwd))
+ipcMain.handle('hermes:git:branches', async (_event, cwd) => gitBranchesForIpc(resolveGitBinary(), cwd))
+ipcMain.handle('hermes:git:checkout', async (_event, cwd, branch) =>
+  gitCheckoutForIpc(resolveGitBinary(), cwd, branch)
+)
+ipcMain.handle('hermes:git:createBranch', async (_event, cwd, name, options) =>
+  gitCreateBranchForIpc(resolveGitBinary(), cwd, name, options || {})
+)
+ipcMain.handle('hermes:git:deleteBranch', async (_event, cwd, name, options) =>
+  gitDeleteBranchForIpc(resolveGitBinary(), cwd, name, options || {})
+)
+ipcMain.handle('hermes:git:log', async (_event, cwd, options) => gitLogForIpc(resolveGitBinary(), cwd, options || {}))
+ipcMain.handle('hermes:git:commitDiff', async (_event, cwd, sha) => gitCommitDiffForIpc(resolveGitBinary(), cwd, sha))
+ipcMain.handle('hermes:git:stashList', async (_event, cwd) => gitStashListForIpc(resolveGitBinary(), cwd))
+ipcMain.handle('hermes:git:stashPush', async (_event, cwd, options) =>
+  gitStashPushForIpc(resolveGitBinary(), cwd, options || {})
+)
+ipcMain.handle('hermes:git:stashAction', async (_event, cwd, action, ref) =>
+  gitStashActionForIpc(resolveGitBinary(), cwd, action, ref)
+)
+ipcMain.handle('hermes:git:applyHunk', async (_event, cwd, patch, options) =>
+  gitApplyHunkForIpc(resolveGitBinary(), cwd, patch, options || {})
+)
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {

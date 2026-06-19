@@ -281,6 +281,8 @@ class ArmBConfig:
     threshold: float = 0.10
     timeout_seconds: int = 600
     lcm_db: str = ""
+    escalation: bool = True   # PRD-8.3 B1. --no-escalation = AC-5 baseline-repro
+                              # (same generator, escalation OFF must still show ~10% CW).
 
     def __post_init__(self):
         if not self.lcm_db:
@@ -605,7 +607,8 @@ class ArmBHarness:
             # This makes correctness independent of summary fidelity. An infra
             # error string is NOT escalated (it is a transient, scored separately).
             answer = node_answer
-            if depth1_id is not None and not node_answer.startswith("[recovery error") \
+            if self.cfg.escalation \
+                    and depth1_id is not None and not node_answer.startswith("[recovery error") \
                     and needs_escalation(node_answer):
                 try:
                     store_answer = self._store_grounded_recovery(
@@ -766,6 +769,12 @@ class ArmBHarness:
             "model": self.cfg.model,
             "profile": self.cfg.profile,
             "N": n,
+            "run_params": {
+                "sentinels_per_session": sentinels_per_session,
+                "escalation": self.cfg.escalation,
+                "filler_turns": self.cfg.filler_turns,
+                "threshold": self.cfg.threshold,
+            },
             "gate_eligible": n >= 180,
             "condensation_fired": condensation_fired,
             "fact_preserved_in_node": fact_preserved,
@@ -860,6 +869,10 @@ def main() -> int:
                     help="Plant K sentinels per long session (amortizes the "
                          "filler buildup ~Kx). K=1 = legacy one-per-session.")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--no-escalation", dest="escalation", action="store_false",
+                    help="AC-5 baseline-repro: disable PRD-8.3 B1 store escalation "
+                         "(same generator; must still reproduce ~10%% confident-wrong).")
+    ap.set_defaults(escalation=True)
     args = ap.parse_args()
 
     if "opus" in args.model.lower():
@@ -870,6 +883,7 @@ def main() -> int:
         profile=args.profile, model=args.model, n=args.n,
         filler_turns=args.filler_turns, filler_tokens=args.filler_tokens,
         threshold=args.threshold, timeout_seconds=args.timeout_seconds,
+        escalation=args.escalation,
     )
     rep = ArmBHarness(cfg).run(Path(args.out),
                                sentinels_per_session=args.sentinels_per_session)

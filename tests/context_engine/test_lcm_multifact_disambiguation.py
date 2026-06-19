@@ -104,3 +104,23 @@ def test_merged_answer_triggers_escalation_path_logic():
     # and the TRUE store answer (Katherine Johnson) would NOT escalate -> served
     true_answer = "Katherine Johnson"
     assert armB.needs_escalation(true_answer) is False
+
+
+# ---- AC-5 baseline-repro toggle: --no-escalation must be representable --------
+
+def test_escalation_toggle_default_on_flag_off():
+    # PRD-8.3 AC-5: the campaign runs an A/B on identical generator code, so the
+    # only difference between the fixed arm and the baseline-repro arm is this
+    # flag. Default MUST be on (production behaviour); --no-escalation flips it.
+    assert armB.ArmBConfig().escalation is True
+    assert armB.ArmBConfig(escalation=False).escalation is False
+
+
+def test_baseline_repro_records_escalation_in_run_params():
+    # The report must record which arm produced it so a 0%-CW result can never be
+    # silently confused with the escalation-OFF baseline. run_params is the pin.
+    import inspect
+    src = inspect.getsource(armB.ArmBHarness.run)
+    assert '"escalation": self.cfg.escalation' in src
+    assert '"run_params"' in src
+

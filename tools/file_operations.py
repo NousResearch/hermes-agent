@@ -395,7 +395,13 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
 # diagnostics ("rg: ...", "grep: ...", "error: ...", indented carets) never
 # match because the path token forbids whitespace and a leading tool prefix
 # like "rg" is followed by ": " (space) which the negated class rejects.
-_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
+#
+# The digit pattern requires ``\d+`` followed by a separator (``:``, ``-``,
+# or end-of-line) so that ``-<digit>`` sequences inside a path (e.g.
+# ``pytest-1732``) are not mistaken for a match/context line.  rg 13.0.0
+# emits some diagnostics (e.g. "Permission denied") without the ``rg: ``
+# prefix, so the shape guard must be precise.
+_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d+(?:[:\-]|$)|^[^\s:][^\s]*$')
 
 
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:

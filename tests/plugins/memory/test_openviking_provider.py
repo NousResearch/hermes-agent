@@ -1459,6 +1459,115 @@ def test_tool_add_resource_sends_git_remote_sources_as_path(url):
     })
 
 
+def test_get_tool_schemas_includes_narrow_forget_tool():
+    provider = OpenVikingMemoryProvider()
+
+    names = [schema["name"] for schema in provider.get_tool_schemas()]
+
+    assert "viking_forget" in names
+
+
+def test_handle_tool_call_forget_deletes_exact_memory_file_uri():
+    uri = "viking://user/peers/hermes/memories/preferences/mem_abc123.md"
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.delete.return_value = {
+        "status": "ok",
+        "result": {"uri": uri, "estimated_deleted_count": 1},
+    }
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    provider._client.delete.assert_called_once_with(
+        "/api/v1/fs",
+        params={"uri": uri, "recursive": False},
+    )
+    assert result == {
+        "status": "deleted",
+        "uri": uri,
+        "estimated_deleted_count": 1,
+    }
+
+
+def test_handle_tool_call_forget_deletes_exact_memory_file_under_memories_root():
+    uri = "viking://user/default/memories/profile.md"
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.delete.return_value = {
+        "status": "ok",
+        "result": {"uri": uri, "estimated_deleted_count": 1},
+    }
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    provider._client.delete.assert_called_once_with(
+        "/api/v1/fs",
+        params={"uri": uri, "recursive": False},
+    )
+    assert result == {
+        "status": "deleted",
+        "uri": uri,
+        "estimated_deleted_count": 1,
+    }
+
+
+@pytest.mark.parametrize("uri", [
+    "",
+    "https://example.com/mem.md",
+    "viking:/user/memories/preferences/mem_abc123.md",
+    "viking://resources/project/doc.md",
+    "viking://resources/project/memories/mem_abc123.md",
+    "viking://memories/preferences/mem_abc123.md",
+    "viking://agent/hermes/memories/preferences/mem_abc123.md",
+    "viking://user/skills/example/SKILL.md",
+    "viking://user/sessions/session-1/messages.jsonl",
+    "viking://user/memories/preferences/",
+    "viking://user/memories/preferences/.overview.md",
+    "viking://user/memories/preferences/.abstract.md",
+    "viking://user/memories/preferences/mem_abc123.md?recursive=true",
+])
+def test_handle_tool_call_forget_rejects_non_memory_file_uris(uri):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    assert "error" in result
+    provider._client.delete.assert_not_called()
+
+
+def test_viking_client_delete_uses_identity_headers(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+    captured = {}
+
+    def capture_delete(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"uri": "viking://user/memories/x.md"}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "delete", capture_delete)
+
+    assert client.delete("/api/v1/fs", params={"uri": "viking://user/memories/x.md"}) == {
+        "status": "ok",
+        "result": {"uri": "viking://user/memories/x.md"},
+    }
+    assert captured["url"] == "https://example.com/api/v1/fs"
+    assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
+    assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+
+
 def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path, monkeypatch):
     sample = tmp_path / "sample.md"
     sample.write_text("# Local resource\n", encoding="utf-8")
@@ -2635,6 +2744,46 @@ def test_on_memory_write_uses_content_write_independent_of_session_rotation():
     assert captured_payloads[0]["uri"].startswith(
         "viking://user/peers/hermes/memories/preferences/mem_"
     )
+
+
+@pytest.mark.parametrize(
+    ("action", "content"),
+    [
+        ("replace", "updated memory"),
+        ("remove", ""),
+        ("forget", ""),
+        ("delete", ""),
+    ],
+)
+def test_on_memory_write_ignores_non_add_actions(action, content, monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    uri = "viking://user/peers/hermes/memories/preferences/mem_abc123.md"
+    spawned = []
+
+    class StubThread:
+        def __init__(self, *args, **kwargs):
+            spawned.append((args, kwargs))
+
+        def start(self):
+            raise AssertionError("non-URI remove should not spawn a mirror thread")
+
+    import plugins.memory.openviking as _mod
+    monkeypatch.setattr(_mod.threading, "Thread", StubThread)
+
+    provider.on_memory_write(
+        action,
+        "memory",
+        content,
+        metadata={"uri": uri, "old_text": "stale fact"},
+    )
+
+    assert spawned == []
 
 
 # ---------------------------------------------------------------------------

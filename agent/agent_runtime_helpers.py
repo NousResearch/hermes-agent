@@ -2036,12 +2036,31 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+# Metadata fields that Hermes stores on message dicts for internal use
+# (persistence, gateway routing, crash-recovery scaffolding) but that must
+# never leak into the API request body.  Strict providers (e.g. OpenCode Go)
+# reject unknown fields with HTTP 400 "Extra inputs are not permitted".
+_NON_API_MESSAGE_FIELDS = frozenset({
+    "timestamp",           # gateway event time, added by _apply_persist_user_message_override
+    "observed",            # gateway group-context observation flag
+    "message_id",          # platform message ID for quote resolution
+    "mirror",              # cross-session mirroring flag
+    "mirror_source",       # cross-session mirroring origin label
+    "_empty_recovery_synthetic",  # empty-response retry scaffolding
+    "_empty_terminal_sentinel",   # empty-response terminal scaffolding
+})
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
     Runs unconditionally — not gated on whether the context compressor
     is present — so orphans from session loading or manual message
     manipulation are always caught.
+
+    Also strips non-API metadata fields (``timestamp``, ``message_id``, etc.)
+    that internal code attaches to message dicts for persistence/routing but
+    that strict providers reject as unknown inputs.
     """
     # --- Role allowlist: drop messages with roles the API won't accept ---
     filtered = []
@@ -2053,6 +2072,11 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 role,
             )
             continue
+        # Strip internal metadata fields that must not reach the API.
+        if isinstance(msg, dict):
+            extra = _NON_API_MESSAGE_FIELDS.intersection(msg.keys())
+            if extra:
+                msg = {k: v for k, v in msg.items() if k not in extra}
         filtered.append(msg)
     messages = filtered
 

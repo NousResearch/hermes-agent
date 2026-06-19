@@ -222,6 +222,43 @@ def test_gui_linux_skips_fixup_when_already_configured(tmp_path, monkeypatch):
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
+def test_gui_build_only_configures_linux_sandbox_before_return(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.write_text("", encoding="utf-8")
+    sandbox.chmod(0o755)
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._desktop_stdio_can_prompt_for_sudo", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/sudo", "chown", "root:root", str(sandbox)]
+    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/sudo", "chmod", "4755", str(sandbox)]
+
+
+def test_gui_build_only_noninteractive_warns_when_sandbox_needs_fixup(tmp_path, monkeypatch, capsys):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._desktop_stdio_can_prompt_for_sudo", return_value=False), \
+         patch("hermes_cli.main._desktop_linux_sandbox_configured", return_value=False), \
+         patch("hermes_cli.main.subprocess.run") as mock_run:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    mock_run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "sandbox helper still needs sudo" in out
+    assert "hermes desktop" in out
+
+
 def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"

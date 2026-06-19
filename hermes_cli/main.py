@@ -5327,6 +5327,31 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
 
+def _desktop_linux_sandbox_configured(packaged_executable: Path) -> bool:
+    """Return True when Electron's Linux SUID sandbox helper is ready."""
+    if sys.platform != "linux":
+        return True
+
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(sandbox_lstat.st_mode)
+        and sandbox_lstat.st_uid == 0
+        and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755
+    )
+
+
+def _desktop_stdio_can_prompt_for_sudo() -> bool:
+    """True when a child ``sudo`` prompt can reasonably ask the user."""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
     if sys.platform != "linux":
@@ -5349,7 +5374,7 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         print(f"✗ Electron's Linux sandbox helper is not a regular file: {sandbox}")
         return False
 
-    if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
+    if _desktop_linux_sandbox_configured(packaged_executable):
         return True
 
     sudo = shutil.which("sudo")
@@ -5529,6 +5554,24 @@ def cmd_gui(args: argparse.Namespace):
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
         else:
+            if sys.platform == "linux":
+                # ``hermes update`` drives ``hermes desktop --build-only`` after
+                # pulling desktop changes. electron-builder restages
+                # ``chrome-sandbox`` as a normal user-owned file, so returning
+                # here without restoring root:4755 leaves the next
+                # ``hermes desktop`` launch broken until it prompts for sudo.
+                # Only prompt when this build-only run is attached to an
+                # interactive terminal; desktop/in-app updates use piped stdio
+                # and should not hang on a password prompt.
+                if _desktop_stdio_can_prompt_for_sudo():
+                    if not _desktop_linux_sandbox_fixup(packaged_executable):
+                        sys.exit(1)
+                elif not _desktop_linux_sandbox_configured(packaged_executable):
+                    print(
+                        "  ⚠ Desktop packaged app built, but Electron's Linux "
+                        "sandbox helper still needs sudo."
+                    )
+                    print("    Run once from a terminal to finish setup:  hermes desktop")
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
         return
 

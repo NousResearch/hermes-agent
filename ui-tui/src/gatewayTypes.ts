@@ -253,6 +253,15 @@ export interface SessionActiveListResponse {
   sessions?: SessionActiveItem[]
 }
 
+export interface ProcessListItem {
+  session_id?: string
+  status?: string
+}
+
+export interface ProcessListResponse {
+  processes?: ProcessListItem[]
+}
+
 export interface SessionInflightTurn {
   assistant?: string
   streaming?: boolean

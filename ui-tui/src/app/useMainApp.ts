@@ -8,12 +8,14 @@ import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { countRunningProcesses } from '../domain/processes.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
   ConfigSetResponse,
   GatewayEvent,
+  ProcessListResponse,
   SessionActiveListResponse,
   SessionCloseResponse,
   TerminalResizeResponse
@@ -514,7 +516,7 @@ export function useMainApp(gw: GatewayClient) {
 
   useEffect(() => {
     if (!ui.sid) {
-      patchUiState({ liveSessionCount: 0 })
+      patchUiState({ backgroundProcessCount: 0, liveSessionCount: 0 })
 
       return
     }
@@ -522,30 +524,46 @@ export function useMainApp(gw: GatewayClient) {
     let stopped = false
 
     const refresh = () => {
-      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
-        .then(raw => {
-          const result = asRpcResult<SessionActiveListResponse>(raw)
+      const currentSid = getUiState().sid
 
-          if (!stopped && result?.sessions) {
-            const liveSessionCount = result.sessions.length
+      if (!currentSid) {
+        return
+      }
 
-            // Surface the current session's (auto-)title for the terminal
-            // titlebar. The active_list poll already carries it, so no extra
-            // round-trip is needed.
-            const currentSid = getUiState().sid
+      Promise.allSettled([
+        gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: currentSid }),
+        gw.request<ProcessListResponse>('process.list', { session_id: currentSid })
+      ])
+        .then(([activeListResult, processListResult]) => {
+          if (stopped) {
+            return
+          }
 
-            const sessionTitle =
-              result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
+          const activeList =
+            activeListResult.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(activeListResult.value) : null
 
-            // Only patch when something actually changed. patchUiState always
-            // produces a new state object, which notifies every $uiState
-            // subscriber; patching unconditionally on each 1.5s poll re-renders
-            // the whole TUI and causes idle flicker.
-            const prev = getUiState()
+          const processList =
+            processListResult.status === 'fulfilled' ? asRpcResult<ProcessListResponse>(processListResult.value) : null
 
-            if (prev.liveSessionCount !== liveSessionCount || prev.sessionTitle !== sessionTitle) {
-              patchUiState({ liveSessionCount, sessionTitle })
-            }
+          const liveSessionCount = activeList?.sessions?.length ?? 0
+
+          const sessionTitle =
+            activeList?.sessions?.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
+
+          const backgroundProcessCount = countRunningProcesses(processList?.processes)
+
+          // Only patch when something actually changed. patchUiState always
+          // produces a new state object, which notifies every $uiState
+          // subscriber; patching unconditionally on each 1.5s poll re-renders
+          // the whole TUI and causes idle flicker.
+          const prev = getUiState()
+
+          if (
+            prev.backgroundProcessCount !== backgroundProcessCount ||
+            prev.liveSessionCount !== liveSessionCount ||
+            prev.sessionTitle !== sessionTitle
+          ) {
+            patchUiState({ backgroundProcessCount, liveSessionCount, sessionTitle })
           }
         })
         .catch(() => {})

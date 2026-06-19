@@ -156,6 +156,7 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  backgroundProcessCount: number
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode

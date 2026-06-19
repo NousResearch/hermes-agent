@@ -29,6 +29,7 @@ model:
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
+  #   "computer-use-cache" - Local OpenAI-compatible cache proxy (requires: COMPUTER_USE_CACHE_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
@@ -52,6 +53,11 @@ model:
   # default: "gpt-4o"          # Deployment/model name
   # entra:
   #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
+
+  # Computer-Use Cache example:
+  # provider: "computer-use-cache"
+  # base_url: "http://127.0.0.1:8000/v1"
+  # default: "openai/gpt-4.1-mini"
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #

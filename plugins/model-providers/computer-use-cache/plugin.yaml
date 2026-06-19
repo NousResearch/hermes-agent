@@ -1,0 +1,5 @@
+name: computer-use-cache-provider
+kind: model-provider
+version: 1.0.0
+description: Computer-Use Cache local OpenAI-compatible cache proxy
+author: SuperPowers AI

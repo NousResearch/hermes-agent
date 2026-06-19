@@ -261,6 +261,41 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _serialize_embeds(embeds: list) -> str | None:
+    """Serialize Discord embed objects into a single text string.
+
+    Webhook messages (e.g. Railway deploy notifications) often carry all
+    their content in embeds with an empty message body.  This function
+    extracts the title, description, and field values from each embed so
+    they can be appended to the message text visible to the LLM.
+
+    Returns None when no embeds are present or all embeds are empty.
+    """
+    if not embeds:
+        return None
+
+    parts: list[str] = []
+    for embed in embeds:
+        embed_parts: list[str] = []
+        title = getattr(embed, "title", None)
+        if title:
+            embed_parts.append(f"**{title}**")
+        description = getattr(embed, "description", None)
+        if description:
+            embed_parts.append(description)
+        for field in getattr(embed, "fields", []) or []:
+            field_name = getattr(field, "name", "") or ""
+            field_value = getattr(field, "value", "") or ""
+            if field_name or field_value:
+                embed_parts.append(f"**{field_name}**: {field_value}")
+        if embed_parts:
+            parts.append("\n".join(embed_parts))
+
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -5454,7 +5489,11 @@ class DiscordAdapter(BasePlatformAdapter):
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
-        # ── History backfill ─────────────────────────────────────────
+        # ── Embed serialization ──────────────────────────────────────
+        # Discord webhook messages (e.g. Railway deploy notifications) often
+        # carry all their content in embeds with an empty message body.
+        # Serialize embed fields into text so the LLM can see them.
+        embed_text = _serialize_embeds(message.embeds)
         # When require_mention is active, the bot only processes messages
         # that @mention it.  Messages in the channel between bot turns are
         # invisible to the session transcript.  To recover that context,
@@ -5544,6 +5583,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
 
+        # Append embed content to event text so the LLM sees it.
+        if embed_text:
+            event_text = f"{event_text}\n\n{embed_text}" if event_text else embed_text
+
         event = MessageEvent(
             text=event_text,
             message_type=msg_type,
@@ -5558,6 +5601,7 @@ class DiscordAdapter(BasePlatformAdapter):
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            embed_text=embed_text,
         )
 
         # Track thread participation so the bot won't require @mention for

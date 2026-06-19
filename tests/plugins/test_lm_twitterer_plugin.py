@@ -423,6 +423,23 @@ def test_safe_post_create_tweet_attaches_media_ids(monkeypatch):
     assert all(entity.tagged_users == [] for entity in media.media_entities)
 
 
+def test_tweet_url_from_result_accepts_flat_data_shape(tmp_path):
+    plugin = load_plugin()
+    core = plugin.core
+
+    class Created:
+        class data:
+            class create_tweet:
+                class tweet_results:
+                    class result:
+                        rest_id = "777"
+
+    assert (
+        core._tweet_url_from_result(Created())
+        == "https://x.com/i/web/status/777"
+    )
+
+
 def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, monkeypatch):
     plugin = load_plugin()
     core = plugin.core

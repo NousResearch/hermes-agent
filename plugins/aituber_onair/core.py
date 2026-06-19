@@ -13,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -20,13 +21,29 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, cast
-
+# Lazy import — hermes_constants may not be importable before config is loaded
 try:
     from hermes_constants import get_hermes_home
 except Exception:  # pragma: no cover - early import safety
 
     def get_hermes_home() -> Path:
         return Path.home() / ".hermes"
+
+
+# Audio WebSocket push — optional, only when websockets is installed
+try:
+    import websockets.sync.server as _ws_server_mod
+    import websockets.exceptions as _ws_exc
+
+    _HAS_WS = True
+except ImportError:
+    _HAS_WS = False
+
+
+_AUDIO_WS_HOST = "127.0.0.1"
+_AUDIO_WS_PORT = 5176
+_audio_ws_state: dict[str, Any] = {}
+_audio_ws_clients: set[Any] = set()
 
 
 PLUGIN_ID = "aituber-onair"
@@ -111,6 +128,49 @@ SENSITIVE_TEXT_PATTERNS = (
 
 _llm_factory: Callable[[], Any] | None = None
 
+# Provider rotation state
+_rotation_index: int = 0
+_rotation_lock: threading.Lock = threading.Lock()
+
+
+def _plugin_provider_rotation_enabled() -> bool:
+    cfg = _plugin_config()
+    raw = cfg.get("provider_rotation")
+    return isinstance(raw, list) and len(raw) > 0
+
+
+def _provider_rotation_entries(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return []
+
+
+def _plugin_provider_rotation_entries() -> list[str]:
+    return _provider_rotation_entries(_plugin_config().get("provider_rotation"))
+
+
+def _next_provider_rotation_entry(raw: Any = None) -> tuple[str, str]:
+    """Return (provider, model) for the next rotation slot.
+    Model may be empty when an entry has no colon separator.
+    Thread-safe round-robin.
+    """
+    rotation = _provider_rotation_entries(raw) if raw is not None else _plugin_provider_rotation_entries()
+    if not rotation:
+        return ("", "")
+    global _rotation_index
+    acquired = _rotation_lock.acquire(timeout=2)
+    if not acquired:
+        return ("", "")
+    try:
+        entry = rotation[_rotation_index % len(rotation)]
+        _rotation_index += 1
+    finally:
+        _rotation_lock.release()
+    parts = entry.split(":", 1)
+    provider = parts[0].strip()
+    model = parts[1].strip() if len(parts) > 1 else ""
+    return (provider, model)
+
 
 def bind_llm_factory(factory: Callable[[], Any] | None) -> None:
     global _llm_factory
@@ -142,13 +202,32 @@ CONFIGURE_HAKUA_SCHEMA = {
                 "enum": ["auto", "hermes", "codex"],
                 "description": "Default Hakua reply backend. auto uses Hermes Agent ctx.llm when the plugin is registered.",
             },
+            "provider_rotation": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Round-robin provider list: 'provider' or 'provider:model'. Overrides hermes_provider/hermes_model when set. Example: ['opencode-zen', 'xai-oauth:grok-3', 'openai-codex:gpt-5.5-low']",
+            },
             "hermes_provider": {
                 "type": "string",
-                "description": "Optional Hermes provider override for Hakua replies.",
+                "description": "Optional Hermes provider override for Hakua replies. Ignored when provider_rotation is set.",
             },
             "hermes_model": {
                 "type": "string",
-                "description": "Optional Hermes model override for Hakua replies.",
+                "description": "Optional Hermes model override for Hakua replies. Ignored when provider_rotation is set.",
+            },
+            "audio_ws_host": {
+                "type": "string",
+                "description": "Audio WebSocket bind host. Defaults to 127.0.0.1; 0.0.0.0 requires audio_ws_allow_lan.",
+            },
+            "audio_ws_port": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 65535,
+                "description": "Audio WebSocket port for synthesized WAV push clients.",
+            },
+            "audio_ws_allow_lan": {
+                "type": "boolean",
+                "description": "Allow the audio WebSocket to bind to a LAN-facing host.",
             },
             "fbx_port": {
                 "type": "integer",
@@ -314,13 +393,18 @@ SAY_SCHEMA = {
                 "enum": ["auto", "hermes", "codex"],
                 "description": "auto uses Hermes Agent ctx.llm when available; codex forces the legacy AITuber OnAir Codex SDK path.",
             },
+            "provider_rotation": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Round-robin provider list for this call: 'provider' or 'provider:model'. Overrides hermes_provider/hermes_model when set.",
+            },
             "hermes_provider": {
                 "type": "string",
-                "description": "Optional Hermes provider override, subject to plugin LLM trust policy.",
+                "description": "Optional Hermes provider override, subject to plugin LLM trust policy. Ignored when provider_rotation is set.",
             },
             "hermes_model": {
                 "type": "string",
-                "description": "Optional Hermes model override, subject to plugin LLM trust policy.",
+                "description": "Optional Hermes model override, subject to plugin LLM trust policy. Ignored when provider_rotation is set.",
             },
             "response_length": {
                 "type": "string",
@@ -2054,17 +2138,116 @@ def _play_wav_file(path: Path) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
+# ── Audio WebSocket Push Server ──────────────────────────────────────────────
+
+def _audio_ws_running() -> bool:
+    return bool(_audio_ws_state.get("server"))
+
+
+def _audio_ws_handler(websocket: Any) -> None:
+    _audio_ws_clients.add(websocket)
+    try:
+        for _ in websocket:
+            pass
+    except (_ws_exc.ConnectionClosed, Exception):
+        pass
+    finally:
+        _audio_ws_clients.discard(websocket)
+
+
+def _audio_ws_config() -> tuple[str, int]:
+    cfg = _plugin_config()
+    host = str(cfg.get("audio_ws_host") or _AUDIO_WS_HOST).strip() or _AUDIO_WS_HOST
+    port = cfg.get("audio_ws_port") or _AUDIO_WS_PORT
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = _AUDIO_WS_PORT
+    if host in {"0.0.0.0", "::"} and not _coerce_bool(cfg.get("audio_ws_allow_lan"), False):
+        host = _AUDIO_WS_HOST
+    return host, max(1024, min(65535, port))
+
+
+def audio_ws_start(host: str | None = None, port: int | None = None) -> dict[str, Any]:
+    if host is None or port is None:
+        cfg_host, cfg_port = _audio_ws_config()
+        host = cfg_host if host is None else host
+        port = cfg_port if port is None else port
+    if not _HAS_WS:
+        return {"ok": False, "error": "websockets package is not installed."}
+    if _audio_ws_running():
+        return {
+            "ok": True,
+            "host": _audio_ws_state.get("host", host),
+            "port": _audio_ws_state.get("port", port),
+            "info": "already running",
+        }
+    try:
+        server = _ws_server_mod.serve(_audio_ws_handler, host, port)
+    except OSError as exc:
+        return {"ok": False, "error": f"audio WS bind failed: {exc}"}
+    thread = threading.Thread(
+        target=lambda: server.serve_forever(),
+        daemon=True,
+        name="audio-ws",
+    )
+    thread.start()
+    _audio_ws_state["server"] = server
+    _audio_ws_state["host"] = host
+    _audio_ws_state["port"] = port
+    return {"ok": True, "host": host, "port": port}
+
+
+def audio_ws_stop() -> dict[str, Any]:
+    server = _audio_ws_state.pop("server", None)
+    _audio_ws_state.pop("host", None)
+    _audio_ws_state.pop("port", None)
+    _audio_ws_clients.clear()
+    if server is not None:
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+def audio_ws_push_wav(wav_path: Path | str) -> dict[str, Any]:
+    if not _audio_ws_running():
+        return {"ok": False, "error": "audio WS server is not running."}
+    if not _audio_ws_clients:
+        return {"ok": True, "sent": 0, "info": "no clients connected"}
+    try:
+        data = Path(wav_path).read_bytes()
+    except (OSError, FileNotFoundError) as exc:
+        return {"ok": False, "error": f"cannot read wav: {exc}"}
+    clients = list(_audio_ws_clients)
+    sent = 0
+    for ws in clients:
+        try:
+            ws.send(data)
+            sent += 1
+        except Exception:
+            _audio_ws_clients.discard(ws)
+    return {"ok": True, "sent": sent, "total": len(clients)}
+
+
+# ── Speech Synthesis ─────────────────────────────────────────────────────────
 def synthesize_speech(values: dict[str, Any]) -> dict[str, Any]:
     provider = _select_tts_provider(values.get("provider"))
     if provider == "irodori":
-        return _synthesize_irodori(values)
-    if provider == "voicevox":
-        return _synthesize_voicevox(values)
-    return {
-        "ok": False,
-        "provider": provider,
-        "error": "No local TTS backend was found.",
-    }
+        result = _synthesize_irodori(values)
+    elif provider == "voicevox":
+        result = _synthesize_voicevox(values)
+    else:
+        return {
+            "ok": False,
+            "provider": provider,
+            "error": "No local TTS backend was found.",
+        }
+    # Push to WebSocket audio clients (best-effort, silent)
+    if result.get("ok") and result.get("file_path"):
+        audio_ws_push_wav(result["file_path"])
+    return result
 
 
 def _obs_exe_candidates() -> list[Path]:
@@ -2734,47 +2917,47 @@ def _youtube_recommended_actions(
     return actions
 
 
-def handle_youtube_ready(args: dict[str, Any] | None = None) -> str:
+def handle_youtube_ready(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(youtube_ready(args or {}))
 
 
-def handle_youtube_comments_status(args: dict[str, Any] | None = None) -> str:
+def handle_youtube_comments_status(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(youtube_comments_status(args or {}))
 
 
-def handle_start_youtube_comments(args: dict[str, Any] | None = None) -> str:
+def handle_start_youtube_comments(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(start_youtube_comments(args or {}))
 
 
-def handle_stop_youtube_comments(args: dict[str, Any] | None = None) -> str:
+def handle_stop_youtube_comments(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(stop_youtube_comments(args or {}))
 
 
-def handle_loops_status(args: dict[str, Any] | None = None) -> str:
+def handle_loops_status(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(loops_status(args or {}))
 
 
-def handle_start_autonomous_talk(args: dict[str, Any] | None = None) -> str:
+def handle_start_autonomous_talk(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(start_autonomous_talk_loop(args or {}))
 
 
-def handle_start_comment_reactions(args: dict[str, Any] | None = None) -> str:
+def handle_start_comment_reactions(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(start_comment_reaction_loop(args or {}))
 
 
-def handle_enqueue_comment(args: dict[str, Any] | None = None) -> str:
+def handle_enqueue_comment(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(enqueue_comment(args or {}))
 
 
-def handle_stop_loops(args: dict[str, Any] | None = None) -> str:
+def handle_stop_loops(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(stop_loops(args or {}))
 
 
-def handle_context_status(args: dict[str, Any] | None = None) -> str:
+def handle_context_status(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(context_status(args or {}))
 
 
-def handle_stream_start_tweet(args: dict[str, Any] | None = None) -> str:
+def handle_stream_start_tweet(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(stream_start_tweet(args or {}))
 
 
@@ -2836,6 +3019,11 @@ def status() -> dict[str, Any]:
             "character_name": cfg.get("character_name") or "はくあ",
             "model": cfg.get("model") or "Codex CLI default",
             "reply_backend": cfg.get("reply_backend") or "auto",
+            "provider_rotation": _plugin_provider_rotation_entries(),
+            "provider_rotation_index": _rotation_index if _plugin_provider_rotation_enabled() else None,
+            "audio_ws_host": _audio_ws_config()[0],
+            "audio_ws_port": _audio_ws_config()[1],
+            "audio_ws_running": _audio_ws_running(),
             "hermes_provider": cfg.get("hermes_provider") or "Hermes default",
             "hermes_model": cfg.get("hermes_model") or "Hermes default",
             "hermes_llm_bound": _llm_factory is not None,
@@ -2952,6 +3140,21 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         entry["model"] = model
     if values.get("reply_backend"):
         entry["reply_backend"] = _plugin_reply_backend(values.get("reply_backend"))
+    if values.get("provider_rotation") is not None:
+        raw = values.get("provider_rotation")
+        if isinstance(raw, list):
+            entry["provider_rotation"] = [str(x).strip() for x in raw if str(x).strip()]
+        else:
+            entry.pop("provider_rotation", None)
+    if values.get("audio_ws_host"):
+        entry["audio_ws_host"] = str(values.get("audio_ws_host")).strip()
+    if values.get("audio_ws_port") is not None:
+        try:
+            entry["audio_ws_port"] = max(1024, min(65535, int(values.get("audio_ws_port"))))
+        except (TypeError, ValueError):
+            entry.pop("audio_ws_port", None)
+    if values.get("audio_ws_allow_lan") is not None:
+        entry["audio_ws_allow_lan"] = _coerce_bool(values.get("audio_ws_allow_lan"), False)
     if values.get("hermes_provider"):
         entry["hermes_provider"] = _path_text(values.get("hermes_provider"))
     if values.get("hermes_model"):
@@ -2967,6 +3170,9 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         "character_name": entry["character_name"],
         "model": entry.get("model") or "Codex CLI default",
         "reply_backend": entry.get("reply_backend") or "auto",
+        "provider_rotation": entry.get("provider_rotation", []),
+        "audio_ws_host": _audio_ws_config()[0],
+        "audio_ws_port": _audio_ws_config()[1],
         "hermes_provider": entry.get("hermes_provider") or "Hermes default",
         "hermes_model": entry.get("hermes_model") or "Hermes default",
         "fbx_url": _avatar_url(entry["fbx_port"], public_host),
@@ -2986,11 +3192,11 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_status(args: dict[str, Any] | None = None) -> str:
+def handle_status(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(status())
 
 
-def handle_configure_hakua(args: dict[str, Any] | None = None) -> str:
+def handle_configure_hakua(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(save_hakua_config(args or {}))
 
 
@@ -3165,7 +3371,7 @@ def _build_chat_for_codex(repo: Path, npm: str, timeout_seconds: int) -> dict[st
     }
 
 
-def handle_prepare(args: dict[str, Any] | None = None) -> str:
+def handle_prepare(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(prepare(args or {}))
 
 
@@ -3268,6 +3474,8 @@ def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
         if proc.poll() is not None:
             break
         time.sleep(0.25)
+    # Auto-start the audio WebSocket push server for Galaxy S9+ remote audio
+    audio_ws_start()
     return {"ok": True, "ready": ready, **record}
 
 
@@ -3275,7 +3483,7 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
     return start_avatar_app({**values, "avatar_kind": "fbx"})
 
 
-def handle_start(args: dict[str, Any] | None = None) -> str:
+def handle_start(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(start_avatar_app(args or {}))
 
 
@@ -3299,6 +3507,7 @@ def stop_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
     while time.time() < deadline:
         if not _pid_alive(pid):
             _clear_active()
+            audio_ws_stop()
             return {"ok": True, "stopped": True, "pid": pid}
         time.sleep(0.2)
 
@@ -3315,19 +3524,19 @@ def stop_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_stop(args: dict[str, Any] | None = None) -> str:
+def handle_stop(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(stop_fbx_app(args or {}))
 
 
-def handle_tts_status(args: dict[str, Any] | None = None) -> str:
+def handle_tts_status(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(tts_status())
 
 
-def handle_start_tts(args: dict[str, Any] | None = None) -> str:
+def handle_start_tts(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(start_tts(args or {}))
 
 
-def handle_speak(args: dict[str, Any] | None = None) -> str:
+def handle_speak(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(synthesize_speech(args or {}))
 
 
@@ -3583,6 +3792,16 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     system_prompt = _plugin_system_prompt()
     reply_backend = _plugin_reply_backend(values.get("reply_backend"))
 
+    # Resolve provider rotation: advance round-robin and inject into values
+    rot_provider, rot_model = _next_provider_rotation_entry(values.get("provider_rotation"))
+    if rot_provider or rot_model:
+        # Copy values so the rotation entry is scoped to this call
+        values = dict(values)
+        if rot_provider and not values.get("hermes_provider"):
+            values["hermes_provider"] = rot_provider
+        if rot_model and not values.get("hermes_model"):
+            values["hermes_model"] = rot_model
+
     if reply_backend in {"auto", "hermes"} and _llm_factory is not None:
         payload = _run_hermes_llm_once(
             prompt=spoken_prompt,
@@ -3746,11 +3965,11 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     return _attach_tts_if_requested(payload, values)
 
 
-def handle_say(args: dict[str, Any] | None = None) -> str:
+def handle_say(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     return _json(run_hakua_once(args or {}))
 
 
-def handle_smoke(args: dict[str, Any] | None = None) -> str:
+def handle_smoke(args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     values = dict(args or {})
     values.setdefault(
         "prompt",

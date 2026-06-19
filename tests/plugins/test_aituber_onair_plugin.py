@@ -450,6 +450,47 @@ def test_run_hakua_once_prefers_bound_hermes_llm(monkeypatch, tmp_path):
     assert calls[0][1]["purpose"] == "aituber-onair.hakua"
 
 
+def test_run_hakua_once_applies_call_provider_rotation(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+    calls = []
+
+    class Result:
+        text = "[happy] rotated hello"
+        provider = "nous"
+        model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+        usage = None
+        audit = {"purpose": "aituber-onair.hakua"}
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return Result()
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(core, "_plugin_config", lambda: {})
+    monkeypatch.setattr(core, "_rotation_index", 0)
+    core.bind_llm_factory(lambda: FakeLlm())
+    try:
+        result = core.run_hakua_once(
+            {
+                "repo_root": str(repo),
+                "prompt": "say hello",
+                "reply_backend": "hermes",
+                "provider_rotation": [
+                    "nous:nvidia/nemotron-3-ultra-550b-a55b:free",
+                    "nvidia:nvidia/nemotron-3-super-120b-a12b",
+                ],
+            }
+        )
+    finally:
+        core.bind_llm_factory(None)
+
+    assert result["ok"] is True
+    assert calls[0][1]["provider"] == "nous"
+    assert calls[0][1]["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
 def test_run_hakua_once_can_use_hermes_cli_backend_without_bound_llm(
     monkeypatch, tmp_path
 ):
@@ -689,6 +730,34 @@ def test_run_hakua_once_can_synthesize_reply(monkeypatch, tmp_path):
     assert result["tts"]["ok"] is True
     assert result["tts"]["provider"] == "voicevox"
     assert result["tts"]["text"] == "[happy] hello"
+
+
+def test_audio_ws_config_stays_local_without_lan_opt_in(monkeypatch):
+    monkeypatch.setattr(
+        core,
+        "_plugin_config",
+        lambda: {
+            "audio_ws_host": "0.0.0.0",
+            "audio_ws_port": "5176",
+            "audio_ws_allow_lan": False,
+        },
+    )
+
+    assert core._audio_ws_config() == ("127.0.0.1", 5176)
+
+
+def test_audio_ws_config_allows_lan_when_explicit(monkeypatch):
+    monkeypatch.setattr(
+        core,
+        "_plugin_config",
+        lambda: {
+            "audio_ws_host": "0.0.0.0",
+            "audio_ws_port": 5176,
+            "audio_ws_allow_lan": True,
+        },
+    )
+
+    assert core._audio_ws_config() == ("0.0.0.0", 5176)
 
 
 def test_run_hakua_once_rejects_empty_provider_failure(monkeypatch, tmp_path):

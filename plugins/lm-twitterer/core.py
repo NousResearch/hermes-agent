@@ -806,14 +806,17 @@ def _format_thread(thread: list[dict[str, str]]) -> str:
 
 
 def _tweet_url_from_result(result: Any) -> str:
-    try:
-        created = result.data.data.create_tweet
-        tweet_results = created.tweet_results
-        rest_id = tweet_results.result.rest_id
-        if rest_id:
-            return f"https://x.com/i/web/status/{rest_id}"
-    except Exception:
-        pass
+    for path in (("data", "create_tweet"), ("data", "data", "create_tweet")):
+        try:
+            created = result
+            for part in path:
+                created = getattr(created, part)
+            tweet_results = created.tweet_results
+            rest_id = tweet_results.result.rest_id
+            if rest_id:
+                return f"https://x.com/i/web/status/{rest_id}"
+        except Exception:
+            continue
     return ""
 
 

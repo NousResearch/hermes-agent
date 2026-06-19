@@ -41,6 +41,31 @@ MAX_USD=650         # hard cost ceiling (proj ~$566; backstop)
 HB_CHANNEL=1516341560118345738
 hb() { /usr/bin/python3 ~/.hermes/scripts/notify.py --send "$1" --channel discord --target "$HB_CHANNEL" >/dev/null 2>&1 || true; }
 
+# ---- terminal-state marker (problem #2): the net cron must NEVER re-fire a
+#      campaign that has already finished OR deliberately aborted. ANY exit from
+#      here on writes the done-marker so a legitimate abort is a FINDING, not a
+#      crash to recover from. Only an external kill (SIGKILL) skips this — and the
+#      net cron's other guards (powered-report / running-proc) still hold.
+DONE_MARKER=/tmp/lcm-k2-campaign.done
+mark_done() { echo "$(date) $*" >> "$DONE_MARKER"; }
+trap 'mark_done "exit trap rc=$?"' EXIT
+
+# ---- per-stage clean store (problem #3): baseline-repro plants MERGED nodes;
+#      if the fix stages run on the same store their sentinels collide with stale
+#      baseline nodes (the harness matches nodes by text). Reset before EACH stage
+#      so every stage starts from messages=0/nodes=0. Reset bounces the aegis
+#      gateway (low blast radius; reversible — see lcm_reset_aegis_store.sh).
+reset_store() {  # $1 = stage label
+  echo "[k2] $(date) reset store before $1..."
+  bash scripts/lcm_reset_aegis_store.sh --go > "/tmp/lcm-k2-reset-$1.log" 2>&1
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    hb "🛑 **K=2** store reset before $1 FAILED (rc=$rc). See /tmp/lcm-k2-reset-$1.log. Aborting."
+    echo "[k2] reset before $1 failed"; tail -20 "/tmp/lcm-k2-reset-$1.log"; exit 1
+  fi
+  sleep 20  # let the aegis gateway settle after restart
+}
+
 T0=$(date +%s)
 spend_since_t0() {
   $PY - "$T0" <<'PYEOF' 2>/dev/null || echo 0
@@ -81,14 +106,11 @@ run_k2() {  # $1=N  $2=report  $3=extra-flags
 }
 
 # ================= STAGE 0: store reset =======================================
-hb "🧹 **PRD-8.3 K=2 campaign** starting · STAGE 0 store reset (clean nodes for text-match harness). Ceiling \$$MAX_USD."
-echo "[k2] $(date) STAGE 0 reset aegis store..."
-bash scripts/lcm_reset_aegis_store.sh --go > /tmp/lcm-k2-reset.log 2>&1
-if [ $? -ne 0 ]; then
-  hb "🛑 **K=2** STAGE 0 store reset FAILED. See /tmp/lcm-k2-reset.log. Aborting (no spend)."
-  echo "[k2] reset failed"; tail -20 /tmp/lcm-k2-reset.log; exit 1
-fi
-sleep 20  # let the aegis gateway settle after restart
+# NOTE: the done-marker is cleared by the LAUNCHER (lcm_k2_autofire.sh) exactly
+# once at fire time, NOT here — clearing here would race the 15m net cron (which
+# treats a present marker as "finished"). We only ADD to it on exit (trap above).
+hb "🧹 **PRD-8.3 K=2 campaign** starting · per-stage clean store, fidelity A/B. Ceiling \$$MAX_USD."
+reset_store "S0-init"
 
 # ================= STAGE 1: baseline-repro (escalation OFF) ====================
 echo "[k2] $(date) STAGE 1 baseline-repro N=$BASE_N escalation OFF..."
@@ -107,6 +129,7 @@ fi
 ceiling_or_die
 
 # ================= STAGE 2: fix shakedown (escalation ON) ======================
+reset_store "S2-shakedown"
 echo "[k2] $(date) STAGE 2 fix-shakedown N=$SHAKE_N escalation ON..."
 hb "🛠️ **K=2 STAGE 2** fix-shakedown N=$SHAKE_N, escalation ON — gate to powered run = 0 confident-wrong."
 run_k2 "$SHAKE_N" "$REPORTS/k2-fix-shakedown-n${SHAKE_N}.md" "" > /tmp/lcm-k2-shake.log 2>&1 || true
@@ -122,6 +145,7 @@ hb "✅ **K=2 STAGE 2** fix-shakedown clean: 0 CW, recall=$S_REC at N=$SHAKE_N �
 ceiling_or_die
 
 # ================= STAGE 3: powered gate (escalation ON) =======================
+reset_store "S3-powered"
 echo "[k2] $(date) STAGE 3 POWERED N=$POWERED_N escalation ON..."
 hb "🚀 **K=2 STAGE 3** POWERED gate N=$POWERED_N, escalation ON (~28h). Rule-of-three: 0/$POWERED_N ⇒ <0.5% CW @95%."
 run_k2 "$POWERED_N" "$REPORTS/k2-powered-gate-n${POWERED_N}.md" "" > /tmp/lcm-k2-powered.log 2>&1 || true
@@ -134,6 +158,7 @@ echo "[k2] powered verdict=$P_VERD CW=$P_CW recall=$P_REC wlb=$P_WLB"
 ceiling_or_die
 
 # ================= STAGE 4: K=1 re-cert (non-regression) =======================
+reset_store "S4-recert"
 echo "[k2] $(date) STAGE 4 K=1 re-cert N=$RECERT_N..."
 hb "🔁 **K=2 STAGE 4** K=1 re-cert N=$RECERT_N — confirm the fix didn't regress the single-fact path."
 $PY scripts/lcm_arm_b_node_recovery.py \

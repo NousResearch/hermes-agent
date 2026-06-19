@@ -26,6 +26,11 @@ sleep 90
 
 hb "🟢 **K=2 autofire firing** · Arm A (pid $ARMA_PID) exited. Launching staged K=2 campaign (reset → baseline-repro → shakedown → powered → K=1 re-cert). Log: $LOG"
 
+# Clear the terminal done-marker exactly ONCE, here at fire time (NOT inside the
+# campaign, which would race the 15m net cron). After this the campaign owns the
+# marker: it only appends on exit, so a finished/aborted run stays "done".
+rm -f /tmp/lcm-k2-campaign.done
+
 # fully detach the campaign so it outlives this watchdog
 nohup bash ~/.hermes/hermes-agent/scripts/lcm_k2_disambig_campaign.sh > "$LOG" 2>&1 < /dev/null &
 disown 2>/dev/null || true

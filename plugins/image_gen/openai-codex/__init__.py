@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -79,6 +81,10 @@ _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
 )
+_CODEX_IMAGE_TOOL = "image_generation"
+_CODEX_MODELS_CLIENT_VERSION = "1.0.0"
+_CODEX_IMAGE_CAPABILITY_CACHE_TTL = 3600  # 1 hour
+_codex_image_capability_cache: Optional[Tuple[float, bool, str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +149,113 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
+def _codex_image_generation_unavailable_message() -> str:
+    """Explain the current Codex OAuth image-generation limitation."""
+    return (
+        "ChatGPT/Codex OAuth currently does not expose the Responses "
+        "`image_generation` tool on the Codex backend. Use the API-key-backed "
+        "`openai` image provider instead."
+    )
+
+
+def _read_cached_codex_supported_tools() -> Optional[List[str]]:
+    """Read experimental_supported_tools for the current Codex chat model."""
+    from pathlib import Path
+
+    codex_home = Path(os.getenv("CODEX_HOME", "") or (Path.home() / ".codex")).expanduser()
+    cache_path = codex_home / "models_cache.json"
+    if not cache_path.exists():
+        return None
+    try:
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("Could not read Codex models cache: %s", exc)
+        return None
+
+    entries = raw.get("models", []) if isinstance(raw, dict) else []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        if item.get("slug") != _CODEX_CHAT_MODEL:
+            continue
+        tools = item.get("experimental_supported_tools")
+        if not isinstance(tools, list):
+            return None
+        return [tool.strip() for tool in tools if isinstance(tool, str) and tool.strip()]
+    return None
+
+
+def _probe_codex_supported_tools(token: str) -> Optional[List[str]]:
+    """Return the live Codex model's advertised experimental tools."""
+    import httpx
+    from agent.auxiliary_client import _codex_cloudflare_headers
+
+    headers = _codex_cloudflare_headers(token)
+    headers["Authorization"] = f"Bearer {token}"
+
+    with httpx.Client(timeout=10.0, headers=headers) as http:
+        response = http.get(
+            f"{_CODEX_BASE_URL}/models?client_version={_CODEX_MODELS_CLIENT_VERSION}"
+        )
+        response.raise_for_status()
+
+    data = response.json()
+    entries = data.get("models", []) if isinstance(data, dict) else []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        if item.get("slug") != _CODEX_CHAT_MODEL:
+            continue
+        tools = item.get("experimental_supported_tools")
+        if not isinstance(tools, list):
+            return None
+        return [tool.strip() for tool in tools if isinstance(tool, str) and tool.strip()]
+    return None
+
+
+def _codex_image_generation_support(
+    token: Optional[str] = None,
+    *,
+    allow_live: bool = False,
+) -> Tuple[Optional[bool], str]:
+    """Return whether the current Codex OAuth surface supports image generation.
+
+    ``False`` means we have direct evidence that the current backend does not
+    expose the ``image_generation`` tool. ``None`` means the capability could
+    not be confirmed cheaply and callers may need to rely on the request path
+    for a definitive answer.
+    """
+    global _codex_image_capability_cache
+
+    cached = _codex_image_capability_cache
+    now = time.time()
+    if cached and now - cached[0] < _CODEX_IMAGE_CAPABILITY_CACHE_TTL:
+        return cached[1], cached[2]
+
+    tools = _read_cached_codex_supported_tools()
+    if tools is not None:
+        supported = _CODEX_IMAGE_TOOL in tools
+        message = "" if supported else _codex_image_generation_unavailable_message()
+        _codex_image_capability_cache = (now, supported, message)
+        return supported, message
+
+    if allow_live and token:
+        try:
+            tools = _probe_codex_supported_tools(token)
+        except Exception as exc:
+            logger.debug("Could not probe Codex image-generation capability: %s", exc)
+        else:
+            if tools is not None:
+                supported = _CODEX_IMAGE_TOOL in tools
+                message = "" if supported else _codex_image_generation_unavailable_message()
+                _codex_image_capability_cache = (now, supported, message)
+                return supported, message
+
+    if cached:
+        return cached[1], cached[2]
+    return None, _codex_image_generation_unavailable_message()
+
+
 def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[str, Any]:
     """Build the Codex Responses request body for an image_generation call."""
     return {
@@ -166,7 +279,7 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
         "tool_choice": {
             "type": "allowed_tools",
             "mode": "required",
-            "tools": [{"type": "image_generation"}],
+            "tools": [{"type": _CODEX_IMAGE_TOOL}],
         },
         "stream": True,
     }
@@ -275,6 +388,16 @@ def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> O
     return image_b64
 
 
+def _looks_like_unsupported_image_generation_error(exc: Exception) -> bool:
+    """Detect the Codex backend's unsupported-image-generation failure."""
+    text = str(exc).lower()
+    return (
+        _CODEX_IMAGE_TOOL in text
+        and "tool choice" in text
+        and "not found" in text
+    )
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -298,7 +421,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             import httpx  # noqa: F401
         except ImportError:
             return False
-        return True
+        supported, _message = _codex_image_generation_support()
+        return supported is True
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
@@ -323,7 +447,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             "env_vars": [],
             "post_setup_hint": (
                 "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
-                "if you haven't already. No API key needed."
+                "if you haven't already. If this backend stays unavailable, "
+                "your current Codex surface likely does not expose "
+                "`image_generation` yet."
             ),
         }
 
@@ -333,6 +459,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        global _codex_image_capability_cache
+
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
 
@@ -382,6 +510,20 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        supported, capability_message = _codex_image_generation_support(
+            token,
+            allow_live=True,
+        )
+        if supported is False:
+            return error_response(
+                error=capability_message,
+                error_type="capability_unsupported",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
         try:
             b64 = _collect_image_b64(
                 token,
@@ -391,6 +533,20 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
+            if _looks_like_unsupported_image_generation_error(exc):
+                _codex_image_capability_cache = (
+                    time.time(),
+                    False,
+                    _codex_image_generation_unavailable_message(),
+                )
+                return error_response(
+                    error=_codex_image_generation_unavailable_message(),
+                    error_type="capability_unsupported",
+                    provider="openai-codex",
+                    model=tier_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
             return error_response(
                 error=f"OpenAI image generation via Codex auth failed: {exc}",
                 error_type="api_error",

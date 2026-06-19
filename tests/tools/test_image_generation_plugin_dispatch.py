@@ -30,6 +30,24 @@ class _FakeCodexProvider(ImageGenProvider):
         }
 
 
+class _FakeUnsupportedCodexProvider(ImageGenProvider):
+    @property
+    def name(self) -> str:
+        return "openai-codex"
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        return {
+            "success": False,
+            "image": None,
+            "error": "ChatGPT/Codex OAuth currently does not expose image_generation.",
+            "error_type": "capability_unsupported",
+            "model": "gpt-image-2-medium",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "provider": "openai-codex",
+        }
+
+
 class TestPluginDispatch:
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
@@ -97,3 +115,30 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_dispatch_preserves_capability_unsupported_error(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: openai-codex\n")
+
+        monkeypatch.setattr(
+            image_generation_tool,
+            "_read_configured_image_provider",
+            lambda: "openai-codex",
+        )
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(
+            registry_module,
+            "get_provider",
+            lambda name: _FakeUnsupportedCodexProvider() if name == "openai-codex" else None,
+        )
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider("draw cat", "landscape")
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is False
+        assert payload["error_type"] == "capability_unsupported"
+        assert payload["provider"] == "openai-codex"

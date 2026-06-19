@@ -45,6 +45,13 @@ def provider(monkeypatch):
     return codex_plugin.OpenAICodexImageGenProvider()
 
 
+@pytest.fixture(autouse=True)
+def _reset_capability_cache():
+    codex_plugin._codex_image_capability_cache = None
+    yield
+    codex_plugin._codex_image_capability_cache = None
+
+
 # ── Metadata ────────────────────────────────────────────────────────────────
 
 
@@ -77,10 +84,31 @@ class TestAvailability:
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
-    def test_available_with_codex_token(self, monkeypatch):
+    def test_unavailable_with_codex_token_when_capability_unknown(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_read_cached_codex_supported_tools", lambda: None)
+        assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
+
+    def test_available_with_cached_image_generation_capability(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_read_cached_codex_supported_tools",
+            lambda: ["image_generation"],
+        )
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
+
+    def test_unavailable_with_cached_non_image_tools(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_read_cached_codex_supported_tools",
+            lambda: [],
+        )
+        assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
     def test_openai_api_key_alone_is_not_enough(self, monkeypatch):
         # Codex plugin is intentionally orthogonal to the API-key plugin —
@@ -106,8 +134,26 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "invalid_argument"
 
+    def test_returns_capability_error_when_live_probe_says_unsupported(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_codex_image_generation_support",
+            lambda *a, **k: (False, codex_plugin._codex_image_generation_unavailable_message()),
+        )
+
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "capability_unsupported"
+        assert "does not expose" in result["error"]
+
     def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_codex_image_generation_support",
+            lambda *a, **k: (True, ""),
+        )
         monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png())
 
         result = provider.generate("a cat", aspect_ratio="landscape")
@@ -126,6 +172,11 @@ class TestGenerate:
 
     def test_codex_stream_request_shape(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_codex_image_generation_support",
+            lambda *a, **k: (True, ""),
+        )
 
         captured = {}
 
@@ -200,6 +251,11 @@ class TestGenerate:
 
     def test_empty_response_returns_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_codex_image_generation_support",
+            lambda *a, **k: (True, ""),
+        )
         monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: None)
 
         result = provider.generate("a cat")
@@ -208,6 +264,11 @@ class TestGenerate:
 
     def test_stream_exception_returns_api_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_codex_image_generation_support",
+            lambda *a, **k: (True, ""),
+        )
 
         def _boom(*args, **kwargs):
             raise RuntimeError("cloudflare 403")
@@ -218,6 +279,26 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
+
+    def test_unsupported_stream_error_is_mapped_to_capability_error(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_codex_image_generation_support",
+            lambda *a, **k: (None, codex_plugin._codex_image_generation_unavailable_message()),
+        )
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("Tool choice 'image_generation' not found in 'tools' parameter.")
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _boom)
+
+        result = provider.generate("a cat")
+        assert result["success"] is False
+        assert result["error_type"] == "capability_unsupported"
+        assert "does not expose" in result["error"]
+        assert codex_plugin._codex_image_capability_cache is not None
+        assert codex_plugin._codex_image_capability_cache[1] is False
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

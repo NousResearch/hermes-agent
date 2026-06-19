@@ -8409,7 +8409,13 @@ def _(rid, params: dict) -> dict:
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools
 
-                refresh_agent_mcp_tools(agent, quiet_mode=True)
+                # Explicit reload: re-resolve enabled toolsets so a server the
+                # user just enabled in config this session is picked up.
+                refresh_agent_mcp_tools(
+                    agent,
+                    enabled_override=_load_enabled_toolsets(),
+                    quiet_mode=True,
+                )
             except Exception as _exc:
                 logger.warning(
                     "Failed to refresh cached agent tools after /reload-mcp: %s",

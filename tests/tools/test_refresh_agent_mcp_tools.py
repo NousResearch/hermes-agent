@@ -98,13 +98,114 @@ def test_refresh_passes_agent_toolset_filters(monkeypatch):
     assert seen["disabled_toolsets"] == ["messaging"]
 
 
-def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
-    """Concurrent refreshes never leave tools / valid_tool_names inconsistent."""
-    agent = _agent(["a"])
+def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
+    """B1 regression: a rebuild must NOT drop post-build-injected tools.
+
+    get_tool_definitions() returns only the registry-derived tools. agent_init
+    appends memory-provider tools (mem0/honcho/…) and context-engine tools
+    (lcm_*) directly onto agent.tools AFTER that. A naive
+    `agent.tools = get_tool_definitions()` would silently delete them on every
+    refresh. The helper must re-inject them.
+    """
+    # Agent already carries: a built-in, a memory-provider tool, a context tool.
+    agent = _agent(["read_file", "memory_search", "lcm_grep"])
+
+    # Provider exposes its schemas; context compressor exposes lcm_*.
+    agent._memory_manager = types.SimpleNamespace(
+        get_all_tool_schemas=lambda: [
+            {"name": "memory_search", "description": "", "parameters": {}}
+        ]
+    )
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [
+            {"name": "lcm_grep", "description": "", "parameters": {}}
+        ]
+    )
+    agent._context_engine_tool_names = {"lcm_grep"}
 
     import model_tools
-    defs = [_tool("a"), _tool("b"), _tool("c")]
-    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: defs)
+    # The registry now ALSO has a newly-connected MCP tool, but does NOT contain
+    # the memory/context tools (they're never in get_tool_definitions output).
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("mcp_new_server_tool")],
+    )
+
+    added = mcp_tool.refresh_agent_mcp_tools(agent)
+
+    # The new MCP tool landed AND the injected families survived.
+    assert "mcp_new_server_tool" in agent.valid_tool_names
+    assert "memory_search" in agent.valid_tool_names   # not clobbered
+    assert "lcm_grep" in agent.valid_tool_names         # not clobbered
+    assert added == {"mcp_new_server_tool"}
+
+
+def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
+    """#5544: context-engine tools must NOT be re-injected on a restricted
+    toolset. A platform with enabled_toolsets that excludes context_engine
+    must not get lcm_* leaked back in by a refresh."""
+    agent = _agent(["read_file"], enabled=["coding"])  # context_engine NOT enabled
+    agent.context_compressor = types.SimpleNamespace(
+        get_tool_schemas=lambda: [{"name": "lcm_grep", "description": "", "parameters": {}}]
+    )
+    agent._context_engine_tool_names = set()
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("mcp_new_tool")],
+    )
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert "mcp_new_tool" in agent.valid_tool_names  # MCP tool still lands
+    assert "lcm_grep" not in agent.valid_tool_names   # gated out (#5544)
+
+
+def test_refreshed_tool_is_callable_through_valid_tool_names_guard(monkeypatch):
+    """The whole point: a late tool, once refreshed, passes the name guard the
+    run loop uses to accept/reject tool calls (agent.valid_tool_names)."""
+    agent = _agent(["read_file"])
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools, "get_tool_definitions",
+        lambda **kw: [_tool("read_file"), _tool("mcp_granola_list_meetings")],
+    )
+
+    # Before refresh the run loop would reject the call ("Tool does not exist").
+    assert "mcp_granola_list_meetings" not in agent.valid_tool_names
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    # After refresh the same guard accepts it AND it's in the tools= payload.
+    assert "mcp_granola_list_meetings" in agent.valid_tool_names
+    assert any(t["function"]["name"] == "mcp_granola_list_meetings" for t in agent.tools)
+
+
+def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
+    """Concurrent refreshes keep tools / valid_tool_names coherent.
+
+    The registry alternates between two DIFFERENT tool sets every call, so the
+    write path (publish) runs repeatedly rather than short-circuiting on the
+    no-change early return — this actually exercises the lock. The invariant:
+    a reader of ``valid_tool_names`` must always match ``agent.tools``, and the
+    final published pair must be one of the two valid sets (never a mix).
+    """
+    agent = _agent(["a"])
+
+    import itertools
+    set_a = [_tool("a"), _tool("b")]
+    set_b = [_tool("a"), _tool("c")]
+    flip = itertools.cycle([set_a, set_b])
+    flip_lock = threading.Lock()
+
+    def _gtd(**kw):
+        with flip_lock:
+            return list(next(flip))
+
+    import model_tools
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _gtd)
 
     errors = []
 
@@ -112,9 +213,11 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
         try:
             for _ in range(50):
                 mcp_tool.refresh_agent_mcp_tools(agent)
-                # Invariant: valid_tool_names must always match agent.tools.
+                # Coherence invariant: the name set must match the tool list
+                # at every observation, never a torn cross-attribute state.
                 names = {t["function"]["name"] for t in agent.tools}
                 assert agent.valid_tool_names == names
+                assert names in ({"a", "b"}, {"a", "c"})
         except Exception as exc:  # pragma: no cover - failure path
             errors.append(exc)
 
@@ -125,7 +228,7 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
         t.join(timeout=10)
 
     assert not errors
-    assert agent.valid_tool_names == {"a", "b", "c"}
+    assert agent.valid_tool_names in ({"a", "b"}, {"a", "c"})
 
 
 # ── discovery-wait bound (mcp_discovery_timeout config) ──────────────────────
@@ -139,9 +242,8 @@ def test_resolve_discovery_timeout_explicit_wins(monkeypatch):
 
 def test_resolve_discovery_timeout_reads_config(monkeypatch):
     from hermes_cli import mcp_startup
-
-    monkeypatch.setattr(mcp_startup, "load_config", None, raising=False)
     import hermes_cli.config as cfg
+
     monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 8.0})
 
     assert mcp_startup._resolve_discovery_timeout(None) == 8.0

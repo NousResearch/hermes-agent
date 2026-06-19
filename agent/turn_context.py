@@ -123,9 +123,10 @@ def build_turn_context(
     # or when the tool set is unchanged (``refresh_agent_mcp_tools`` diffs by
     # name and leaves the snapshot untouched on no-change).
     try:
-        from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
-        if has_registered_mcp_tools():
-            refresh_agent_mcp_tools(agent, quiet_mode=True)
+        if not getattr(agent, "_skip_mcp_refresh", False):
+            from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
+            if has_registered_mcp_tools():
+                refresh_agent_mcp_tools(agent, quiet_mode=True)
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 

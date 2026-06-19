@@ -15231,14 +15231,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else "a gateway interruption"
                 )
                 _persist_user_message_override = message
+                if not message:
+                    _msg_guidance = (
+                        "Inform the user that the session has been restored successfully, "
+                        "summarize the status of any background work, and ask for further instructions."
+                    )
+                else:
+                    _msg_guidance = "Address the user's NEW message below FIRST. Focus on what the user is asking now."
+
                 message = (
-                    f"[System note: A new message has arrived. The previous turn "
-                    f"was interrupted by {_reason_phrase}. "
-                    f"Address the user's NEW message below FIRST. "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history and focus on what the "
-                    f"user is asking now.]\n\n"
-                    + message
+                    f"[System note: The previous turn was interrupted by {_reason_phrase}. "
+                    f"If the last action in the conversation history was a command to restart, stop, or shutdown "
+                    f"the gateway or container, it has already executed successfully and the gateway is now back online; "
+                    f"do NOT re-execute it and do NOT run any command to verify it. "
+                    f"{_msg_guidance} "
+                    f"Do NOT re-execute old tool calls — skip any unfinished work from the conversation history.]"
+                    + (f"\n\n{message}" if message else "")
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message

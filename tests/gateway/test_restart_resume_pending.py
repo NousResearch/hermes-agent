@@ -153,14 +153,22 @@ def _simulate_note_injection(
             if reason == "shutdown_timeout"
             else "a gateway interruption"
         )
+        if not message:
+            _msg_guidance = (
+                "Inform the user that the session has been restored successfully, "
+                "summarize the status of any background work, and ask for further instructions."
+            )
+        else:
+            _msg_guidance = "Address the user's NEW message below FIRST. Focus on what the user is asking now."
+
         message = (
-            f"[System note: A new message has arrived. The previous turn "
-            f"was interrupted by {reason_phrase}. "
-            f"Address the user's NEW message below FIRST. "
-            f"Do NOT re-execute old tool calls — skip any unfinished "
-            f"work from the conversation history and focus on what the "
-            f"user is asking now.]\n\n"
-            + message
+            f"[System note: The previous turn was interrupted by {reason_phrase}. "
+            f"If the last action in the conversation history was a command to restart, stop, or shutdown "
+            f"the gateway or container, it has already executed successfully and the gateway is now back online; "
+            f"do NOT re-execute it and do NOT run any command to verify it. "
+            f"{_msg_guidance} "
+            f"Do NOT re-execute old tool calls — skip any unfinished work from the conversation history.]"
+            + (f"\n\n{message}" if message else "")
         )
     elif has_fresh_tool_tail:
         message = (
@@ -653,6 +661,27 @@ class TestResumePendingSystemNote:
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert result == "ping"
+
+    def test_resume_pending_empty_message_guidance(self):
+        """When the user message is empty (auto-resume startup turn), we instruct
+        the model to report successful recovery and ask for instructions,
+        and warn against re-executing restart/shutdown commands.
+        """
+        entry = self._pending_entry(reason="restart_timeout")
+        result = _simulate_note_injection(
+            history=[
+                {"role": "assistant", "content": "in progress", "timestamp": time.time()},
+            ],
+            user_message="",
+            resume_entry=entry,
+        )
+        assert "[System note:" in result
+        assert "gateway restart" in result
+        assert "restored successfully" in result
+        assert "ask for further instructions" in result
+        assert "If the last action in the conversation history was a command to restart" in result
+        assert "Do NOT re-execute" in result
+
 
 
 # ---------------------------------------------------------------------------

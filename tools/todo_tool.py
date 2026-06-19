@@ -179,6 +179,10 @@ class TodoStore:
         """Collapse duplicate ids, keeping the last occurrence in its position."""
         last_index: Dict[str, int] = {}
         for i, item in enumerate(todos):
+            # Defensive: if the LLM sends a bare string instead of a dict,
+            # skip it — it's malformed and would crash .get()
+            if not isinstance(item, dict):
+                continue
             item_id = str(item.get("id", "")).strip() or "?"
             last_index[item_id] = i
         return [todos[i] for i in sorted(last_index.values())]

@@ -1009,6 +1009,97 @@ class TestSignalSendReturnsMessageId:
         assert result.message_id is None
 
 
+class TestSignalSendResultValidation:
+    """Verify that send() validates recipient-level delivery results."""
+
+    @pytest.mark.asyncio
+    async def test_send_success_when_results_has_success(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "type": "SUCCESS"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_failure_when_results_has_failure_type(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "type": "UNREGISTERED_FAILURE"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is False
+        assert result.error == "UNREGISTERED_FAILURE"
+
+    @pytest.mark.asyncio
+    async def test_send_failure_when_results_has_success_false(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({
+            "timestamp": 1712345678000,
+            "results": [
+                {
+                    "recipientAddress": {"number": "+155****4567"},
+                    "success": False,
+                    "failure": "Some connection error"
+                }
+            ]
+        })
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+        assert result.success is False
+        assert result.error == "Some connection error"
+
+    @pytest.mark.asyncio
+    async def test_rpc_raises_rate_limit_on_results_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "jsonrpc": "2.0",
+            "result": {
+                "timestamp": 1712345678000,
+                "results": [
+                    {
+                        "recipientAddress": {"number": "+155****4567"},
+                        "type": "RATE_LIMIT_FAILURE",
+                        "retryAfterSeconds": 15
+                    }
+                ]
+            },
+            "id": "1"
+        }
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter.client = mock_client
+
+        from gateway.platforms.signal_rate_limit import SignalRateLimitError
+        with pytest.raises(SignalRateLimitError) as exc_info:
+            await adapter._rpc("send", {"recipient": ["+155****4567"]}, raise_on_rate_limit=True)
+
+        assert "Rate limit exceeded for recipient" in str(exc_info.value)
+        assert exc_info.value.retry_after == 15
+
+
 # ---------------------------------------------------------------------------
 # stop_typing() delegates to _stop_typing_indicator (#4647)
 # ---------------------------------------------------------------------------

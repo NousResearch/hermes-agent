@@ -796,7 +796,16 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.debug("Signal RPC error (%s): %s", method, err)
                 return None
 
-            return data.get("result")
+            result = data.get("result")
+            if isinstance(result, dict) and raise_on_rate_limit:
+                results = result.get("results")
+                if isinstance(results, list):
+                    for r in results:
+                        if isinstance(r, dict) and r.get("type") == "RATE_LIMIT_FAILURE":
+                            retry_after = r.get("retryAfterSeconds")
+                            raise SignalRateLimitError("Rate limit exceeded for recipient", retry_after=retry_after)
+
+            return result
 
         except SignalRateLimitError:
             raise
@@ -960,6 +969,29 @@ class SignalAdapter(BasePlatformAdapter):
         # Our send() override bypasses this entirely.
         return content
 
+    def _validate_send_result(self, result: Any) -> tuple[bool, Optional[str]]:
+        """Validate signal-cli send response results.
+
+        Returns (success, error_message).
+        """
+        if not result or not isinstance(result, dict):
+            return True, None
+
+        results = result.get("results")
+        if isinstance(results, list):
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                rtype = r.get("type")
+                if rtype and rtype != "SUCCESS":
+                    return False, str(rtype)
+                if "success" in r and not r.get("success"):
+                    fail = r.get("failure")
+                    if fail:
+                        return False, str(fail)
+                    return False, "Recipient delivery failed"
+        return True, None
+
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
@@ -995,6 +1027,9 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("send", params)
 
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             # Signal has no editable message identifier. Returning None keeps the
             # stream consumer on the non-edit fallback path instead of pretending
@@ -1171,14 +1206,33 @@ class SignalAdapter(BasePlatformAdapter):
                     )
                     _rpc_duration = time.monotonic() - _rpc_t0
                     if result is not None:
-                        self._track_sent_timestamp(result)
-                        await scheduler.report_rpc_duration(_rpc_duration, n)
-                        logger.info(
-                            "Signal batch %d/%d: %d attachments sent in %.1fs "
-                            "(attempt %d/%d)",
-                            idx + 1, len(att_batches), n, _rpc_duration,
-                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
-                        )
+                        success, err_msg = self._validate_send_result(result)
+                        if success:
+                            self._track_sent_timestamp(result)
+                            await scheduler.report_rpc_duration(_rpc_duration, n)
+                            logger.info(
+                                "Signal batch %d/%d: %d attachments sent in %.1fs "
+                                "(attempt %d/%d)",
+                                idx + 1, len(att_batches), n, _rpc_duration,
+                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                            )
+                        else:
+                            logger.error(
+                                "Signal: RPC send failed for batch %d/%d (%d attachments, "
+                                "attempt %d/%d, rpc_duration=%.1fs): %s",
+                                idx + 1, len(att_batches), n,
+                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                                _rpc_duration, err_msg,
+                            )
+                            # Retry transient (non-rate-limit) failures once
+                            if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                                backoff = 2.0 ** attempt
+                                logger.info(
+                                    "Signal: retrying batch %d/%d after %.1fs backoff",
+                                    idx + 1, len(att_batches), backoff,
+                                )
+                                await asyncio.sleep(backoff)
+                                continue
                     else:
                         # Assume the server didn't accept the batch, don't deduce tokens
                         logger.error(
@@ -1277,6 +1331,9 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
@@ -1316,6 +1373,9 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            success, err_msg = self._validate_send_result(result)
+            if not success:
+                return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")

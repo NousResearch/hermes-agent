@@ -115,6 +115,13 @@ def _group_message(
     )
 
 
+def test_clean_bot_trigger_text_keeps_group_command_arg_separator():
+    adapter = _make_adapter(bot_username="ExampleHelper_bot")
+
+    assert adapter._clean_bot_trigger_text("/steer@ExampleHelper_bot hello") == "/steer hello"
+    assert adapter._clean_bot_trigger_text("/steer@OtherHelper_bot hello") == "/steer@OtherHelper_bot hello"
+
+
 def _dm_message(text="hello", *, from_user_id=111):
     return SimpleNamespace(
         message_id=43,

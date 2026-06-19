@@ -5513,7 +5513,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
         username = re.escape(self._bot.username)
-        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
+        # In Telegram groups, keep the separator in /command@bot args.
+        cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", " ", text).strip()
         return cleaned or text
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:

@@ -1188,6 +1188,15 @@ def _reload_runtime_env_preserving_config_authority() -> None:
             cfg = _yaml.safe_load(f) or {}
         from hermes_cli.config import _expand_env_vars
         cfg = _expand_env_vars(cfg)
+        # Managed scope: keep administrator-pinned values authoritative on every
+        # turn too. This per-turn reload re-bridges config→env, so without the
+        # overlay a managed agent.max_turns / timezone / redact_secrets would be
+        # replaced by the user's value after the first turn. Fail-open.
+        try:
+            from hermes_cli import managed_scope
+            cfg = managed_scope.apply_managed_overlay(cfg)
+        except Exception:
+            pass
     except Exception:
         return
 
@@ -1219,6 +1228,17 @@ if _config_path.exists():
         # Expand ${ENV_VAR} references before bridging to env vars.
         from hermes_cli.config import _expand_env_vars
         _cfg = _expand_env_vars(_cfg)
+        # Managed scope: overlay administrator-pinned values BEFORE bridging to
+        # env vars, so a managed timezone / redact_secrets / max_turns / terminal
+        # setting wins over the user's value at the env layer too. This bridge
+        # reads config.yaml directly (not via load_config), so without the
+        # overlay every HERMES_*/TERMINAL_* env var below would carry the user's
+        # value even when an administrator pinned it. Fail-open via the helper.
+        try:
+            from hermes_cli import managed_scope
+            _cfg = managed_scope.apply_managed_overlay(_cfg)
+        except Exception:
+            pass
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:

@@ -1024,6 +1024,7 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
+        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
         result = await self._rpc("send", params)
 
         if result is not None:

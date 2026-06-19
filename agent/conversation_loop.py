@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.install_success_stop import install_success_stop_response
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -4103,6 +4104,28 @@ def run_conversation(
                             except Exception:
                                 pass
                     break
+
+                if getattr(agent, "_platform_task_mode", "") == "install":
+                    _install_stop_response = install_success_stop_response(
+                        messages,
+                        current_turn_user_idx,
+                    )
+                    if _install_stop_response:
+                        _turn_exit_reason = "success_stop_install_verified"
+                        final_response = _install_stop_response
+                        agent._emit_status(
+                            "安装已验证，已停止继续探测以控制 token 消耗。"
+                        )
+                        messages.append({"role": "assistant", "content": final_response})
+                        if final_response:
+                            agent._safe_print(f"\n{final_response}\n")
+                            if agent.stream_delta_callback:
+                                try:
+                                    agent.stream_delta_callback(final_response)
+                                    agent.stream_delta_callback(None)
+                                except Exception:
+                                    pass
+                        break
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the

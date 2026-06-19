@@ -158,7 +158,7 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
     that direct-key problem into the final blocking summary.
     """
     normalized = (provider_label or "").strip().lower()
-    if normalized in {"google / gemini", "gemini"}:
+    if normalized in {"google / gemini", "gemini", "google ai studio"}:
         try:
             from hermes_cli.auth import get_gemini_oauth_auth_status
             return bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
@@ -1575,7 +1575,7 @@ def run_doctor(args):
                 # Use resolved absolute path so Windows can execute
                 # npm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    [_npm_bin, "audit", "--json", *audit_extra],
+                    [_npm_bin, "audit", "--omit=dev", "--json", *audit_extra],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, timeout=30,
                 )
@@ -1860,6 +1860,13 @@ def run_doctor(args):
                     [],
                 )
             if r.status_code == 401:
+                if _has_healthy_oauth_fallback_for_apikey_provider(pname):
+                    return _ConnectivityResult(
+                        pname,
+                        [(color("✓", Colors.GREEN), label,
+                          color("(OAuth path healthy; direct API key skipped)", Colors.DIM))],
+                        [],
+                    )
                 return _ConnectivityResult(
                     pname,
                     [(color("✗", Colors.RED), label,
@@ -2070,8 +2077,6 @@ def run_doctor(args):
             else:
                 print(f"  {_glyph} {_label}")
         _issues_to_add = list(_r.issues)
-        if _issues_to_add and _has_healthy_oauth_fallback_for_apikey_provider(_r.label):
-            _issues_to_add = []
         for _issue in _issues_to_add:
             issues.append(_issue)
 

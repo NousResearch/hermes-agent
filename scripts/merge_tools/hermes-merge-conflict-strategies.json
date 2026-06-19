@@ -52,6 +52,21 @@
       "note": "Official helper tracks youtube-transcript-api v1.x and Hermes uv execution."
     },
     {
+      "pattern": "skills/creative/claude-design/SKILL.md",
+      "action": "upstream",
+      "note": "Official new creative skill; no fork-local counterpart exists."
+    },
+    {
+      "pattern": "skills/creative/design-md/SKILL.md",
+      "action": "upstream",
+      "note": "Official new creative skill; no fork-local counterpart exists."
+    },
+    {
+      "pattern": "skills/creative/pretext/SKILL.md",
+      "action": "upstream",
+      "note": "Official new creative skill; no fork-local counterpart exists."
+    },
+    {
       "pattern": ".github/workflows/*",
       "action": "upstream",
       "note": "Keep official CI and security workflow changes."

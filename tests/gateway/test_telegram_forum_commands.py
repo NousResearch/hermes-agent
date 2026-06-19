@@ -1,6 +1,7 @@
-"""Tests for lazy forum command registration in TelegramAdapter."""
+"""Tests for Telegram bot-command scope reconciliation."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -116,3 +117,33 @@ async def test_ensure_forum_commands_race_safety():
 
     # The lock should make this exactly 1 call, not 2.
     assert adapter._bot.set_my_commands.await_count == 1
+
+
+def test_private_command_chat_ids_reconciles_allowed_home_and_channel_directory(tmp_path, monkeypatch):
+    """Known private chats should get per-chat command scopes refreshed.
+
+    A stale BotCommandScopeChat for the DM overrides AllPrivateChats, which was
+    the observed reason Telegram kept showing old slash commands for the user.
+    """
+    adapter = _make_test_adapter()
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "36899330")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*, 12345, -100999, not-an-id")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    (tmp_path / "channel_directory.json").write_text(
+        json.dumps(
+            {
+                "platforms": {
+                    "telegram": [
+                        {"id": "36899330:930987", "type": "dm"},
+                        {"id": "77777", "type": "private"},
+                        {"id": "-100123", "type": "group"},
+                        {"id": "bad", "type": "dm"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert adapter._telegram_private_command_chat_ids() == [12345, 36899330, 77777]

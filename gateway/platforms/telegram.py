@@ -2206,6 +2206,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommand,
                     BotCommandScopeAllPrivateChats,
                     BotCommandScopeAllGroupChats,
+                    BotCommandScopeChat,
                     BotCommandScopeDefault,
                 )
                 from hermes_cli.commands import telegram_menu_commands
@@ -2220,10 +2221,42 @@ class TelegramAdapter(BasePlatformAdapter):
                 for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
                     scope_name = scope_cls.__name__
                     try:
-                        await self._bot.set_my_commands(bot_commands, scope=scope_cls())
+                        scope = scope_cls()
+                        await self._bot.set_my_commands(bot_commands, scope=scope)
+                        await self._delete_telegram_language_specific_commands(scope, scope_name)
                         logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
                     except Exception as scope_err:
                         logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+                # A narrower per-chat command scope overrides AllPrivateChats.
+                # Older Hermes builds and BotFather/manual setup can leave a
+                # BotCommandScopeChat entry behind for the user's DM; if we only
+                # update default/private/group scopes, Telegram will keep showing
+                # that stale per-chat menu "for me".  Reconcile known private
+                # chats too so startup actually replaces stale user-specific menus.
+                for chat_id in self._telegram_private_command_chat_ids():
+                    try:
+                        scope = BotCommandScopeChat(chat_id=chat_id)
+                        await self._bot.set_my_commands(
+                            bot_commands,
+                            scope=scope,
+                        )
+                        await self._delete_telegram_language_specific_commands(
+                            scope,
+                            f"BotCommandScopeChat({chat_id})",
+                        )
+                        logger.info(
+                            "[%s] set_my_commands OK for private chat scope %s (%d cmds)",
+                            self.name,
+                            chat_id,
+                            len(bot_commands),
+                        )
+                    except Exception as scope_err:
+                        logger.warning(
+                            "[%s] set_my_commands FAILED for private chat scope %s: %s",
+                            self.name,
+                            chat_id,
+                            scope_err,
+                        )
                 # Forum topics don't inherit AllGroupChats — Telegram resolves
                 # commands via BotCommandScopeChat(chat_id) for forum groups.
                 # Lazy registration happens in _ensure_forum_commands on first
@@ -2231,7 +2264,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if hidden_count:
                     logger.info(
                         "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count, 30,
+                        self.name, len(menu_commands), hidden_count, MAX_COMMANDS_PER_SCOPE,
                     )
             except Exception as e:
                 logger.warning(
@@ -5881,11 +5914,99 @@ class TelegramAdapter(BasePlatformAdapter):
                 from hermes_cli.commands import telegram_menu_commands
                 menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
-                await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
+                scope = BotCommandScopeChat(chat_id=chat_id)
+                await self._bot.set_my_commands(bot_commands, scope=scope)
+                await self._delete_telegram_language_specific_commands(
+                    scope,
+                    f"BotCommandScopeChat({chat_id})",
+                )
                 self._forum_command_registered.add(chat_id)
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
+
+    def _telegram_command_language_codes(self) -> List[str]:
+        """Language-specific BotCommand variants to clear during reconciliation."""
+        raw = os.getenv("HERMES_TELEGRAM_COMMAND_LANGUAGE_CODES", "en,es,it,ru,zh")
+        codes: List[str] = []
+        seen: Set[str] = set()
+        for part in str(raw).split(","):
+            code = part.strip().lower()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            codes.append(code)
+        return codes
+
+    async def _delete_telegram_language_specific_commands(self, scope, scope_name: str) -> None:
+        """Clear language-specific BotCommand overrides for a reconciled scope.
+
+        Telegram clients may prefer a language-specific command list over the
+        default commands for the same scope.  Startup sets the default command
+        list, then clears common language-specific variants so stale localized
+        menus cannot keep overriding the fresh default menu.
+        """
+        delete_commands = getattr(self._bot, "delete_my_commands", None)
+        if not callable(delete_commands):
+            return
+        for language_code in self._telegram_command_language_codes():
+            try:
+                await delete_commands(scope=scope, language_code=language_code)
+            except Exception as exc:
+                logger.debug(
+                    "[%s] delete_my_commands skipped for scope %s language %s: %s",
+                    self.name,
+                    scope_name,
+                    language_code,
+                    exc,
+                )
+
+    def _telegram_private_command_chat_ids(self) -> List[int]:
+        """Return known private chat IDs whose BotCommandScopeChat should be reconciled.
+
+        Telegram resolves bot commands by the narrowest matching scope.  A
+        stale ``BotCommandScopeChat`` for a private DM overrides the freshly
+        registered ``BotCommandScopeAllPrivateChats`` menu, so gateway startup
+        must also update per-chat scopes for private chats we can identify from
+        configuration and the channel directory.
+        """
+        candidates: Set[str] = set()
+
+        for env_name in ("TELEGRAM_HOME_CHANNEL", "TELEGRAM_ALLOWED_USERS"):
+            raw = os.getenv(env_name, "")
+            candidates.update(part.strip() for part in str(raw).split(",") if part.strip())
+
+        try:
+            from hermes_constants import get_hermes_home
+
+            directory_path = get_hermes_home() / "channel_directory.json"
+            if directory_path.exists():
+                payload = json.loads(directory_path.read_text(encoding="utf-8"))
+                for entry in (payload.get("platforms", {}) or {}).get("telegram", []) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if str(entry.get("type") or "").lower() not in {"dm", "private"}:
+                        continue
+                    raw_id = str(entry.get("id") or "").strip()
+                    if raw_id:
+                        candidates.add(raw_id.split(":", 1)[0])
+        except Exception:
+            logger.debug("[%s] Could not read Telegram channel directory for command scopes", self.name, exc_info=True)
+
+        chat_ids: List[int] = []
+        seen: Set[int] = set()
+        for candidate in sorted(candidates):
+            try:
+                chat_id = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            # Private Telegram chat IDs are positive.  Groups/supergroups are
+            # negative and get handled by AllGroupChats or lazy forum scopes.
+            if chat_id <= 0 or chat_id in seen:
+                continue
+            seen.add(chat_id)
+            chat_ids.append(chat_id)
+        return chat_ids
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.

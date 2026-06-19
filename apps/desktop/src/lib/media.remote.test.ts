@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl } from './media'
+import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl, toLocalFileUrl } from './media'
 
 describe('isRemoteGateway', () => {
   afterEach(() => {
@@ -86,5 +86,65 @@ describe('gatewayMediaDataUrl', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/media?path=%2Fhome%2Fu%2F.hermes%2Fimages%2Fa%20b.png'
     })
+  })
+})
+
+describe('toLocalFileUrl', () => {
+  // Round-trip every produced file:// URL through the same WHATWG parser the
+  // Electron main process uses (`new URL` + fileURLToPath), asserting the path
+  // survives intact. This is the regression guard for the "chat file link is a
+  // silent dead end" bug.
+  const roundTrip = (fileUrl: string): string => {
+    const u = new URL(fileUrl)
+    // Mirror Node's fileURLToPath for the POSIX cases under test.
+    return decodeURIComponent(u.pathname)
+  }
+
+  it('encodes a plain absolute path (unchanged for simple paths)', () => {
+    expect(toLocalFileUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
+    expect(roundTrip('file:///tmp/a.png')).toBe('/tmp/a.png')
+  })
+
+  it('preserves spaces in an absolute path (Application Support case)', () => {
+    const p = '/Users/cary/Library/Application Support/Hermes/x.png'
+    const url = toLocalFileUrl(p)
+
+    expect(url).toBe('file:///Users/cary/Library/Application%20Support/Hermes/x.png')
+    expect(roundTrip(url)).toBe(p)
+  })
+
+  it('preserves URL-special characters instead of truncating at # or ?', () => {
+    // Old `file://${path}` concat truncated this to `/tmp/weird` (the rest was
+    // parsed as fragment/query) — the shell then opened the wrong file.
+    const p = '/tmp/weird#name?.png'
+    const url = toLocalFileUrl(p)
+
+    expect(url).toBe('file:///tmp/weird%23name%3F.png')
+    expect(roundTrip(url)).toBe(p)
+  })
+
+  it('preserves unicode characters', () => {
+    const p = '/tmp/café.png'
+    expect(roundTrip(toLocalFileUrl(p))).toBe(p)
+  })
+
+  it('passes a file:// URL through unchanged', () => {
+    expect(toLocalFileUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
+  })
+
+  it('returns a RELATIVE path raw (main process resolves it, never file://<host>)', () => {
+    // The screenshot case: `file://hermes-support-slack.png` would parse the
+    // filename as a host and get rejected. Raw passthrough lets the main
+    // process resolve it against the session cwd.
+    expect(toLocalFileUrl('hermes-support-slack.png')).toBe('hermes-support-slack.png')
+    expect(toLocalFileUrl('out/report.png')).toBe('out/report.png')
+  })
+
+  it('returns a ~ path raw (main process expands the home dir)', () => {
+    expect(toLocalFileUrl('~/Desktop/foo.png')).toBe('~/Desktop/foo.png')
+  })
+
+  it('builds a canonical file URL for a Windows drive path', () => {
+    expect(toLocalFileUrl('C:\\Users\\me\\a b.png')).toBe('file:///C:/Users/me/a%20b.png')
   })
 })

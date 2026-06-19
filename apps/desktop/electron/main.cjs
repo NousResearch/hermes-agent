@@ -35,6 +35,7 @@ const {
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { classifyOpenTarget } = require('./open-target.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
@@ -834,54 +835,22 @@ function rememberLog(chunk) {
 }
 
 function openExternalUrl(rawUrl) {
-  const raw = String(rawUrl || '').trim()
-  if (!raw) return false
+  // Pure classification (parse + scheme rules) lives in open-target.cjs so it's
+  // unit-testable without Electron; the side-effecting shell.* calls stay here.
+  const target = classifyOpenTarget(rawUrl)
 
-  let parsed
-  try {
-    parsed = new URL(raw)
-  } catch {
+  if (target.kind === 'reject') {
     return false
   }
 
-  // `file://` URLs come from the artifacts panel (the renderer can't open
-  // them itself because Chromium blocks file:// navigation from the app
-  // origin). Hand them to `shell.openPath`, which dispatches to the OS
-  // file association. If the OS can't open it (`error` is a non-empty
-  // string), fall back to revealing the file in the system file manager.
-  if (parsed.protocol === 'file:') {
-    let localPath
-    try {
-      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })
-    } catch {
-      return false
-    }
-
-    void shell
-      .openPath(localPath)
-      .then(error => {
-        if (!error) {
-          return
-        }
-
-        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
-
-        try {
-          shell.showItemInFolder(localPath)
-        } catch (revealError) {
-          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
-        }
-      })
-      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
-
-    return true
+  // `file://` URLs (artifacts panel) and scheme-less local paths (relative or
+  // `~`, which the renderer can't safely turn into a file:// URL) both open via
+  // shell.openPath, which dispatches to the OS file association.
+  if (target.kind === 'file') {
+    return openLocalFilePath(target.path)
   }
 
-  if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
-    return false
-  }
-
-  const url = parsed.toString()
+  const url = target.url
 
   if (IS_WSL) {
     rememberLog(`[link] opening via WSL→Windows: ${url}`)
@@ -900,6 +869,37 @@ function openExternalUrl(rawUrl) {
   }
 
   shell.openExternal(url).catch(error => rememberLog(`[link] openExternal failed: ${error.message}`))
+
+  return true
+}
+
+// Open a local file (file:// URL or a plain/relative/~ path) via the OS file
+// association, falling back to revealing it in the file manager if the OS
+// can't open it. Returns false only when the path can't be resolved at all.
+function openLocalFilePath(pathOrFileUrl) {
+  let localPath
+  try {
+    localPath = resolveRequestedPathForIpc(pathOrFileUrl, { purpose: 'Open external file' })
+  } catch {
+    return false
+  }
+
+  void shell
+    .openPath(localPath)
+    .then(error => {
+      if (!error) {
+        return
+      }
+
+      rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
+
+      try {
+        shell.showItemInFolder(localPath)
+      } catch (revealError) {
+        rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
+      }
+    })
+    .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
 
   return true
 }

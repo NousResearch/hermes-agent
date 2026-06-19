@@ -56,6 +56,59 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+// Build a `file://` URL from a local absolute path with per-segment encoding.
+//
+// The old `file://${path}` string concat broke three ways, all of which made a
+// chat link a silent dead end (the main process rejects the malformed URL and
+// the click/copy does nothing):
+//   1. A path with URL-special chars (`#`, `?`, spaces) was truncated at the
+//      first `#`/`?` — `new URL('file:///tmp/a#b.png')` drops `#b.png` as a
+//      fragment, so the shell opened the wrong path (or ENOENT'd).
+//   2. A RELATIVE path (`hermes-support-slack.png`) became
+//      `file://hermes-support-slack.png`, where the filename is parsed as the
+//      URL *host* — rejected on macOS/Linux ("file URL host must be empty").
+//   3. A `~/...` path hit the same host-parse failure.
+//
+// Per-segment `encodeURIComponent` keeps each path component intact (spaces,
+// `#`, `?`, unicode all survive a `new URL()` round-trip). Relative and `~`
+// paths are returned RAW so the main process can resolve them with a real
+// home-dir/cwd base (`resolveRequestedPathForIpc`) — `new URL` can't.
+export function toLocalFileUrl(path: string): string {
+  if (/^file:/i.test(path)) {
+    return path
+  }
+
+  // Normalize Windows separators so segment-splitting is uniform.
+  let p = path.replace(/\\/g, '/')
+
+  // Windows drive path (`C:/...`) → `/C:/...` so it parses as an absolute
+  // file URL. The drive-letter colon stays literal (canonical Node form).
+  const driveMatch = /^([a-zA-Z]):(\/.*)?$/.exec(p)
+
+  if (driveMatch) {
+    const rest = (driveMatch[2] ?? '/')
+      .split('/')
+      .map(seg => encodeURIComponent(seg))
+      .join('/')
+
+    return `file:///${driveMatch[1]}:${rest}`
+  }
+
+  // Relative or tilde path: the renderer can't resolve it (no cwd/home), and
+  // `file://<relative>` mis-parses the first segment as a host. Hand the raw
+  // path to the main process, which expands `~` and resolves against a base.
+  if (!p.startsWith('/')) {
+    return p
+  }
+
+  const encoded = p
+    .split('/')
+    .map(seg => encodeURIComponent(seg))
+    .join('/')
+
+  return `file://${encoded}`
+}
+
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
@@ -74,7 +127,7 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  return /^file:/i.test(path) ? path : `file://${path}`
+  return toLocalFileUrl(path)
 }
 
 // Custom Electron scheme (registered in electron/main.cjs) that streams a local

@@ -13,6 +13,85 @@ Usage:
     python cli.py --gateway
 """
 
+# ---------------------------------------------------------------------------
+# SSL certificate auto-detection.
+#
+# Must run BEFORE any HTTP library (aiohttp, httpx, discord.py, etc.) is
+# imported, otherwise long-lived clients that cache an SSL context at module
+# load time will use whatever the default verify paths resolved to back then.
+#
+# Distros where Python's compiled-in default CA path (typically
+# ``/etc/ssl/cert.pem``) does not exist — Debian/Ubuntu without
+# ``ca-certificates`` exposing that exact path, NixOS, Alpine without the
+# Mozilla bundle, certain minimal containers — would otherwise fail the
+# Discord/Telegram TLS handshake with::
+#
+#     ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED]
+#     certificate verify failed: unable to get local issuer certificate
+#
+# This block runs eagerly at module import so every subsequent import sees
+# a valid ``SSL_CERT_FILE``.
+# ---------------------------------------------------------------------------
+import os as _os
+import logging as _logging
+
+
+def _ensure_ssl_certs() -> None:
+    """Set ``SSL_CERT_FILE`` if the system doesn't expose CA certs to Python.
+
+    Some startup paths (Windows installer children, Scheduled Tasks, and the
+    occasional desktop launcher) inherit a stale ``SSL_CERT_FILE`` pointing at
+    a path that no longer exists. Returning early just because the variable is
+    *present* makes every later httpx/aiohttp client construction fail with
+    ``FileNotFoundError`` from ``ssl.load_verify_locations()``. Treat a missing
+    path as unset and fall through to the discovery chain below.
+    """
+    configured_cert = _os.environ.get("SSL_CERT_FILE")
+    if configured_cert:
+        if _os.path.exists(configured_cert):
+            return  # user already configured it to a real file
+        _logging.getLogger(__name__).warning(
+            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist",
+            configured_cert,
+        )
+        _os.environ.pop("SSL_CERT_FILE", None)
+
+    import ssl
+
+    # 1. Python's compiled-in defaults
+    paths = ssl.get_default_verify_paths()
+    for candidate in (paths.cafile, paths.openssl_cafile):
+        if candidate and _os.path.exists(candidate):
+            _os.environ["SSL_CERT_FILE"] = candidate
+            return
+
+    # 2. certifi (ships its own Mozilla bundle; vendored in the venv)
+    try:
+        import certifi
+        _os.environ["SSL_CERT_FILE"] = certifi.where()
+        return
+    except ImportError:
+        pass
+
+    # 3. Common distro / macOS locations
+    for candidate in (
+        "/etc/ssl/certs/ca-certificates.crt",                # Debian/Ubuntu/Gentoo
+        "/etc/pki/tls/certs/ca-bundle.crt",                  # RHEL/CentOS 7
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", # RHEL/CentOS 8+
+        "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
+        "/etc/ssl/cert.pem",                                 # Alpine / macOS
+        "/etc/pki/tls/cert.pem",                             # Fedora
+        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
+        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
+    ):
+        if _os.path.exists(candidate):
+            _os.environ["SSL_CERT_FILE"] = candidate
+            return
+
+
+_ensure_ssl_certs()
+del _ensure_ssl_certs
+
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
@@ -1051,61 +1130,6 @@ def _collect_auto_append_media_tags(
 
     return media_tags, has_voice_directive
 
-# ---------------------------------------------------------------------------
-# SSL certificate auto-detection for NixOS and other non-standard systems.
-# Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
-# ---------------------------------------------------------------------------
-def _ensure_ssl_certs() -> None:
-    """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python.
-
-    Windows startup paths (Desktop, Scheduled Tasks, installer children) can
-    occasionally inherit a stale SSL_CERT_FILE. Returning just because the
-    variable is present makes every later httpx/OpenAI client construction fail
-    with FileNotFoundError from ssl.load_verify_locations(). Treat a missing
-    path as unset and fall back to certifi instead.
-    """
-    configured_cert = os.environ.get("SSL_CERT_FILE")
-    if configured_cert:
-        if os.path.exists(configured_cert):
-            return  # user already configured it to a real file
-        logging.getLogger(__name__).warning(
-            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist",
-            configured_cert,
-        )
-        os.environ.pop("SSL_CERT_FILE", None)
-
-    import ssl
-
-    # 1. Python's compiled-in defaults
-    paths = ssl.get_default_verify_paths()
-    for candidate in (paths.cafile, paths.openssl_cafile):
-        if candidate and os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
-
-    # 2. certifi (ships its own Mozilla bundle)
-    try:
-        import certifi
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        return
-    except ImportError:
-        pass
-
-    # 3. Common distro / macOS locations
-    for candidate in (
-        "/etc/ssl/certs/ca-certificates.crt",               # Debian/Ubuntu/Gentoo
-        "/etc/pki/tls/certs/ca-bundle.crt",                 # RHEL/CentOS 7
-        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", # RHEL/CentOS 8+
-        "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
-        "/etc/ssl/cert.pem",                                 # Alpine / macOS
-        "/etc/pki/tls/cert.pem",                             # Fedora
-        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
-        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
-    ):
-        if os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
-
 def _home_target_env_var(platform_name: str) -> str:
     """Return the configured home-target env var for a platform.
 
@@ -1147,8 +1171,6 @@ def _clear_planned_restart_notification() -> None:
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
-
-_ensure_ssl_certs()
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))

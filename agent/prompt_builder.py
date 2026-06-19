@@ -23,6 +23,7 @@ from agent.skill_utils import (
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
+    skill_quarantine_finding,
     skill_matches_environment,
     skill_matches_platform,
 )
@@ -1082,7 +1083,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1333,6 +1334,8 @@ def build_skills_system_prompt(
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+            if skill_quarantine_finding(skill_file):
+                continue
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
             skill_entries.append(entry)
@@ -1386,6 +1389,8 @@ def build_skills_system_prompt(
             continue
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
             try:
+                if skill_quarantine_finding(skill_file):
+                    continue
                 is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
                 if not is_compatible:
                     continue

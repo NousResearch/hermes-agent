@@ -1252,6 +1252,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             continue
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+            finding = loaded.get("finding")
+            if finding or "quarantined" in str(error).lower():
+                raise CronPromptInjectionBlocked(str(finding or error))
             logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
             skipped.append(skill_name)
             continue

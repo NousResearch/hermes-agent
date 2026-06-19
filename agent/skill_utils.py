@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -48,6 +49,46 @@ EXCLUDED_SKILL_DIRS = frozenset(
 # be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
 # archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+
+_SKILL_QUARANTINE_PATTERNS = (
+    (
+        "prompt_injection",
+        re.compile(
+            r"\bignore\s+(?:all\s+)?(?:previous|prior)\s+"
+            r"(?:instructions|rules|system\s+prompts?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "disregard_rules",
+        re.compile(
+            r"\bdisregard\s+(?:all\s+)?(?:your|the)\s+"
+            r"(?:instructions|rules|guidelines|system\s+prompt)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "deception_hide",
+        re.compile(
+            r"\b(?:do\s+not|don't)\s+"
+            r"(?:tell|inform|mention|reveal)\s+(?:the\s+)?user\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "sys_prompt_override",
+        re.compile(
+            r"\b(?:system\s+prompt|developer\s+message|hidden\s+instructions?)"
+            r"\s*(?:override|:)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "system_tag_override",
+        re.compile(r"</?system(?:\s|>)", re.IGNORECASE),
+    ),
+)
+_SKILL_QUARANTINE_CACHE: dict[tuple[str, str], Optional[str]] = {}
 
 
 def is_excluded_skill_path(path) -> bool:
@@ -95,6 +136,47 @@ def is_skill_support_path(path) -> bool:
         if (skill_root / "SKILL.md").exists():
             return True
     return False
+
+
+def skill_quarantine_finding(
+    skill_file: Path, content: Optional[str] = None
+) -> Optional[str]:
+    """Return a high-confidence injection finding for an active skill, if any.
+
+    Active skill scanners call this before a ``SKILL.md`` can enter the
+    slash-command map, skills list, or system-prompt index. The cache key uses
+    a content hash rather than mtime so edited skills are rescanned when bytes
+    change, including project-local or externally mounted skill trees.
+    """
+    try:
+        raw = content if content is not None else skill_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        logger.debug("Could not scan skill %s for quarantine: %s", skill_file, e)
+        return None
+
+    try:
+        path_key = str(skill_file.resolve(strict=False))
+    except Exception:
+        path_key = str(skill_file)
+    digest = hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()
+    cache_key = (path_key, digest)
+    if cache_key in _SKILL_QUARANTINE_CACHE:
+        return _SKILL_QUARANTINE_CACHE[cache_key]
+
+    finding = None
+    for finding_id, pattern in _SKILL_QUARANTINE_PATTERNS:
+        if pattern.search(raw):
+            finding = (
+                f"{finding_id}: quarantined active skill before indexing "
+                "because it contains high-confidence prompt-injection text"
+            )
+            logger.warning("Quarantined skill %s: %s", skill_file, finding)
+            break
+
+    if len(_SKILL_QUARANTINE_CACHE) > 512:
+        _SKILL_QUARANTINE_CACHE.clear()
+    _SKILL_QUARANTINE_CACHE[cache_key] = finding
+    return finding
 
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────

@@ -82,6 +82,7 @@ from utils import env_var_enabled
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
     is_skill_support_path as _is_skill_support_path,
+    skill_quarantine_finding,
 )
 
 logger = logging.getLogger(__name__)
@@ -632,7 +633,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             skill_dir = skill_md.parent
 
             try:
-                content = skill_md.read_text(encoding="utf-8")[:4000]
+                content = skill_md.read_text(encoding="utf-8")
+                if skill_quarantine_finding(skill_md, content):
+                    continue
                 frontmatter, body = _parse_frontmatter(content)
 
                 if not skill_matches_platform(frontmatter):
@@ -802,11 +805,16 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
-    # Injection scan — log but still serve (matches local-skill behaviour)
-    if any(p in content.lower() for p in _INJECTION_PATTERNS):
-        logger.warning(
-            "Plugin skill '%s:%s' contains patterns that may indicate prompt injection",
-            namespace, bare,
+    quarantine_finding = skill_quarantine_finding(skill_md, content)
+    if quarantine_finding:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Skill '{namespace}:{bare}' is quarantined.",
+                "finding": quarantine_finding,
+                "hint": "Remove the injection text from SKILL.md and reload skills.",
+            },
+            ensure_ascii=False,
         )
 
     description = str(parsed_frontmatter.get("description", ""))
@@ -1126,6 +1134,18 @@ def skill_view(
                 {
                     "success": False,
                     "error": f"Failed to read skill '{name}': {e}",
+                },
+                ensure_ascii=False,
+            )
+
+        quarantine_finding = skill_quarantine_finding(skill_md, content)
+        if quarantine_finding:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Skill '{name}' is quarantined.",
+                    "finding": quarantine_finding,
+                    "hint": "Remove the injection text from SKILL.md and reload skills.",
                 },
                 ensure_ascii=False,
             )

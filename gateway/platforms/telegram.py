@@ -3532,8 +3532,13 @@ class TelegramAdapter(BasePlatformAdapter):
         rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
         return InlineKeyboardMarkup(rows)
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
-        """Build paginated model buttons. Returns (keyboard, page_info_text)."""
+    def _build_model_keyboard(self, models: list, page: int, billing_tag: str = "") -> tuple:
+        """Build paginated model buttons. Returns (keyboard, page_info_text).
+
+        ``billing_tag`` (e.g. "pay"/"sub") is appended to every button so the
+        billing model stays visible at the model-selection level, not just in
+        the provider header.
+        """
         page_size = self._MODEL_PAGE_SIZE
         total = len(models)
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -3543,14 +3548,17 @@ class TelegramAdapter(BasePlatformAdapter):
         end = min(start + page_size, total)
         page_models = models[start:end]
 
+        suffix = f" [{billing_tag}]" if billing_tag else ""
+        max_short = 38 - len(suffix)
+
         buttons: list = []
         for i, model_id in enumerate(page_models):
             abs_idx = start + i
             short = model_id.split("/")[-1] if "/" in model_id else model_id
-            if len(short) > 38:
-                short = short[:35] + "..."
+            if len(short) > max_short:
+                short = short[: max_short - 3] + "..."
             buttons.append(
-                InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
+                InlineKeyboardButton(f"{short}{suffix}", callback_data=f"mm:{abs_idx}")
             )
 
         rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
@@ -3605,7 +3613,14 @@ class TelegramAdapter(BasePlatformAdapter):
             state["model_list"] = models
             state["model_page"] = 0
 
-            keyboard, page_info = self._build_model_keyboard(models, 0)
+            try:
+                from hermes_cli.models import provider_billing_tag
+                billing_tag = provider_billing_tag(provider_slug)
+            except Exception:
+                billing_tag = ""
+            state["billing_tag"] = billing_tag
+
+            keyboard, page_info = self._build_model_keyboard(models, 0, billing_tag)
 
             pname = provider.get("name", provider_slug)
             total = provider.get("total_models", len(models))
@@ -3636,7 +3651,9 @@ class TelegramAdapter(BasePlatformAdapter):
             models = state.get("model_list", [])
             state["model_page"] = page
 
-            keyboard, page_info = self._build_model_keyboard(models, page)
+            keyboard, page_info = self._build_model_keyboard(
+                models, page, state.get("billing_tag", "")
+            )
 
             pname = state.get("selected_provider_name", "")
             provider_slug = state.get("selected_provider", "")

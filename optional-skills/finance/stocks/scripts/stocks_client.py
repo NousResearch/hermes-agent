@@ -125,7 +125,7 @@ def fetch_url(url: str, headers: dict | None = None, retries: int = MAX_RETRIES)
                 return json.loads(raw.decode("utf-8", errors="replace"))
         except urllib.error.HTTPError as e:
             last_err = e
-            if e.code in (404, 400):
+            if e.code in {404, 400}:
                 break  # no point retrying
             wait = BACKOFF_BASE ** attempt
             time.sleep(wait)

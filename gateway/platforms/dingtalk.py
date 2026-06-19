@@ -112,9 +112,33 @@ DINGTALK_TYPE_MAPPING = {
 
 
 def check_dingtalk_requirements() -> bool:
-    """Check if DingTalk dependencies are available and configured."""
+    """Check if DingTalk dependencies are available and configured.
+
+    Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
+    on first call if not present.
+    """
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global HTTPX_AVAILABLE, httpx
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
-        return False
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.dingtalk", prompt=False)
+        except Exception:
+            return False
+        try:
+            import dingtalk_stream as _ds
+            from dingtalk_stream import ChatbotMessage as _CM
+            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+            import httpx as _httpx
+        except ImportError:
+            return False
+        dingtalk_stream = _ds
+        ChatbotMessage = _CM
+        CallbackMessage = _CBM
+        AckMessage = _AM
+        httpx = _httpx
+        DINGTALK_STREAM_AVAILABLE = True
+        HTTPX_AVAILABLE = True
     if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
         return False
     return True
@@ -358,6 +382,19 @@ class DingTalkAdapter(BasePlatformAdapter):
                 task.cancel()
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
             self._bg_tasks.clear()
+
+        # Finalize any open streaming cards before the HTTP client closes so
+        # they don't stay stuck in streaming state on DingTalk's UI after
+        # a gateway restart.  _close_streaming_siblings handles its own
+        # per-card exceptions; the outer try is a safety net for token fetch.
+        for _chat_id in list(self._streaming_cards):
+            try:
+                await self._close_streaming_siblings(_chat_id)
+            except Exception as _exc:
+                logger.debug(
+                    "[%s] Failed to finalize streaming card on disconnect for %s: %s",
+                    self.name, _chat_id, _exc,
+                )
 
         if self._http_client:
             await self._http_client.aclose()
@@ -775,7 +812,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                             elif mapped == "audio":
                                 media_types.append("audio")
                                 if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.AUDIO
+                                    # DingTalk's "voice" rich-text item is a
+                                    # native voice note — route through STT.
+                                    # "audio" comes from file uploads only;
+                                    # keep those as AUDIO (no auto-STT).
+                                    if item_type == "voice":
+                                        msg_type = MessageType.VOICE
+                                    else:
+                                        msg_type = MessageType.AUDIO
                             elif mapped == "video":
                                 media_types.append("video")
                                 if msg_type == MessageType.TEXT:
@@ -1395,6 +1439,16 @@ class _IncomingHandler(
             super().__init__()
         self._adapter = adapter
         self._loop = loop
+
+    def pre_start(self) -> None:
+        """No-op pre-start hook required by dingtalk-stream SDK.
+
+        The SDK calls ``pre_start()`` on every registered handler before
+        opening the WebSocket connection.  Without this method, the SDK
+        raises ``AttributeError: '_IncomingHandler' object has no
+        attribute 'pre_start'`` and kills the stream connection.
+        """
+        return
 
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.

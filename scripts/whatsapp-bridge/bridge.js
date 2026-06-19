@@ -24,7 +24,8 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { fileURLToPath } from 'url';
+import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
@@ -45,9 +46,28 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
-const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
-const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
-const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+// Cache directories: the Python gateway passes the profile-aware paths via
+// env (HERMES_HOME-aware, new cache/ layout).  Fall back to the legacy
+// hardcoded locations for bridges launched outside the gateway.
+const IMAGE_CACHE_DIR = process.env.HERMES_IMAGE_CACHE_DIR
+  || path.join(process.env.HOME || '~', '.hermes', 'image_cache');
+const DOCUMENT_CACHE_DIR = process.env.HERMES_DOCUMENT_CACHE_DIR
+  || path.join(process.env.HOME || '~', '.hermes', 'document_cache');
+const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
+  || path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+
+// Self-hash of this script file.  Reported in /health so the Python gateway
+// can detect a running bridge that predates the current bridge.js and
+// restart it instead of silently reusing stale code (stale-bridge trap:
+// `hermes update` updates bridge.js on disk but a long-lived bridge process
+// keeps serving the old behavior forever).
+let SCRIPT_HASH = '';
+try {
+  SCRIPT_HASH = createHash('sha256')
+    .update(readFileSync(fileURLToPath(import.meta.url)))
+    .digest('hex')
+    .slice(0, 16);
+} catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
@@ -57,9 +77,26 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+// Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
+// when uploading media to WhatsApp servers (and, less often, on text sends),
+// which pins the bridge's HTTP handler until the upstream aiohttp timeout
+// fires. Fail fast instead so the gateway can surface a real error and retry.
+const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
+      timeoutMs,
+    );
+  });
+  return Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
+    .finally(() => clearTimeout(timer));
 }
 
 function formatOutgoingMessage(message) {
@@ -300,7 +337,10 @@ async function startSocket() {
       const messageContent = getMessageContent(msg);
       const contextInfo = getContextInfo(messageContent);
       const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
-      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '');
+      const quotedMessageId = contextInfo?.stanzaId || null;
+      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
+      const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
+      const hasQuotedMessage = !!contextInfo?.quotedMessage;
 
       // Extract message body
       let body = '';
@@ -412,7 +452,10 @@ async function startSocket() {
         mediaType,
         mediaUrls,
         mentionedIds,
+        quotedMessageId,
         quotedParticipant,
+        quotedRemoteJid,
+        hasQuotedMessage,
         botIds,
         timestamp: msg.messageTimestamp,
       };
@@ -481,7 +524,7 @@ app.post('/send', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
-      const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+      const sent = await sendWithTimeout(chatId, { text: chunks[i] });
       trackSentMessageId(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
@@ -515,10 +558,10 @@ app.post('/edit', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
 
-    await sock.sendMessage(chatId, { text: chunks[0], edit: key });
+    await sendWithTimeout(chatId, { text: chunks[0], edit: key });
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
-        const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+        const sent = await sendWithTimeout(chatId, { text: chunks[i] });
         trackSentMessageId(sent);
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {
@@ -619,7 +662,7 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sock.sendMessage(chatId, msgPayload);
+    const sent = await sendWithTimeout(chatId, msgPayload);
 
     trackSentMessageId(sent);
 
@@ -677,6 +720,7 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
+    scriptHash: SCRIPT_HASH,
   });
 });
 

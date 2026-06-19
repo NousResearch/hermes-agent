@@ -549,6 +549,19 @@ def classify_api_error(
             should_fallback=True,
         )
 
+    # Confirmed billing / credit exhaustion by message pattern. Like the
+    # content-policy block above, this MUST run before status-based
+    # classification: Anthropic surfaces credit exhaustion as an HTTP 400
+    # invalid_request_error which _classify_400 buckets as a non-failover
+    # format_error. (Hana/LINE credit-depletion incident 2026-06-13.)
+    if any(p in error_msg for p in _BILLING_PATTERNS):
+        return _result(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
     # Anthropic thinking block recovery (400).  Two distinct failure modes,
     # same recovery (strip all reasoning_details and retry without thinking
     # blocks — see the thinking_signature handler in conversation_loop.py):

@@ -1,11 +1,11 @@
 """Deterministic date-token expansion for cron job prompts.
 
-Cron prompts historically embedded literal date placeholders, ``$(date
-+%Y-%m-%d)``, ``YYYY-MM-DD``, ``<TODAY>``, ``{TODAY}``, and relied on the
-agent to substitute the real date at run time.
+Cron prompts historically embedded literal date placeholders — ``$(date
++%Y-%m-%d)``, ``YYYY-MM-DD``, ``<TODAY>``, ``{TODAY}`` — and relied on the
+(often weak claude-3-haiku) agent to substitute the real date at run time.
 Agents frequently failed, writing the *literal placeholder* as a filename
 (e.g. ``context/theo/trader-standups/$(date +%Y-%m-%d)-open.md``). This module
-replaces those placeholders with the actual Pacific-Time date before the prompt
+replaces those placeholders with the actual Pacific-Time date BEFORE the prompt
 reaches the agent, so no agent substitution is required.
 
 Applied at the single prompt-build chokepoint in ``cron/scheduler.py``

@@ -237,9 +237,13 @@ def infer_status_mode(source: str, event: Any | None = None) -> str:
         text = f"{message_type} {text}"
     if not text:
         return "Ask"
-    if "?" in text or re.search(r"\b(what|why|how|which|should i|can you explain|do you know|is it|are we)\b", text):
+    ask_pattern = (
+        r"\b(what|whats|what's|why|how|which|should i|should we|do i|do we|did you|have you|"
+        r"can you explain|do you know|is it|are we|are you|will you|would you)\b"
+    )
+    if "?" in text or re.search(ask_pattern, text):
         return "Ask"
-    if re.search(r"\b(debug|bug|fix|broken|error|fail(?:ed|ing)?|traceback|crash|issue|stuck|not working|dumb|wrong|regression|troubleshoot)\b", text):
+    if re.search(r"\b(debug|bug|fix|broken|error|fail(?:ed|ing)?|traceback|crash|issue|stuck|not working|itsnot|it's not|isn't working|dumb|wrong|regression|troubleshoot)\b", text):
         return "Debug"
     if re.search(r"\b(plan|strategy|design|sop|architecture|outline|roadmap|proposal|approach)\b", text):
         return "Plan"
@@ -274,6 +278,8 @@ def interpret_status_request(source: str, mode: str) -> str:
     if mode == "Debug":
         if re.search(r"\bpinned (message|status|work[- ]?status|summary)\b", lowered):
             return "Investigate pinned message code"
+        if lowered in {"itsnot", "it's not", "its not", "not working"}:
+            return "Investigate reported status issue"
         if re.search(r"\b(work[- ]?status|status card|live status)\b", lowered):
             return "Investigate work-status code"
         if re.search(r"\b(gateway|telegram)\b", lowered):
@@ -293,6 +299,8 @@ def interpret_status_request(source: str, mode: str) -> str:
             return "Report completion status"
         if re.search(r"\b(what happened|what did you do|what changed)\b", lowered):
             return "Summarize completed changes"
+        if re.search(r"\b(do we|should we|need to|restart)\b", lowered):
+            return "Assess restart requirement"
         if re.search(r"\b(why|how)\b", lowered):
             return "Explain request context"
         return "Answer user question"
@@ -347,7 +355,7 @@ def sanitize_status_label(label: str, *, max_len: int = 110) -> str:
     """Clamp and de-risk LLM/user-derived status text."""
     text = " ".join(str(label or "").split()).strip('"` ')
     # Avoid accidental mentions/pings and raw Markdown injection in compact pins.
-    text = re.sub(r"@(?=everyone|here|[A-Za-z0-9_])", "@", text)
+    text = re.sub(r"@(?=everyone|here|[A-Za-z0-9_])", "@", text)
     text = text.replace("\u0000", "")
     if len(text) > max_len:
         text = text[: max_len - 3].rstrip(" ,;:-") + "..."

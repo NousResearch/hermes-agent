@@ -114,7 +114,11 @@ def test_status_mode_replaces_working_prefix_with_request_interpretation():
     assert infer_status_mode("Can you explain what broke?") == "Ask"
     assert interpret_status_request("How did the implementation go", "Ask") == "Summarize implementation outcome"
     assert interpret_status_request("What's left?", "Ask") == "Summarize remaining work"
+    assert interpret_status_request("Whats left", "Ask") == "Summarize remaining work"
     assert interpret_status_request("What is left?", "Ask") == "Summarize remaining work"
+    assert infer_status_mode("Do we need to restart") == "Ask"
+    assert interpret_status_request("Do we need to restart", "Ask") == "Assess restart requirement"
+    assert fallback_status_text(event("Itsnot")) == "📌 [Debug] Investigate reported status issue"
     assert infer_status_mode("Plan the migration") == "Plan"
     assert interpret_status_request("Our pinned message is dumb", "Debug") == "Investigate pinned message code"
 

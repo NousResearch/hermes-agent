@@ -50,7 +50,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -1330,9 +1330,9 @@ def init_agent(
     # parent_session_id chain, no `name #N` renumber). See #38763 and
     # agent/conversation_compression.py. Consumed by compress_context(), not the
     # compressor, so it rides on the agent.
-    compression_in_place = str(
-        _compression_cfg.get("in_place", False)
-    ).lower() in {"true", "1", "yes"}
+    compression_in_place = is_truthy_value(
+        _compression_cfg.get("in_place"), default=False
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via

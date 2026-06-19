@@ -170,6 +170,16 @@ SESSION_SEARCH_GUIDANCE = (
     "asking them to repeat themselves."
 )
 
+STATE_VERIFICATION_GUIDANCE = (
+    "# State verification before status claims\n"
+    "Before claiming something is running, stopped, configured, or broken, "
+    "verify with a live check of the single most relevant source. Do not rely "
+    "on documentation, memory, or notes that may be stale — if a live check "
+    "contradicts what a document says, trust the live check. Stop after the "
+    "first source if it contradicts; do not search for additional sources to "
+    "find agreement."
+)
+
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "

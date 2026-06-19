@@ -1176,6 +1176,97 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
 
+class TestStateVerificationGuidance:
+    """Tests for stale-state resistance guidance in the system prompt."""
+
+    def test_injected_when_live_state_tools_are_available(self):
+        from agent.prompt_builder import STATE_VERIFICATION_GUIDANCE
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "search_files", "read_file"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                model="anthropic/claude-opus-4.8",
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            prompt = agent._build_system_prompt()
+
+        assert STATE_VERIFICATION_GUIDANCE in prompt
+
+    def test_not_injected_when_no_live_state_tools_available(self):
+        """Guidance must NOT be injected when agent has no live-state tools."""
+        from agent.prompt_builder import STATE_VERIFICATION_GUIDANCE
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                model="anthropic/claude-opus-4.8",
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            prompt = agent._build_system_prompt()
+
+        assert STATE_VERIFICATION_GUIDANCE not in prompt, (
+            "State verification guidance should NOT be injected when no "
+            "live-state tools (terminal, process, search_files, read_file, "
+            "cronjob) are available"
+        )
+
+    def test_not_injected_when_only_session_search(self):
+        """session_search is cross-session recall, not live-state verification.
+
+        This is the exact case Opus flagged: an agent with only session_search
+        (which IS in the default toolset) would trip the gate despite having no
+        tool to check live system state. The guidance would then tell it to
+        verify via sources it cannot touch.
+        """
+        from agent.prompt_builder import STATE_VERIFICATION_GUIDANCE
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "session_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                model="anthropic/claude-opus-4.8",
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            prompt = agent._build_system_prompt()
+
+        assert STATE_VERIFICATION_GUIDANCE not in prompt, (
+            "session_search is cross-session memory recall, not a live-state "
+            "verification tool — must not trip the guidance gate"
+        )
+
+
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""
 

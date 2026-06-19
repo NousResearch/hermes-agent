@@ -31,6 +31,7 @@ from agent.prompt_builder import (
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    STATE_VERIFICATION_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -53,6 +54,26 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_state_verification_guidance_is_concise_and_deployment_agnostic(self):
+        """Guidance must be short and general — no deployment-specific vocabulary.
+
+        This is a design invariant, not a string mirror: if someone adds
+        team-specific kanban labels or debugging anecdotes back into the
+        constant, this test fails because shared core must stay generic.
+        """
+        assert len(STATE_VERIFICATION_GUIDANCE) < 500, (
+            "Guidance should be concise (<500 chars). Deployment-specific "
+            "details belong in skills/memory, not shared system prompt."
+        )
+        text = STATE_VERIFICATION_GUIDANCE.lower()
+        # Core behavioral principle must be present
+        assert "live" in text or "verify" in text
+        # Must NOT contain deployment-specific kanban taxonomy
+        assert "active/soaking" not in text
+        assert "implemented-but-needs-review" not in text
+        # Must NOT contain tool-specific operational anecdotes
+        assert "importerror" not in text
 
 
 # =========================================================================

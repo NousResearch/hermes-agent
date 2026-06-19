@@ -31,6 +31,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
+from agent.turn_snapshot import install_turn_snapshot_messages, publish_turn_snapshot
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
@@ -422,12 +423,16 @@ def run_conversation(
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
-    messages = _ctx.messages
     conversation_history = _ctx.conversation_history
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
+    messages = install_turn_snapshot_messages(
+        _ctx.messages,
+        callback=getattr(agent, "_turn_snapshot_callback", None),
+        current_turn_user_idx=current_turn_user_idx,
+    )
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
@@ -587,6 +592,11 @@ def run_conversation(
                 repaired_tool_calls,
                 agent.session_id or "-",
             )
+            publish_turn_snapshot(
+                messages,
+                source_path="sanitize_tool_call_arguments",
+                complete=False,
+            )
 
         # Defensive: repair malformed role-alternation before API call.
         # Catches cases where the history got wedged into a
@@ -601,6 +611,11 @@ def run_conversation(
                 "Repaired %s message-alternation violations before request (session=%s)",
                 repaired_seq,
                 agent.session_id or "-",
+            )
+            publish_turn_snapshot(
+                messages,
+                source_path="repair_message_sequence",
+                complete=False,
             )
 
         api_messages = []
@@ -3705,6 +3720,11 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                publish_turn_snapshot(
+                    messages,
+                    source_path="execute_tool_calls",
+                    complete=False,
+                )
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
@@ -4196,6 +4216,24 @@ def run_conversation(
                 messages.append({"role": "assistant", "content": final_response})
                 break
     
+    if interrupted:
+        _snapshot_source_path = "interrupted"
+    elif failed:
+        _snapshot_source_path = "fatal"
+    elif final_response is not None:
+        _snapshot_source_path = "normal"
+    else:
+        _snapshot_source_path = "partial"
+    publish_turn_snapshot(
+        messages,
+        source_path=_snapshot_source_path,
+        complete=(
+            final_response is not None
+            and not interrupted
+            and not failed
+        ),
+    )
+
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.

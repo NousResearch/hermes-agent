@@ -1,0 +1,7 @@
+name: openai-compatible
+version: 1.0.0
+description: "OpenAI-compatible image generation backend. Calls /v1/images/generations and supports JSON or SSE responses."
+author: NousResearch
+kind: backend
+requires_env:
+  - OPENAI_COMPATIBLE_IMAGE_BASE_URL

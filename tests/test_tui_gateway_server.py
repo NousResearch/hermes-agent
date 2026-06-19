@@ -4460,6 +4460,10 @@ def test_session_undo_rejects_while_running():
         assert resp.get("error"), "session.undo should reject while running"
         assert resp["error"]["code"] == 4009
         assert "session busy" in resp["error"]["message"]
+        # Must not point users at a non-existent /interrupt command — interrupt
+        # is only a /busy subcommand, never a standalone slash command.
+        assert "/interrupt" not in resp["error"]["message"]
+        assert "interrupt the current turn" in resp["error"]["message"]
         # History must be unchanged
         assert len(server._sessions["sid"]["history"]) == 2
     finally:
@@ -4938,6 +4942,8 @@ def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monke
             "session busy" in warning
         ), f"{cmd} should have returned busy warning, got: {warning!r}"
         assert f"/{expected_name}" in warning
+        # Guard against re-suggesting a non-existent /interrupt slash command.
+        assert "/interrupt" not in warning
 
     # None of the mutating side-effect helpers should have fired.
     assert not applied["model"], "model switch fired despite running session"

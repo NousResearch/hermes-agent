@@ -985,7 +985,7 @@ export function usePromptActions({
           }
 
           if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            renderSlashOutput('session busy — interrupt the current turn before sending this command')
 
             return
           }

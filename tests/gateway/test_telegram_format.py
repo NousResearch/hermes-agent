@@ -37,6 +37,7 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
+    _escape_bare_brackets_segment,
     _escape_mdv2,
     _strip_mdv2,
     _wrap_markdown_tables,
@@ -328,6 +329,34 @@ class TestFormatMessageLinks:
         # corrupts the link target.
         assert "Python_(programming_language" in result
         assert "Python_\\(programming_language" not in result
+
+    def test_link_url_sibling_opening_parens_not_escaped(self, adapter):
+        # A link URL carrying two sibling single-level paren groups
+        # (e.g. .../Foo_(bar)/Baz_(qux) ). Both opening '(' must stay bare; the
+        # ')'-aware safety net only escapes the closing parens.
+        result = adapter.format_message(
+            "[d](https://example.com/Foo_(bar)) and [e](https://example.com/Baz_(qux))"
+        )
+        assert "Foo_(bar" in result
+        assert "Baz_(qux" in result
+        assert "Foo_\\(bar" not in result
+        assert "Baz_\\(qux" not in result
+
+    def test_esc_bare_nested_url_paren_stays_bare(self):
+        # Direct regression for the step-12 safety net's '('-branch depth-scan
+        # (`_escape_bare_brackets_segment`). format_message's link regex only
+        # restores single-level URL parens, so a truly *nested* link URL
+        # ( [t](http://x/a_(b_(c)) ) only reaches the safety net as a restored
+        # segment. The inner '(' before 'c' is enclosed by another '(' before
+        # the link-open '](': the OLD branch broke at that first enclosing open
+        # paren and wrongly escaped the inner '(' to '\(' (corrupting the link
+        # target); the fixed branch scans outward to the link-open and keeps it
+        # bare.
+        out = _escape_bare_brackets_segment("[d](http://x/a_(b_(c))_d)")
+        # Both URL-internal opening parens must remain bare.
+        assert "a_(b_(c" in out
+        assert "a_(b_\\(c" not in out
+        assert "a_\\(b" not in out
 
     def test_link_with_surrounding_text(self, adapter):
         result = adapter.format_message("Visit [Google](https://google.com) today.")

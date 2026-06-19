@@ -214,6 +214,81 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
     return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
 
 
+def _escape_bare_brackets_segment(segment: str) -> str:
+    """Escape bare ``( ) { }`` in a non-code MarkdownV2 segment.
+
+    This is the step-12 ``format_message`` safety net, extracted so it can be
+    exercised directly. ``( )`` that belong to an already-built link
+    (``[text](url)``) must stay bare inside the URL — per the MarkdownV2 spec
+    only ``)`` and ``\\`` are reserved there. Both the ``(`` and ``)`` branches
+    run a depth-scan to decide whether the paren sits inside a link URL.
+    """
+
+    def _esc_bare(m, _seg=segment):
+        s = m.start()
+        ch = m.group(0)
+        # Already escaped
+        if s > 0 and _seg[s - 1] == '\\':
+            return ch
+        # ( that opens a MarkdownV2 link [text](url)
+        if ch == '(' and s > 0 and _seg[s - 1] == ']':
+            return ch
+        # ( that sits *inside* a link URL [text](...(...)...) — mirror the
+        # ')'-branch: only ')' and '\' are reserved inside a MarkdownV2 link
+        # URL, so a URL-internal '(' must stay bare (escaping it injects a
+        # literal backslash and corrupts the link target, e.g. Wikipedia
+        # article URLs like Python_(programming_language)).
+        if ch == '(':
+            before = _seg[:s]
+            if '](http' in before or '](' in before:
+                # Walk left, balancing parens, looking for an *enclosing* open
+                # paren that is the link-open '](';  if one exists, this '('
+                # sits inside the link URL and must stay bare. Each enclosing
+                # open paren is one whose matching ')' lies to the right of s.
+                # Nested URL parens (e.g. .../a_(b_(c)) ) therefore surface as a
+                # stack of enclosing opens — we must NOT break at the first one
+                # (the old bug); we scan outward through every enclosing open
+                # until we reach the link-open '](' (inside URL → return bare)
+                # or the outermost enclosing open is not a link-open (not in a
+                # URL → fall through and escape).
+                depth = 0
+                in_url = False
+                for j in range(s - 1, max(s - 2000, -1), -1):
+                    if _seg[j] == ')':
+                        depth += 1
+                    elif _seg[j] == '(':
+                        if depth == 0:
+                            # An enclosing (unmatched) open paren.
+                            if j > 0 and _seg[j - 1] == ']':
+                                in_url = True
+                                break
+                            # Otherwise keep scanning outward; a nested URL
+                            # paren is still enclosed by the link-open further
+                            # left.
+                        else:
+                            depth -= 1
+                if in_url:
+                    return ch
+        # ) that closes a link URL
+        if ch == ')':
+            before = _seg[:s]
+            if '](http' in before or '](' in before:
+                # Check depth
+                depth = 0
+                for j in range(s - 1, max(s - 2000, -1), -1):
+                    if _seg[j] == '(':
+                        depth -= 1
+                        if depth < 0:
+                            if j > 0 and _seg[j - 1] == ']':
+                                return ch
+                            break
+                    elif _seg[j] == ')':
+                        depth += 1
+        return '\\' + ch
+
+    return re.sub(r'[(){}]', _esc_bare, segment)
+
+
 # ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
@@ -5317,54 +5392,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 _safe_parts.append(_seg)
             else:
                 # Outside code — escape bare ( ) { }
-                def _esc_bare(m, _seg=_seg):
-                    s = m.start()
-                    ch = m.group(0)
-                    # Already escaped
-                    if s > 0 and _seg[s - 1] == '\\':
-                        return ch
-                    # ( that opens a MarkdownV2 link [text](url)
-                    if ch == '(' and s > 0 and _seg[s - 1] == ']':
-                        return ch
-                    # ( that sits *inside* a link URL [text](...(...)...) —
-                    # mirror the ')'-branch: only ')' and '\' are reserved
-                    # inside a MarkdownV2 link URL, so a URL-internal '(' must
-                    # stay bare (escaping it injects a literal backslash and
-                    # corrupts the link target, e.g. Wikipedia article URLs
-                    # like Python_(programming_language)).
-                    if ch == '(':
-                        before = _seg[:s]
-                        if '](http' in before or '](' in before:
-                            # Walk left, balancing parens; if the nearest
-                            # unmatched open paren is the link-open '](', this
-                            # '(' is inside the URL.
-                            depth = 0
-                            for j in range(s - 1, max(s - 2000, -1), -1):
-                                if _seg[j] == ')':
-                                    depth += 1
-                                elif _seg[j] == '(':
-                                    if depth == 0:
-                                        if j > 0 and _seg[j - 1] == ']':
-                                            return ch
-                                        break
-                                    depth -= 1
-                    # ) that closes a link URL
-                    if ch == ')':
-                        before = _seg[:s]
-                        if '](http' in before or '](' in before:
-                            # Check depth
-                            depth = 0
-                            for j in range(s - 1, max(s - 2000, -1), -1):
-                                if _seg[j] == '(':
-                                    depth -= 1
-                                    if depth < 0:
-                                        if j > 0 and _seg[j - 1] == ']':
-                                            return ch
-                                        break
-                                elif _seg[j] == ')':
-                                    depth += 1
-                    return '\\' + ch
-                _safe_parts.append(re.sub(r'[(){}]', _esc_bare, _seg))
+                _safe_parts.append(_escape_bare_brackets_segment(_seg))
         text = ''.join(_safe_parts)
 
         return text

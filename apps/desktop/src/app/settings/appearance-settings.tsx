@@ -10,12 +10,14 @@ import { cn } from '@/lib/utils'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
+import { $backdropEnabled, setBackdropEnabled } from '@/store/backdrop'
 import { useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import { MODE_OPTIONS } from './constants'
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { Switch } from '@/components/ui/switch'
 
 function ThemePreview({ name }: { name: string }) {
   const t = resolveTheme(name)
@@ -137,6 +139,7 @@ export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const translucency = useStore($translucency)
+  const backdropEnabled = useStore($backdropEnabled)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
@@ -209,6 +212,17 @@ export function AppearanceSettings() {
             }
             description={a.translucencyDesc}
             title={a.translucencyTitle}
+          />
+
+          <ListRow
+            action={
+              <Switch
+                checked={backdropEnabled}
+                onCheckedChange={setBackdropEnabled}
+              />
+            }
+            description={a.backdropDesc}
+            title={a.backdropTitle}
           />
 
           <ListRow

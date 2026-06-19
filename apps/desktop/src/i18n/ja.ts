@@ -281,7 +281,9 @@ export const ja = defineLocale({
       installError: 'そのテーマをインストールできませんでした。',
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
-      importedBadge: 'インポート済み'
+      importedBadge: 'インポート済み',
+      backdropTitle: 'Background Texture',
+      backdropDesc: 'Show a subtle decorative image behind the chat. Turn off for a plain solid background.'
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',

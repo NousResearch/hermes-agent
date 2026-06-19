@@ -271,7 +271,9 @@ export const zhHant = defineLocale({
       installError: '無法安裝該主題。',
       installed: name => `已安裝「${name}」。`,
       removeTheme: '移除主題',
-      importedBadge: '已匯入'
+      importedBadge: '已匯入',
+      backdropTitle: 'Background Texture',
+      backdropDesc: 'Show a subtle decorative image behind the chat. Turn off for a plain solid background.'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',

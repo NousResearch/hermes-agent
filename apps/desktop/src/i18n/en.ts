@@ -366,7 +366,9 @@ export const en: Translations = {
       installError: 'Could not install that theme.',
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
-      importedBadge: 'Imported'
+      importedBadge: 'Imported',
+      backdropTitle: 'Background Texture',
+      backdropDesc: 'Show a subtle decorative image behind the chat. Turn off for a plain solid background.'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,

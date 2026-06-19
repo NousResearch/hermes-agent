@@ -1,5 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { Leva, useControls } from 'leva'
 import { type CSSProperties, useEffect, useState } from 'react'
+
+import { $backdropEnabled } from '@/store/backdrop'
 
 const BLEND_MODES = [
   'normal',
@@ -25,6 +28,7 @@ const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/
 
 export function Backdrop() {
   const [controlsOpen, setControlsOpen] = useState(false)
+  const enabled = useStore($backdropEnabled)
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
@@ -82,6 +86,10 @@ export function Backdrop() {
     },
     { collapsed: true }
   )
+
+  if (!enabled) {
+    return null
+  }
 
   return (
     <>

@@ -265,6 +265,8 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      backdropTitle: string
+      backdropDesc: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>

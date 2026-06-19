@@ -359,7 +359,9 @@ export const zh: Translations = {
       installError: '无法安装该主题。',
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
-      importedBadge: '已导入'
+      importedBadge: '已导入',
+      backdropTitle: 'Background Texture',
+      backdropDesc: 'Show a subtle decorative image behind the chat. Turn off for a plain solid background.'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',

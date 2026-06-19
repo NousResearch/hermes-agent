@@ -227,7 +227,10 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
         return None
     try:
         raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # OSError: file vanished or permission flipped between exists() and
+        # read. UnicodeDecodeError: file holds non-UTF-8 / binary garbage
+        # (a truncated or clobbered status file). Either way it's unusable.
         return None
     if not raw:
         return None
@@ -249,8 +252,9 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
 
     try:
         raw = pid_path.read_text().strip()
-    except OSError:
-        # File was deleted between exists() and read_text(), or permission flipped.
+    except (OSError, UnicodeDecodeError):
+        # File was deleted between exists() and read_text(), permission
+        # flipped, or it holds non-UTF-8 / binary garbage.
         return None
     if not raw:
         return None
@@ -551,6 +555,41 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
     return _read_json_file(_get_runtime_status_path())
 
 
+def get_runtime_status_running_pid(
+    runtime: Optional[dict[str, Any]] = None,
+) -> Optional[int]:
+    """Return a live gateway PID from the runtime status record, if valid.
+
+    ``get_running_pid()`` is the primary liveness source because it verifies the
+    runtime lock and PID file.  Launch-service managers can still leave us with
+    a live process and a fresh ``gateway_state.json`` but no ``gateway.pid``; use
+    this as a conservative fallback by checking both the persisted state and the
+    OS process identity.
+    """
+    payload = runtime if runtime is not None else read_runtime_status()
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
+        return None
+
+    pid = _pid_from_record(payload)
+    if pid is None or not _pid_exists(pid):
+        return None
+
+    recorded_start = payload.get("start_time")
+    current_start = _get_process_start_time(pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return None
+
+    if _looks_like_gateway_process(pid) or _record_looks_like_gateway(payload):
+        return pid
+    return None
+
+
 def remove_pid_file() -> None:
     """Remove the gateway PID file, but only if it belongs to this process.
 
@@ -638,6 +677,21 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 ):
                     live_cmdline = _read_process_cmdline(existing_pid)
                     if live_cmdline is not None or not _record_looks_like_gateway(existing):
+                        stale = True
+                # Secondary defence against boot-time PID+start_time collisions:
+                # systemd spawns core services deterministically, so an unrelated
+                # process (e.g. cron) can land on the exact same PID and jiffy
+                # count as a previous gateway. If both start_times are known and
+                # match but the live process is not a gateway, and we can confirm
+                # that by reading its cmdline, the lock is stale.
+                if (
+                    not stale
+                    and existing.get("start_time") is not None
+                    and current_start is not None
+                    and not _looks_like_gateway_process(existing_pid)
+                ):
+                    live_cmdline = _read_process_cmdline(existing_pid)
+                    if live_cmdline is not None:
                         stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still appear alive to _pid_exists but are not
@@ -816,12 +870,24 @@ def _consume_pid_marker_for_self(
 
     our_pid = os.getpid()
     our_start_time = _get_process_start_time(our_pid)
-    matches = (
-        target_pid == our_pid
-        and target_start_time is not None
-        and our_start_time is not None
-        and target_start_time == our_start_time
-    )
+    # Start-time is a PID-reuse guard. It is only meaningful when both
+    # sides actually have it: ``_get_process_start_time`` returns None on
+    # platforms without ``/proc`` (macOS, native Windows — the very
+    # platform the planned-stop watcher exists for). Requiring a non-None
+    # match there would make every consume return False, so a legitimate
+    # ``hermes gateway stop`` on Windows would be misclassified as an
+    # unexpected ``UNKNOWN`` exit (exit 1) and revived by the service
+    # manager. So: when both start_times are known they must match; when
+    # either is unknown, fall back to PID equality alone (bounded by the
+    # marker's short TTL). This mirrors ``planned_stop_marker_targets_self``
+    # so the watcher's non-destructive probe and this authoritative
+    # consume agree on every platform (issue #34597).
+    if target_pid != our_pid:
+        matches = False
+    elif target_start_time is not None and our_start_time is not None:
+        matches = target_start_time == our_start_time
+    else:
+        matches = True
 
     try:
         path.unlink(missing_ok=True)
@@ -912,6 +978,68 @@ def consume_planned_stop_marker_for_self() -> bool:
         start_time_field="target_start_time",
         ttl_s=_PLANNED_STOP_MARKER_TTL_S,
     )
+
+
+def planned_stop_marker_targets_self() -> bool:
+    """Return True only when a live planned-stop marker names the current process.
+
+    This is a **non-destructive** probe used by the watcher thread
+    (``gateway/run.py:_run_planned_stop_watcher``) to decide whether to
+    trigger shutdown. Unlike :func:`consume_planned_stop_marker_for_self`,
+    it never unlinks a marker that matches us — the shutdown handler does
+    the authoritative consume on its own thread.
+
+    It *does* clean up markers that can never apply to this process:
+    malformed markers and markers older than the TTL are unlinked so a
+    stale file left behind by a previous gateway instance cannot wedge
+    the new one. Markers naming a different PID/start_time are left in
+    place (they may still be consumed legitimately by the process they
+    name) but report False here.
+
+    Returns False (without raising) on any read/parse error.
+    """
+    path = _get_planned_stop_marker_path()
+    record = _read_json_file(path)
+    if not record:
+        return False
+
+    try:
+        target_pid = int(record["target_pid"])
+        target_start_time = record.get("target_start_time")
+        written_at = record.get("written_at") or ""
+    except (KeyError, TypeError, ValueError):
+        # Malformed marker can never match anyone — drop it.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    if _marker_is_stale(written_at, _PLANNED_STOP_MARKER_TTL_S):
+        # A marker this old is past its useful life regardless of target —
+        # clean it up so it cannot crash-loop a freshly booted gateway.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    our_pid = os.getpid()
+    if target_pid != our_pid:
+        return False
+
+    # Start-time is a PID-reuse guard. It is only meaningful when both
+    # sides actually have it: ``_get_process_start_time`` returns None on
+    # platforms without ``/proc`` (macOS, native Windows — the very
+    # platform this watcher exists for). Requiring a non-None match there
+    # would make the watcher never fire and re-break the #33778 Windows
+    # session-resume path. So: when both start_times are known they must
+    # match; when either is unknown, fall back to PID equality alone
+    # (the marker is short-lived under a 60s TTL, bounding reuse risk).
+    our_start_time = _get_process_start_time(our_pid)
+    if target_start_time is not None and our_start_time is not None:
+        return target_start_time == our_start_time
+    return True
 
 
 def clear_planned_stop_marker() -> None:

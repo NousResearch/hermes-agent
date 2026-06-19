@@ -11,13 +11,9 @@ _swap_credential continue operating on the PRIMARY's credential pool during
 fallback calls, contaminating primary state with fallback-provider errors.
 """
 
-import logging
 import sys
-import types
-from dataclasses import dataclass, replace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

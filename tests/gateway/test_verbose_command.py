@@ -1,6 +1,5 @@
 """Tests for gateway /verbose command (config-gated tool progress cycling)."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

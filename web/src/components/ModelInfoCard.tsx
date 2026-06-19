@@ -86,7 +86,7 @@ export function ModelInfoCard({
       {hasCaps && (
         <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
           {caps.supports_tools && (
-            <span className="inline-flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+            <span className="inline-flex items-center gap-1 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
               <Wrench className="h-2.5 w-2.5" /> Tools
             </span>
           )}

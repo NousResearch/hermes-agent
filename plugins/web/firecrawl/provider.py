@@ -146,16 +146,16 @@ def _get_firecrawl_gateway_url() -> str:
 def _is_tool_gateway_ready() -> bool:
     """Return True when gateway URL + Nous Subscriber token are available.
 
-    Reads ``read_nous_access_token`` and ``resolve_managed_tool_gateway``
+    Reads ``peek_nous_access_token`` and ``resolve_managed_tool_gateway``
     via :mod:`tools.web_tools` rather than direct imports, so unit tests
-    that ``patch("tools.web_tools._read_nous_access_token", ...)`` see
+    that ``patch("tools.web_tools._peek_nous_access_token", ...)`` see
     their patches honored. The names are re-exported on
     :mod:`tools.web_tools` for exactly this reason.
     """
     import tools.web_tools as _wt
 
     return _wt.resolve_managed_tool_gateway(
-        "firecrawl", token_reader=_wt._read_nous_access_token
+        "firecrawl", token_reader=_wt._peek_nous_access_token
     ) is not None
 
 

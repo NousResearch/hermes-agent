@@ -13,7 +13,6 @@ Signal's native implementation is covered by test_signal.py.
 """
 
 import asyncio
-import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 

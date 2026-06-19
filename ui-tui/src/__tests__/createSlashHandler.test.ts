@@ -2,23 +2,48 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { DASHBOARD_EXIT_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+
+// DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
+// so toggling process.env in a test body can't move it. Mock just that one
+// export (everything else stays real) and flip the holder per test.
+const envState = { dashboardTuiMode: false }
+vi.mock('../config/env.js', async importActual => {
+  const actual = await importActual<typeof import('../config/env.js')>()
+
+  return {
+    ...actual,
+    get DASHBOARD_TUI_MODE() {
+      return envState.dashboardTuiMode
+    }
+  }
+})
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
+    envState.dashboardTuiMode = false
   })
 
-  it('opens the resume picker locally', () => {
+  it('opens the unified sessions overlay for /resume', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/resume')).toBe(true)
-    expect(getOverlayState().picker).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
   })
 
-  it('opens the live session switcher locally even when the current session is busy', () => {
+  it('resumes a prior session by id when /resume has an argument', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
+    expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old')
+    expect(getOverlayState().sessions).toBe(false)
+  })
+
+  it('opens the unified sessions overlay locally even when the current session is busy', () => {
     patchUiState({ busy: true, sid: 'sid-abc' })
     const ctx = buildCtx()
 
@@ -26,6 +51,22 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
     expect(ctx.session.guardBusySessionSwitch).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('blocks immediate resume-by-id while a turn is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx({ session: { ...buildSession(), guardBusySessionSwitch: vi.fn(() => true) } })
+
+    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).toHaveBeenCalled()
+    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+  })
+
+  it('treats /session (singular) as an alias of the sessions overlay', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/session')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
   })
 
   it('handles /redraw locally without slash worker fallback', () => {
@@ -42,6 +83,24 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
     expect(ctx.session.die).toHaveBeenCalledTimes(1)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('keeps hosted dashboard chat alive for /exit', () => {
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/exit')).toBe(true)
+    expect(ctx.session.die).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
+  })
+
+  it('keeps /quit available outside hosted dashboard chat', () => {
+    envState.dashboardTuiMode = false
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/quit')).toBe(true)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
   })
 
   it('handles /update locally and exits with code 42 via dieWithCode', () => {
@@ -84,6 +143,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/model x-model')).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model'
@@ -104,6 +164,7 @@ describe('createSlashHandler', () => {
       createSlashHandler(ctx)(`/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`)
     ).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
@@ -116,6 +177,7 @@ describe('createSlashHandler', () => {
 
     createSlashHandler(ctx)('/model x-model --global')
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model --global'

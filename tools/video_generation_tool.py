@@ -336,6 +336,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
     kwargs: Dict[str, Any] = {
         "model": model,
+        "_model_override_explicit": bool(model_override),
         "image_url": image_url,
         "reference_image_urls": reference_image_urls,
         "duration": duration,

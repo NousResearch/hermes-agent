@@ -10,6 +10,10 @@ import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+import numpy as np
+
+from .embedder import get_embedder, cosine_similarity
+
 if TYPE_CHECKING:
     from .store import MemoryStore
 
@@ -29,6 +33,7 @@ class FactRetriever:
         fts_weight: float = 0.4,
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
+        onnx_weight: float = 0.2,
         hrr_dim: int = 1024,
     ):
         self.store = store
@@ -41,9 +46,18 @@ class FactRetriever:
             jaccard_weight = 0.4
             hrr_weight = 0.0
 
-        self.fts_weight = fts_weight
-        self.jaccard_weight = jaccard_weight
-        self.hrr_weight = hrr_weight
+        # Normalize weights to sum to 1.0
+        total_weight = fts_weight + jaccard_weight + hrr_weight + onnx_weight
+        if total_weight > 0:
+            self.fts_weight = fts_weight / total_weight
+            self.jaccard_weight = jaccard_weight / total_weight
+            self.hrr_weight = hrr_weight / total_weight
+            self.onnx_weight = onnx_weight / total_weight
+        else:
+            self.fts_weight = 0.25
+            self.jaccard_weight = 0.25
+            self.hrr_weight = 0.25
+            self.onnx_weight = 0.25
 
     def search(
         self,
@@ -88,10 +102,27 @@ class FactRetriever:
             else:
                 hrr_sim = 0.5  # neutral
 
-            # Combine FTS5 + Jaccard + HRR
+            # ONNX semantic similarity
+            if self.onnx_weight > 0 and fact.get("embedding"):
+                embedder = get_embedder()
+                if embedder is not None:
+                    fact_embedding = np.frombuffer(fact["embedding"], dtype=np.float32)
+                    query_embedding = embedder.embed(query)
+                    if query_embedding is not None:
+                        onnx_sim = cosine_similarity(query_embedding, fact_embedding)
+                        onnx_sim = (onnx_sim + 1.0) / 2.0
+                    else:
+                        onnx_sim = 0.5
+                else:
+                    onnx_sim = 0.5
+            else:
+                onnx_sim = 0.5
+
+            # Combine FTS5 + Jaccard + HRR + ONNX
             relevance = (self.fts_weight * fts_score
                         + self.jaccard_weight * jaccard
-                        + self.hrr_weight * hrr_sim)
+                        + self.hrr_weight * hrr_sim
+                        + self.onnx_weight * onnx_sim)
 
             # Trust weighting
             score = relevance * fact["trust_score"]
@@ -106,9 +137,10 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
-        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        # Strip raw HRR bytes and embedding — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+            fact.pop("embedding", None)
         return results
 
     def probe(

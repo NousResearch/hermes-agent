@@ -265,3 +265,36 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
+
+def test_photon_sidecar_ships_in_both_wheel_and_sdist():
+    """Regression test for #48659.
+
+    The Photon (iMessage) plugin has a Node.js sidecar (package.json,
+    index.mjs, lockfile, postinstall patch) that ``hermes photon
+    install-sidecar`` runs ``npm ci`` against. Without these files in the
+    wheel/sdist, install-sidecar fails with ENOENT package.json.
+
+    - wheel  -> ``[tool.setuptools.package-data]`` ``plugins`` ``**/sidecar/*``
+    - sdist  -> ``MANIFEST.in`` ``recursive-include plugins sidecar/*``
+    """
+    # There must actually be sidecar files on disk for the glob to match.
+    on_disk = list((REPO_ROOT / "plugins").rglob("sidecar/package.json"))
+    assert on_disk, (
+        "expected sidecar/package.json under plugins/ (Photon sidecar)"
+    )
+
+    # Wheel channel: package-data must declare a glob that matches sidecar
+    # files anywhere under the plugins package.
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    plugins_pkg_data = data["tool"]["setuptools"]["package-data"].get("plugins", [])
+    assert any(g.endswith("sidecar/*") for g in plugins_pkg_data), (
+        "pyproject package-data 'plugins' must ship sidecar/* (wheel)"
+    )
+
+    # Sdist channel: MANIFEST.in must recursively include the sidecar files so
+    # downstream packagers building from the sdist also get them.
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "sidecar/*" in manifest, (
+        "MANIFEST.in must recursive-include plugins sidecar/* (sdist)"
+    )
+

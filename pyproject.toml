@@ -340,6 +340,12 @@ plugins = [
   "**/plugin.yaml",
   "**/plugin.yml",
   "**/README.md",
+  # Photon (iMessage) sidecar — Node.js files (package.json, index.mjs,
+  # lockfile, postinstall patch) that `hermes photon install-sidecar` runs
+  # `npm ci` against. Without this glob, the wheel omits every sidecar file
+  # except README.md and install-sidecar fails with ENOENT package.json
+  # (#48659). Matches any sidecar/ directory under any plugin.
+  "**/sidecar/*",
 ]
 
 [tool.setuptools.packages.find]

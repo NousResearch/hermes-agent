@@ -232,14 +232,44 @@ class SessionManager:
         """Return the session for *session_id*, or ``None``.
 
         If the session is not in memory but exists in the database (e.g. after
-        a process restart), it is transparently restored.
+        a process restart), it is transparently restored. Compression-ended ACP
+        ids are treated as aliases for their current compression tip so clients
+        can reconnect with the original ``session/new`` handle.
         """
+        resolved_id = self._resolve_compression_tip(session_id)
         with self._lock:
-            state = self._sessions.get(session_id)
+            state = self._sessions.get(resolved_id) or self._sessions.get(session_id)
         if state is not None:
+            if state.session_id != resolved_id:
+                return self.adopt_session_id(state.session_id, resolved_id) or state
             return state
         # Attempt to restore from database.
-        return self._restore(session_id)
+        return self._restore(resolved_id)
+
+    def adopt_session_id(self, old_session_id: str, new_session_id: str) -> Optional[SessionState]:
+        """Re-key an in-memory ACP session after Hermes internal id rotation.
+
+        Automatic context compression can rotate ``AIAgent.session_id`` to a
+        compression continuation. ACP control paths need the in-memory manager
+        to follow that effective id before persisting history or accepting the
+        next prompt/control call.
+        """
+        if not old_session_id or not new_session_id:
+            return None
+        if old_session_id == new_session_id:
+            with self._lock:
+                return self._sessions.get(new_session_id)
+        with self._lock:
+            state = self._sessions.pop(old_session_id, None)
+            if state is None:
+                state = self._sessions.get(new_session_id)
+                return state
+            state.session_id = new_session_id
+            self._sessions[new_session_id] = state
+        _clear_task_cwd(old_session_id)
+        _register_task_cwd(new_session_id, state.cwd)
+        logger.info("Adopted ACP session id %s -> %s", old_session_id, new_session_id)
+        return state
 
     def remove_session(self, session_id: str) -> bool:
         """Remove a session from memory and database. Returns True if it existed."""
@@ -361,7 +391,7 @@ class SessionManager:
         if state is None:
             return None
         state.cwd = cwd
-        _register_task_cwd(session_id, cwd)
+        _register_task_cwd(state.session_id, cwd)
         self._persist(state)
         return state
 
@@ -419,6 +449,20 @@ class SessionManager:
         except Exception:
             logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
             return None
+
+    def _resolve_compression_tip(self, session_id: str) -> str:
+        """Resolve compression-ended ACP ids to the current continuation id."""
+        if not session_id:
+            return session_id
+        db = self._get_db()
+        if db is None or not hasattr(db, "get_compression_tip"):
+            return session_id
+        try:
+            tip = db.get_compression_tip(session_id)
+        except Exception:
+            logger.debug("Failed to resolve ACP compression tip for %s", session_id, exc_info=True)
+            return session_id
+        return str(tip or session_id)
 
     def _persist(self, state: SessionState) -> None:
         """Write session state to the database.

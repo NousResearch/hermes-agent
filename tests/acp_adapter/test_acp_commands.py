@@ -32,6 +32,19 @@ class FakeAgent:
         return {"final_response": final, "messages": messages}
 
 
+class RotatingFakeAgent(FakeAgent):
+    def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
+        result = super().run_conversation(
+            user_message=user_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            **kwargs,
+        )
+        self.session_id = "child-after-compression"
+        result["session_id"] = self.session_id
+        return result
+
+
 class CaptureConn:
     def __init__(self):
         self.updates = []
@@ -65,6 +78,28 @@ def make_agent_and_state():
     conn = CaptureConn()
     acp_agent.on_connect(conn)
     return acp_agent, state, fake, conn
+
+
+@pytest.mark.asyncio
+async def test_acp_prompt_adopts_agent_session_id_after_compression_rotation():
+    fake = RotatingFakeAgent()
+    manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+    original_id = state.session_id
+    fake.session_id = original_id
+    conn = CaptureConn()
+    acp_agent.on_connect(conn)
+
+    response = await acp_agent.prompt(
+        session_id=original_id,
+        prompt=[TextContentBlock(type="text", text="trigger compression")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert state.session_id == "child-after-compression"
+    assert "child-after-compression" in manager._sessions
+    assert original_id not in manager._sessions
 
 
 def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):

@@ -313,6 +313,40 @@ class TestPersistence:
         # Agent should have been recreated.
         assert restored.agent is not None
 
+    def test_get_session_aliases_compression_parent_to_tip_even_when_parent_has_messages(self, tmp_path):
+        """ACP clients may reconnect with the original session/new id after compression.
+
+        The original row can still have messages (e.g. an older adapter wrote
+        post-compression history back onto the ended parent), so ACP restore
+        must follow the compression tip instead of relying on the older
+        empty-parent-only resume helper.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("root-acp", source="acp", model_config={"cwd": "/work"})
+        db.append_message("root-acp", role="user", content="old parent message")
+        db.end_session("root-acp", "compression")
+        db.create_session(
+            "tip-acp",
+            source="acp",
+            parent_session_id="root-acp",
+            model_config={"cwd": "/work"},
+        )
+        db.append_message("tip-acp", role="user", content="compressed child message")
+
+        manager = SessionManager(agent_factory=_mock_agent, db=db)
+
+        restored = manager.get_session("root-acp")
+
+        assert restored is not None
+        assert restored.session_id == "tip-acp"
+        assert len(restored.history) == 1
+        assert restored.history[0]["role"] == "user"
+        assert restored.history[0]["content"] == "compressed child message"
+
+        listing_ids = {item["session_id"] for item in manager.list_sessions()}
+        assert "tip-acp" in listing_ids
+        assert "root-acp" not in listing_ids
+
     def test_save_session_updates_db(self, manager):
         state = manager.create_session()
         state.history.append({"role": "user", "content": "test"})

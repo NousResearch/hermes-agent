@@ -1138,6 +1138,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
+        session_id = state.session_id
         logger.info("Loaded session %s", session_id)
         # Per ACP spec, `session/load` must stream the prior conversation back
         # to the client via `session/update` notifications BEFORE responding,
@@ -1306,6 +1307,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
+        session_id = state.session_id
 
         user_text = _extract_text(prompt).strip()
         user_content = _content_blocks_to_openai_user_content(prompt)
@@ -1547,7 +1549,12 @@ class HermesACPAgent(acp.Agent):
             # can detect a compression-driven session rotation afterwards. The
             # ACP `session_id` stays the stable client handle; agent.session_id
             # is the live internal head that compression may rotate.
-            pre_turn_hermes_id = getattr(state.agent, "session_id", None)
+            pre_turn_raw_id = getattr(state.agent, "session_id", None)
+            pre_turn_hermes_id = (
+                pre_turn_raw_id.strip()
+                if isinstance(pre_turn_raw_id, str) and pre_turn_raw_id.strip()
+                else None
+            )
             # Wrap the executor call in a fresh copy of the current context so
             # concurrent ACP sessions on the shared ThreadPoolExecutor don't
             # stomp on each other's ContextVar writes (HERMES_SESSION_KEY in
@@ -1561,22 +1568,35 @@ class HermesACPAgent(acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
+        post_turn_raw_id = result.get("session_id") or getattr(state.agent, "session_id", None)
+        post_turn_hermes_id = (
+            post_turn_raw_id.strip()
+            if isinstance(post_turn_raw_id, str) and post_turn_raw_id.strip()
+            else session_id
+        )
+        rotated_internal_session = bool(
+            post_turn_hermes_id
+            and pre_turn_hermes_id
+            and post_turn_hermes_id != pre_turn_hermes_id
+        )
+        if post_turn_hermes_id and post_turn_hermes_id != session_id:
+            adopted = self.session_manager.adopt_session_id(session_id, post_turn_hermes_id)
+            if adopted is not None:
+                state = adopted
+                session_id = state.session_id
+
         if result.get("messages"):
             state.history = result["messages"]
-            # Persist updated history so sessions survive process restarts.
+            # Persist updated history under the effective ACP/internal id so
+            # compression continuations do not get written back onto the ended
+            # parent session.
             self.session_manager.save_session(session_id)
 
         # Detect a compression-driven internal session rotation. If the agent's
         # DB head moved during the turn, emit a session_info_update carrying
         # _meta.hermes.sessionProvenance so ACP clients can render the boundary
-        # and keep old/new ids in lineage. The ACP session_id is unchanged.
-        post_turn_hermes_id = getattr(state.agent, "session_id", None)
-        if (
-            conn
-            and post_turn_hermes_id
-            and pre_turn_hermes_id
-            and post_turn_hermes_id != pre_turn_hermes_id
-        ):
+        # and keep old/new ids in lineage.
+        if conn and rotated_internal_session:
             try:
                 await self._send_session_info_update(
                     session_id,
@@ -1992,6 +2012,7 @@ class HermesACPAgent(acp.Agent):
         """Switch the model for a session (called by ACP protocol)."""
         state = self.session_manager.get_session(session_id)
         if state:
+            session_id = state.session_id
             current_provider = getattr(state.agent, "provider", None)
             requested_provider, resolved_model = self._resolve_model_selection(
                 model_id,
@@ -2028,6 +2049,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
             return None
+        session_id = state.session_id
         normalized_mode = str(mode_id or "").strip()
         if normalized_mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
             normalized_mode = self._MODE_DEFAULT
@@ -2044,6 +2066,7 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
+        session_id = state.session_id
 
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)

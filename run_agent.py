@@ -658,11 +658,22 @@ class AIAgent:
         if (self.provider or "").strip().lower() != "lmstudio":
             return
         try:
-            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
             from hermes_cli.models import ensure_lmstudio_model_loaded
             if config_context_length is None:
                 config_context_length = getattr(self, "_config_context_length", None)
-            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            if config_context_length:
+                target_ctx = max(config_context_length, MINIMUM_CONTEXT_LENGTH)
+            else:
+                detected_ctx = get_model_context_length(
+                    self.model,
+                    base_url=self.base_url,
+                    api_key=getattr(self, "api_key", ""),
+                    config_context_length=None,
+                    provider=self.provider,
+                    custom_providers=getattr(self, "_custom_providers", None),
+                )
+                target_ctx = max(MINIMUM_CONTEXT_LENGTH, detected_ctx or 0)
             loaded_ctx = ensure_lmstudio_model_loaded(
                 self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
             )

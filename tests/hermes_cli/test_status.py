@@ -14,6 +14,32 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
+def test_show_status_qqbot_home_uses_canonical_env(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("QQ_APP_ID", "app-123")
+    monkeypatch.setenv("QQBOT_HOME_CHANNEL", "group-openid-home")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "QQBot" in output
+    assert "home: group-openid-home" in output
+
+
+def test_show_status_qqbot_home_falls_back_to_legacy_env(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("QQ_APP_ID", "app-123")
+    # Only the deprecated variable is set; status should still surface it.
+    monkeypatch.delenv("QQBOT_HOME_CHANNEL", raising=False)
+    monkeypatch.setenv("QQ_HOME_CHANNEL", "legacy-openid-home")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "QQBot" in output
+    assert "home: legacy-openid-home" in output
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

@@ -164,19 +164,64 @@ def _s6_running() -> bool:
 #
 # These adapters are thin facades over the existing module-level functions
 # in ``hermes_cli.gateway`` (systemd/launchd) and ``hermes_cli.gateway_windows``
-# (Windows Scheduled Tasks). The protocol's ``name`` parameter is currently
-# unused for host backends — they operate on whichever profile is currently
-# active (set via the ``hermes -p <profile>`` flag before the call). This
-# matches existing host-side semantics; the parameter shape is designed
-# for s6 where each profile maps to a distinct service directory.
+# (Windows Scheduled Tasks).
+#
+# Host backends (systemd / launchd / Windows) only manage a single service:
+# the gateway for the active profile. Generic (backend-agnostic) callers —
+# Phase 4 profile hooks, the s6 dispatch path — pass the name produced by
+# ``_expected_service_name()`` (or s6's ``_service_name()``). The lifecycle
+# methods validate the name up front and raise ``ValueError`` if it does
+# not match the active profile's gateway service. This makes the
+# ``name`` parameter honest: passing a different name (e.g. an s6-style
+# ``gateway-<profile>`` on a systemd host) used to be silently dropped and
+# start the wrong service — a quiet correctness bug for any future generic
+# caller that forgets to branch on ``detect_service_manager()``.
 # ---------------------------------------------------------------------------
 
 
 class _RegistrationUnsupportedMixin:
-    """Mixin for host backends that don't support runtime registration."""
+    """Mixin for host backends that don't support runtime registration.
+
+    Also provides the name validation used by every lifecycle method on
+    host backends — see the module-level comment above.
+    """
 
     def supports_runtime_registration(self) -> bool:
         return False
+
+    def _expected_service_name(self) -> str:
+        """Return the gateway service name for the active profile.
+
+        The host-backend convention is ``hermes-gateway[-<profile>]``,
+        derived from the active ``HERMES_HOME`` (see
+        :func:`hermes_cli.gateway.get_service_name`). Generic callers
+        should pass the value returned here so the host backend can
+        confirm the call targets the service it can actually manage.
+        """
+        from hermes_cli.gateway import get_service_name
+
+        return get_service_name()
+
+    def _validate_lifecycle_name(self, name: str) -> None:
+        """Raise ``ValueError`` if ``name`` is not the gateway service
+        this backend can manage.
+
+        Without this check, ``SystemdServiceManager().start("anything")``
+        silently calls the underlying ``systemd_start()`` and starts
+        the active profile's gateway service regardless of the passed
+        name. That is the kind of footgun that is invisible in the
+        current code (every caller checks ``detect_service_manager() ==
+        "s6"`` first) and bites the first future caller that forgets
+        to gate on backend kind.
+        """
+        expected = self._expected_service_name()
+        if name != expected:
+            raise ValueError(
+                f"{type(self).__name__} only manages the gateway service "
+                f"for the active profile (expected {expected!r}, got "
+                f"{name!r}). Use _expected_service_name() to derive the "
+                f"correct value for backend-agnostic callers."
+            )
 
     def register_profile_gateway(
         self,
@@ -211,18 +256,22 @@ class SystemdServiceManager(_RegistrationUnsupportedMixin):
     kind: ServiceManagerKind = "systemd"
 
     def start(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import systemd_start
         systemd_start()
 
     def stop(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import systemd_stop
         systemd_stop()
 
     def restart(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import systemd_restart
         systemd_restart()
 
     def is_running(self, name: str) -> bool:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import _probe_systemd_service_running
         _, running = _probe_systemd_service_running()
         return running
@@ -234,18 +283,22 @@ class LaunchdServiceManager(_RegistrationUnsupportedMixin):
     kind: ServiceManagerKind = "launchd"
 
     def start(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import launchd_start
         launchd_start()
 
     def stop(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import launchd_stop
         launchd_stop()
 
     def restart(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import launchd_restart
         launchd_restart()
 
     def is_running(self, name: str) -> bool:
+        self._validate_lifecycle_name(name)
         from hermes_cli.gateway import _probe_launchd_service_running
         return _probe_launchd_service_running()
 
@@ -281,18 +334,22 @@ class WindowsServiceManager(_RegistrationUnsupportedMixin):
         )
 
     def start(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli import gateway_windows
         gateway_windows.start()
 
     def stop(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli import gateway_windows
         gateway_windows.stop()
 
     def restart(self, name: str) -> None:
+        self._validate_lifecycle_name(name)
         from hermes_cli import gateway_windows
         gateway_windows.restart()
 
     def is_running(self, name: str) -> bool:
+        self._validate_lifecycle_name(name)
         from hermes_cli import gateway_windows
         from hermes_cli.gateway import find_gateway_pids
         if not gateway_windows.is_installed():

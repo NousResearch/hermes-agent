@@ -2070,7 +2070,8 @@ class WeixinAdapter(BasePlatformAdapter):
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
-        assert self._send_session is not None
+        if self._send_session is None:
+            raise RuntimeError("_fetch_url called before send session was initialized")
         # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
         # "Timeout context manager should be used inside a task" errors.
         async def _do_fetch():

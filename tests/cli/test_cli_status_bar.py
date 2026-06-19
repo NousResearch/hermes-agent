@@ -289,12 +289,11 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
 
-    def test_input_rules_hide_after_resize_until_next_input(self):
+    def test_input_rules_hide_while_resize_suppression_is_set(self):
         """When _status_bar_suppressed_after_resize is set, both rules hide.
 
-        See _recover_after_resize — column shrink reflows already-rendered
-        bars into scrollback, so we hide the separators until the user
-        submits the next input, at which point the flag is cleared.
+        Resize recovery owns the transient suppression flag. While it is set,
+        the live input rules should stay hidden.
         """
         cli_obj = _make_cli()
         cli_obj._status_bar_suppressed_after_resize = True

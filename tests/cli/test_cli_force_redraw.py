@@ -71,33 +71,58 @@ class TestForceFullRedraw:
             "invalidate",
         ]
 
-    def test_resize_recovery_uses_prompt_toolkit_original_resize_before_reset(self, bare_cli, monkeypatch):
-        """Resize recovery must preserve prompt_toolkit's tracked cursor state.
-
-        prompt_toolkit's built-in Application._on_resize() starts with
-        renderer.erase(leave_alternate_screen=False), which uses the renderer's
-        cached cursor position to move back to the live prompt origin before
-        erase_down(). If Hermes resets the renderer first, that cursor position
-        is lost and stale prompt glyphs can remain after a narrow resize.
-        """
+    def test_rows_only_resize_recovery_delegates_without_clearing(self, bare_cli, monkeypatch):
         app = MagicMock()
         events = []
         app.renderer.reset.side_effect = lambda **_: events.append("renderer_reset")
         app.invalidate.side_effect = lambda: events.append("invalidate")
         original_on_resize = lambda: events.append("original_resize")
+        monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 100)
+        monkeypatch.setattr(
+            bare_cli,
+            "_schedule_status_bar_unsuppress",
+            lambda _app: events.append("unsuppress"),
+        )
 
         # bare_cli skips __init__, so seed the attribute the way __init__ would.
         bare_cli._status_bar_suppressed_after_resize = False
+        bare_cli._last_resize_width = 100
         bare_cli._recover_after_resize(app, original_on_resize)
 
-        assert events == ["original_resize"]
+        assert events == ["original_resize", "unsuppress"]
         app.renderer.reset.assert_not_called()
         app.invalidate.assert_not_called()
         # Must NOT clear the screen or scrollback — those destroy the banner.
         app.renderer.output.erase_screen.assert_not_called()
         app.renderer.output.write_raw.assert_not_called()
         app.renderer.output.cursor_goto.assert_not_called()
-        # Status bar / input rules must be suppressed until the next prompt.
+        assert bare_cli._status_bar_suppressed_after_resize is True
+
+    def test_width_resize_clears_viewport_before_original_resize(self, bare_cli, monkeypatch):
+        app = MagicMock()
+        events = []
+        original_on_resize = lambda: events.append("original_resize")
+        monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 80)
+        monkeypatch.setattr(
+            bare_cli,
+            "_clear_prompt_toolkit_screen",
+            lambda _app, **kw: events.append(("clear", kw.get("rebuild_scrollback"))),
+        )
+        monkeypatch.setattr(
+            cli_mod, "_replay_output_history", lambda: events.append("replay")
+        )
+        monkeypatch.setattr(
+            bare_cli,
+            "_schedule_status_bar_unsuppress",
+            lambda _app: events.append("unsuppress"),
+        )
+
+        bare_cli._status_bar_suppressed_after_resize = False
+        bare_cli._last_resize_width = 120
+        bare_cli._recover_after_resize(app, original_on_resize)
+
+        assert events == [("clear", False), "replay", "original_resize", "unsuppress"]
+        assert bare_cli._last_resize_width == 80
         assert bare_cli._status_bar_suppressed_after_resize is True
 
     def test_force_redraw_uses_full_screen_clear_without_scrollback_clear(self, bare_cli):
@@ -156,6 +181,42 @@ class TestForceFullRedraw:
         timers[1].fire()
         assert ("recover", "second") in calls
         assert bare_cli._resize_recovery_pending is False
+
+    def test_status_bar_unsuppress_is_debounced(self, bare_cli, monkeypatch):
+        timers = []
+        calls = []
+
+        class FakeTimer:
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                timers.append(self)
+
+            def start(self):
+                calls.append(("start", self.delay))
+
+            def cancel(self):
+                self.cancelled = True
+                calls.append(("cancel", self.delay))
+
+            def fire(self):
+                self.callback()
+
+        app = MagicMock()
+        app.loop.call_soon_threadsafe.side_effect = lambda cb: cb()
+        monkeypatch.setattr(cli_mod.threading, "Timer", FakeTimer)
+        bare_cli._status_bar_suppressed_after_resize = True
+
+        bare_cli._schedule_status_bar_unsuppress(app, delay=0.35)
+        bare_cli._schedule_status_bar_unsuppress(app, delay=0.35)
+
+        assert len(timers) == 2
+        assert timers[0].cancelled is True
+        timers[1].fire()
+        assert bare_cli._status_bar_suppressed_after_resize is False
+        app.invalidate.assert_called_once()
 
     def test_invalidate_is_suppressed_while_resize_recovery_is_pending(self, bare_cli):
         app = MagicMock()

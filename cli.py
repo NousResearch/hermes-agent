@@ -3796,6 +3796,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._resize_recovery_lock = threading.Lock()
         self._resize_recovery_timer = None
         self._resize_recovery_pending = False
+        self._status_bar_unsuppress_timer = None
+        self._last_resize_width = None
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -3933,13 +3935,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state.
 
-        Unlike _force_full_redraw, we do NOT clear the physical screen or
-        scrollback here.  The startup banner and tool summary are printed
-        before prompt_toolkit owns the live chrome, so they live in normal
-        terminal scrollback.  Erasing the screen on SIGWINCH removes that
-        startup UI and ``_replay_output_history`` cannot reconstruct it
-        (the banner was never added to ``_OUTPUT_HISTORY``).
-
         Let prompt_toolkit's own resize path run with its renderer cursor
         cache intact. Its Application._on_resize() starts with
         renderer.erase(leave_alternate_screen=False), which needs the cached
@@ -3948,15 +3943,73 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         origin and can leave stale prompt glyphs after a narrow resize.
 
         We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
-        status bar and input separator rules stay hidden until the next user
-        input.  On column shrink the terminal reflows already-rendered status
-        bar rows into scrollback before prompt_toolkit can erase them; drawing
-        a fresh full-width bar immediately makes the old and new versions
-        look duplicated (#19280, #22976).  Clearing the suppression on the
-        next prompt restores the bar cleanly.
+        status bar and input separator rules stay hidden while terminal
+        reflow settles.  On column shrink the terminal reflows already-rendered
+        status bar rows before prompt_toolkit can erase them; drawing a fresh
+        full-width bar immediately makes the old and new versions look
+        duplicated (#19280, #22976).
+
+        Suppression alone is not enough on a width change: prompt_toolkit's
+        cached cursor position can undershoot the newly reflowed rows and leave
+        stale chrome above the live origin.  On width changes we clear the
+        visible viewport with CSI 2J (not CSI 3J, so scrollback is preserved)
+        and replay Hermes' output history before delegating to prompt_toolkit.
+        Row-count-only changes skip the clear because they do not reflow
+        full-width chrome.
         """
         self._status_bar_suppressed_after_resize = True
+        try:
+            new_width = self._get_tui_terminal_width()
+        except Exception:
+            new_width = None
+        prev_width = getattr(self, "_last_resize_width", None)
+        width_changed = new_width is not None and new_width != prev_width
+        if width_changed:
+            try:
+                self._clear_prompt_toolkit_screen(app, rebuild_scrollback=False)
+                _replay_output_history()
+            except Exception:
+                pass
+        if new_width is not None:
+            self._last_resize_width = new_width
         original_on_resize()
+        self._schedule_status_bar_unsuppress(app)
+
+    def _schedule_status_bar_unsuppress(self, app, delay: float = 0.35) -> None:
+        try:
+            old_timer = getattr(self, "_status_bar_unsuppress_timer", None)
+            if old_timer is not None:
+                try:
+                    old_timer.cancel()
+                except Exception:
+                    pass
+
+            def _clear():
+                self._status_bar_suppressed_after_resize = False
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+
+            def _fire():
+                try:
+                    loop = getattr(app, "loop", None)
+                except Exception:
+                    loop = None
+                if loop is not None:
+                    try:
+                        loop.call_soon_threadsafe(_clear)
+                        return
+                    except Exception:
+                        pass
+                _clear()
+
+            timer = threading.Timer(delay, _fire)
+            timer.daemon = True
+            self._status_bar_unsuppress_timer = timer
+            timer.start()
+        except Exception:
+            self._status_bar_suppressed_after_resize = False
 
     def _schedule_resize_recovery(
         self, app, original_on_resize, delay: float = 0.12

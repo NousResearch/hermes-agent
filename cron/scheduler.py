@@ -836,7 +836,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         except Exception as ex:
                             target_errors.append(f"live adapter send failed: {ex}")
                             raise
-                        
+
                         if send_result is None or not getattr(send_result, "success", True):
                             err = getattr(send_result, "error", "unknown") if send_result else "no response from adapter"
                             msg = f"live adapter send to {platform_name}:{chat_id} failed: {err}"

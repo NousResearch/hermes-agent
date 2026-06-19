@@ -157,6 +157,10 @@ This fork follows the same core engineering constraints as upstream Hermes:
 
 ## Quick Start
 
+On Windows, the supported bootstrap path is the PowerShell installer in
+`scripts/install.ps1`. Clone-based development is still available when you want
+to work directly from source.
+
 ```powershell
 git clone https://github.com/zapabob/hermes-agent.git
 cd hermes-agent

@@ -2588,14 +2588,29 @@ class GatewaySlashCommandsMixin:
                 # session_id for the continuation.  Write the compressed messages
                 # into the NEW session so the original history stays searchable.
                 new_session_id = tmp_agent.session_id
-                if new_session_id != session_entry.session_id:
+                rotated = new_session_id != session_entry.session_id
+                if rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
                     self._sync_telegram_topic_binding(
                         source, session_entry, reason="compress-command",
                     )
 
-                self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Only rewrite the transcript when rotation actually produced a
+                # NEW session id. If _compress_context could not rotate (e.g.
+                # _session_db unavailable, or the DB split raised), session_id
+                # is unchanged and rewrite_transcript() would DELETE the
+                # original messages and replace them with only the compressed
+                # summary — permanent data loss (#44794, #39704). In that case
+                # leave the original transcript intact.
+                if rotated:
+                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                else:
+                    logger.warning(
+                        "Manual /compress: session rotation did not occur "
+                        "(session_id unchanged) — preserving original transcript "
+                        "instead of overwriting it (#44794)."
+                    )
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0

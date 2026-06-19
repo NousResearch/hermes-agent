@@ -118,6 +118,22 @@ function isSessionNotFoundError(error: unknown): boolean {
   return /session not found/i.test(message)
 }
 
+function storedSessionProfile(storedSessionId: string | null): string | undefined {
+  if (!storedSessionId) {
+    return undefined
+  }
+  const session = $sessions.get().find(s => s.id === storedSessionId || s._lineage_root_id === storedSessionId)
+  const profile = session?.profile?.trim()
+
+  return profile || undefined
+}
+
+function sessionResumeParams(storedSessionId: string): { session_id: string; profile?: string } {
+  const profile = storedSessionProfile(storedSessionId)
+
+  return profile ? { session_id: storedSessionId, profile } : { session_id: storedSessionId }
+}
+
 // The gateway refuses prompt.submit while a turn is running (4009 "session
 // busy"). It's a transient concurrency guard, never a user-facing error: a
 // submit racing the settle edge (or a rewind interrupting mid-turn) just waits
@@ -710,9 +726,10 @@ export function usePromptActions({
         } catch (firstErr) {
           if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current
-            })
+            const resumed = await requestGateway<{ session_id: string }>(
+              'session.resume',
+              sessionResumeParams(selectedStoredSessionIdRef.current)
+            )
 
             const recoveredId = resumed?.session_id
 
@@ -1114,8 +1131,15 @@ export function usePromptActions({
 
             const finalTitle = (result?.title || arg).trim()
             const queued = result?.pending === true
+            const storedId = result?.session_key || selectedStoredSessionIdRef.current || sessionId
 
-            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+            setSessions(prev =>
+              prev.map(s =>
+                s.id === storedId || s._lineage_root_id === storedId || s.id === sessionId
+                  ? { ...s, title: finalTitle || null }
+                  : s
+              )
+            )
             await refreshSessions().catch(() => undefined)
             renderSlashOutput(
               finalTitle
@@ -1411,9 +1435,10 @@ export function usePromptActions({
 
       if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
         try {
-          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: selectedStoredSessionIdRef.current
-          })
+          const resumed = await requestGateway<{ session_id: string }>(
+            'session.resume',
+            sessionResumeParams(selectedStoredSessionIdRef.current)
+          )
 
           const recoveredId = resumed?.session_id
 

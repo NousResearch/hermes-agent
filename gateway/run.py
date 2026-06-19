@@ -5147,14 +5147,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.relay import (
                 register_relay_adapter,
                 relay_url,
-                self_provision_if_managed,
+                self_provision_relay,
             )
 
-            # Managed boot: self-provision relay creds in-process (resolve the
-            # agent's NAS token -> POST /relay/provision -> set GATEWAY_RELAY_* in
-            # os.environ) BEFORE registration reads them. No-op when not managed,
-            # relay unconfigured, or a secret is already pinned. Never raises.
-            self_provision_if_managed()
+            # Boot-time relay self-provision: resolve the agent's NAS token ->
+            # POST /relay/provision -> set GATEWAY_RELAY_* in os.environ BEFORE
+            # registration reads them. No-op when relay is unconfigured, a secret
+            # is already pinned, or no NAS token resolves (self-hosted, unenrolled).
+            # Never raises.
+            self_provision_relay()
 
             if register_relay_adapter():
                 logger.info("relay adapter registered (connector at %s)", relay_url())

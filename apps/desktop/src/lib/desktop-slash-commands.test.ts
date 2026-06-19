@@ -40,6 +40,13 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
   })
 
+  it('does not classify hidden built-ins as user extensions', () => {
+    for (const command of ['/subgoal', '/whoami', '/codex-runtime', '/memory', '/bundles', '/auth', '/credits', '/billing']) {
+      expect(isDesktopSlashSuggestion(command)).toBe(false)
+      expect(isDesktopSlashCommand(command)).toBe(false)
+    }
+  })
+
   it('surfaces /tools, /save, and /personality on the desktop', () => {
     expect(isDesktopSlashSuggestion('/tools')).toBe(true)
     expect(isDesktopSlashSuggestion('/save')).toBe(true)
@@ -75,7 +82,8 @@ describe('desktop slash command curation', () => {
           name: 'Session',
           pairs: [
             ['/new', 'Start a new session'],
-            ['/clear', 'Clear terminal screen']
+            ['/clear', 'Clear terminal screen'],
+            ['/subgoal', 'Create a subgoal']
           ]
         },
         {

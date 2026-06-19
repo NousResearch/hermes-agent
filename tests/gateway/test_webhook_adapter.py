@@ -86,7 +86,11 @@ def _mock_request(headers=None, body=b"", content_length=None, match_info=None):
     async def _read():
         return body
 
+    async def _iter_chunked(_size):
+        yield body
+
     req.read = _read
+    req.content.iter_chunked = _iter_chunked
     return req
 
 
@@ -740,6 +744,21 @@ class TestBodySize:
                 headers={"Content-Length": "999999"},
             )
             assert resp.status == 413
+
+    @pytest.mark.asyncio
+    async def test_chunked_payload_without_content_length_is_capped(self):
+        """Missing Content-Length still rejects once the streamed body exceeds the cap."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=10)
+        req = _mock_request(
+            body=b'{"data":"this body is too large"}',
+            match_info={"route_name": "big"},
+        )
+        req.content_length = None
+
+        resp = await adapter._handle_webhook(req)
+
+        assert resp.status == 413
 
 
 # ===================================================================

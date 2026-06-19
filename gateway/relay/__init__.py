@@ -79,40 +79,6 @@ def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
     return (gateway_id or None, secret or None)
 
 
-def relay_inbound_config() -> tuple[Optional[str], Optional[str], int]:
-    """Resolve (delivery_key, bind_host, bind_port) for the inbound receiver.
-
-    The connector delivers normalized inbound events to this gateway over a
-    SIGNED HTTP POST (not the outbound WS), verified with the per-tenant delivery
-    key issued at enrollment (``GATEWAY_RELAY_DELIVERY_KEY``). The receiver only
-    starts when a delivery key AND a bind port are configured — a gateway with no
-    public inbound URL (e.g. a purely outbound dev run) simply doesn't run it.
-
-    Env first (Docker), then ``gateway.relay_delivery_key`` /
-    ``gateway.relay_inbound_host`` / ``gateway.relay_inbound_port`` in config.yaml.
-    Port 0 (default/unset) -> receiver disabled.
-    """
-    key = os.environ.get("GATEWAY_RELAY_DELIVERY_KEY", "").strip()
-    host = os.environ.get("GATEWAY_RELAY_INBOUND_HOST", "").strip()
-    port_raw = os.environ.get("GATEWAY_RELAY_INBOUND_PORT", "").strip()
-    if not (key and port_raw):
-        try:
-            from gateway.run import _load_gateway_config  # late import to avoid cycle
-
-            cfg = (_load_gateway_config().get("gateway") or {})
-            key = key or str(cfg.get("relay_delivery_key", "") or "").strip()
-            host = host or str(cfg.get("relay_inbound_host", "") or "").strip()
-            if not port_raw:
-                port_raw = str(cfg.get("relay_inbound_port", "") or "").strip()
-        except Exception:  # noqa: BLE001 - config absence/parse must never crash registration
-            pass
-    try:
-        port = int(port_raw) if port_raw else 0
-    except ValueError:
-        port = 0
-    return (key or None, host or "0.0.0.0", port)
-
-
 def relay_endpoint() -> Optional[str]:
     """The gateway's own PUBLIC inbound URL, asserted to the connector at provision.
 
@@ -238,21 +204,33 @@ def _post_provision(
     return payload
 
 
-def self_provision_if_managed() -> bool:
-    """Managed-boot self-provision: mint relay creds in-process, no human, no disk.
+def self_provision_relay() -> bool:
+    """Boot-time relay self-provision: mint relay creds in-process, no human, no disk.
 
-    Fires only on a MANAGED boot (``is_managed()``) with relay configured
-    (``relay_url()`` set) and NO per-gateway secret already present. In that case
-    the runtime resolves the agent's own Nous access token (the same
+    Fires when relay is configured (``relay_url()`` set) and NO per-gateway secret
+    is already present, AND the agent can resolve its own Nous access token. In
+    that case the runtime resolves the agent's own Nous access token (the same
     ``resolve_nous_access_token()`` the enroll CLI / dashboard register use),
     POSTs ``/relay/provision`` asserting its own endpoint + route keys, and sets
     ``GATEWAY_RELAY_ID`` / ``GATEWAY_RELAY_SECRET`` / ``GATEWAY_RELAY_DELIVERY_KEY``
     into ``os.environ`` so the subsequent ``register_relay_adapter()`` picks them
-    up. The creds live ONLY in process memory — never written to ``~/.hermes/.env``
-    (``save_env_value`` refuses under managed anyway, and keeping the secret off
-    any volume is the stronger posture).
+    up. The creds live ONLY in process memory — never written to ``~/.hermes/.env``.
 
-    Stateless: process-env creds don't survive a restart, so a managed container
+    The trigger is deliberately NOT ``is_managed()``: that means
+    "package-manager/NixOS-managed" and is False on a NAS-hosted Fly agent (which
+    sets neither ``HERMES_MANAGED`` nor a ``.managed`` marker), so gating on it
+    blocked the exact hosted case this is for. The real signal is "you pointed me
+    at a connector and didn't pin a secret" — which is both NAS-independent and
+    self-guarding:
+
+      - A NAS-hosted agent: has ``GATEWAY_RELAY_URL``, no pinned secret, and a
+        bootstrapped NAS token -> self-provisions.
+      - A self-hosted operator who ran ``hermes gateway enroll``: has a PINNED
+        ``GATEWAY_RELAY_SECRET`` -> skipped (the secret-present guard below).
+      - A self-hosted box with a relay URL but no NAS identity:
+        ``resolve_nous_access_token()`` fails -> graceful no-op.
+
+    Stateless: process-env creds don't survive a restart, so a hosted container
     re-provisions every boot; the connector's rotation window covers a still-
     connected prior instance. An explicitly-pinned ``GATEWAY_RELAY_SECRET`` (env
     or config) is RESPECTED — self-provision skips so an operator pin isn't
@@ -267,18 +245,12 @@ def self_provision_if_managed() -> bool:
 
     logger = logging.getLogger("gateway.relay")
 
-    try:
-        from hermes_cli.config import is_managed
-    except Exception:  # noqa: BLE001
-        return False
-
-    if not is_managed():
-        return False
     dial_url = relay_url()
     if not dial_url:
         return False
 
-    # Respect an already-present (pinned/stamped) secret — don't stomp it.
+    # Respect an already-present (pinned/stamped) secret — don't stomp it. This
+    # is also what makes a self-hosted, enrolled gateway skip self-provision.
     existing_id, existing_secret = relay_connection_auth()
     if existing_id and existing_secret:
         logger.info("relay self-provision skipped: GATEWAY_RELAY_SECRET already set")
@@ -289,6 +261,8 @@ def self_provision_if_managed() -> bool:
 
         access_token = resolve_nous_access_token()
     except Exception as exc:  # noqa: BLE001 - boot must survive a token failure
+        # No resolvable NAS identity (e.g. a self-hosted box that hasn't enrolled)
+        # -> nothing to provision with; skip quietly and let the gateway boot.
         logger.warning("relay self-provision skipped: could not resolve Nous token (%s)", exc)
         return False
 
@@ -318,8 +292,11 @@ def self_provision_if_managed() -> bool:
         logger.warning("relay self-provision failed (%s); gateway will boot without relay auth", exc)
         return False
 
-    # Set creds in-process so register_relay_adapter() + relay_inbound_config()
-    # read them from os.environ. Never logged.
+    # Set creds in-process so register_relay_adapter() reads them from os.environ
+    # (the per-gateway secret authenticates the outbound WS upgrade). The delivery
+    # key is still issued by the connector and persisted for forward-compat, but
+    # inbound now rides the WS (no HTTP receiver), so it is not consumed here.
+    # Never logged.
     os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
     os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")
     os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")

@@ -148,6 +148,7 @@ function ResumeHarness({
     selectedStoredSessionIdRef: ref<string | null>(null),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
+    resetViewSync: vi.fn(),
     updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
   })
 

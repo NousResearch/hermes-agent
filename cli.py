@@ -1343,6 +1343,17 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
         except Exception as e:
             logger.debug("Error copying .worktreeinclude entries: %s", e)
 
+    # Lock the worktree so other processes (and `git worktree remove`) can see
+    # it is actively in use.  Fail-soft: a lock failure never blocks the session.
+    try:
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", f"hermes pid={os.getpid()}", str(wt_path)],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        logger.debug("Worktree locked: %s (pid=%s)", wt_path, os.getpid())
+    except Exception as e:
+        logger.debug("git worktree lock failed (non-fatal): %s", e)
+
     info = {
         "path": str(wt_path),
         "branch": branch_name,
@@ -1424,6 +1435,16 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
     # Remove worktree (even if working tree is dirty — uncommitted
     # changes without unpushed commits are just artifacts)
+    # Unlock first so `git worktree remove` isn't blocked by the lock we
+    # placed at creation time.  Fail-soft — never block cleanup.
+    try:
+        subprocess.run(
+            ["git", "worktree", "unlock", wt_path],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+    except Exception as e:
+        logger.debug("git worktree unlock failed (non-fatal): %s", e)
+
     try:
         subprocess.run(
             ["git", "worktree", "remove", wt_path, "--force"],
@@ -3651,6 +3672,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
+        self._session_db_unavailable = False
         try:
             from hermes_state import SessionDB
 
@@ -6301,6 +6323,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
+            # Flush any un-persisted messages from the current turn to the
+            # old session *before* rotating.  /new can be called mid-turn
+            # when _flush_messages_to_session_db() has not yet run — without
+            # this, messages generated during the current turn are silently
+            # lost on session rotation (#47202).
+            if self.agent:
+                try:
+                    self.agent._flush_messages_to_session_db(
+                        self.conversation_history
+                    )
+                except Exception:
+                    pass  # best-effort
             try:
                 self._session_db.end_session(old_session_id, "new_session")
             except Exception:
@@ -7374,7 +7408,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 if ctx is None:
                     raise RuntimeError("inventory context unavailable")
-                providers = build_models_payload(ctx, max_models=50)["providers"]
+                providers = build_models_payload(ctx)["providers"]
             except Exception:
                 providers = []
 

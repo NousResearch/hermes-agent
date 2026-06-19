@@ -1292,6 +1292,19 @@ def _session_db(session: dict):
                 db.close()
 
 
+def _session_db_for_immediate_use(session: dict):
+    profile_home = session.get("profile_home")
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            return SessionDB(db_path=Path(profile_home) / "state.db")
+        except Exception:
+            logger.debug("failed to open profile db for session", exc_info=True)
+            return None
+    return _get_db()
+
+
 def _set_session_cwd(session: dict, cwd: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(str(cwd)))
     if not os.path.isdir(resolved):
@@ -4444,6 +4457,27 @@ def _(rid, params: dict) -> dict:
             found = {}
         else:
             return _err(rid, 4007, "session not found")
+
+    # Follow the compression-continuation chain to the live tip so a resume on
+    # a rotated-out parent id binds to the descendant that actually holds the
+    # post-compression turns. Auto-compression ends the session and forks a
+    # continuation child; without this, resuming the original id (the desktop's
+    # routed id when the chat was opened before it rotated) reloads the parent
+    # transcript and the response generated after compression is missing — the
+    # "I came back and the reply isn't there" bug on large sessions. Resolving
+    # here also re-anchors the fast path below so a still-live rotated session
+    # is reused (by its new key) instead of rebuilding a duplicate agent on the
+    # stale parent. Skipped for lazy watch windows, which intentionally attach
+    # to the exact child branch they were opened on.
+    if found and not is_truthy_value(params.get("lazy", False)):
+        try:
+            tip = db.resolve_resume_session_id(target)
+        except Exception:
+            tip = target
+        if tip and tip != target:
+            target = tip
+            found = db.get_session(target) or found
+
     profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
         profile_home
     )
@@ -4954,30 +4988,30 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5007)
     key = session["session_key"]
     if "title" not in params:
         fallback = session.get("pending_title") or ""
-        try:
-            resolved_title = db.get_session_title(key) or ""
-            if fallback:
-                if db.set_session_title(key, fallback):
-                    session["pending_title"] = None
-                    resolved_title = fallback
-                else:
-                    existing_row = db.get_session(key)
-                    existing_title = ((existing_row or {}).get("title") or "").strip()
-                    if existing_title == fallback:
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5007)
+            try:
+                resolved_title = db.get_session_title(key) or ""
+                if fallback:
+                    if db.set_session_title(key, fallback):
                         session["pending_title"] = None
                         resolved_title = fallback
-                    elif not resolved_title:
-                        resolved_title = fallback
-            elif resolved_title:
-                session["pending_title"] = None
-        except Exception:
-            resolved_title = fallback
+                    else:
+                        existing_row = db.get_session(key)
+                        existing_title = ((existing_row or {}).get("title") or "").strip()
+                        if existing_title == fallback:
+                            session["pending_title"] = None
+                            resolved_title = fallback
+                        elif not resolved_title:
+                            resolved_title = fallback
+                elif resolved_title:
+                    session["pending_title"] = None
+            except Exception:
+                resolved_title = fallback
         return _ok(
             rid,
             {
@@ -4988,10 +5022,13 @@ def _(rid, params: dict) -> dict:
     title = (params.get("title", "") or "").strip()
     if not title:
         return _err(rid, 4021, "title required")
+    db = _session_db_for_immediate_use(session)
+    if db is None:
+        return _db_unavailable_error(rid, code=5007)
     try:
         if db.set_session_title(key, title):
             session["pending_title"] = None
-            return _ok(rid, {"pending": False, "title": title})
+            return _ok(rid, {"pending": False, "session_key": key, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
         existing_row = db.get_session(key)
         if existing_row:
@@ -5000,6 +5037,7 @@ def _(rid, params: dict) -> dict:
                 rid,
                 {
                     "pending": False,
+                    "session_key": key,
                     "title": (existing_row.get("title") or title),
                 },
             )
@@ -5017,15 +5055,19 @@ def _(rid, params: dict) -> dict:
         with _session_db(session) as scoped_db:
             if scoped_db is not None and scoped_db.set_session_title(key, title):
                 session["pending_title"] = None
-                return _ok(rid, {"pending": False, "title": title})
+                return _ok(rid, {"pending": False, "session_key": key, "title": title})
         # Row creation didn't take (DB unavailable, or a concurrent writer) —
         # fall back to queuing so the post-turn apply block can still recover.
         session["pending_title"] = title
-        return _ok(rid, {"pending": True, "title": title})
+        return _ok(rid, {"pending": True, "session_key": key, "title": title})
     except ValueError as e:
         return _err(rid, 4022, str(e))
     except Exception as e:
         return _err(rid, 5007, str(e))
+    finally:
+        if session.get("profile_home"):
+            with contextlib.suppress(Exception):
+                db.close()
 
 
 @method("handoff.request")
@@ -9582,7 +9624,6 @@ def _(rid, params: dict) -> dict:
             canonical_order=True,
             pricing=True,
             capabilities=True,
-            max_models=50,
         )
         return _ok(rid, payload)
     except Exception as e:

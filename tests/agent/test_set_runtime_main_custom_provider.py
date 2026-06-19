@@ -112,6 +112,40 @@ class TestSetRuntimeMainCustomProvider:
         finally:
             mod.clear_runtime_main()
 
+    def test_resolve_vision_uses_globals_for_custom_provider(self):
+        """Vision auto also reads base_url/api_key from globals when main_runtime is None."""
+        import agent.auxiliary_client as mod
+
+        mod.clear_runtime_main()
+        try:
+            mod.set_runtime_main(
+                "custom:test-router",
+                "qwen-vl-max",
+                base_url="https://vision-endpoint.example.com/v1",
+                api_key="sk-vision",
+                api_mode="chat_completions",
+            )
+
+            with patch.object(mod, "_resolve_task_provider_model", return_value=("auto", None, None, None, None)), patch.object(
+                mod, "resolve_provider_client"
+            ) as mock_resolve:
+                mock_resolve.return_value = (MagicMock(), "qwen-vl-max")
+
+                provider, client, resolved = mod.resolve_vision_provider_client(main_runtime=None)
+
+                assert provider == "custom:test-router"
+                assert client is not None
+                assert resolved == "qwen-vl-max"
+                mock_resolve.assert_called_once()
+                call_args = mock_resolve.call_args
+                assert call_args[0][0] == "custom"
+                assert call_args[1]["explicit_base_url"] == "https://vision-endpoint.example.com/v1"
+                assert call_args[1]["explicit_api_key"] == "sk-vision"
+                assert call_args[1]["api_mode"] == "chat_completions"
+                assert call_args[1]["is_vision"] is True
+        finally:
+            mod.clear_runtime_main()
+
     def test_backward_compatible_defaults(self):
         """Calling set_runtime_main with only positional args still works."""
         import agent.auxiliary_client as mod

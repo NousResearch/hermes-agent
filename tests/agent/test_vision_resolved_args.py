@@ -1,6 +1,8 @@
 """Test that call_llm vision path passes resolved provider args, not raw ones."""
 
-from unittest.mock import patch, MagicMock
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import patch, MagicMock, AsyncMock
 
 
 def test_vision_call_uses_resolved_provider_args():
@@ -35,6 +37,172 @@ def test_vision_call_uses_resolved_provider_args():
     assert call_args.kwargs["model"] == "my-resolved-model"
     assert call_args.kwargs["base_url"] == "http://resolved"
     assert call_args.kwargs["api_key"] == "resolved-key"
+
+
+def test_vision_call_passes_main_runtime():
+    """Vision call_llm should forward main_runtime into auto vision resolution."""
+    from agent.auxiliary_client import call_llm
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="description"))],
+        usage=MagicMock(prompt_tokens=10, completion_tokens=5),
+    )
+    main_runtime = {
+        "provider": "custom:qwen",
+        "model": "qwen-vl-max",
+        "base_url": "https://qwen.example.com/v1",
+        "api_key": "sk-qwen",
+        "api_mode": "chat_completions",
+    }
+
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("auto", None, None, None, None),
+    ), patch(
+        "agent.auxiliary_client.resolve_vision_provider_client",
+        return_value=("custom:qwen", fake_client, "qwen-vl-max"),
+    ) as mock_vision:
+        call_llm(
+            "vision",
+            main_runtime=main_runtime,
+            messages=[{"role": "user", "content": "describe this"}],
+        )
+
+    assert mock_vision.call_args.kwargs["main_runtime"] == main_runtime
+
+
+def test_async_vision_call_passes_main_runtime():
+    """Async vision path should forward main_runtime into auto vision resolution."""
+
+    async def _run():
+        from agent.auxiliary_client import async_call_llm
+
+        fake_create = AsyncMock(
+            return_value=MagicMock(
+                choices=[MagicMock(message=MagicMock(content="description"))],
+                usage=MagicMock(prompt_tokens=10, completion_tokens=5),
+            ),
+        )
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+        )
+        main_runtime = {
+            "provider": "custom:qwen",
+            "model": "qwen-vl-max",
+            "base_url": "https://qwen.example.com/v1",
+            "api_key": "sk-qwen",
+            "api_mode": "chat_completions",
+        }
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            return_value=("custom:qwen", fake_client, "qwen-vl-max"),
+        ) as mock_vision:
+            await async_call_llm(
+                "vision",
+                main_runtime=main_runtime,
+                messages=[{"role": "user", "content": "describe this"}],
+            )
+
+        assert mock_vision.call_args.kwargs["main_runtime"] == main_runtime
+
+    asyncio.run(_run())
+
+
+def test_vision_retry_sync_passes_main_runtime():
+    """Sync same-provider retry must rebuild vision clients with main_runtime."""
+    from agent.auxiliary_client import _retry_same_provider_sync
+
+    response = MagicMock(
+        choices=[MagicMock(message=MagicMock(content="description"))],
+        usage=MagicMock(prompt_tokens=10, completion_tokens=5),
+    )
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = response
+    main_runtime = {
+        "provider": "custom:qwen",
+        "model": "qwen-vl-max",
+        "base_url": "https://qwen.example.com/v1",
+        "api_key": "sk-qwen",
+        "api_mode": "chat_completions",
+    }
+
+    with patch(
+        "agent.auxiliary_client.resolve_vision_provider_client",
+        return_value=("custom:qwen", fake_client, "qwen-vl-max"),
+    ) as mock_vision:
+        result = _retry_same_provider_sync(
+            task="vision",
+            resolved_provider="auto",
+            resolved_model=None,
+            resolved_base_url=None,
+            resolved_api_key=None,
+            resolved_api_mode=None,
+            main_runtime=main_runtime,
+            final_model="qwen-vl-max",
+            messages=[{"role": "user", "content": "describe this"}],
+            temperature=None,
+            max_tokens=None,
+            tools=None,
+            effective_timeout=30.0,
+            effective_extra_body={},
+        )
+
+    assert result is response
+    assert mock_vision.call_args.kwargs["main_runtime"] == main_runtime
+
+
+def test_vision_retry_async_passes_main_runtime():
+    """Async same-provider retry must rebuild vision clients with main_runtime."""
+
+    async def _run():
+        from agent.auxiliary_client import _retry_same_provider_async
+
+        response = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="description"))],
+            usage=MagicMock(prompt_tokens=10, completion_tokens=5),
+        )
+        fake_create = AsyncMock(return_value=response)
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+        )
+        main_runtime = {
+            "provider": "custom:qwen",
+            "model": "qwen-vl-max",
+            "base_url": "https://qwen.example.com/v1",
+            "api_key": "sk-qwen",
+            "api_mode": "chat_completions",
+        }
+
+        with patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            return_value=("custom:qwen", fake_client, "qwen-vl-max"),
+        ) as mock_vision:
+            result = await _retry_same_provider_async(
+                task="vision",
+                resolved_provider="auto",
+                resolved_model=None,
+                resolved_base_url=None,
+                resolved_api_key=None,
+                resolved_api_mode=None,
+                main_runtime=main_runtime,
+                final_model="qwen-vl-max",
+                messages=[{"role": "user", "content": "describe this"}],
+                temperature=None,
+                max_tokens=None,
+                tools=None,
+                effective_timeout=30.0,
+                effective_extra_body={},
+            )
+
+        assert result is response
+        assert mock_vision.call_args.kwargs["main_runtime"] == main_runtime
+
+    asyncio.run(_run())
 
 
 def test_vision_base_url_override_keeps_explicit_provider():

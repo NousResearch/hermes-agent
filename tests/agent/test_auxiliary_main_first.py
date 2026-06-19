@@ -355,6 +355,43 @@ class TestResolveVisionMainFirst:
         assert mock_resolve.call_args.args[1] == "mimo-v2.5"
         assert mock_resolve.call_args.kwargs.get("is_vision") is True
 
+    def test_custom_main_vision_inherits_runtime_endpoint(self):
+        """Vision auto must inherit base_url/api_key from the live main runtime."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider",
+            return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="config-model",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ):
+            mock_resolve.return_value = (MagicMock(), "qwen-vl-max")
+
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client(
+                main_runtime={
+                    "provider": "custom:qwen",
+                    "model": "qwen-vl-max",
+                    "base_url": "https://qwen.example.com/v1",
+                    "api_key": "sk-qwen",
+                    "api_mode": "chat_completions",
+                },
+            )
+
+        assert provider == "custom:qwen"
+        assert client is not None
+        assert model == "qwen-vl-max"
+        assert mock_resolve.call_args.args[0] == "custom"
+        assert mock_resolve.call_args.args[1] == "qwen-vl-max"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] == "https://qwen.example.com/v1"
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == "sk-qwen"
+        assert mock_resolve.call_args.kwargs["api_mode"] == "chat_completions"
+        assert mock_resolve.call_args.kwargs["is_vision"] is True
+
     def test_copilot_vision_sets_vision_header(self, monkeypatch):
         """Copilot vision requests include the header required for vision routing."""
         monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")

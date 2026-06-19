@@ -2222,6 +2222,25 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     return normalized
 
 
+def _main_runtime_with_connection_fallback(
+    main_runtime: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return main runtime with process-local connection fields filled in.
+
+    ``set_runtime_main()`` persists base_url/api_key/api_mode in process-local
+    globals so auxiliary routing can inherit the live main-session endpoint
+    even when the caller does not pass ``main_runtime`` explicitly.
+    """
+    runtime = _normalize_main_runtime(main_runtime)
+    if not runtime.get("base_url") and _RUNTIME_MAIN_BASE_URL:
+        runtime["base_url"] = _RUNTIME_MAIN_BASE_URL
+    if not runtime.get("api_key") and _RUNTIME_MAIN_API_KEY:
+        runtime["api_key"] = _RUNTIME_MAIN_API_KEY
+    if not runtime.get("api_mode") and _RUNTIME_MAIN_API_MODE:
+        runtime["api_mode"] = _RUNTIME_MAIN_API_MODE
+    return runtime
+
+
 def _get_provider_chain() -> List[tuple]:
     """Return the ordered provider detection chain.
 
@@ -2797,6 +2816,7 @@ def _retry_same_provider_sync(
             model=final_model,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
+            main_runtime=main_runtime,
             async_mode=False,
         )
     else:
@@ -2840,6 +2860,7 @@ async def _retry_same_provider_async(
     resolved_base_url: Optional[str],
     resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str],
+    main_runtime: Optional[Dict[str, Any]],
     final_model: Optional[str],
     messages: list,
     temperature: Optional[float],
@@ -2854,6 +2875,7 @@ async def _retry_same_provider_async(
             model=final_model,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
+            main_runtime=main_runtime,
             async_mode=True,
         )
     else:
@@ -2864,6 +2886,7 @@ async def _retry_same_provider_async(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
     if retry_client is None:
         raise RuntimeError(
@@ -3238,24 +3261,12 @@ def _resolve_auto(
     """
     global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
-    runtime = _normalize_main_runtime(main_runtime)
+    runtime = _main_runtime_with_connection_fallback(main_runtime)
     runtime_provider = runtime.get("provider", "")
     runtime_model = str(runtime.get("model") or "")
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
-
-    # Fall back to process-local globals when main_runtime dict was not
-    # provided or was incomplete.  ``set_runtime_main()`` now records
-    # base_url/api_key/api_mode alongside provider/model, so custom:
-    # providers get the full credential surface in Step 1 of the
-    # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -4244,6 +4255,7 @@ def resolve_vision_provider_client(
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
     async_mode: bool = False,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
@@ -4257,6 +4269,12 @@ def resolve_vision_provider_client(
         "vision", provider, model, base_url, api_key
     )
     requested = _normalize_vision_provider(requested)
+    runtime = _main_runtime_with_connection_fallback(main_runtime)
+    runtime_provider = runtime.get("provider", "")
+    runtime_model = str(runtime.get("model") or "")
+    runtime_base_url = str(runtime.get("base_url") or "")
+    runtime_api_key = runtime.get("api_key", "")
+    runtime_api_mode = str(runtime.get("api_mode") or "")
 
     def _finalize(resolved_provider: str, sync_client: Any, default_model: Optional[str]):
         if sync_client is None:
@@ -4295,8 +4313,8 @@ def resolve_vision_provider_client(
         #   2. OpenRouter  (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
         #   4. Stop
-        main_provider = _read_main_provider()
-        main_model = _read_main_model()
+        main_provider = str(runtime_provider or _read_main_provider() or "")
+        main_model = str(runtime_model or _read_main_model() or "")
         if main_provider and main_provider not in {"auto", ""}:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
@@ -4340,10 +4358,26 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
+                resolved_provider = main_provider
+                explicit_base_url = runtime_base_url or None
+                explicit_api_key = None
+                if runtime_base_url and (
+                    main_provider == "custom" or main_provider.startswith("custom:")
+                ):
+                    resolved_provider = "custom"
+                    explicit_base_url = runtime_base_url
+                    explicit_api_key = runtime_api_key or None
+                elif runtime_api_key:
+                    explicit_api_key = runtime_api_key
                 rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, vision_model,
-                    api_mode=resolved_api_mode,
-                    is_vision=True)
+                    resolved_provider,
+                    vision_model,
+                    explicit_base_url=explicit_base_url,
+                    explicit_api_key=explicit_api_key,
+                    api_mode=runtime_api_mode or resolved_api_mode,
+                    main_runtime=runtime,
+                    is_vision=True,
+                )
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using main provider %s (%s)",
@@ -5215,6 +5249,7 @@ def call_llm(
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
+            main_runtime=main_runtime,
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -5225,6 +5260,7 @@ def call_llm(
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto",
                 model=resolved_model,
+                main_runtime=main_runtime,
                 async_mode=False,
             )
         if client is None:
@@ -5724,6 +5760,7 @@ async def async_call_llm(
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
+            main_runtime=main_runtime,
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -5734,6 +5771,7 @@ async def async_call_llm(
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto",
                 model=resolved_model,
+                main_runtime=main_runtime,
                 async_mode=True,
             )
         if client is None:
@@ -5951,6 +5989,7 @@ async def async_call_llm(
                     resolved_base_url=resolved_base_url,
                     resolved_api_key=resolved_api_key,
                     resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
                     final_model=final_model,
                     messages=messages,
                     temperature=temperature,
@@ -5988,6 +6027,7 @@ async def async_call_llm(
                         resolved_base_url=resolved_base_url,
                         resolved_api_key=resolved_api_key,
                         resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
                         final_model=final_model,
                         messages=messages,
                         temperature=temperature,

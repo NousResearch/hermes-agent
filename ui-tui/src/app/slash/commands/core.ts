@@ -76,6 +76,20 @@ const DETAILS_USAGE =
 
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
+const truthyEnv = (v?: string) => /^(?:1|true|yes|on)$/i.test((v ?? '').trim())
+
+const hostedInlineDashboardChat = () => {
+  const hermesHome = (process.env.HERMES_HOME ?? '').trim()
+  const hostedHome = hermesHome === '/opt/data' || hermesHome.startsWith('/opt/data/')
+
+  return (
+    process.env.HERMES_TUI_INLINE === '1' &&
+    hostedHome &&
+    process.env.HERMES_WRITE_SAFE_ROOT === '/opt/data' &&
+    truthyEnv(process.env.HERMES_DISABLE_LAZY_INSTALLS)
+  )
+}
+
 export const coreCommands: SlashCommand[] = [
   {
     help: 'list commands + hotkeys',
@@ -113,7 +127,15 @@ export const coreCommands: SlashCommand[] = [
     aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
-    run: (_arg, ctx) => ctx.session.die()
+    run: (_arg, ctx) => {
+      if (hostedInlineDashboardChat()) {
+        ctx.transcript.sys('exit is disabled in hosted dashboard chat — use /new to start a fresh session')
+
+        return
+      }
+
+      ctx.session.die()
+    }
   },
 
   {

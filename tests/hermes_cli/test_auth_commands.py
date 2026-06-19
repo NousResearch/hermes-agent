@@ -1901,10 +1901,13 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
 
     with patch(
         "hermes_cli.copilot_auth.resolve_copilot_token",
-        return_value=("ghp_fake", "gh"),
+        return_value=("gho_fake", "gh"),
     ), patch(
         "hermes_cli.copilot_auth.get_copilot_api_token",
         return_value="ghu_fake_api",
+    ), patch(
+        "hermes_cli.copilot_auth.exchange_copilot_token",
+        return_value=("ghu_fake_api", time.time() + 3600),
     ):
         auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
 

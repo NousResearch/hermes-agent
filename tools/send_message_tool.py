@@ -31,6 +31,7 @@ _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_DINGTALK_TARGET_RE = re.compile(r"^\s*(cid[A-Za-z0-9+/=_-]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -509,6 +510,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "dingtalk":
+        # DingTalk open_conversation_id (cid format) — base64-like strings
+        # starting with "cid". These are the primary addressing format for
+        # both DM and group conversations on DingTalk.
+        match = _DINGTALK_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name == "ntfy":
         topic = target_ref.strip()
         if topic:
@@ -913,7 +921,19 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
-            result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
+            # Route DingTalk through the gateway live adapter when available.
+            # The adapter supports proactive send (OToMessage batchSend API)
+            # and session_webhook replies — both more capable than the
+            # standalone static-webhook path (_send_dingtalk).
+            result = await _send_via_adapter(
+                platform, pconfig, chat_id, chunk,
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=force_document,
+            )
+            # Fallback to static webhook if adapter is unavailable
+            if isinstance(result, dict) and result.get("error") and "adapter" in result.get("error", "").lower():
+                result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:

@@ -714,6 +714,18 @@ PLATFORM_HINTS = {
         "code fences). Treat this like a conversation, not a document. Keep responses "
         "brief and natural."
     ),
+    "dingtalk": (
+        "You are on DingTalk (钉钉), a Chinese enterprise messaging platform. "
+        "Markdown is supported in replies (bold, links, headers, code blocks). "
+        "Tables are NOT supported — use bullet lists or labeled key:value pairs instead. "
+        "Numbered lists need a blank line before them. "
+        "Keep messages concise for mobile reading. "
+        "You can send image URLs inline with markdown ![alt](url). "
+        "Local file uploads are NOT supported through session_webhook — "
+        "use MEDIA:/path syntax only on platforms that support it. "
+        "For proactive push notifications (cron jobs), prefer plain text without "
+        "heavy markdown formatting — users prefer clean, readable notifications."
+    ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "
         "Full Markdown rendering is supported — headings, bold, italic, code "

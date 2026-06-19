@@ -1,0 +1,4 @@
+{"id": "f1781783667", "ts": "2026-06-18T11:54:27.598920+00:00", "skill": "server-operations", "category": "execution_error", "error_text": "permission denied", "context": "", "task": "deploy nginx", "resolution": null}
+{"id": "f1781783667", "ts": "2026-06-18T11:54:27.599354+00:00", "skill": "server-operations", "category": "timeout", "error_text": "timed out", "context": "", "task": "backup db", "resolution": null}
+{"id": "f1781783667", "ts": "2026-06-18T11:54:27.599531+00:00", "skill": "code-review", "category": "missing_skill", "error_text": "no skill found", "context": "", "task": "review PR", "resolution": null}
+{"id": "f1781783721", "ts": "2026-06-18T11:55:21.259200+00:00", "skill": "server-operations", "category": "execution_error", "error_text": "permission denied for /etc/nginx/nginx.conf", "context": "ran after sudo apt install nginx", "task": "deploy nginx", "resolution": null}

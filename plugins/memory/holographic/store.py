@@ -13,6 +13,8 @@ try:
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
+from .embedder import get_embedder
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,6 +139,9 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: add embedding column if missing (ONNX semantic vectors)
+        if "embedding" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN embedding BLOB")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -184,6 +189,7 @@ class MemoryStore:
 
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
+            self._compute_embedding(fact_id, content)
             self._rebuild_bank(category)
 
             return fact_id
@@ -495,6 +501,21 @@ class MemoryStore:
             )
             self._conn.commit()
 
+    def _compute_embedding(self, fact_id: int, content: str) -> None:
+        """Compute and store ONNX embedding for a fact. No-op if unavailable."""
+        with self._lock:
+            embedder = get_embedder()
+            if embedder is None:
+                return
+            embedding = embedder.embed(content)
+            if embedding is None:
+                return
+            self._conn.execute(
+                "UPDATE facts SET embedding = ? WHERE fact_id = ?",
+                (embedding.tobytes(), fact_id),
+            )
+            self._conn.commit()
+
     def _rebuild_bank(self, category: str) -> None:
         """Full rebuild of a category's memory bank from all its fact vectors."""
         with self._lock:
@@ -552,12 +573,38 @@ class MemoryStore:
             categories: set[str] = set()
             for row in rows:
                 self._compute_hrr_vector(row["fact_id"], row["content"])
+                self._compute_embedding(row["fact_id"], row["content"])
                 categories.add(row["category"])
 
             for category in categories:
                 self._rebuild_bank(category)
 
             return len(rows)
+
+    def backfill_existing_facts(self, batch_size: int = 100) -> int:
+        """Compute ONNX embeddings for all facts missing them."""
+        embedder = get_embedder()
+        if embedder is None:
+            return 0
+        rows = self._conn.execute(
+            "SELECT fact_id, content FROM facts WHERE embedding IS NULL"
+        ).fetchall()
+        count = 0
+        for i, row in enumerate(rows):
+            embedding = embedder.embed(row["content"])
+            if embedding is not None:
+                with self._lock:
+                    self._conn.execute(
+                        "UPDATE facts SET embedding = ? WHERE fact_id = ?",
+                        (embedding.tobytes(), row["fact_id"]),
+                    )
+                    count += 1
+            if (i + 1) % batch_size == 0:
+                with self._lock:
+                    self._conn.commit()
+        with self._lock:
+            self._conn.commit()
+        return count
 
     # ------------------------------------------------------------------
     # Utilities

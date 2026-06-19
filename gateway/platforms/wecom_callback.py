@@ -46,7 +46,13 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    resolve_proxy_url,
+)
 from gateway.platforms.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -131,7 +137,14 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
+            proxy_url = resolve_proxy_url("WECOM_CALLBACK_PROXY", target_hosts=["qyapi.weixin.qq.com"])
+            if proxy_url:
+                logger.info("[WecomCallback] Using proxy: %s", proxy_url)
+            self._http_client = httpx.AsyncClient(
+                timeout=20.0,
+                limits=platform_httpx_limits(),
+                proxy=proxy_url,
+            )
             self._app = web.Application()
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)
@@ -353,7 +366,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         scoped_chat_id = self._user_app_key(corp_id, user_id)
         content = root.findtext("Content", default="").strip()
         if not content and msg_type == "event":
-            content = "/start"
+            return None
         msg_id = (
             root.findtext("MsgId")
             or f"{user_id}:{root.findtext('CreateTime', default='0')}"

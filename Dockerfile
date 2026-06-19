@@ -133,6 +133,7 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
+    npm audit fix --omit=dev || true && \
     npx playwright install --with-deps chromium --only-shell && \
     npm cache clean --force
 

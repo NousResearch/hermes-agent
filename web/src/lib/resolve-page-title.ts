@@ -1,6 +1,7 @@
 import type { Translations } from "@/i18n/types";
 
-const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
+const BUILTIN: Record<string, keyof Translations["app"]["nav"] | "__dashboard" | "__hubs"> = {
+  "/dashboard": "__dashboard",
   "/chat": "chat",
   "/sessions": "sessions",
   "/analytics": "analytics",
@@ -9,6 +10,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/cron": "cron",
   "/skills": "skills",
   "/plugins": "plugins",
+  "/hubs": "__hubs",
   "/profiles": "profiles",
   "/config": "config",
   "/env": "keys",
@@ -29,8 +31,14 @@ export function resolvePageTitle(
     return plugin.label;
   }
   const key = BUILTIN[normalized];
-  if (key) {
-    return t.app.nav[key];
+  if (key === "__dashboard") {
+    return "Dashboard";
+  }
+  if (key === "__hubs") {
+    return "Room Hubs";
+  }
+  if (key && key in t.app.nav) {
+    return t.app.nav[key as keyof Translations["app"]["nav"]];
   }
   // Derive title from pathname: "/profiles" → "Profiles"
   const segment = normalized.slice(1);

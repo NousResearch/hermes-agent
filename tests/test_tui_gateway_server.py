@@ -10537,6 +10537,46 @@ def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     assert seen == ["s9", (claimed, "tui_close")]
 
 
+def test_session_close_rpc_normalizes_desktop_reason(monkeypatch):
+    seen = []
+    claimed = {"session_key": "k"}
+    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)) or True,
+    )
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.close",
+            "params": {"session_id": "s9", "reason": "new"},
+        }
+    )
+    assert resp["result"] == {"closed": True}
+    assert seen == ["s9", (claimed, "desktop_new_chat")]
+
+
+def test_session_close_rpc_falls_back_for_unknown_reason(monkeypatch):
+    seen = []
+    claimed = {"session_key": "k"}
+    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda session, *, end_reason: seen.append((session, end_reason)) or True,
+    )
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.close",
+            "params": {"session_id": "s9", "reason": "totally-unknown"},
+        }
+    )
+    assert resp["result"] == {"closed": True}
+    assert seen == ["s9", (claimed, "tui_close")]
+
+
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(

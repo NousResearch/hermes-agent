@@ -381,6 +381,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [restartPreviewServer])
 
   const {
+    abandonCurrentSessionForNewChat,
     archiveSession,
     branchCurrentSession,
     branchStoredSession,
@@ -449,7 +450,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // also drills the sidebar into that project so the new lane is visible.
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
-      startFreshSessionDraft()
+      void abandonCurrentSessionForNewChat()
 
       // A worktree lane carries its own path; the trunk "+" can be path-less
       // (the main checkout is implicit), so fall back to the active project's
@@ -475,7 +476,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         })
         .catch(() => undefined)
     },
-    [requestGateway, startFreshSessionDraft]
+    [abandonCurrentSessionForNewChat, requestGateway]
   )
 
   // Composer "branch off into a new worktree": open a fresh session anchored
@@ -538,7 +539,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway,
     resumeStoredSession: resumeSession,
     selectedStoredSessionIdRef,
-    startFreshSessionDraft,
+    startFreshSessionDraft: abandonCurrentSessionForNewChat,
     sttEnabled,
     updateSessionState
   })
@@ -715,7 +716,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // keybind editor's capture mode (same as DesktopController).
   useKeybinds({
     openNewSessionTab: () => void openNewSessionTile('center'),
-    startFreshSession: startFreshSessionDraft,
+    startFreshSession: abandonCurrentSessionForNewChat,
     toggleCommandCenter,
     toggleSelectedPin
   })

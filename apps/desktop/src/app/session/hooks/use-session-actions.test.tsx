@@ -1,9 +1,9 @@
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { deleteSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -20,6 +20,7 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentCwd,
@@ -35,7 +36,7 @@ import {
 } from '@/store/session'
 
 import { sessionRoute } from '../../routes'
-import type { ClientSessionState } from '../../types'
+import type { ClientSessionState, SidebarNavItem } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
 
@@ -54,6 +55,7 @@ vi.mock('@/store/profile', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+const STORED_SESSION_ID = 'stored-1'
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -122,6 +124,78 @@ function Harness({
   useEffect(() => {
     onReady(actions)
   }, [actions, onReady])
+
+  return null
+}
+
+type SessionBoundaryHandle = Pick<
+  ReturnType<typeof useSessionActions>,
+  'archiveSession' | 'removeSession' | 'selectSidebarItem'
+>
+
+function SessionBoundaryHarness({
+  busy = false,
+  includeRuntimeState = true,
+  onReady,
+  requestGateway
+}: {
+  busy?: boolean
+  includeRuntimeState?: boolean
+  onReady: (handle: SessionBoundaryHandle) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
+  const activeSessionIdRef = useRef<null | string>(RUNTIME_SESSION_ID)
+  const busyRef = useRef(busy)
+  const selectedStoredSessionIdRef = useRef<null | string>(STORED_SESSION_ID)
+
+  const sessionStateByRuntimeIdRef = useRef(
+    new Map<string, ClientSessionState>(
+      includeRuntimeState
+        ? [[RUNTIME_SESSION_ID, { ...createClientSessionState(STORED_SESSION_ID), awaitingResponse: busy, busy }]]
+        : []
+    )
+  )
+
+  const actions = useSessionActions({
+    activeSessionId: RUNTIME_SESSION_ID,
+    activeSessionIdRef,
+    busyRef,
+    creatingSessionRef: useRef(false),
+    ensureSessionState: (sessionId, storedSessionId) => {
+      const state = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState(storedSessionId)
+
+      sessionStateByRuntimeIdRef.current.set(sessionId, state)
+
+      return state
+    },
+    getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => STORED_SESSION_ID,
+    navigate: vi.fn() as never,
+    requestGateway,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef: useRef(new Map<string, string>()),
+    selectedStoredSessionId: STORED_SESSION_ID,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef,
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (sessionId, updater, storedSessionId) => {
+      const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState(storedSessionId)
+
+      const next = updater(current)
+
+      sessionStateByRuntimeIdRef.current.set(sessionId, next)
+
+      return next
+    }
+  })
+
+  useEffect(() => {
+    onReady({
+      archiveSession: actions.archiveSession,
+      removeSession: actions.removeSession,
+      selectSidebarItem: actions.selectSidebarItem
+    })
+  }, [actions.archiveSession, actions.removeSession, actions.selectSidebarItem, onReady])
 
   return null
 }
@@ -553,6 +627,125 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/repo/app' })
+  })
+})
+
+describe('session boundary runtime closing', () => {
+  const newSessionItem: SidebarNavItem = {
+    action: 'new-session',
+    icon: (() => null) as never,
+    id: 'new-session',
+    label: 'New'
+  }
+
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setSessions([])
+    setMessages([])
+    vi.restoreAllMocks()
+  })
+
+  async function renderBoundary(options: { busy?: boolean; includeRuntimeState?: boolean } = {}) {
+    setSessions([storedSession({ id: STORED_SESSION_ID, is_active: true })])
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: SessionBoundaryHandle | null = null
+
+    render(
+      <SessionBoundaryHarness
+        {...options}
+        onReady={value => {
+          handle = value
+        }}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    return { handle: handle!, requestGateway }
+  }
+
+  it('closes the idle runtime when the sidebar starts a new chat', async () => {
+    const { handle, requestGateway } = await renderBoundary()
+
+    act(() => handle.selectSidebarItem(newSessionItem))
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('session.close', {
+        reason: 'desktop_new_chat',
+        session_id: RUNTIME_SESSION_ID
+      })
+    )
+  })
+
+  it('does not close a running runtime when starting a new chat', async () => {
+    const { handle, requestGateway } = await renderBoundary({ busy: true })
+
+    await act(async () => {
+      handle.selectSidebarItem(newSessionItem)
+      await Promise.resolve()
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it('preserves the pre-reset busy fallback when the runtime state entry is absent', async () => {
+    const { handle, requestGateway } = await renderBoundary({ busy: true, includeRuntimeState: false })
+
+    await act(async () => {
+      handle.selectSidebarItem(newSessionItem)
+      await Promise.resolve()
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it('does not archive a running selected session', async () => {
+    const { handle, requestGateway } = await renderBoundary({ busy: true })
+
+    await act(async () => handle.archiveSession(STORED_SESSION_ID))
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect(setSessionArchived).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual([storedSession({ id: STORED_SESSION_ID, is_active: true })])
+  })
+
+  it('closes the selected idle runtime before archive', async () => {
+    vi.mocked(setSessionArchived).mockResolvedValue(true as never)
+    const { handle, requestGateway } = await renderBoundary()
+
+    await act(async () => handle.archiveSession(STORED_SESSION_ID))
+
+    expect(requestGateway).toHaveBeenCalledWith('session.close', {
+      reason: 'desktop_archive',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(setSessionArchived).toHaveBeenCalledWith(STORED_SESSION_ID, true, undefined)
+  })
+
+  it('does not delete a running selected session', async () => {
+    const { handle, requestGateway } = await renderBoundary({ busy: true })
+
+    await act(async () => handle.removeSession(STORED_SESSION_ID))
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual([storedSession({ id: STORED_SESSION_ID, is_active: true })])
+  })
+
+  it('closes the selected idle runtime before delete', async () => {
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    const { handle, requestGateway } = await renderBoundary()
+
+    await act(async () => handle.removeSession(STORED_SESSION_ID))
+
+    expect(requestGateway).toHaveBeenCalledWith('session.close', {
+      reason: 'desktop_delete',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(deleteSession).toHaveBeenCalledWith(STORED_SESSION_ID, undefined)
   })
 })
 

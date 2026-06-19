@@ -155,8 +155,10 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Don't downgrade to text; convert to code block instead (see _convert_tables_to_code_blocks).
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Separator row of a table: |---|---|
+# (Used by _convert_tables_to_code_blocks which has its own local copy for clarity.)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -546,6 +548,81 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
+
+
+def _render_table_as_md(content: str) -> str:
+    """Render markdown tables as Feishu-friendly markdown text.
+
+    Feishu's post ``tag: \"md\"`` does NOT support fenced code blocks (````` ``` `````)
+    or table syntax.  To make tables display legibly we:
+
+    1. Bold the header cells: ``**H1** | **H2**``
+    2. Keep the separator row ``|---|---|`` as literal dashes
+    3. Keep data rows as pipe-separated literal text
+
+    All non-table content (bold, lists, links, inline code) passes
+    through unchanged so the rest of the message still renders normally.
+    """
+    lines = content.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    _TABLE_SEP_RE = re.compile(r"^\|[-|: ]+\|$")
+
+    while i < n:
+        line = lines[i]
+
+        # Detect table start: header row + separator row
+        if (
+            i + 1 < n
+            and line.lstrip().startswith("|")
+            and _TABLE_SEP_RE.match(lines[i + 1].strip())
+        ):
+            # Parse header cells
+            header_cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            # Use pipe-separated plain text for headers (no **bold** — cards
+            # don't render `**` bold when `|` pipes are on the same line).
+            plain_header = " | ".join(header_cells)
+            sep_row = lines[i + 1].rstrip()
+            i += 2
+
+            # Collect data rows
+            data_rows: list[str] = []
+            while i < n:
+                row = lines[i].rstrip()
+                if not row.lstrip().startswith("|"):
+                    break
+                if i + 1 < n and _TABLE_SEP_RE.match(lines[i + 1].strip()):
+                    break
+                data_rows.append(row)
+                i += 1
+
+            out.append(plain_header)
+            out.append(sep_row)
+            out.extend(data_rows)
+        else:
+            out.append(line)
+            i += 1
+
+    return "\n".join(out)
+
+
+def _build_content_card_payload(content: str) -> str:
+    """Wrap markdown content in an interactive card for Feishu.
+
+    Interactive cards render with a white background and fill the full
+    chat width, unlike ``post`` messages which use a grey bubble.
+    """
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": content},
+            ],
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
 
 
 def _build_markdown_post_payload(content: str) -> str:
@@ -1798,13 +1875,45 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        logger.warning(
+                            "[Feishu] Interactive card rejected by API; falling back to post/md"
+                        )
+                        # Rebuild as post/md with table formatting still applied
+                        if _MARKDOWN_TABLE_RE.search(chunk):
+                            chunk = _render_table_as_md(chunk)
+                        msg_type = "post"
+                        payload = _build_markdown_post_payload(chunk)
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    else:
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                if msg_type == "interactive" and not self._response_succeeded(response):
+                    logger.warning(
+                        "[Feishu] Interactive card rejected by API response; falling back to post/md"
+                    )
+                    if _MARKDOWN_TABLE_RE.search(chunk):
+                        chunk = _render_table_as_md(chunk)
+                    msg_type = "post"
+                    payload = _build_markdown_post_payload(chunk)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type=msg_type,
+                        payload=payload,
                         reply_to=reply_to,
                         metadata=metadata,
                     )
@@ -4374,14 +4483,18 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu interactive cards (Schema 2.0) support a wider range of
+        # markdown than post: headings, blockquotes, inline code, code blocks,
+        # bold, links, lists.  When a table is detected, render it with bold
+        # headers + pipe separators and send as a full-width white card.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            content = _render_table_as_md(content)
+            logger.info("[Feishu] Outbound msg_type=interactive (table -> Schema 2.0 card)")
+            return "interactive", _build_content_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
+            logger.info("[Feishu] Outbound msg_type=post (markdown hints)")
             return "post", _build_markdown_post_payload(content)
+        logger.info("[Feishu] Outbound msg_type=text")
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

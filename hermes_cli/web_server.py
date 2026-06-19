@@ -335,6 +335,42 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _normalize_host_header(host_header: str) -> str:
+    """Return the lowercase host portion of a Host header / netloc.
+
+    Accepts plain hostnames, host:port, bracketed IPv6, and bracketed
+    IPv6-with-port. Empty/malformed inputs normalize to an empty string.
+    """
+    if not host_header:
+        return ""
+    h = host_header.strip()
+    if not h:
+        return ""
+    if h.startswith("["):
+        close = h.find("]")
+        if close != -1:
+            return h[1:close].lower()
+        return h.strip("[]").lower()
+    return (h.rsplit(":", 1)[0] if ":" in h else h).lower()
+
+
+def _dashboard_allowed_host_aliases() -> frozenset[str]:
+    """Trusted reverse-proxy host aliases for localhost dashboard binds.
+
+    Keeps the dashboard bound to 127.0.0.1 while allowing a local trusted
+    proxy such as Tailscale Serve to forward requests whose Host header is
+    the tailnet DNS name.  Exact aliases only; no wildcards.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    aliases = {
+        _normalize_host_header(part)
+        for part in raw.split(",")
+        if part.strip()
+    }
+    aliases.discard("")
+    return frozenset(aliases)
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -354,36 +390,32 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
+    Lookup chain, in order:
+    1. Normalize the Host header to its bare host portion (strips ports and
+       IPv6 brackets) via ``_normalize_host_header``.
+    2. Accept any host when bound to 0.0.0.0 / :: — the operator explicitly
+       opted into all-interfaces and no Host-layer defence can protect that
+       mode.
+    3. Accept exact aliases from ``HERMES_DASHBOARD_ALLOWED_HOSTS`` — trusted
+       reverse-proxy hostnames (e.g. a Tailscale Serve tailnet name) that
+       forward to a loopback bind. Checked before the loopback/exact rules so
+       a localhost bind can still answer for its proxy alias.
+    4. Loopback bind: accept the loopback names (localhost, 127.0.0.1, ::1).
+    5. Explicit non-loopback bind: require an exact host match.
     """
-    if not host_header:
+    host_only = _normalize_host_header(host_header)
+    if not host_only:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
     if bound_host in {"0.0.0.0", "::"}:
+        return True
+
+    # Trusted reverse-proxy aliases (exact match, no wildcards). Allows a
+    # localhost-bound dashboard to answer for a forwarded tailnet hostname.
+    if host_only in _dashboard_allowed_host_aliases():
         return True
 
     # Loopback bind: accept the loopback names

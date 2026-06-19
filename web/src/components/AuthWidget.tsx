@@ -46,6 +46,18 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // In loopback / --insecure mode the dashboard does not use the OAuth gate,
+    // so /api/auth/me is expected to return 401. Do not probe it: the shared
+    // fetchJSON 401 handler treats loopback 401s as possible stale dashboard
+    // tokens and reloads once to recover. Other successful page fetches can
+    // clear that guard, which turns this harmless auth probe into a visible
+    // reload/flicker loop behind trusted reverse proxies such as Tailscale
+    // Serve. The widget is documented to render nothing in this mode, so skip
+    // the request entirely unless the server says gated auth is active.
+    if (!window.__HERMES_AUTH_REQUIRED__) {
+      setHidden(true);
+      return;
+    }
     let cancelled = false;
     api
       .getAuthMe()
@@ -125,7 +137,10 @@ export function AuthWidget({ className }: AuthWidgetProps) {
       aria-label={`Logged in as ${label}`}
     >
       <div className="flex min-w-0 flex-col">
-        <span className="truncate font-mono text-foreground/90" title={me.user_id}>
+        <span
+          className="truncate font-mono text-foreground/90"
+          title={me.user_id}
+        >
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">

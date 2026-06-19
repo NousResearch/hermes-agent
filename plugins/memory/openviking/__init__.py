@@ -72,7 +72,6 @@ _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
-_OPENVIKING_RECALL_TOOL_NAMES = {"viking_search", "viking_read", "viking_browse"}
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -500,6 +499,17 @@ ADD_RESOURCE_SCHEMA = {
         },
         "required": ["url"],
     },
+}
+
+
+# Recall tools (read-only) whose results we never re-ingest into OpenViking —
+# echoing recalled memory back into the session transcript would re-store it.
+# Write tools (viking_remember / viking_add_resource) are intentionally NOT
+# here. Derived from the canonical schema names so renames can't desync.
+_OPENVIKING_RECALL_TOOL_NAMES = {
+    SEARCH_SCHEMA["name"],
+    READ_SCHEMA["name"],
+    BROWSE_SCHEMA["name"],
 }
 
 

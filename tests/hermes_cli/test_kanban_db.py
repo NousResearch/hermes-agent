@@ -4766,3 +4766,176 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# task_context_files — per-task file injection into worker context
+# ---------------------------------------------------------------------------
+
+def test_task_context_files_roundtrip(kanban_home, tmp_path):
+    """task_context_files is normalised, stored as JSON, and read back as a list."""
+    brief = tmp_path / "BRIEF.md"
+    brief.write_text("brief contents")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="with context",
+            # Blank/whitespace entries are dropped by normalisation.
+            task_context_files=[str(brief), "  ", ""],
+        )
+        task = kb.get_task(conn, tid)
+    assert task.task_context_files == [str(brief)]
+
+
+def test_task_context_files_none_when_omitted(kanban_home):
+    """Omitting task_context_files stores NULL (no behaviour change for old flows)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="no context")
+        task = kb.get_task(conn, tid)
+    assert task.task_context_files is None
+
+
+def test_task_context_files_injected_into_worker_context(kanban_home, tmp_path):
+    """File contents appear in the worker context under a clear header."""
+    brief = tmp_path / "BRIEF.md"
+    brief.write_text("Use VQZ115-5L1-01T dump valve.")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="inject", body="do the thing",
+            task_context_files=[str(brief)],
+        )
+        ctx = kb.build_worker_context(conn, tid)
+    assert "## Context files" in ctx
+    assert str(brief) in ctx
+    assert "Use VQZ115-5L1-01T dump valve." in ctx
+
+
+def test_task_context_files_unreadable_path_is_graceful(kanban_home, tmp_path):
+    """An unreadable path emits a visible warning instead of crashing."""
+    good = tmp_path / "GOOD.md"
+    good.write_text("readable content")
+    missing = str(tmp_path / "nope.md")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="partial", task_context_files=[str(good), missing],
+        )
+        ctx = kb.build_worker_context(conn, tid)
+    assert "readable content" in ctx
+    assert "[unreadable:" in ctx
+
+
+def test_task_context_files_injection_respects_byte_cap(kanban_home, tmp_path):
+    """Total injected bytes are capped at _CTX_MAX_TASK_CONTEXT_FILES."""
+    import re
+
+    written = kb._CTX_MAX_TASK_CONTEXT_FILES + 5000
+    big = tmp_path / "BIG.md"
+    big.write_text("x" * written)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="big", task_context_files=[str(big)])
+        ctx = kb.build_worker_context(conn, tid)
+    # The injected payload is the single long run of 'x' (path chars in the
+    # header can contribute stray 'x's, so measure the contiguous run).
+    longest_run = max((len(m.group(0)) for m in re.finditer("x+", ctx)), default=0)
+    assert longest_run <= kb._CTX_MAX_TASK_CONTEXT_FILES
+    # And it was genuinely truncated, not injected whole.
+    assert longest_run < written
+
+
+def test_legacy_db_gains_task_context_files_column(tmp_path):
+    """A board predating the field (no column at all) gains it on connect()."""
+    db_path = tmp_path / "legacy-kanban.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy', 'old task', 'ready', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        cols = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
+        # Legacy row reads back with task_context_files as None (no crash).
+        legacy = kb.get_task(migrated, "legacy")
+    assert "task_context_files" in cols
+    assert legacy.task_context_files is None
+
+
+def test_db_with_old_context_files_column_is_renamed(tmp_path):
+    """A board created with the pre-rename ``context_files`` column has it
+    renamed to ``task_context_files`` in place, preserving existing data."""
+    db_path = tmp_path / "old-column-kanban.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            context_files TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at, context_files) "
+        "VALUES ('old', 'pre-rename task', 'ready', 1, ?)",
+        # Column stores a JSON array string; write it directly to avoid a
+        # module-level json import in the test file.
+        ('["/project/BRIEF.md"]',),
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        cols = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
+        task = kb.get_task(migrated, "old")
+    # Column renamed in place: new name present, old name gone.
+    assert "task_context_files" in cols
+    assert "context_files" not in cols
+    # Existing data survived the rename.
+    assert task.task_context_files == ["/project/BRIEF.md"]

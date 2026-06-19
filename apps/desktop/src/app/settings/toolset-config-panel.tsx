@@ -272,7 +272,10 @@ function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerP
       </div>
 
       {status && (status.lines.length > 0 || status.running) && (
-        <pre className="max-h-48 overflow-y-auto rounded-md bg-background px-2.5 py-1.5 font-mono text-[0.7rem] leading-relaxed text-muted-foreground whitespace-pre-wrap">
+        <pre
+          className="max-h-48 overflow-y-auto rounded-md bg-background px-2.5 py-1.5 font-mono text-[0.7rem] leading-relaxed text-muted-foreground whitespace-pre-wrap"
+          data-selectable-text="true"
+        >
           {status.lines.length > 0 ? status.lines.join('\n') : copy.postSetupStarting}
         </pre>
       )}

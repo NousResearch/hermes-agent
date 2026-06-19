@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
@@ -373,6 +374,14 @@ def _detect_claude_code_version() -> str:
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
+
+
+def _sanitize_oauth_system_prompt_text(text: str) -> str:
+    text = text.replace("Hermes Agent", "Claude Code")
+    text = text.replace("Hermes agent", "Claude Code")
+    text = re.sub(r"\bhermes-agent\b(?!\.nousresearch\.com)", "claude-code", text)
+    text = text.replace("Nous Research", "Anthropic")
+    return text
 
 
 def _get_claude_code_version() -> str:
@@ -2342,12 +2351,7 @@ def build_anthropic_kwargs(
         #    to avoid Anthropic's server-side content filters.
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+                block["text"] = _sanitize_oauth_system_prompt_text(block.get("text", ""))
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth

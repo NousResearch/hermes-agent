@@ -1090,6 +1090,30 @@ class TestBuildAnthropicKwargs:
         assert "oauth-2025-04-20" in betas
         assert "context-1m-2025-08-07" not in betas
 
+    def test_oauth_system_prompt_sanitizer_preserves_docs_url(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Hermes Agent by Nous Research uses hermes-agent skills. "
+                        "Docs: https://hermes-agent.nousresearch.com/docs"
+                    ),
+                },
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        system_text = "\n".join(block["text"] for block in kwargs["system"])
+        assert "Claude Code by Anthropic uses claude-code skills." in system_text
+        assert "https://hermes-agent.nousresearch.com/docs" in system_text
+        assert "claude-code.nousresearch.com" not in system_text
+
     def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
         """drop_context_1m_beta=True strips context-1m from fast-mode
         extra_headers while preserving every other OAuth + fast-mode beta."""

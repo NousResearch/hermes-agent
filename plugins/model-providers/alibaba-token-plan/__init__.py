@@ -1,7 +1,7 @@
 """Alibaba Cloud Token Plan (Team Edition) provider profile.
 
 Separate from the standard `alibaba` and `alibaba-coding-plan` profiles because
-it hits a different endpoint (token-plan.cn-beijing.maas.aliyuncs.com) with
+it hits a different endpoint (token-plan.ap-southeast-1.maas.aliyuncs.com) with
 its own subscription-based billing (Credits).
 
 Docs: https://help.aliyun.com/zh/model-studio/token-plan-overview
@@ -17,7 +17,7 @@ alibaba_token_plan = ProviderProfile(
     description="Alibaba Cloud Token Plan — team subscription (Credits)",
     signup_url="https://www.aliyun.com/benefit/scene/tokenplan",
     env_vars=("ALIBABA_TOKEN_PLAN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_TOKEN_PLAN_BASE_URL"),
-    base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
     auth_type="api_key",
 )
 

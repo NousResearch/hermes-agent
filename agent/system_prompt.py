@@ -295,7 +295,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # correctly report which model it is (workaround for API bug).
     # Stable for the lifetime of an agent instance — model and provider are fixed
     # at construction time.
-    if agent.provider in ("alibaba", "alibaba-coding-plan", "alibaba-token-plan"):
+    if agent.provider in ("alibaba", "alibaba-coding-plan", "alibaba-token-plan", "alibaba-token-plan-cn"):
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
         stable_parts.append(
             f"You are powered by the model named {_model_short}. "

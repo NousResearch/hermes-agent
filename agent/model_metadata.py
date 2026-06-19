@@ -48,7 +48,7 @@ def _resolve_requests_verify() -> bool | str:
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
-    "opencode-zen", "opencode-go", "kilocode", "alibaba", "alibaba-token-plan", "novita",
+    "opencode-zen", "opencode-go", "kilocode", "alibaba", "alibaba-token-plan", "alibaba-token-plan-cn", "novita",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -423,7 +423,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
-    "token-plan.cn-beijing.maas.aliyuncs.com": "alibaba-token-plan",
+    "token-plan.ap-southeast-1.maas.aliyuncs.com": "alibaba-token-plan",
+    "token-plan.cn-beijing.maas.aliyuncs.com": "alibaba-token-plan-cn",
     "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
     "generativelanguage.googleapis.com": "gemini",

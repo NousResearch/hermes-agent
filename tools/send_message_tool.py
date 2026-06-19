@@ -883,6 +883,17 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: native file upload support via files_upload_v2 ---
+    if platform == Platform.SLACK and media_files:
+        comment = "\n".join(chunk for chunk in chunks if chunk).strip()
+        return await _send_slack_media(
+            pconfig.token,
+            chat_id,
+            comment,
+            thread_id=thread_id,
+            media_files=media_files,
+        )
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
@@ -1204,6 +1215,77 @@ async def _send_slack(token, chat_id, message, thread_ts=None):
                 return _error(f"Slack API error: {data.get('error', 'unknown')}")
     except Exception as e:
         return _error(f"Slack send failed: {e}")
+
+
+async def _send_slack_media(token, chat_id, message, *, thread_id=None, media_files=None):
+    """Upload local MEDIA attachments to Slack, failing closed on upload errors."""
+    media_files = media_files or []
+    try:
+        from slack_sdk.web.async_client import AsyncWebClient
+        from gateway.platforms.base import resolve_proxy_url
+    except Exception as exc:
+        return _error(
+            "upload_blocker: Slack MEDIA upload requires slack-sdk. "
+            f"Could not import Slack client: {exc}"
+        )
+
+    proxy = None
+    try:
+        proxy = resolve_proxy_url()
+    except Exception:
+        proxy = None
+    client = AsyncWebClient(token=token, proxy=proxy)
+    uploaded = []
+
+    def _slack_response_data(response):
+        if isinstance(response, dict):
+            return response
+        data = getattr(response, "data", None)
+        if isinstance(data, dict):
+            return data
+        try:
+            return dict(response)
+        except Exception:
+            return {}
+
+    for idx, item in enumerate(media_files):
+        media_path = item[0] if isinstance(item, (list, tuple)) else item
+        media_path = str(media_path)
+        if not os.path.exists(media_path):
+            return _error(f"upload_blocker: Slack MEDIA file not found: {media_path}")
+        try:
+            result = await client.files_upload_v2(
+                channel=chat_id,
+                file=media_path,
+                filename=os.path.basename(media_path),
+                initial_comment=message if idx == 0 else "",
+                thread_ts=thread_id,
+            )
+        except Exception as exc:
+            detail = _sanitize_error_text(str(exc))
+            if "missing_scope" in detail:
+                detail = "Missing scope: files:write. Update Slack app scopes/settings and reinstall."
+            return _error(
+                f"upload_blocker: Slack MEDIA upload failed for {os.path.basename(media_path)}: {detail}"
+            )
+        data = _slack_response_data(result)
+        files = data.get("files") or []
+        first_file = files[0] if files and isinstance(files[0], dict) else {}
+        uploaded.append(
+            {
+                "path": media_path,
+                "filename": os.path.basename(media_path),
+                "slack_upload_ts": data.get("ts") or first_file.get("created"),
+                "file_id": first_file.get("id"),
+                "permalink": first_file.get("permalink"),
+            }
+        )
+    return {
+        "success": True,
+        "platform": "slack",
+        "chat_id": chat_id,
+        "uploaded_artifacts": uploaded,
+    }
 
 
 async def _send_whatsapp(extra, chat_id, message):

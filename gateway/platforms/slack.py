@@ -1804,10 +1804,10 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"🖼️ Image: {image_path}"
-            if caption:
-                text = f"{caption}\n{text}"
-            return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            return SendResult(
+                success=False,
+                error=f"upload_blocker: Slack image upload failed for {os.path.basename(image_path)}: {e}",
+            )
 
     async def send_image(
         self,
@@ -1956,10 +1956,10 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"🎬 Video: {video_path}"
-            if caption:
-                text = f"{caption}\n{text}"
-            return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            return SendResult(
+                success=False,
+                error=f"upload_blocker: Slack video upload failed for {os.path.basename(video_path)}: {e}",
+            )
 
     async def send_document(
         self,
@@ -2015,10 +2015,30 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"📎 File: {file_path}"
-            if caption:
-                text = f"{caption}\n{text}"
-            return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+            response = getattr(e, "response", None)
+            api_notice = self._describe_slack_api_error(
+                response,
+                file_obj={"name": display_name},
+            )
+            if api_notice is None and "missing_scope" in str(e):
+                api_notice = (
+                    f"Slack attachment upload failed for {display_name}. "
+                    "Missing scope: files:write. Update the Slack app scopes/settings "
+                    "and reinstall the app to the workspace."
+                )
+            if api_notice:
+                notice = (
+                    "파일 첨부 실패: Slack 앱 권한 문제로 업로드하지 못했습니다.\n"
+                    f"{api_notice}\n"
+                    "상태: upload_blocker"
+                )
+                await self.send(chat_id, notice, reply_to=reply_to, metadata=metadata)
+                return SendResult(success=False, error=api_notice)
+
+            return SendResult(
+                success=False,
+                error=f"upload_blocker: Slack attachment upload failed for {display_name}: {e}",
+            )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Slack channel."""

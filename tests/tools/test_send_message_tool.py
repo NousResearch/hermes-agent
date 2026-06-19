@@ -722,6 +722,33 @@ class TestSendToPlatformChunking:
         sent_text = send.await_args.args[2]
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
 
+    def test_slack_media_uses_native_upload_helper(self, tmp_path, monkeypatch):
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4")
+        upload = AsyncMock(return_value={"success": True, "uploaded_artifacts": [{"path": str(doc)}]})
+        text_send = AsyncMock()
+        with patch("tools.send_message_tool._send_slack_media", upload), \
+             patch("tools.send_message_tool._send_slack", text_send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "C123",
+                    "업로드합니다",
+                    thread_id="171.000",
+                    media_files=[(str(doc), False)],
+                )
+            )
+
+        assert result["success"] is True
+        upload.assert_awaited_once()
+        assert upload.await_args.kwargs["thread_id"] == "171.000"
+        assert upload.await_args.kwargs["media_files"] == [(str(doc), False)]
+        text_send.assert_not_called()
+
     def test_telegram_media_attaches_to_last_chunk(self):
 
         sent_calls = []

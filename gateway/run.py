@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -1597,6 +1598,334 @@ from gateway.whatsapp_identity import (
 
 
 logger = logging.getLogger(__name__)
+
+_AIHQ_RUNTIME_ROOT = Path(
+    os.getenv("AIHQ_HERMES_WORKSPACE", "/Users/dongiksmac/hermes-workspaces/aihq-runtime")
+)
+_AIHQ_THREAD_INDEX_PATH = (
+    _AIHQ_RUNTIME_ROOT / "04_Data" / "runtime-project-index" / "slack-thread-projects.jsonl"
+)
+_AIHQ_GROWTH_DIR = _AIHQ_RUNTIME_ROOT / "04_Data" / "growth"
+
+_AIHQ_RESUME_RE = re.compile(
+    r"(이어서|계속|재개|어제\s*하던|같은\s*스레드|하던\s*거|resume|continue)",
+    re.IGNORECASE,
+)
+_AIHQ_CORRECTIVE_RE = re.compile(
+    r"(또|아니|다시|수정|v\d+\s*말고\s*v\d+|경로만\s*보내지\s*말고|업로드|upload|wrong|not\s+that)",
+    re.IGNORECASE,
+)
+_AIHQ_DETAIL_RE = re.compile(r"(상세페이지|상세\s*페이지|detail\s*page|쿠팡|브랜드스토어)", re.IGNORECASE)
+_AIHQ_PROPOSAL_RE = re.compile(r"(제안서|proposal|입점|바이어|이마트24|gs25|cu)", re.IGNORECASE)
+_AIHQ_MARKET_RESEARCH_RE = re.compile(r"(시장조사|경쟁조사|리서치|보고서|market\s*research)", re.IGNORECASE)
+_AIHQ_AUTOMATION_RE = re.compile(r"(자동화|개발복구|개발|gateway|slack|cron|봇|연동)", re.IGNORECASE)
+_AIHQ_MEETING_RE = re.compile(r"(회의|같이\s*보자|논의|미팅)", re.IGNORECASE)
+_AIHQ_MEETING_CHANNEL_ID = "C0B4TLSMNJG"
+_AIHQ_TEAM_CHANNEL_IDS = {"C0B487QE023"}
+
+
+def _aihq_source_platform(source: Any) -> str:
+    platform = getattr(source, "platform", None)
+    return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _aihq_is_slack_source(source: Any) -> bool:
+    return _aihq_source_platform(source) == "slack"
+
+
+def _aihq_detect_pipeline(message: str) -> str | None:
+    text = str(message or "")
+    if _AIHQ_DETAIL_RE.search(text):
+        return "detail_page"
+    if _AIHQ_PROPOSAL_RE.search(text):
+        return "proposal"
+    if _AIHQ_MARKET_RESEARCH_RE.search(text):
+        return "market_research"
+    if _AIHQ_AUTOMATION_RE.search(text):
+        return "automation_dev"
+    return None
+
+
+def _aihq_joint_meeting_router_intercept(message: str, source: Any) -> bool:
+    if not _aihq_is_slack_source(source):
+        return False
+    channel_id = str(getattr(source, "chat_id", "") or "")
+    if channel_id == _AIHQ_MEETING_CHANNEL_ID:
+        return True
+    return channel_id in _AIHQ_TEAM_CHANNEL_IDS and bool(_AIHQ_MEETING_RE.search(str(message or "")))
+
+
+def _aihq_load_thread_index_entries(index_path: Path | None = None) -> list[dict[str, Any]]:
+    path = Path(index_path) if index_path is not None else _AIHQ_THREAD_INDEX_PATH
+    if not path.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                entries.append(item)
+    except OSError:
+        return []
+    return entries
+
+
+def _aihq_matching_thread_entries(source: Any) -> list[dict[str, Any]]:
+    channel_id = str(getattr(source, "chat_id", "") or "")
+    thread_ts = str(getattr(source, "thread_id", "") or "")
+    if not channel_id or not thread_ts:
+        return []
+    matches = []
+    for item in _aihq_load_thread_index_entries():
+        if str(item.get("workspace") or "") != "hermes":
+            continue
+        if str(item.get("slack_channel_id") or "") != channel_id:
+            continue
+        if str(item.get("slack_thread_ts") or "") != thread_ts:
+            continue
+        if str(item.get("status") or "active").lower() in {"closed", "archived", "done"}:
+            continue
+        matches.append(item)
+    return matches
+
+
+def _aihq_progress_excerpt(progress_path: str, max_chars: int = 1800) -> str:
+    if not progress_path:
+        return ""
+    path = Path(progress_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return "[canonical progress file could not be read]"
+    return text[-max_chars:]
+
+
+def _aihq_continuity_prompt(message: str, source: Any) -> str:
+    if not (_aihq_is_slack_source(source) and _AIHQ_RESUME_RE.search(str(message or ""))):
+        return ""
+    entries = _aihq_matching_thread_entries(source)
+    if not entries:
+        return (
+            "[AIHQ Project Continuity Guard]\n"
+            "This Slack turn contains a same-thread resume signal, but there is no project index entry in "
+            f"{_AIHQ_THREAD_INDEX_PATH}.\n"
+            "Do not start a new project, do not create a fresh output_root, and ask for the canonical "
+            "YYYYMMDD_프로젝트명_PROGRESS.md path or project name first."
+        )
+    if len(entries) > 1:
+        candidates = "\n".join(
+            f"- {item.get('project_slug')}: {item.get('progress_path')}" for item in entries
+        )
+        return (
+            "[AIHQ Project Continuity Guard]\n"
+            "This Slack thread has multiple canonical progress-file candidates. Stop production and report the conflict.\n"
+            f"{candidates}\n"
+            "Resolve by exact channel_id + thread_ts before continuing."
+        )
+    entry = entries[0]
+    progress_path = str(entry.get("progress_path") or "")
+    excerpt = _aihq_progress_excerpt(progress_path)
+    return (
+        "[AIHQ Project Continuity Guard]\n"
+        f"canonical_progress_path: {progress_path}\n"
+        f"output_root: {entry.get('output_root')}\n"
+        f"pipeline_id: {entry.get('pipeline_id')}\n"
+        f"project_slug: {entry.get('project_slug')}\n"
+        f"run_id: {entry.get('run_id')}\n"
+        "Read the canonical progress file first, resume from current_phase and active_next_action, "
+        "and do not modify older versions unless the user explicitly names them.\n"
+        "[canonical progress excerpt]\n"
+        f"{excerpt}"
+    )
+
+
+def _aihq_meeting_guard_prompt(message: str, source: Any) -> str:
+    if not _aihq_joint_meeting_router_intercept(message, source):
+        return ""
+    channel_id = str(getattr(source, "chat_id", "") or "")
+    if channel_id == _AIHQ_MEETING_CHANNEL_ID:
+        route_note = (
+            "Direct #aihq-meeting agenda. Deduplicate only by exact channel_id + thread_ts; "
+            "the same topic in a different thread is a new meeting and must never block a new direct `#aihq-meeting` agenda."
+        )
+    else:
+        route_note = (
+            "Team-channel meeting trigger. Transfer the agenda to #aihq-meeting. "
+            "Do not answer as a normal channel reply."
+        )
+    return (
+        "[AIHQ Joint Meeting Guard]\n"
+        f"{route_note}\n"
+        "Use meeting-sessions.jsonl for exact thread binding. Include 정실장 and 김팀장 as participants, "
+        "keep kim-teamlead as Hermes owner, do not load AIHQ workflow skills inside the meeting router, "
+        "and keep the routing notice under 900 Korean characters."
+    )
+
+
+def _aihq_pipeline_instruction(pipeline_id: str) -> str:
+    return (
+        "[AIHQ Slack Pipeline Guard]\n"
+        f"pipeline_id: {pipeline_id}\n"
+        "Use the canonical 9 pipeline before production: intake -> /mywiki -> My Note -> additional research if needed -> "
+        "actual working team-lead roster -> plan -> execution -> verification -> record/learning.\n"
+        "Do not jump directly into copy, layout, code, report prose, or file generation.\n"
+        "Declare pipeline_id, workflow, /mywiki plan, My Note plan, actual working team-lead roster, "
+        "Superpowers/GStack verification plan, approval boundary, output_root, and YYYYMMDD_프로젝트명_PROGRESS.md first.\n"
+        "Bind Slack channel_id + thread_ts in slack-thread-projects.jsonl before producing user-facing artifacts.\n"
+        "For design/detail-page work include Supanova and Open Design AIHQ Supanova after My Note design reference lookup.\n"
+        "Maintain artifact_manifest.jsonl under the project output_root. For minor edits to v3, read v3 as source_version "
+        "and create v3.1 or the next patch version; never overwrite or silently edit v2 unless the user explicitly names v2.\n"
+        "Completion for Slack file artifacts requires uploaded_artifacts. If upload fails, report upload_blocker and do not send only a local path."
+    )
+
+
+def _aihq_learning_recall_prompt(message: str, limit: int = 3) -> str:
+    text = str(message or "").lower()
+    feedback_path = _AIHQ_GROWTH_DIR / "corrective-feedback.jsonl"
+    if not feedback_path.exists():
+        return ""
+    matches: list[str] = []
+    try:
+        for line in reversed(feedback_path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            summary = str(item.get("summary") or item.get("message") or "").strip()
+            if not summary:
+                continue
+            tags = [token.strip() for token in str(item.get("tags") or "").lower().split(",")]
+            if _AIHQ_CORRECTIVE_RE.search(str(message or "")) or any(token and token in text for token in tags):
+                matches.append(summary[:400])
+            if len(matches) >= limit:
+                break
+    except OSError:
+        return ""
+    if not matches:
+        return ""
+    return "[AIHQ Learning Recall]\n" + "\n".join(f"- {m}" for m in matches)
+
+
+def _aihq_record_corrective_feedback(message: str, source: Any) -> None:
+    if not (_aihq_is_slack_source(source) and _AIHQ_CORRECTIVE_RE.search(str(message or ""))):
+        return
+    try:
+        _AIHQ_GROWTH_DIR.mkdir(parents=True, exist_ok=True)
+        record = {
+            "created_at": datetime.now().isoformat(),
+            "surface": "slack",
+            "channel_id": getattr(source, "chat_id", None),
+            "thread_ts": getattr(source, "thread_id", None),
+            "message": str(message or "")[:1200],
+            "summary": str(message or "")[:240],
+            "tags": "correction,slack,upload,version,continuity",
+            "status": "captured",
+        }
+        with (_AIHQ_GROWTH_DIR / "corrective-feedback.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        logger.debug("Failed to record AIHQ corrective feedback", exc_info=True)
+
+
+def _aihq_pipeline_guard(message: str, source: Any) -> str:
+    if not _aihq_is_slack_source(source):
+        return ""
+    parts = []
+    meeting = _aihq_meeting_guard_prompt(message, source)
+    if meeting:
+        parts.append(meeting)
+    continuity = _aihq_continuity_prompt(message, source)
+    if continuity:
+        parts.append(continuity)
+    pipeline_id = _aihq_detect_pipeline(message)
+    if pipeline_id and not continuity:
+        parts.append(_aihq_pipeline_instruction(pipeline_id))
+    recall = _aihq_learning_recall_prompt(message)
+    if recall and (pipeline_id or continuity or meeting or _AIHQ_CORRECTIVE_RE.search(str(message or ""))):
+        parts.append(recall)
+    return "\n\n".join(part for part in parts if part)
+
+
+def _aihq_detail_page_pipeline_guard(message: str, source: Any) -> str:
+    return _aihq_pipeline_guard(message, source)
+
+
+def _aihq_parse_version(version: str) -> tuple[int, ...]:
+    match = re.search(r"v?(\d+(?:\.\d+)*)", str(version or ""), re.IGNORECASE)
+    if not match:
+        return (0,)
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _aihq_next_patch_version(source_version: str, manifest_entries: list[dict[str, Any]] | None = None) -> str:
+    base = _aihq_parse_version(source_version)
+    if not base or base == (0,):
+        base = (1,)
+    prefix = f"v{base[0]}"
+    existing_patch_numbers = [0]
+    for item in manifest_entries or []:
+        parsed = _aihq_parse_version(str(item.get("version") or ""))
+        if len(parsed) >= 2 and parsed[0] == base[0]:
+            existing_patch_numbers.append(parsed[1])
+    return f"{prefix}.{max(existing_patch_numbers) + 1}"
+
+
+def _aihq_read_artifact_manifest(manifest_path: str | Path) -> list[dict[str, Any]]:
+    path = Path(manifest_path)
+    if not path.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            if isinstance(item, dict):
+                entries.append(item)
+    except (OSError, json.JSONDecodeError):
+        return entries
+    return entries
+
+
+def _aihq_record_artifact_manifest(
+    manifest_path: str | Path,
+    *,
+    version: str,
+    path: str,
+    source_version: str | None = None,
+    slack_upload_ts: str | None = None,
+    status: str = "created",
+) -> dict[str, Any]:
+    artifact_path = Path(path)
+    sha256 = ""
+    if artifact_path.exists() and artifact_path.is_file():
+        h = hashlib.sha256()
+        with artifact_path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        sha256 = h.hexdigest()
+    record = {
+        "version": version,
+        "path": str(artifact_path),
+        "sha256": sha256,
+        "source_version": source_version,
+        "created_at": datetime.now().isoformat(),
+        "slack_upload_ts": slack_upload_ts,
+        "status": status,
+    }
+    manifest = Path(manifest_path)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -3297,6 +3626,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _last_good["*"] = model
 
         return model, runtime_kwargs
+
+    def _apply_aihq_model_routing_for_turn(
+        self,
+        *,
+        message: str,
+        source: Optional[SessionSource],
+        session_key: Optional[str],
+    ) -> None:
+        """Apply AIHQ work-turn model/reasoning overrides without changing global config."""
+        if not session_key or source is None or not _aihq_is_slack_source(source):
+            return
+        is_work = bool(
+            _aihq_detect_pipeline(message)
+            or _AIHQ_RESUME_RE.search(str(message or ""))
+            or _AIHQ_CORRECTIVE_RE.search(str(message or ""))
+            or _aihq_joint_meeting_router_intercept(message, source)
+        )
+        if not is_work:
+            return
+        try:
+            cfg = _load_gateway_config()
+        except Exception:
+            cfg = {}
+        routing = cfg.get("aihq_model_routing") if isinstance(cfg, dict) else None
+        if not isinstance(routing, dict) or not routing.get("enabled", False):
+            return
+        provider = str(routing.get("provider") or "").strip()
+        if not provider:
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            if isinstance(model_cfg, dict):
+                provider = str(model_cfg.get("provider") or "").strip()
+        model = str(routing.get("work_intake_model") or "").strip()
+        if not model:
+            return
+        previous = dict(getattr(self, "_session_model_overrides", {}).get(session_key) or {})
+        next_override = {
+            "model": model,
+            "provider": provider or previous.get("provider"),
+            "api_key": previous.get("api_key"),
+            "base_url": previous.get("base_url"),
+            "api_mode": previous.get("api_mode"),
+        }
+        self._session_model_overrides[session_key] = next_override
+        if previous != next_override:
+            self._evict_cached_agent(session_key)
+
+        effort = str(routing.get("work_intake_reasoning_effort") or "").strip()
+        if effort:
+            try:
+                from hermes_constants import parse_reasoning_effort
+
+                parsed = parse_reasoning_effort(effort)
+            except Exception:
+                parsed = None
+            if parsed:
+                self._set_session_reasoning_override(session_key, parsed)
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -8828,6 +9213,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        _aihq_record_corrective_feedback(message, source)
+        self._apply_aihq_model_routing_for_turn(
+            message=message,
+            source=source,
+            session_key=session_key,
+        )
+        _aihq_guard_prompt = _aihq_pipeline_guard(message, source)
+        if _aihq_guard_prompt:
+            context_prompt = (context_prompt + "\n\n" + _aihq_guard_prompt).strip()
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

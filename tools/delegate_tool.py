@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -137,6 +138,76 @@ _MIN_SPAWN_DEPTH = 1
 # No upper ceiling on spawn depth — like max_concurrent_children, depth has a
 # floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
 # stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
+
+_AIHQ_DETAIL_GOAL_RE = re.compile(
+    r"(상세페이지|상세\s*페이지|detail\s*page|쿠팡|브랜드스토어)",
+    re.IGNORECASE,
+)
+_AIHQ_PROPOSAL_GOAL_RE = re.compile(r"(제안서|proposal|입점|바이어|이마트24|gs25|cu)", re.IGNORECASE)
+_AIHQ_RESEARCH_GOAL_RE = re.compile(r"(시장조사|경쟁조사|리서치|보고서|market\s*research)", re.IGNORECASE)
+_AIHQ_AUTOMATION_GOAL_RE = re.compile(r"(자동화|개발복구|개발|gateway|slack|cron|봇|연동)", re.IGNORECASE)
+
+
+def _task_text(task: Dict[str, Any]) -> str:
+    return f"{task.get('goal') or ''}\n{task.get('context') or ''}"
+
+
+def _context_has(context: str, needle: str) -> bool:
+    return needle.lower() in str(context or "").lower()
+
+
+def _missing_context_requirements(context: str, requirements: list[tuple[str, list[str]]]) -> list[str]:
+    missing = []
+    for label, alternatives in requirements:
+        if not any(_context_has(context, alt) for alt in alternatives):
+            missing.append(label)
+    return missing
+
+
+def _aihq_detail_delegate_missing_requirements(tasks: List[Dict[str, Any]]) -> list[str]:
+    required = [
+        ("pipeline_id", ["pipeline_id"]),
+        ("/mywiki", ["/mywiki", "mywiki"]),
+        ("My Note", ["My Note", "마이노트"]),
+        ("실제 작업 에이전트 팀장 회의", ["실제 작업 에이전트 팀장 회의", "actual working team-lead roster", "팀장 회의"]),
+        ("superpowers", ["superpowers"]),
+        ("GStack", ["GStack"]),
+        ("김팀장 최종 취합", ["김팀장 최종 취합", "김팀장 final", "final orchestration"]),
+    ]
+    missing: list[str] = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        if not _AIHQ_DETAIL_GOAL_RE.search(_task_text(task)):
+            continue
+        missing.extend(_missing_context_requirements(str(task.get("context") or ""), required))
+    return sorted(set(missing), key=missing.index)
+
+
+def _aihq_pipeline_delegate_missing_requirements(tasks: List[Dict[str, Any]]) -> list[str]:
+    required = [
+        ("pipeline_id", ["pipeline_id"]),
+        ("/mywiki", ["/mywiki", "mywiki"]),
+        ("My Note", ["My Note", "마이노트"]),
+        ("실제 작업 에이전트 팀장 회의", ["실제 작업 에이전트 팀장 회의", "actual working team-lead roster", "팀장 회의"]),
+        ("superpowers", ["superpowers"]),
+        ("GStack", ["GStack"]),
+        ("김팀장 최종 취합", ["김팀장 최종 취합", "김팀장 final", "final orchestration"]),
+    ]
+    missing: list[str] = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        text = _task_text(task)
+        if not (
+            _AIHQ_DETAIL_GOAL_RE.search(text)
+            or _AIHQ_PROPOSAL_GOAL_RE.search(text)
+            or _AIHQ_RESEARCH_GOAL_RE.search(text)
+            or _AIHQ_AUTOMATION_GOAL_RE.search(text)
+        ):
+            continue
+        missing.extend(_missing_context_requirements(str(task.get("context") or ""), required))
+    return sorted(set(missing), key=missing.index)
 
 
 # ---------------------------------------------------------------------------
@@ -2195,6 +2266,13 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    missing_aihq_requirements = _aihq_pipeline_delegate_missing_requirements(task_list)
+    if missing_aihq_requirements:
+        return tool_error(
+            "AIHQ delegate preflight blocked: missing required pipeline context before child-agent spawn: "
+            + ", ".join(missing_aihq_requirements)
+        )
 
     overall_start = time.monotonic()
     results = []

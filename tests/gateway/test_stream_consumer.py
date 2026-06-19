@@ -1,4 +1,4 @@
-"""Tests for GatewayStreamConsumer — media directive stripping in streaming."""
+﻿"""Tests for GatewayStreamConsumer — media directive stripping in streaming."""
 
 import asyncio
 from types import SimpleNamespace
@@ -1948,3 +1948,46 @@ class TestUtf16OverflowDetection:
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
 
+
+
+class TestFilterAndAccumulateLtChar:
+    """Regression tests for issue #48869.
+
+    A standalone '<' character must never be held back in _think_buffer.
+    Only prefixes of length >= 2 (e.g. '<t', '</') should be buffered.
+    """
+
+    def test_standalone_lt_passes_through_immediately(self):
+        """A bare '<' must not be clipped from the stream."""
+        c = _make_consumer()
+        c._filter_and_accumulate("Use a < b for comparison")
+        assert c._accumulated == "Use a < b for comparison"
+        assert c._think_buffer == ""
+
+    def test_lt_at_end_of_chunk_passes_through(self):
+        """'<' at the end of a chunk must flush, not stall the stream."""
+        c = _make_consumer()
+        c._filter_and_accumulate("value <")
+        assert c._accumulated == "value <"
+        assert c._think_buffer == ""
+
+    def test_lt_followed_by_non_tag_char_passes_through(self):
+        """'<3' (heart emoji text) must not be buffered as a tag prefix."""
+        c = _make_consumer()
+        c._filter_and_accumulate("I <3 you")
+        assert c._accumulated == "I <3 you"
+        assert c._think_buffer == ""
+
+    def test_valid_partial_tag_still_buffered(self):
+        """'<th' is a valid prefix of '<think>' and must still be held back."""
+        c = _make_consumer()
+        c._filter_and_accumulate("before <th")
+        assert c._think_buffer == "<th"
+        assert c._accumulated == "before "
+
+    def test_full_think_tag_still_filtered_after_fix(self):
+        """Complete think blocks must still be stripped after the fix."""
+        c = _make_consumer()
+        c._filter_and_accumulate("<think>hidden</think>visible")
+        assert c._accumulated == "visible"
+        assert "hidden" not in c._accumulated

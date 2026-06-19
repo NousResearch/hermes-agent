@@ -1,4 +1,4 @@
-"""Gateway streaming consumer — bridges sync agent callbacks to async platform delivery.
+﻿"""Gateway streaming consumer — bridges sync agent callbacks to async platform delivery.
 
 The agent fires stream_delta_callback(text) synchronously from its worker thread.
 GatewayStreamConsumer:
@@ -419,7 +419,7 @@ class GatewayStreamConsumer:
                     # No opening tag — check for a partial tag at the tail
                     held_back = 0
                     for tag in self._OPEN_THINK_TAGS:
-                        for i in range(1, len(tag)):
+                        for i in range(2, len(tag)):
                             if buf.endswith(tag[:i]) and i > held_back:
                                 held_back = i
                     if held_back:

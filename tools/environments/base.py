@@ -299,6 +299,10 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Shell type: "bash" (default) or "powershell".  ShellFileOperations
+    # uses this to select between bash commands and Python snippets.
+    shell_type: str = "bash"
+
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
 

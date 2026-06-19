@@ -51,6 +51,24 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+def _is_powershell_shell() -> bool:
+    """Return True if the configured terminal shell is PowerShell."""
+    try:
+        from tools.terminal_tool import _get_terminal_shell_config
+        return _get_terminal_shell_config() == "powershell"
+    except Exception:
+        return False
+
+
+def _find_configured_shell() -> str:
+    """Return the path to the configured shell (pwsh or bash).
+
+    Delegates to _find_shell() which now handles PowerShell detection
+    internally via _get_terminal_shell_config().
+    """
+    return _find_shell()
+
+
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 
@@ -510,10 +528,18 @@ class ProcessRegistry:
         if callable(get_temp_dir):
             try:
                 temp_dir = get_temp_dir()
-                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
-                    return temp_dir.rstrip("/") or "/"
+                if isinstance(temp_dir, str) and temp_dir:
+                    # Accept both POSIX (/tmp) and Windows (C:\...) paths.
+                    # Normalise backslashes to forward slashes for consistent
+                    # path joining downstream.
+                    normalised = temp_dir.replace("\\", "/").rstrip("/") or "/"
+                    return normalised
             except Exception as exc:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
+        # Platform-appropriate fallback
+        if _IS_WINDOWS:
+            import tempfile as _tmpmod
+            return _tmpmod.gettempdir().replace("\\", "/")
         return "/tmp"
 
     def spawn_local(
@@ -551,15 +577,26 @@ class ProcessRegistry:
                     from winpty import PtyProcess as _PtyProcessCls
                 else:
                     from ptyprocess import PtyProcess as _PtyProcessCls
-                user_shell = _find_shell()
+                user_shell = _find_configured_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
-                pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
-                    cwd=session.cwd,
-                    env=pty_env,
-                    dimensions=(30, 120),
-                )
+                # Detect PowerShell: use pwsh -NoProfile -Command instead of
+                # bash -lic "set +m; ..."
+                is_powershell = _is_powershell_shell()
+                if is_powershell:
+                    pty_proc = _PtyProcessCls.spawn(
+                        [user_shell, "-NoProfile", "-NoLogo", "-Command", command],
+                        cwd=session.cwd,
+                        env=pty_env,
+                        dimensions=(30, 120),
+                    )
+                else:
+                    pty_proc = _PtyProcessCls.spawn(
+                        [user_shell, "-lic", f"set +m; {command}"],
+                        cwd=session.cwd,
+                        env=pty_env,
+                        dimensions=(30, 120),
+                    )
                 session.pid = pty_proc.pid
                 # Store the pty handle on the session for read/write
                 session._pty = pty_proc
@@ -589,7 +626,7 @@ class ProcessRegistry:
         # Standard Popen path (non-PTY or PTY fallback)
         # Use the user's login shell for consistency with LocalEnvironment --
         # ensures rc files are sourced and user tools are available.
-        user_shell = _find_shell()
+        user_shell = _find_configured_shell()
         # Force unbuffered output for Python scripts so progress is visible
         # during background execution (libraries like tqdm/datasets buffer when
         # stdout is a pipe, hiding output from process(action="poll")).
@@ -597,8 +634,15 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
+        # Detect PowerShell: use pwsh -NoProfile -Command instead of bash -lic
+        is_powershell = _is_powershell_shell()
+        if is_powershell:
+            shell_args = [user_shell, "-NoProfile", "-NoLogo", "-Command", command]
+        else:
+            shell_args = [user_shell, "-lic", f"set +m; {command}"]
+
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            shell_args,
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -689,17 +733,38 @@ class ProcessRegistry:
         log_path = f"{temp_dir}/hermes_bg_{session.id}.log"
         pid_path = f"{temp_dir}/hermes_bg_{session.id}.pid"
         exit_path = f"{temp_dir}/hermes_bg_{session.id}.exit"
-        quoted_command = shlex.quote(command)
-        quoted_temp_dir = shlex.quote(temp_dir)
-        quoted_log_path = shlex.quote(log_path)
-        quoted_pid_path = shlex.quote(pid_path)
-        quoted_exit_path = shlex.quote(exit_path)
-        bg_command = (
-            f"mkdir -p {quoted_temp_dir} && "
-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
-            f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
-        )
+
+        # Detect PowerShell backends — use PowerShell job syntax instead of
+        # nohup/bash.  Falls back to the original bash path for all others.
+        is_powershell = getattr(env, 'shell_type', 'bash') == 'powershell'
+
+        if is_powershell:
+            # PowerShell: use Start-Job / Start-Process for background execution.
+            # Paths use Windows-style backslashes inside the sandbox.
+            win_log = log_path.replace("/", "\\")
+            win_pid = pid_path.replace("/", "\\")
+            win_exit = exit_path.replace("/", "\\")
+            win_temp = temp_dir.replace("/", "\\")
+            cmd_escaped = command.replace("'", "''")
+            bg_command = (
+                f"if (-not (Test-Path '{win_temp}')) {{ New-Item -ItemType Directory -Path '{win_temp}' -Force | Out-Null }}; "
+                f"$proc = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile','-NoLogo','-Command','{cmd_escaped}' "
+                f"  -RedirectStandardOutput '{win_log}' -RedirectStandardError '{win_log}' -PassThru -NoNewWindow; "
+                f"$proc.Id | Set-Content -Path '{win_pid}' -Encoding UTF8; "
+                f"Get-Content '{win_pid}'"
+            )
+        else:
+            quoted_command = shlex.quote(command)
+            quoted_temp_dir = shlex.quote(temp_dir)
+            quoted_log_path = shlex.quote(log_path)
+            quoted_pid_path = shlex.quote(pid_path)
+            quoted_exit_path = shlex.quote(exit_path)
+            bg_command = (
+                f"mkdir -p {quoted_temp_dir} && "
+                f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+                f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
+                f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
+            )
 
         try:
             result = env.execute(

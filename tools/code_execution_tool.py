@@ -311,6 +311,11 @@ def shell_quote(s: str) -> str:
     Use this when inserting dynamic content into terminal() commands:
         terminal(f"echo {shell_quote(user_input)}")
     """
+    import platform as _pf
+    if _pf.system() == "Windows":
+        # PowerShell: wrap in single quotes, escape embedded single quotes
+        # by doubling them ('' → '').
+        return "'" + s.replace("'", "''") + "'"
     return shlex.quote(s)
 
 

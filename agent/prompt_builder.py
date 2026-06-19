@@ -790,6 +790,18 @@ _WINDOWS_BASH_SHELL_HINT = (
 )
 
 
+_WINDOWS_POWERSHELL_SHELL_HINT = (
+    "Shell: on this Windows host your `terminal` tool runs commands through "
+    "PowerShell 7+ (pwsh), NOT bash or cmd.exe. Use PowerShell cmdlets and "
+    "syntax inside terminal calls: `Get-ChildItem` (alias: ls), "
+    "`Get-Content` (alias: cat), `Select-String` (alias: sls) for search, "
+    "`$env:VAR_NAME` for environment variables, `;` instead of `&&`/`||` "
+    "for command chaining, `$LASTEXITCODE` for exit codes of external "
+    "programs. Use native Windows paths like `C:\\Users\\<user>\\...`. "
+    "Bash syntax (`$FOO`, `&&`, `||`, `grep`, `sed`) will NOT work."
+)
+
+
 def _probe_remote_backend(env_type: str) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
 
@@ -923,10 +935,20 @@ def build_environment_hints() -> str:
             )
         hints.append("\n".join(host_lines))
 
-        # Windows-local terminal runs bash, not PowerShell — the model must
-        # know this or it will issue PowerShell syntax and fail.
+        # Windows-local terminal: tell the model which shell it has.
+        # When terminal.shell=powershell is configured, emit the PowerShell
+        # hint; otherwise default to the historical bash (git-bash/MSYS) hint.
         if sys.platform == "win32" and not is_wsl():
-            hints.append(_WINDOWS_BASH_SHELL_HINT)
+            _shell_hint = _WINDOWS_BASH_SHELL_HINT
+            try:
+                from hermes_cli.config import load_config as _lc
+                _cfg = _lc() or {}
+                _shell = str((_cfg.get("terminal") or {}).get("shell", "")).lower().strip()
+                if _shell in ("powershell", "pwsh"):
+                    _shell_hint = _WINDOWS_POWERSHELL_SHELL_HINT
+            except Exception:
+                pass
+            hints.append(_shell_hint)
     else:
         # --- Remote backend block (host info suppressed) ---
         probe = _probe_remote_backend(backend)

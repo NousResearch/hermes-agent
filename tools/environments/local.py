@@ -286,8 +286,19 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
-_find_shell = _find_bash
+# Backward compat — process_registry.py imports this name.
+# When PowerShell is configured as the terminal shell, return pwsh instead
+# of bash so background processes are spawned with the correct shell.
+def _find_shell() -> str:
+    """Return the path to the configured shell (pwsh or bash)."""
+    try:
+        from tools.terminal_tool import _get_terminal_shell_config
+        if _get_terminal_shell_config() == "powershell":
+            from tools.environments.powershell import _find_powershell
+            return _find_powershell()
+    except Exception:
+        pass
+    return _find_bash()
 
 
 # Standard PATH entries for environments with minimal PATH.
@@ -491,6 +502,8 @@ class LocalEnvironment(BaseEnvironment):
     Session snapshot preserves env vars across calls.
     CWD persists via file-based read after each command.
     """
+
+    shell_type = "bash"
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         if cwd:

@@ -824,6 +824,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 # Environment classes now live in tools/environments/
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
+from tools.environments.powershell import PowerShellEnvironment as _PowerShellEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
@@ -834,7 +835,45 @@ import sys
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
+_POWERSHELL_TOOL_DESCRIPTION = """Execute commands in a PowerShell environment on Windows. Filesystem, current working directory, and environment variables persist between calls.
+
+You are running on Windows with PowerShell 7+ (pwsh). Use PowerShell cmdlets and syntax:
+- List files: Get-ChildItem (alias: ls, dir, gci)
+- Read file content: Get-Content (alias: cat, gc) — but prefer read_file tool
+- Search text: Select-String (alias: sls) — but prefer search_files tool
+- Environment variables: $env:VAR_NAME (e.g. $env:PATH, $env:USERPROFILE)
+- Set env var: $env:VAR_NAME = "value"
+- Current dir: Get-Location (alias: pwd, gl)
+- Change dir: Set-Location (alias: cd, sl)
+- Pipe: | (works like bash but passes objects, not text)
+- Variables: $var = "value" (no $ needed on assignment, $ on read)
+- String interpolation: "Hello $name" (double quotes interpolate, single quotes don't)
+- Exit code: $LASTEXITCODE (for external programs), $? (True/False for cmdlets)
+- Run exe: & "C:\\path\\to.exe" arg1 arg2
+- Multi-statement: use ; between commands (not &&). Use ; instead of && and ||
+
+Do NOT use cat/head/tail to read files — use read_file instead.
+Do NOT use grep/rg/find to search — use search_files instead.
+Do NOT use ls to list directories — use search_files(target='files') instead.
+Do NOT use sed/awk to edit files — use patch instead.
+Do NOT use Set-Content/Out-File to create files — use write_file instead.
+Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
+Because environment state persists, activate a virtualenv or set up variables once per session; do not re-set the same environment before every command unless a command proves the shell state was reset.
+
+Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
+Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
+  (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.
+  (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — MUST set notify_on_complete=true. Without it you'll either forget to poll or sit blocked waiting for the user to surface the result.
+For servers/watchers, do NOT use shell-level background wrappers (Start-Process -NoNewWindow / trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
+After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
+Use process(action="poll") for progress checks, process(action="wait") to block until done.
+Working directory: Use 'workdir' for per-command cwd.
+PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
+
+Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to Out-Host or cat if it might page.
+"""
+
+_BASH_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -856,6 +895,34 @@ PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REP
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
+
+
+def _get_terminal_shell_config() -> str:
+    """Return the configured shell type for local terminal: 'powershell' or 'bash'.
+
+    Reads ``terminal.shell`` from config.yaml. Defaults to 'bash' (the
+    historical Hermes behaviour on Windows via Git Bash).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        shell = str(terminal_cfg.get("shell", "")).lower().strip()
+        if shell in ("powershell", "pwsh"):
+            return "powershell"
+        return "bash"
+    except Exception:
+        return "bash"
+
+
+def _get_terminal_tool_description() -> str:
+    """Return the terminal tool description matching the configured shell."""
+    if _get_terminal_shell_config() == "powershell":
+        return _POWERSHELL_TOOL_DESCRIPTION
+    return _BASH_TOOL_DESCRIPTION
+
+
+TERMINAL_TOOL_DESCRIPTION = _get_terminal_tool_description()
 
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
@@ -1255,6 +1322,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_extra_args = cc.get("docker_extra_args", [])
 
     if env_type == "local":
+        shell_type = _get_terminal_shell_config()
+        if shell_type == "powershell":
+            return _PowerShellEnvironment(cwd=cwd, timeout=timeout)
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":

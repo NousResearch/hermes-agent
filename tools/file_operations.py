@@ -725,6 +725,11 @@ class ShellFileOperations(FileOperations):
     
     Works with ANY terminal backend that has execute(command, cwd) method.
     This includes local, docker, singularity, ssh, modal, and daytona environments.
+
+    When the backend's ``shell_type`` is ``"powershell"``, all file operations
+    use Python snippets (``python -c``) instead of bash commands so they work
+    correctly on Windows PowerShell where ``cat``, ``sed``, ``wc``, ``head``,
+    ``mktemp``, ``trap``, etc. are unavailable.
     """
     
     def __init__(self, terminal_env, cwd: str = None):
@@ -761,7 +766,11 @@ class ShellFileOperations(FileOperations):
 
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
-    
+
+        # Detect PowerShell backends — when true, we use Python-based
+        # operations instead of bash/POSIX commands.
+        self._is_powershell = getattr(terminal_env, 'shell_type', 'bash') == 'powershell'
+
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Execute command via terminal backend.
@@ -797,7 +806,10 @@ class ShellFileOperations(FileOperations):
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached)."""
         if cmd not in self._command_cache:
-            result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
+            if self._is_powershell:
+                result = self._exec(f"Get-Command {cmd} -ErrorAction SilentlyContinue | Out-Null; if ($?) {{ echo 'yes' }}")
+            else:
+                result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
     
@@ -863,7 +875,10 @@ class ShellFileOperations(FileOperations):
         # Handle ~ and ~user
         if path.startswith('~'):
             # Get home directory via the terminal environment
-            result = self._exec("echo $HOME")
+            if self._is_powershell:
+                result = self._exec("echo $env:USERPROFILE")
+            else:
+                result = self._exec("echo $HOME")
             if result.exit_code == 0 and result.stdout.strip():
                 home = result.stdout.strip()
                 if path == '~':
@@ -879,7 +894,10 @@ class ShellFileOperations(FileOperations):
                 if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
                     # Only expand ~username (not the full path) to avoid shell
                     # injection via path suffixes like "~user/$(malicious)".
-                    expand_result = self._exec(f"echo ~{username}")
+                    if self._is_powershell:
+                        expand_result = self._exec(f"echo (Resolve-Path ~{username}).Path")
+                    else:
+                        expand_result = self._exec(f"echo ~{username}")
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         user_home = expand_result.stdout.strip()
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
@@ -889,7 +907,10 @@ class ShellFileOperations(FileOperations):
     
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands."""
-        # Use single quotes and escape any single quotes in the string
+        if self._is_powershell:
+            # PowerShell single-quote escaping: double embedded single quotes
+            return "'" + arg.replace("'", "''") + "'"
+        # bash single-quote escaping
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
@@ -907,6 +928,9 @@ class ShellFileOperations(FileOperations):
         was swapped into place atomically. A non-zero exit means nothing was
         renamed and the original (if any) is intact.
         """
+        if self._is_powershell:
+            return self._atomic_write_python(path, content)
+
         q_path = self._escape_shell_arg(path)
         parent = os.path.dirname(path) or "."
         q_parent = self._escape_shell_arg(parent)
@@ -946,6 +970,36 @@ class ShellFileOperations(FileOperations):
         )
         return self._exec(script, stdin_data=content)
 
+    def _atomic_write_python(self, path: str, content: str) -> "ExecuteResult":
+        """Atomic write via Python snippet — used on PowerShell backends.
+
+        Uses ``python -c`` with stdin piping so it works on any shell that
+        has Python available (which Hermes always does via its venv).
+        Creates a temp file in the same directory, writes stdin to it,
+        then atomically replaces the target.
+        """
+        snippet = (
+            "import sys, os, tempfile, pathlib\n"
+            f"target = pathlib.Path({path!r})\n"
+            "parent = target.parent if target.parent else pathlib.Path('.')\n"
+            "parent.mkdir(parents=True, exist_ok=True)\n"
+            "fd, tmp = tempfile.mkstemp(dir=str(parent), prefix='.hermes-tmp.')\n"
+            "try:\n"
+            "    with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:\n"
+            "        f.write(sys.stdin.read())\n"
+            "    if target.exists():\n"
+            "        try:\n"
+            "            os.chmod(tmp, os.stat(str(target)).st_mode & 0o7777)\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    os.replace(tmp, str(target))\n"
+            "except Exception:\n"
+            "    try: os.unlink(tmp)\n"
+            "    except Exception: pass\n"
+            "    raise\n"
+        )
+        return self._exec(f"python -c {self._escape_shell_arg(snippet)}", stdin_data=content)
+
     def _detect_file_line_ending(self, path: str, pre_content: Optional[str] = None) -> Optional[str]:
         """Detect the dominant line ending of a file on disk.
 
@@ -959,10 +1013,20 @@ class ShellFileOperations(FileOperations):
         """
         if pre_content:
             return _detect_line_ending(pre_content)
-        # File may not exist (new write) — `head` exits 0 with empty
-        # stdout in that case which yields None below.  Cheap probe.
-        head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
-        head_result = self._exec(head_cmd)
+        # File may not exist (new write) — probe returns empty in that case.
+        if self._is_powershell:
+            snippet = (
+                "import sys\n"
+                f"p = {path!r}\n"
+                "try:\n"
+                "    with open(p, 'rb') as f: data = f.read(4096)\n"
+                "    sys.stdout.buffer.write(data)\n"
+                "except Exception: pass\n"
+            )
+            head_result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+        else:
+            head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
+            head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:
             return None
         return _detect_line_ending(head_result.stdout)
@@ -977,8 +1041,19 @@ class ShellFileOperations(FileOperations):
         """
         if pre_content is not None:
             return _has_bom(pre_content)
-        head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
-        head_result = self._exec(head_cmd)
+        if self._is_powershell:
+            snippet = (
+                "import sys\n"
+                f"p = {path!r}\n"
+                "try:\n"
+                "    with open(p, 'rb') as f: data = f.read(3)\n"
+                "    sys.stdout.buffer.write(data)\n"
+                "except Exception: pass\n"
+            )
+            head_result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+        else:
+            head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
+            head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:
             return False
         return _has_bom(head_result.stdout)
@@ -1015,7 +1090,10 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
         
         offset, limit = normalize_read_pagination(offset, limit)
-        
+
+        if self._is_powershell:
+            return self._read_file_python(path, offset, limit)
+
         # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
@@ -1096,6 +1174,87 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
+    def _read_file_python(self, path: str, offset: int, limit: int) -> ReadResult:
+        """Read file via Python snippet — used on PowerShell backends."""
+        snippet = (
+            "import sys, os\n"
+            f"p = {path!r}\n"
+            "if not os.path.isfile(p):\n"
+            "    sys.exit(1)\n"
+            "st = os.stat(p)\n"
+            f"print(st.st_size)\n"
+            "with open(p, 'rb') as f:\n"
+            "    data = f.read(1000)\n"
+            "sys.stdout.buffer.write(data)\n"
+        )
+        result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+        if result.exit_code != 0:
+            return self._suggest_similar_files(path)
+        lines = result.stdout.split('\n', 1)
+        try:
+            file_size = int(lines[0].strip())
+        except (ValueError, IndexError):
+            file_size = 0
+        sample_output = lines[1] if len(lines) > 1 else ""
+        sample_output = _strip_terminal_fence_leaks(sample_output)
+
+        if self._is_image(path):
+            return ReadResult(
+                is_image=True, is_binary=True, file_size=file_size,
+                hint="Image file detected. Use vision_analyze with this file path."
+            )
+        if self._is_likely_binary(path, sample_output):
+            return ReadResult(
+                is_binary=True, file_size=file_size,
+                error="Binary file - cannot display as text."
+            )
+
+        end_line = offset + limit - 1
+        read_snippet = (
+            "import sys\n"
+            f"p = {path!r}\n"
+            "with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
+            "    for i, line in enumerate(f, 1):\n"
+            f"        if i < {offset}: continue\n"
+            f"        if i > {end_line}: break\n"
+            "        sys.stdout.write(line)\n"
+        )
+        read_result = self._exec(f"python -c {self._escape_shell_arg(read_snippet)}")
+        if read_result.exit_code != 0:
+            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
+        read_output = _strip_terminal_fence_leaks(read_result.stdout)
+        if offset == 1:
+            read_output, _ = _strip_bom(read_output)
+
+        count_snippet = (
+            "import sys\n"
+            f"p = {path!r}\n"
+            "try:\n"
+            "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
+            "        print(sum(1 for _ in f))\n"
+            "except Exception:\n"
+            "    print(0)\n"
+        )
+        wc_result = self._exec(f"python -c {self._escape_shell_arg(count_snippet)}")
+        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
+        try:
+            total_lines = int(wc_output.strip())
+        except ValueError:
+            total_lines = 0
+
+        truncated = total_lines > end_line
+        hint = None
+        if truncated:
+            hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
+
+        return ReadResult(
+            content=self._add_line_numbers(read_output, offset),
+            total_lines=total_lines,
+            file_size=file_size,
+            truncated=truncated,
+            hint=hint
+        )
+
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
         dir_path = os.path.dirname(path) or "."
@@ -1105,8 +1264,19 @@ class ShellFileOperations(FileOperations):
         lower_name = filename.lower()
 
         # List files in the target directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
-        ls_result = self._exec(ls_cmd)
+        if self._is_powershell:
+            list_snippet = (
+                "import os, sys\n"
+                f"d = {dir_path!r}\n"
+                "try:\n"
+                "    for f in sorted(os.listdir(d))[:50]:\n"
+                "        print(f)\n"
+                "except Exception: pass\n"
+            )
+            ls_result = self._exec(f"python -c {self._escape_shell_arg(list_snippet)}")
+        else:
+            ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
+            ls_result = self._exec(ls_cmd)
 
         scored: list = []  # (score, filepath) — higher is better
         if ls_result.exit_code == 0 and ls_result.stdout.strip():
@@ -1155,6 +1325,8 @@ class ShellFileOperations(FileOperations):
         Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
+        if self._is_powershell:
+            return self._read_file_raw_python(path)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
@@ -1182,6 +1354,50 @@ class ShellFileOperations(FileOperations):
         # back out — it re-probes the on-disk file, which still has the
         # marker — so the round-trip preserves it.
         raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
+        return ReadResult(
+            content=raw_content,
+            file_size=file_size,
+        )
+
+    def _read_file_raw_python(self, path: str) -> ReadResult:
+        """Read full file content via Python snippet — used on PowerShell backends."""
+        stat_snippet = (
+            "import sys, os\n"
+            f"p = {path!r}\n"
+            "if not os.path.isfile(p):\n"
+            "    sys.exit(1)\n"
+            f"print(os.stat(p).st_size)\n"
+            "with open(p, 'rb') as f:\n"
+            "    data = f.read(1000)\n"
+            "sys.stdout.buffer.write(data)\n"
+        )
+        stat_result = self._exec(f"python -c {self._escape_shell_arg(stat_snippet)}")
+        if stat_result.exit_code != 0:
+            return self._suggest_similar_files(path)
+        lines_out = stat_result.stdout.split('\n', 1)
+        try:
+            file_size = int(lines_out[0].strip())
+        except (ValueError, IndexError):
+            file_size = 0
+        sample_output = lines_out[1] if len(lines_out) > 1 else ""
+        sample_output = _strip_terminal_fence_leaks(sample_output)
+        if self._is_image(path):
+            return ReadResult(is_image=True, is_binary=True, file_size=file_size)
+        if self._is_likely_binary(path, sample_output):
+            return ReadResult(
+                is_binary=True, file_size=file_size,
+                error="Binary file — cannot display as text."
+            )
+        read_snippet = (
+            "import sys\n"
+            f"p = {path!r}\n"
+            "with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
+            "    sys.stdout.write(f.read())\n"
+        )
+        read_result = self._exec(f"python -c {self._escape_shell_arg(read_snippet)}")
+        if read_result.exit_code != 0:
+            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
+        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(read_result.stdout))
         return ReadResult(
             content=raw_content,
             file_size=file_size,
@@ -1236,12 +1452,15 @@ class ShellFileOperations(FileOperations):
             "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
         )
 
-        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
-
-        # Fall back to ``python`` (Windows / older systems where there's no
-        # ``python3`` symlink but a ``python`` binary is on PATH).
-        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+        if self._is_powershell:
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+        else:
+            result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+
+            # Fall back to ``python`` (Windows / older systems where there's no
+            # ``python3`` symlink but a ``python`` binary is on PATH).
+            if result.exit_code != 0 and "python3" in (result.stdout or ""):
+                result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
 
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
@@ -1249,15 +1468,27 @@ class ShellFileOperations(FileOperations):
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:
-        """Move a file via mv."""
+        """Move a file via mv (bash) or Python snippet (PowerShell)."""
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
             if _is_write_denied(p):
                 return WriteResult(error=f"Move denied: {p} is a protected path")
-        result = self._exec(
-            f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
-        )
+        if self._is_powershell:
+            snippet = (
+                "import shutil, sys\n"
+                f"src = {src!r}\n"
+                f"dst = {dst!r}\n"
+                "try:\n"
+                "    shutil.move(src, dst)\n"
+                "except Exception as exc:\n"
+                "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+            )
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+        else:
+            result = self._exec(
+                f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
+            )
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
         return WriteResult()
@@ -1318,8 +1549,19 @@ class ShellFileOperations(FileOperations):
             # pre_content as None which makes both downstream consumers
             # degrade gracefully (lint reports all errors; LSP skips the
             # shift map).
-            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-            read_result = self._exec(read_cmd)
+            if self._is_powershell:
+                pre_snippet = (
+                    "import sys\n"
+                    f"p = {path!r}\n"
+                    "try:\n"
+                    "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
+                    "        sys.stdout.write(f.read())\n"
+                    "except Exception: sys.exit(1)\n"
+                )
+                read_result = self._exec(f"python -c {self._escape_shell_arg(pre_snippet)}")
+            else:
+                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+                read_result = self._exec(read_cmd)
             if read_result.exit_code == 0 and read_result.stdout:
                 pre_content = read_result.stdout
 
@@ -1358,8 +1600,19 @@ class ShellFileOperations(FileOperations):
         dirs_created = False
 
         if parent:
-            mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
-            mkdir_result = self._exec(mkdir_cmd)
+            if self._is_powershell:
+                mkdir_snippet = (
+                    "import pathlib, sys\n"
+                    f"p = pathlib.Path({parent!r})\n"
+                    "try:\n"
+                    "    p.mkdir(parents=True, exist_ok=True)\n"
+                    "except Exception as exc:\n"
+                    "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+                )
+                mkdir_result = self._exec(f"python -c {self._escape_shell_arg(mkdir_snippet)}")
+            else:
+                mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
+                mkdir_result = self._exec(mkdir_cmd)
             if mkdir_result.exit_code == 0:
                 dirs_created = True
 
@@ -1383,9 +1636,19 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
+        # Get bytes written
+        if self._is_powershell:
+            size_snippet = (
+                "import os, sys\n"
+                f"p = {path!r}\n"
+                "try:\n"
+                "    print(os.path.getsize(p))\n"
+                "except Exception: sys.exit(1)\n"
+            )
+            stat_result = self._exec(f"python -c {self._escape_shell_arg(size_snippet)}")
+        else:
+            stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+            stat_result = self._exec(stat_cmd)
 
         try:
             bytes_written = int(stat_result.stdout.strip())
@@ -1442,8 +1705,19 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
-        read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-        read_result = self._exec(read_cmd)
+        if self._is_powershell:
+            patch_read_snippet = (
+                "import sys\n"
+                f"p = {path!r}\n"
+                "try:\n"
+                "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
+                "        sys.stdout.write(f.read())\n"
+                "except Exception: sys.exit(1)\n"
+            )
+            read_result = self._exec(f"python -c {self._escape_shell_arg(patch_read_snippet)}")
+        else:
+            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+            read_result = self._exec(read_cmd)
         
         if read_result.exit_code != 0:
             return PatchResult(error=f"Failed to read file: {path}")
@@ -1495,7 +1769,19 @@ class ShellFileOperations(FileOperations):
         # pipe, etc.) that would otherwise return success-with-diff while the
         # file is unchanged on disk.
         verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-        verify_result = self._exec(verify_cmd)
+        if self._is_powershell:
+            verify_snippet = (
+                "import sys\n"
+                f"p = {path!r}\n"
+                "try:\n"
+                "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
+                "        sys.stdout.write(f.read())\n"
+                "except Exception: sys.exit(1)\n"
+            )
+            verify_result = self._exec(f"python -c {self._escape_shell_arg(verify_snippet)}")
+        else:
+            verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+            verify_result = self._exec(verify_cmd)
         if verify_result.exit_code != 0:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
         # Normalize line endings before comparing.  On Windows, Python's
@@ -1600,8 +1886,19 @@ class ShellFileOperations(FileOperations):
         if inproc is not None:
             # Need content — either passed in or read from disk.
             if content is None:
-                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-                read_result = self._exec(read_cmd)
+                if self._is_powershell:
+                    lint_read_snippet = (
+                        "import sys\n"
+                        f"p = {path!r}\n"
+                        "try:\n"
+                        "    with open(p, 'r', encoding='utf-8', errors='replace') as f:\n"
+                        "        sys.stdout.write(f.read())\n"
+                        "except Exception: sys.exit(1)\n"
+                    )
+                    read_result = self._exec(f"python -c {self._escape_shell_arg(lint_read_snippet)}")
+                else:
+                    read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+                    read_result = self._exec(read_cmd)
                 if read_result.exit_code != 0:
                     return LintResult(skipped=True, message=f"Failed to read {path} for lint")
                 content = read_result.stdout
@@ -1942,20 +2239,47 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
         
         # Validate that the path exists before searching
-        check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
+        if self._is_powershell:
+            check_snippet = (
+                "import os, sys\n"
+                f"p = {path!r}\n"
+                "print('exists' if os.path.exists(p) else 'not_found')\n"
+            )
+            check = self._exec(f"python -c {self._escape_shell_arg(check_snippet)}")
+        else:
+            check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
             # Try to suggest nearby paths
             parent = os.path.dirname(path) or "."
             basename_query = os.path.basename(path)
             hint_parts = [f"Path not found: {path}"]
             # Check if parent directory exists and list similar entries
-            parent_check = self._exec(
-                f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
-            )
-            if "yes" in parent_check.stdout and basename_query:
-                ls_result = self._exec(
-                    f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
+            if self._is_powershell:
+                parent_snippet = (
+                    "import os, sys\n"
+                    f"p = {parent!r}\n"
+                    "print('yes' if os.path.isdir(p) else 'no')\n"
                 )
+                parent_check = self._exec(f"python -c {self._escape_shell_arg(parent_snippet)}")
+            else:
+                parent_check = self._exec(
+                    f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
+                )
+            if "yes" in parent_check.stdout and basename_query:
+                if self._is_powershell:
+                    ls_snippet = (
+                        "import os, sys\n"
+                        f"d = {parent!r}\n"
+                        "try:\n"
+                        "    for f in sorted(os.listdir(d))[:20]:\n"
+                        "        print(f)\n"
+                        "except Exception: pass\n"
+                    )
+                    ls_result = self._exec(f"python -c {self._escape_shell_arg(ls_snippet)}")
+                else:
+                    ls_result = self._exec(
+                        f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
+                    )
                 if ls_result.exit_code == 0 and ls_result.stdout.strip():
                     lower_q = basename_query.lower()
                     candidates = []
@@ -1993,6 +2317,11 @@ class ShellFileOperations(FileOperations):
             part not in {".", ".."} and part.startswith(".")
             for part in search_root.parts
         )
+
+        # On PowerShell, use Python-based search instead of find/rg
+        if self._is_powershell:
+            return self._search_files_python(search_pattern, path, limit, offset,
+                                              has_hidden_path_ancestor, search_root)
 
         # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
         # default, and has parallel directory traversal (~200x faster than
@@ -2111,10 +2440,45 @@ class ShellFileOperations(FileOperations):
             truncated=len(all_files) >= fetch_limit or bool(limit_reason),
             limit_reason=limit_reason,
         )
-    
+
+    def _search_files_python(self, pattern: str, path: str, limit: int, offset: int,
+                             has_hidden_ancestor: bool, search_root: Path) -> SearchResult:
+        """File search via Python snippet — used on PowerShell backends."""
+        snippet = (
+            "import os, fnmatch, sys, time\n"
+            f"root = {path!r}\n"
+            f"pattern = {pattern!r}\n"
+            f"skip_hidden = {not has_hidden_ancestor!r}\n"
+            "results = []\n"
+            "for dirpath, dirnames, filenames in os.walk(root):\n"
+            "    if skip_hidden:\n"
+            "        dirnames[:] = [d for d in dirnames if not d.startswith('.')]\n"
+            "    for fn in filenames:\n"
+            "        if fnmatch.fnmatch(fn, pattern):\n"
+            "            fp = os.path.join(dirpath, fn)\n"
+            "            try: mt = os.path.getmtime(fp)\n"
+            "            except Exception: mt = 0\n"
+            "            results.append((mt, fp))\n"
+            "results.sort(key=lambda x: -x[0])\n"
+            "for mt, fp in results:\n"
+            "    print(fp)\n"
+        )
+        result = self._exec(f"python -c {self._escape_shell_arg(snippet)}", timeout=60)
+        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        page = all_files[offset:offset + limit]
+        return SearchResult(
+            files=page,
+            total_count=len(all_files),
+            truncated=len(all_files) > offset + limit,
+        )
+
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search for content inside files (grep-like)."""
+        # On PowerShell, use Python-based search to avoid bash pipe syntax
+        if self._is_powershell:
+            return self._search_content_python(pattern, path, file_glob, limit, offset,
+                                                output_mode, context)
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
@@ -2128,7 +2492,102 @@ class ShellFileOperations(FileOperations):
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
-    
+
+    def _search_content_python(self, pattern: str, path: str, file_glob: Optional[str],
+                               limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+        """Content search via Python snippet — used on PowerShell backends."""
+        snippet = (
+            "import os, re, sys, fnmatch\n"
+            f"root = {path!r}\n"
+            f"pattern = {pattern!r}\n"
+            f"file_glob = {file_glob!r}\n"
+            f"output_mode = {output_mode!r}\n"
+            f"context = {context!r}\n"
+            f"limit = {limit + offset + 50!r}\n"
+            "try:\n"
+            "    regex = re.compile(pattern)\n"
+            "except re.error as e:\n"
+            "    print(f'Regex error: {e}', file=sys.stderr); sys.exit(1)\n"
+            "matches = []\n"
+            "if os.path.isfile(root):\n"
+            "    files_to_search = [root]\n"
+            "else:\n"
+            "    files_to_search = []\n"
+            "    for dirpath, dirnames, filenames in os.walk(root):\n"
+            "        dirnames[:] = [d for d in dirnames if not d.startswith('.')]\n"
+            "        for fn in filenames:\n"
+            "            if file_glob and not fnmatch.fnmatch(fn, file_glob):\n"
+            "                continue\n"
+            "            files_to_search.append(os.path.join(dirpath, fn))\n"
+            "for fp in files_to_search:\n"
+            "    try:\n"
+            "        with open(fp, 'r', encoding='utf-8', errors='replace') as f:\n"
+            "            lines = f.readlines()\n"
+            "    except Exception:\n"
+            "        continue\n"
+            "    for i, line in enumerate(lines, 1):\n"
+            "        if regex.search(line):\n"
+            "            if output_mode == 'files_only':\n"
+            "                print(fp)\n"
+            "                break\n"
+            "            elif output_mode == 'count':\n"
+            "                pass\n"
+            "            else:\n"
+            "                start = max(0, i - 1 - context)\n"
+            "                end = min(len(lines), i + context)\n"
+            "                for j in range(start, end):\n"
+            "                    prefix = '>>' if j == i - 1 else '  '\n"
+            "                    print(f'{fp}:{j+1}:{prefix} {lines[j].rstrip()}')\n"
+            "                if context > 0 and i < len(lines):\n"
+            "                    print('--')\n"
+            "    if output_mode == 'count':\n"
+            "        cnt = sum(1 for line in lines if regex.search(line))\n"
+            "        if cnt > 0:\n"
+            "            print(f'{fp}:{cnt}')\n"
+            "    if len(matches) >= limit:\n"
+            "        break\n"
+        )
+        result = self._exec(f"python -c {self._escape_shell_arg(snippet)}", timeout=60)
+        if result.exit_code != 0:
+            return SearchResult(error=f"Search failed: {result.stdout.strip()}")
+
+        stdout = result.stdout
+        if output_mode == "files_only":
+            all_files = [f for f in stdout.strip().split('\n') if f and f != '--']
+            page = all_files[offset:offset + limit]
+            return SearchResult(files=page, total_count=len(all_files))
+        elif output_mode == "count":
+            counts = {}
+            for line in stdout.strip().split('\n'):
+                if ':' in line:
+                    parts = line.rsplit(':', 1)
+                    if len(parts) == 2:
+                        try:
+                            counts[parts[0]] = int(parts[1])
+                        except ValueError:
+                            pass
+            return SearchResult(counts=counts, total_count=sum(counts.values()))
+
+        # content mode
+        matches = []
+        current_path = None
+        for line in stdout.split('\n'):
+            if not line or line == '--':
+                continue
+            parts = line.split(':', 2)
+            if len(parts) >= 3:
+                try:
+                    ln = int(parts[1])
+                except ValueError:
+                    continue
+                matches.append(SearchMatch(path=parts[0], line_number=ln, content=parts[2]))
+        page = matches[offset:offset + limit]
+        return SearchResult(
+            matches=page,
+            total_count=len(matches),
+            truncated=len(matches) > offset + limit,
+        )
+
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""

@@ -240,6 +240,49 @@ def _extract_email_address(raw: str) -> str:
     return raw.strip().lower()
 
 
+def _extract_email_thread_id(msg: email_lib.message.Message) -> Optional[str]:
+    """
+    Extract a stable thread identifier from an inbound email's RFC 5322 headers.
+
+    Strategy (Root ID via References):
+      1. References header present → take the FIRST <message-id> in the list.
+         This is the root of the conversation; it's preserved by virtually all
+         RFC-compliant MUAs (Gmail, Outlook, Apple Mail, Thunderbird) even when
+         the References list is truncated on very long threads.
+      2. References missing but In-Reply-To present → use that as a fallback
+         for older MUAs (notably legacy Outlook) that don't emit References.
+      3. Neither present → this is the first message of a new thread.
+         Use the message's own Message-ID; subsequent replies will echo it
+         back in their References header.
+      4. Nothing usable → return None (caller falls back to chat_id-only session).
+
+    The returned ID is stripped of angle brackets, casing preserved.
+    """
+    def _first_id(header_value: str) -> Optional[str]:
+        matches = re.findall(r"<([^<>\s]+)>", header_value)
+        return matches[0] if matches else None
+
+    references = msg.get("References", "")
+    if references:
+        root_id = _first_id(references)
+        if root_id:
+            return root_id
+
+    in_reply_to = msg.get("In-Reply-To", "")
+    if in_reply_to:
+        parent_id = _first_id(in_reply_to)
+        if parent_id:
+            return parent_id
+
+    own_id = msg.get("Message-ID") or msg.get("Message-Id") or ""
+    if own_id:
+        root_id = _first_id(own_id)
+        if root_id:
+            return root_id
+
+    return None
+
+
 def _extract_attachments(
     msg: email_lib.message.Message,
     skip_attachments: bool = False,
@@ -501,6 +544,14 @@ class EmailAdapter(BasePlatformAdapter):
                     subject = _decode_header_value(msg.get("Subject", "(no subject)"))
                     message_id = msg.get("Message-ID", "")
                     in_reply_to = msg.get("In-Reply-To", "")
+                    # Extract conversation root ID for per-thread session isolation.
+                    # See _extract_email_thread_id for the strategy.
+                    thread_id = _extract_email_thread_id(msg)
+                    # Capture the full References chain so outbound replies can
+                    # extend it properly (RFC 5322 §3.6.4), instead of overwriting
+                    # it with just the parent Message-ID. Without this, threads
+                    # break after a few back-and-forth exchanges.
+                    references_chain = msg.get("References", "")
                     # Skip automated/noreply senders before any processing
                     msg_headers = dict(msg.items())
                     if _is_automated_sender(sender_addr, msg_headers):
@@ -516,6 +567,8 @@ class EmailAdapter(BasePlatformAdapter):
                         "subject": subject,
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
+                        "thread_id": thread_id,
+                        "references": references_chain,
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
@@ -585,7 +638,28 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "references": msg_data.get("references", ""),
         }
+
+        thread_id = msg_data.get("thread_id")
+
+        # FIX: If this is a reply to a Hermes-initiated email (no References header,
+        # but In-Reply-To matches a hermes_root_id we stored), use that root id
+        # so we land in the existing session instead of creating a new one.
+        if not thread_id:
+            in_reply_to = msg_data.get("in_reply_to", "").strip("<>")
+            known_root = self._thread_context.get(sender_addr, {}).get("hermes_root_id", "")
+            if in_reply_to and known_root and in_reply_to == known_root:
+                thread_id = known_root
+                logger.debug("[Email] Matched hermes_root_id=%s for %s → reusing session", thread_id, sender_addr)
+
+        logger.debug(
+            "[Email] Thread routing: from=%s message_id=%s in_reply_to=%s thread_id=%s",
+            sender_addr,
+            msg_data.get("message_id") or "(none)",
+            msg_data.get("in_reply_to") or "(none)",
+            thread_id or "(none, chat_id-only)",
+        )
 
         source = self.build_source(
             chat_id=sender_addr,
@@ -593,6 +667,7 @@ class EmailAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
+            thread_id=thread_id,
         )
 
         event = MessageEvent(
@@ -644,15 +719,33 @@ class EmailAdapter(BasePlatformAdapter):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        # Threading headers
+        # Threading headers — RFC 5322 §3.6.4 compliant chaining.
+        # In-Reply-To = parent's Message-ID (single value).
+        # References = parent's References chain + parent's Message-ID.
+        # If parent has no References (it was the thread root), References
+        # equals just the parent's Message-ID.
+        # Without this chaining, the inbound References on subsequent replies
+        # would drift, breaking per-thread session isolation downstream.
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            parent_references = ctx.get("references", "").strip()
+            if parent_references:
+                msg["References"] = f"{parent_references} {original_msg_id}"
+            else:
+                msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+
+        # FIX: When Hermes initiates a thread (no prior context), store its own
+        # Message-ID as the thread root so the first human reply — which will
+        # carry In-Reply-To: <this msg_id> — can be matched back to this session.
+        if not ctx.get("hermes_root_id"):
+            bare_id = msg_id.strip("<>")
+            self._thread_context.setdefault(to_addr, {})["hermes_root_id"] = bare_id
+            logger.debug("[Email] Stored hermes_root_id=%s for %s", bare_id, to_addr)
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -758,10 +851,15 @@ class EmailAdapter(BasePlatformAdapter):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
+        # Threading headers — RFC 5322 §3.6.4 compliant chaining.
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            parent_references = ctx.get("references", "").strip()
+            if parent_references:
+                msg["References"] = f"{parent_references} {original_msg_id}"
+            else:
+                msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
@@ -838,10 +936,15 @@ class EmailAdapter(BasePlatformAdapter):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
+        # Threading headers — RFC 5322 §3.6.4 compliant chaining.
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            parent_references = ctx.get("references", "").strip()
+            if parent_references:
+                msg["References"] = f"{parent_references} {original_msg_id}"
+            else:
+                msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"

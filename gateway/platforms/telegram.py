@@ -197,12 +197,15 @@ def _strip_mdv2(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Markdown table → Telegram-friendly row groups
+# Markdown table → Telegram-native rendering
 # ---------------------------------------------------------------------------
-# Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
-# so pipe tables render as noisy backslash-pipe text with no alignment.
-# Reformating each row into a bold heading plus bullet list keeps the content
-# readable on mobile clients while preserving the source data.
+# Legacy path (MarkdownV2): pipe tables are converted to bold-heading+bullet
+# groups because MarkdownV2 has no table syntax.
+#
+# Rich path (sendRichMessage, Bot API 10.1): pipe tables are converted to
+# HTML <table> markup and injected into the markdown content. Rich Markdown
+# supports inline HTML, so tables render as native, styled Telegram tables
+# with borders and zebra striping.
 
 # Matches a GFM table delimiter row: optional outer pipes, cells containing
 # only dashes (with optional leading/trailing colons for alignment) separated
@@ -325,6 +328,127 @@ def _wrap_markdown_tables(text: str) -> str:
                 table_block.append(lines[j])
                 j += 1
             out.append(_render_table_block_for_telegram(table_block))
+            i = j
+            continue
+
+        out.append(line)
+        i += 1
+
+    return '\n'.join(out)
+
+
+def _get_col_alignments(delimiter_row: str, col_count: int) -> list[str]:
+    """Extract GFM column alignments from a delimiter row.
+
+    Returns a list of ``'left'``, ``'center'``, or ``'right'`` for each column.
+    """
+    cells = _split_markdown_table_row(delimiter_row)
+    alignments: list[str] = []
+    for cell in cells:
+        cell = cell.strip()
+        left = cell.startswith(':')
+        right = cell.endswith(':')
+        if left and right:
+            alignments.append('center')
+        elif right:
+            alignments.append('right')
+        else:
+            alignments.append('left')
+    # Pad/trim to match col_count
+    while len(alignments) < col_count:
+        alignments.append('left')
+    return alignments[:col_count]
+
+
+def _escape_html(text: str) -> str:
+    """Escape ``&``, ``<``, ``>`` for safe HTML embedding."""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def _render_pipe_table_as_html(table_block: list[str]) -> str:
+    """Render a detected GFM table as HTML ``<table>`` for Rich Messages."""
+    if len(table_block) < 3:
+        return '\n'.join(table_block)
+
+    headers = _split_markdown_table_row(table_block[0])
+    if len(headers) < 2:
+        return '\n'.join(table_block)
+
+    alignments = _get_col_alignments(table_block[1], len(headers))
+
+    first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
+    has_row_label_col = len(first_data_row) == len(headers) + 1
+
+    html_lines = ['<table bordered striped>']
+
+    # Header row
+    html_lines.append('<tr>')
+    if has_row_label_col:
+        html_lines.append('<th></th>')
+    for i, h in enumerate(headers):
+        align = alignments[i] if i < len(alignments) else 'left'
+        html_lines.append(f'<th align="{align}">{_escape_html(h)}</th>')
+    html_lines.append('</tr>')
+
+    # Data rows
+    for row in table_block[2:]:
+        cells = _split_markdown_table_row(row)
+        html_lines.append('<tr>')
+        for i, cell in enumerate(cells):
+            if i > 0 or not has_row_label_col:
+                align = alignments[i - (1 if has_row_label_col else 0)] if i - (1 if has_row_label_col else 0) < len(alignments) else 'left'
+            else:
+                align = 'left'
+            tag = 'th' if (has_row_label_col and i == 0) else 'td'
+            html_lines.append(f'<{tag} align="{align}">{_escape_html(cell)}</{tag}>')
+        html_lines.append('</tr>')
+
+    html_lines.append('</table>')
+    return '\n'.join(html_lines)
+
+
+def _convert_pipe_tables_to_html(text: str) -> str:
+    """Rewrite GFM-style pipe tables into HTML ``<table>`` markup.
+
+    Used by the rich-message path so tables render natively via
+    ``sendRichMessage`` instead of being degraded to bullet groups.
+    Tables inside existing fenced code blocks are left alone.
+    """
+    if '|' not in text or '-' not in text:
+        return text
+
+    lines = text.split('\n')
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        # Track existing fenced code blocks — never touch content inside.
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        # Look for a header row (contains '|') immediately followed by a
+        # delimiter row.
+        if (
+            '|' in line
+            and i + 1 < len(lines)
+            and _TABLE_SEPARATOR_RE.match(lines[i + 1])
+        ):
+            table_block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and _is_table_row(lines[j]):
+                table_block.append(lines[j])
+                j += 1
+            out.append(_render_pipe_table_as_html(table_block))
             i = j
             continue
 
@@ -1072,7 +1196,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Never pass ``format_message(content)`` here — that converts to
         MarkdownV2 and would escape/destroy rich syntax like table pipes.
+
+        GFM pipe tables are converted to HTML ``<table>`` markup so they
+        render as native tables via ``sendRichMessage``.
         """
+        # Convert pipe tables to HTML <table> for native rendering.
+        # Rich Markdown supports inline HTML, so the surrounding markdown
+        # formatting (bold, italic, code, etc.) still works.
+        if '|' in content:
+            content = _convert_pipe_tables_to_html(content)
+
         payload: Dict[str, Any] = {"markdown": content}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True

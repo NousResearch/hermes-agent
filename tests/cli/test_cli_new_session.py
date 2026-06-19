@@ -175,6 +175,21 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
+def test_recompile_rebuilds_prompt_without_touching_history(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+    old_history = list(cli.conversation_history)
+
+    cli.process_command("/recompile")
+
+    # System prompt invalidated → rebuild + disk reload (SOUL/MEMORY/USER) next turn.
+    cli.agent._invalidate_system_prompt.assert_called_once()
+    # ...but the thread and session are untouched — that is the whole point of
+    # /recompile vs /new (drops history) or /compress (summarizes it).
+    assert cli.session_id == old_session_id
+    assert cli.conversation_history == old_history
+
+
 def test_new_command_rotates_hermes_session_id_env_and_context(tmp_path):
     from gateway.session_context import _VAR_MAP, get_session_env
 

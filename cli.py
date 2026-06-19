@@ -7664,6 +7664,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if retry_msg and hasattr(self, '_pending_input'):
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
+        elif canonical == "recompile":
+            # Rebuild the system prompt in place: reload SOUL.md / MEMORY.md /
+            # USER.md from disk and force a rebuild on the next turn, WITHOUT
+            # touching conversation history. Lets edits to the standing prompt
+            # take effect mid-session — unlike /new (drops the thread) or
+            # /compress (summarizes it). Mirrors the invalidation that context
+            # compression already performs, just exposed as its own command.
+            if self.agent is not None and hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+                _cprint(
+                    "  ↻ System prompt will rebuild on the next turn "
+                    "(SOUL.md / MEMORY.md / USER.md reloaded from disk)."
+                )
+            else:
+                _cprint("  (._.) No active agent — nothing to recompile.")
         elif canonical == "undo":
             # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
             _undo_n = 1

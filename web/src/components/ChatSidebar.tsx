@@ -48,7 +48,15 @@ interface RpcEnvelope {
   params?: { type?: string; payload?: unknown };
 }
 
+interface StatusEntry {
+  id: string;
+  kind: string;
+  text: string;
+}
+
 const TOOL_LIMIT = 20;
+const STATUS_LIMIT = 10;
+type BadgeTone = "secondary" | "warning" | "success" | "destructive";
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: "idle",
@@ -58,16 +66,28 @@ const STATE_LABEL: Record<ConnectionState, string> = {
   error: "error",
 };
 
-const STATE_TONE: Record<
-  ConnectionState,
-  "secondary" | "warning" | "success" | "destructive"
-> = {
+const STATE_TONE: Record<ConnectionState, BadgeTone> = {
   idle: "secondary",
   connecting: "warning",
   open: "success",
   closed: "secondary",
   error: "destructive",
 };
+
+function statusLabel(kind: string): string {
+  if (kind === "warn") return "warning";
+  if (kind === "ready") return "ready";
+  if (kind === "lifecycle") return "lifecycle";
+  if (kind === "process") return "process";
+  return "status";
+}
+
+function statusTone(kind: string): BadgeTone {
+  if (kind === "warn") return "destructive";
+  if (kind === "ready") return "success";
+  if (kind === "lifecycle" || kind === "process") return "warning";
+  return "secondary";
+}
 
 interface ChatSidebarProps {
   channel: string;
@@ -89,6 +109,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [info, setInfo] = useState<SessionInfo>({});
   const [tools, setTools] = useState<ToolEntry[]>([]);
+  const [statuses, setStatuses] = useState<StatusEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -205,7 +226,8 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
       // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
+      const DISCONNECTED =
+        "events feed disconnected — tool and status updates may not appear";
       const surface = (msg: string) => !unmounting && setError(msg);
 
       ws.addEventListener("error", () => surface(DISCONNECTED));
@@ -219,89 +241,113 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
       });
 
       ws.addEventListener("message", (ev) => {
-      let frame: RpcEnvelope;
+        let frame: RpcEnvelope;
 
-      try {
-        frame = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-
-      if (frame.method !== "event" || !frame.params) {
-        return;
-      }
-
-      const { type, payload } = frame.params;
-
-      if (type === "tool.start") {
-        const p = payload as
-          | { tool_id?: string; name?: string; context?: string }
-          | undefined;
-        const toolId = p?.tool_id;
-
-        if (!toolId) {
+        try {
+          frame = JSON.parse(ev.data);
+        } catch {
           return;
         }
 
-        setTools((prev) =>
-          [
-            ...prev,
-            {
-              kind: "tool" as const,
-              id: `tool-${toolId}-${prev.length}`,
-              tool_id: toolId,
-              name: p?.name ?? "tool",
-              context: p?.context,
-              status: "running" as const,
-              startedAt: Date.now(),
-            },
-          ].slice(-TOOL_LIMIT),
-        );
-      } else if (type === "tool.progress") {
-        const p = payload as
-          | { name?: string; preview?: string }
-          | undefined;
-
-        if (!p?.name || !p.preview) {
+        if (frame.method !== "event" || !frame.params) {
           return;
         }
 
-        setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
-          ),
-        );
-      } else if (type === "tool.complete") {
-        const p = payload as
-          | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
+        const { type, payload } = frame.params;
+
+        if (type === "tool.start") {
+          const p = payload as
+            | { tool_id?: string; name?: string; context?: string }
+            | undefined;
+          const toolId = p?.tool_id;
+
+          if (!toolId) {
+            return;
+          }
+
+          setTools((prev) =>
+            [
+              ...prev,
+              {
+                kind: "tool" as const,
+                id: `tool-${toolId}-${prev.length}`,
+                tool_id: toolId,
+                name: p?.name ?? "tool",
+                context: p?.context,
+                status: "running" as const,
+                startedAt: Date.now(),
+              },
+            ].slice(-TOOL_LIMIT),
+          );
+        } else if (type === "tool.progress") {
+          const p = payload as
+            | { name?: string; preview?: string }
+            | undefined;
+
+          if (!p?.name || !p.preview) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.status === "running" && t.name === p.name
+                ? { ...t, preview: p.preview }
+                : t,
+            ),
+          );
+        } else if (type === "tool.complete") {
+          const p = payload as
+            | {
+                tool_id?: string;
+                summary?: string;
+                error?: string;
+                inline_diff?: string;
+              }
+            | undefined;
+
+          if (!p?.tool_id) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.tool_id === p.tool_id
+                ? {
+                    ...t,
+                    status: p.error ? "error" : "done",
+                    summary: p.summary,
+                    error: p.error,
+                    inline_diff: p.inline_diff,
+                    completedAt: Date.now(),
+                  }
+                : t,
+            ),
+          );
+        } else if (type === "status.update") {
+          const p = payload as { kind?: string; text?: string } | undefined;
+          const kind = (p?.kind ?? "status").trim().toLowerCase() || "status";
+          const text =
+            (p?.text ?? "").trim() || (kind === "ready" ? "ready" : "");
+
+          if (!text) {
+            return;
+          }
+
+          setStatuses((prev) => {
+            const last = prev.at(-1);
+            if (last?.kind === kind && last.text === text) {
+              return prev;
             }
-          | undefined;
-
-        if (!p?.tool_id) {
-          return;
+            return [
+              ...prev,
+              {
+                id: `status-${Date.now()}-${prev.length}`,
+                kind,
+                text,
+              },
+            ].slice(-STATUS_LIMIT);
+          });
         }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
-              ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
-              : t,
-          ),
-        );
-      }
       });
     })();
 
@@ -314,6 +360,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
   const reconnect = useCallback(() => {
     setError(null);
     setTools([]);
+    setStatuses([]);
     setVersion((v) => v + 1);
   }, []);
 
@@ -382,6 +429,37 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
           </div>
         </Card>
       )}
+
+      <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
+        <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
+          status
+        </div>
+
+        <div className="flex min-h-0 flex-col gap-1.5">
+          {statuses.length === 0 ? (
+            <div className="px-2 py-4 text-center text-xs text-text-secondary">
+              no lifecycle updates yet
+            </div>
+          ) : (
+            [...statuses].reverse().map((status) => (
+              <div
+                key={status.id}
+                className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-xs"
+              >
+                <div className="mb-1 flex items-center gap-2">
+                  <Badge tone={statusTone(status.kind)}>
+                    {statusLabel(status.kind)}
+                  </Badge>
+                </div>
+
+                <div className="wrap-break-word text-text-secondary">
+                  {status.text}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
 
       <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
         <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">

@@ -120,9 +120,9 @@ class TestBuiltinSkins:
         assert skin.get_color("response_border") == "#5DB8A8"
         assert skin.get_color("status_bar_bg") == "#0A2F2C"
         assert skin.get_branding("agent_name") == "Nautilus Agent"
-        assert skin.get_branding("goodbye") == "Dive complete! 🐚"
-        assert skin.get_branding("prompt_symbol") == "🐚"
-        assert skin.get_branding("response_label") == " 🐚 Nautilus "
+        assert skin.get_branding("goodbye") == "Dive complete! ⚚"
+        assert skin.get_branding("prompt_symbol") == "⚚"
+        assert skin.get_branding("response_label") == " ⚚ Nautilus "
 
     def test_nautilus_has_spinner_customization(self):
         from hermes_cli.skin_engine import load_skin
@@ -140,7 +140,7 @@ class TestBuiltinSkins:
         assert skin.banner_logo != ""
         assert "Nautilus" in skin.banner_logo or "nautilus" in skin.banner_logo.lower()
         assert skin.banner_hero != ""
-        assert "🐚" in skin.banner_hero
+        assert "⚚" in skin.banner_hero
 
     def test_nautilus_listed_in_skins(self):
         from hermes_cli.skin_engine import list_skins

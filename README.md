@@ -2,7 +2,7 @@
   <img src="assets/banner.png" alt="Nautilus Agent" width="100%">
 </p>
 
-# Nautilus Agent 🐚
+# Nautilus Agent ⚚
 <p align="center">
   <a href="https://tj-coding.github.io/nautilus-community/">Nautilus Community</a> | <a href="https://tj-coding.github.io/nautilus-community/docs">Documentation</a>
 </p>
@@ -198,7 +198,7 @@ Nautilus Agent is a **friendly fork** of [Hermes Agent](https://github.com/NousR
 
 > If you like Nautilus Agent, **please star the upstream [Hermes Agent repo](https://github.com/NousResearch/hermes-agent)** — that's where the real magic happens.
 
-## Nautilus + Hermes = 🐚⚡
+## Nautilus + Hermes = ⚚⚡
 
 Nautilus takes everything that makes Hermes great and layers science-specific capabilities on top:
 

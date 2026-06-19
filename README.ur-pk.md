@@ -4,7 +4,7 @@
   <img src="assets/banner.png" alt="Nautilus Agent" width="100%">
 </p>
 
-# نوٹیلس ایجنٹ 🐚 (Nautilus Agent)
+# نوٹیلس ایجنٹ ⚚ (Nautilus Agent)
 
 <p align="center">
   <a href="https://tj-coding.github.io/nautilus-agent/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>

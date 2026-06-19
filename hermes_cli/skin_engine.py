@@ -163,7 +163,7 @@ class SkinConfig:
 # =============================================================================
 
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
-    "default": {
+    "hermes": {
         "name": "default",
         "description": "Classic Hermes — gold and kawaii",
         "colors": {
@@ -197,453 +197,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         },
         "tool_prefix": "┊",
     },
-    "ares": {
-        "name": "ares",
-        "description": "War-god theme — crimson and bronze",
-        "colors": {
-            "banner_border": "#9F1C1C",
-            "banner_title": "#C7A96B",
-            "banner_accent": "#DD4A3A",
-            "banner_dim": "#6B1717",
-            "banner_text": "#F1E6CF",
-            "ui_accent": "#DD4A3A",
-            "ui_label": "#C7A96B",
-            "ui_ok": "#4caf50",
-            "ui_error": "#ef5350",
-            "ui_warn": "#ffa726",
-            "prompt": "#F1E6CF",
-            "input_rule": "#9F1C1C",
-            "response_border": "#C7A96B",
-            "status_bar_bg": "#2A1212",
-            "status_bar_text": "#F1E6CF",
-            "status_bar_strong": "#C7A96B",
-            "status_bar_dim": "#6E584B",
-            "status_bar_good": "#7BC96F",
-            "status_bar_warn": "#C7A96B",
-            "status_bar_bad": "#DD4A3A",
-            "status_bar_critical": "#EF5350",
-            "session_label": "#C7A96B",
-            "session_border": "#6E584B",
-        },
-        "spinner": {
-            "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
-            "thinking_faces": ["(⚔)", "(⛨)", "(▲)", "(⌁)", "(<>)"],
-            "thinking_verbs": [
-                "forging", "marching", "sizing the field", "holding the line",
-                "hammering plans", "tempering steel", "plotting impact", "raising the shield",
-            ],
-            "wings": [
-                ["⟪⚔", "⚔⟫"],
-                ["⟪▲", "▲⟫"],
-                ["⟪╸", "╺⟫"],
-                ["⟪⛨", "⛨⟫"],
-            ],
-        },
-        "branding": {
-            "agent_name": "Ares Agent",
-            "welcome": "Welcome to Ares Agent! Type your message or /help for commands.",
-            "goodbye": "Farewell, warrior! ⚔",
-            "response_label": " ⚔ Ares ",
-            "prompt_symbol": "⚔",
-            "help_header": "(⚔) Available Commands",
-        },
-        "tool_prefix": "╎",
-        "banner_logo": """[bold #A3261F] █████╗ ██████╗ ███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #B73122]██╔══██╗██╔══██╗██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#C93C24]███████║██████╔╝█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#D84A28]██╔══██║██╔══██╗██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#E15A2D]██║  ██║██║  ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#EB6C32]╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
-        "banner_hero": """[#9F1C1C]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣤⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#9F1C1C]⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣿⠟⠻⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#C7A96B]⠀⠀⠀⠀⠀⠀⠀⣠⣾⡿⠋⠀⠀⠀⠙⢿⣷⣄⠀⠀⠀⠀⠀⠀⠀[/]
-[#C7A96B]⠀⠀⠀⠀⠀⢀⣾⡿⠋⠀⠀⢠⡄⠀⠀⠙⢿⣷⡀⠀⠀⠀⠀⠀[/]
-[#DD4A3A]⠀⠀⠀⠀⣰⣿⠟⠀⠀⠀⣰⣿⣿⣆⠀⠀⠀⠻⣿⣆⠀⠀⠀⠀[/]
-[#DD4A3A]⠀⠀⠀⢰⣿⠏⠀⠀⢀⣾⡿⠉⢿⣷⡀⠀⠀⠹⣿⡆⠀⠀⠀[/]
-[#9F1C1C]⠀⠀⠀⣿⡟⠀⠀⣠⣿⠟⠀⠀⠀⠻⣿⣄⠀⠀⢻⣿⠀⠀⠀[/]
-[#9F1C1C]⠀⠀⠀⣿⡇⠀⠀⠙⠋⠀⠀⚔⠀⠀⠙⠋⠀⠀⢸⣿⠀⠀⠀[/]
-[#6B1717]⠀⠀⠀⢿⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣼⡿⠀⠀⠀[/]
-[#6B1717]⠀⠀⠀⠘⢿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⡿⠃⠀⠀⠀[/]
-[#C7A96B]⠀⠀⠀⠀⠈⠻⣿⣷⣦⣤⣀⣀⣤⣤⣶⣿⠿⠋⠀⠀⠀⠀[/]
-[#C7A96B]⠀⠀⠀⠀⠀⠀⠀⠉⠛⠿⠿⠿⠿⠛⠉⠀⠀⠀⠀⠀⠀⠀[/]
-[#DD4A3A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⚔⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[dim #6B1717]⠀⠀⠀⠀⠀⠀⠀⠀war god online⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
-    },
-    "mono": {
-        "name": "mono",
-        "description": "Monochrome — clean grayscale",
-        "colors": {
-            "banner_border": "#555555",
-            "banner_title": "#e6edf3",
-            "banner_accent": "#aaaaaa",
-            "banner_dim": "#444444",
-            "banner_text": "#c9d1d9",
-            "ui_accent": "#aaaaaa",
-            "ui_label": "#888888",
-            "ui_ok": "#888888",
-            "ui_error": "#cccccc",
-            "ui_warn": "#999999",
-            "prompt": "#c9d1d9",
-            "input_rule": "#444444",
-            "response_border": "#aaaaaa",
-            "status_bar_bg": "#1F1F1F",
-            "status_bar_text": "#C9D1D9",
-            "status_bar_strong": "#E6EDF3",
-            "status_bar_dim": "#777777",
-            "status_bar_good": "#B5B5B5",
-            "status_bar_warn": "#AAAAAA",
-            "status_bar_bad": "#D0D0D0",
-            "status_bar_critical": "#F0F0F0",
-            "session_label": "#888888",
-            "session_border": "#555555",
-        },
-        "spinner": {},
-        "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯",
-            "help_header": "[?] Available Commands",
-        },
-        "tool_prefix": "┊",
-    },
-    "slate": {
-        "name": "slate",
-        "description": "Cool blue — developer-focused",
-        "colors": {
-            "banner_border": "#4169e1",
-            "banner_title": "#7eb8f6",
-            "banner_accent": "#8EA8FF",
-            "banner_dim": "#4b5563",
-            "banner_text": "#c9d1d9",
-            "ui_accent": "#7eb8f6",
-            "ui_label": "#8EA8FF",
-            "ui_ok": "#63D0A6",
-            "ui_error": "#F7A072",
-            "ui_warn": "#e6a855",
-            "prompt": "#c9d1d9",
-            "input_rule": "#4169e1",
-            "response_border": "#7eb8f6",
-            "status_bar_bg": "#151C2F",
-            "status_bar_text": "#C9D1D9",
-            "status_bar_strong": "#7EB8F6",
-            "status_bar_dim": "#4B5563",
-            "status_bar_good": "#63D0A6",
-            "status_bar_warn": "#E6A855",
-            "status_bar_bad": "#F7A072",
-            "status_bar_critical": "#FF7A7A",
-            "session_label": "#7eb8f6",
-            "session_border": "#4b5563",
-        },
-        "spinner": {},
-        "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯",
-            "help_header": "(^_^)? Available Commands",
-        },
-        "tool_prefix": "┊",
-    },
-    "daylight": {
-        "name": "daylight",
-        "description": "Light theme for bright terminals with dark text and cool blue accents",
-        "colors": {
-            "banner_border": "#2563EB",
-            "banner_title": "#0F172A",
-            "banner_accent": "#1D4ED8",
-            "banner_dim": "#475569",
-            "banner_text": "#111827",
-            "ui_accent": "#2563EB",
-            "ui_label": "#0F766E",
-            "ui_ok": "#15803D",
-            "ui_error": "#B91C1C",
-            "ui_warn": "#B45309",
-            "prompt": "#111827",
-            "input_rule": "#93C5FD",
-            "response_border": "#2563EB",
-            "session_label": "#1D4ED8",
-            "session_border": "#64748B",
-            "status_bar_bg": "#E5EDF8",
-            "voice_status_bg": "#E5EDF8",
-            "completion_menu_bg": "#F8FAFC",
-            "completion_menu_current_bg": "#DBEAFE",
-            "completion_menu_meta_bg": "#EEF2FF",
-            "completion_menu_meta_current_bg": "#BFDBFE",
-        },
-        "spinner": {},
-        "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! ⚕",
-            "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯",
-            "help_header": "[?] Available Commands",
-        },
-        "tool_prefix": "│",
-    },
-    "warm-lightmode": {
-        "name": "warm-lightmode",
-        "description": "Warm light mode — dark brown/gold text for light terminal backgrounds",
-        "colors": {
-            "banner_border": "#8B6914",
-            "banner_title": "#5C3D11",
-            "banner_accent": "#8B4513",
-            "banner_dim": "#8B7355",
-            "banner_text": "#2C1810",
-            "ui_accent": "#8B4513",
-            "ui_label": "#5C3D11",
-            "ui_ok": "#2E7D32",
-            "ui_error": "#C62828",
-            "ui_warn": "#E65100",
-            "prompt": "#2C1810",
-            "input_rule": "#8B6914",
-            "response_border": "#8B6914",
-            "session_label": "#5C3D11",
-            "session_border": "#A0845C",
-            "status_bar_bg": "#F5F0E8",
-            "voice_status_bg": "#F5F0E8",
-            "completion_menu_bg": "#F5EFE0",
-            "completion_menu_current_bg": "#E8DCC8",
-            "completion_menu_meta_bg": "#F0E8D8",
-            "completion_menu_meta_current_bg": "#DFCFB0",
-        },
-        "spinner": {},
-        "branding": {
-            "agent_name": "Hermes Agent",
-            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! \u2695",
-            "response_label": " \u2695 Hermes ",
-            "prompt_symbol": "\u276f",
-            "help_header": "(^_^)? Available Commands",
-        },
-        "tool_prefix": "\u250a",
-    },
-    "poseidon": {
-        "name": "poseidon",
-        "description": "Ocean-god theme — deep blue and seafoam",
-        "colors": {
-            "banner_border": "#2A6FB9",
-            "banner_title": "#A9DFFF",
-            "banner_accent": "#5DB8F5",
-            "banner_dim": "#153C73",
-            "banner_text": "#EAF7FF",
-            "ui_accent": "#5DB8F5",
-            "ui_label": "#A9DFFF",
-            "ui_ok": "#4caf50",
-            "ui_error": "#ef5350",
-            "ui_warn": "#ffa726",
-            "prompt": "#EAF7FF",
-            "input_rule": "#2A6FB9",
-            "response_border": "#5DB8F5",
-            "status_bar_bg": "#0F2440",
-            "status_bar_text": "#EAF7FF",
-            "status_bar_strong": "#A9DFFF",
-            "status_bar_dim": "#496884",
-            "status_bar_good": "#6ED7B0",
-            "status_bar_warn": "#5DB8F5",
-            "status_bar_bad": "#2A6FB9",
-            "status_bar_critical": "#D94F4F",
-            "session_label": "#A9DFFF",
-            "session_border": "#496884",
-        },
-        "spinner": {
-            "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
-            "thinking_faces": ["(Ψ)", "(∿)", "(≈)", "(⌁)", "(◌)"],
-            "thinking_verbs": [
-                "charting currents", "sounding the depth", "reading foam lines",
-                "steering the trident", "tracking undertow", "plotting sea lanes",
-                "calling the swell", "measuring pressure",
-            ],
-            "wings": [
-                ["⟪≈", "≈⟫"],
-                ["⟪Ψ", "Ψ⟫"],
-                ["⟪∿", "∿⟫"],
-                ["⟪◌", "◌⟫"],
-            ],
-        },
-        "branding": {
-            "agent_name": "Poseidon Agent",
-            "welcome": "Welcome to Poseidon Agent! Type your message or /help for commands.",
-            "goodbye": "Fair winds! Ψ",
-            "response_label": " Ψ Poseidon ",
-            "prompt_symbol": "Ψ",
-            "help_header": "(Ψ) Available Commands",
-        },
-        "tool_prefix": "│",
-        "banner_logo": """[bold #B8E8FF]██████╗  ██████╗ ███████╗███████╗██╗██████╗  ██████╗ ███╗   ██╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #97D6FF]██╔══██╗██╔═══██╗██╔════╝██╔════╝██║██╔══██╗██╔═══██╗████╗  ██║      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#75C1F6]██████╔╝██║   ██║███████╗█████╗  ██║██║  ██║██║   ██║██╔██╗ ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#4FA2E0]██╔═══╝ ██║   ██║╚════██║██╔══╝  ██║██║  ██║██║   ██║██║╚██╗██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#2E7CC7]██║     ╚██████╔╝███████║███████╗██║██████╔╝╚██████╔╝██║ ╚████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#1B4F95]╚═╝      ╚═════╝ ╚══════╝╚══════╝╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
-        "banner_hero": """[#2A6FB9]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#5DB8F5]⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#5DB8F5]⠀⠀⠀⠀⠀⠀⠀⢠⣿⠏⠀Ψ⠀⠹⣿⡄⠀⠀⠀⠀⠀⠀⠀[/]
-[#A9DFFF]⠀⠀⠀⠀⠀⠀⠀⣿⡟⠀⠀⠀⠀⠀⢻⣿⠀⠀⠀⠀⠀⠀⠀[/]
-[#A9DFFF]⠀⠀⠀≈≈≈≈≈⣿⡇⠀⠀⠀⠀⠀⢸⣿≈≈≈≈≈⠀⠀⠀[/]
-[#5DB8F5]⠀⠀⠀⠀⠀⠀⠀⣿⡇⠀⠀⠀⠀⠀⢸⣿⠀⠀⠀⠀⠀⠀⠀[/]
-[#2A6FB9]⠀⠀⠀⠀⠀⠀⠀⢿⣧⠀⠀⠀⠀⠀⣼⡿⠀⠀⠀⠀⠀⠀⠀[/]
-[#2A6FB9]⠀⠀⠀⠀⠀⠀⠀⠘⢿⣷⣄⣀⣠⣾⡿⠃⠀⠀⠀⠀⠀⠀⠀[/]
-[#153C73]⠀⠀⠀⠀⠀⠀⠀⠀⠈⠻⣿⣿⡿⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#153C73]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#5DB8F5]⠀⠀⠀⠀⠀≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈⠀⠀⠀⠀⠀[/]
-[#A9DFFF]⠀⠀⠀⠀⠀⠀≈≈≈≈≈≈≈≈≈≈≈≈≈⠀⠀⠀⠀⠀⠀[/]
-[dim #153C73]⠀⠀⠀⠀⠀⠀⠀deep waters hold⠀⠀⠀⠀⠀⠀⠀[/]""",
-    },
-    "sisyphus": {
-        "name": "sisyphus",
-        "description": "Sisyphean theme — austere grayscale with persistence",
-        "colors": {
-            "banner_border": "#B7B7B7",
-            "banner_title": "#F5F5F5",
-            "banner_accent": "#E7E7E7",
-            "banner_dim": "#4A4A4A",
-            "banner_text": "#D3D3D3",
-            "ui_accent": "#E7E7E7",
-            "ui_label": "#D3D3D3",
-            "ui_ok": "#919191",
-            "ui_error": "#E7E7E7",
-            "ui_warn": "#B7B7B7",
-            "prompt": "#F5F5F5",
-            "input_rule": "#656565",
-            "response_border": "#B7B7B7",
-            "status_bar_bg": "#202020",
-            "status_bar_text": "#D3D3D3",
-            "status_bar_strong": "#F5F5F5",
-            "status_bar_dim": "#656565",
-            "status_bar_good": "#B7B7B7",
-            "status_bar_warn": "#D3D3D3",
-            "status_bar_bad": "#E7E7E7",
-            "status_bar_critical": "#F5F5F5",
-            "session_label": "#919191",
-            "session_border": "#656565",
-        },
-        "spinner": {
-            "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
-            "thinking_faces": ["(◉)", "(◬)", "(◌)", "(○)", "(●)"],
-            "thinking_verbs": [
-                "finding traction", "measuring the grade", "resetting the boulder",
-                "counting the ascent", "testing leverage", "setting the shoulder",
-                "pushing uphill", "enduring the loop",
-            ],
-            "wings": [
-                ["⟪◉", "◉⟫"],
-                ["⟪◬", "◬⟫"],
-                ["⟪◌", "◌⟫"],
-                ["⟪⬤", "⬤⟫"],
-            ],
-        },
-        "branding": {
-            "agent_name": "Sisyphus Agent",
-            "welcome": "Welcome to Sisyphus Agent! Type your message or /help for commands.",
-            "goodbye": "The boulder waits. ◉",
-            "response_label": " ◉ Sisyphus ",
-            "prompt_symbol": "◉",
-            "help_header": "(◉) Available Commands",
-        },
-        "tool_prefix": "│",
-        "banner_logo": """[bold #F5F5F5]███████╗██╗███████╗██╗   ██╗██████╗ ██╗  ██╗██╗   ██╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #E7E7E7]██╔════╝██║██╔════╝╚██╗ ██╔╝██╔══██╗██║  ██║██║   ██║██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#D7D7D7]███████╗██║███████╗ ╚████╔╝ ██████╔╝███████║██║   ██║███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#BFBFBF]╚════██║██║╚════██║  ╚██╔╝  ██╔═══╝ ██╔══██║██║   ██║╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#8F8F8F]███████║██║███████║   ██║   ██║     ██║  ██║╚██████╔╝███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#626262]╚══════╝╚═╝╚══════╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
-        "banner_hero": """[#B7B7B7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#D3D3D3]⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#E7E7E7]⠀⠀⠀⠀⠀⠀⣾⣿⣿⣿⣿⣿⣿⣿⣷⠀⠀⠀⠀⠀⠀⠀[/]
-[#F5F5F5]⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⠀⠀[/]
-[#E7E7E7]⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀[/]
-[#D3D3D3]⠀⠀⠀⠀⠀⠀⠘⢿⣿⣿⣿⣿⣿⡿⠃⠀⠀⠀⠀⠀⠀⠀[/]
-[#B7B7B7]⠀⠀⠀⠀⠀⠀⠀⠀⠙⠿⣿⠿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#919191]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#656565]⠀⠀⠀⠀⠀⠀⠀⠀⠀⣰⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#656565]⠀⠀⠀⠀⠀⠀⠀⠀⣰⣿⣿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#4A4A4A]⠀⠀⠀⠀⠀⠀⠀⣰⣿⣿⣿⣿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#4A4A4A]⠀⠀⠀⠀⠀⣀⣴⣿⣿⣿⣿⣿⣿⣦⣀⠀⠀⠀⠀⠀⠀[/]
-[#656565]⠀⠀⠀━━━━━━━━━━━━━━━━━━━━━━━⠀⠀⠀[/]
-[dim #4A4A4A]⠀⠀⠀⠀⠀⠀⠀⠀⠀the boulder⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
-    },
-    "charizard": {
-        "name": "charizard",
-        "description": "Volcanic theme — burnt orange and ember",
-        "colors": {
-            "banner_border": "#C75B1D",
-            "banner_title": "#FFD39A",
-            "banner_accent": "#F29C38",
-            "banner_dim": "#C58A45",
-            "banner_text": "#FFF0D4",
-            "ui_accent": "#F29C38",
-            "ui_label": "#FFD39A",
-            "ui_ok": "#4caf50",
-            "ui_error": "#ef5350",
-            "ui_warn": "#ffa726",
-            "prompt": "#FFF0D4",
-            "input_rule": "#C75B1D",
-            "response_border": "#F29C38",
-            "status_bar_bg": "#2B160E",
-            "status_bar_text": "#FFF0D4",
-            "status_bar_strong": "#FFD39A",
-            "status_bar_dim": "#6C4724",
-            "status_bar_good": "#6BCB77",
-            "status_bar_warn": "#F29C38",
-            "status_bar_bad": "#E2832B",
-            "status_bar_critical": "#EF5350",
-            "session_label": "#FFD39A",
-            "session_border": "#6C4724",
-            "selection_bg": "#5A260D",
-            "completion_menu_bg": "#0B0503",
-            "completion_menu_current_bg": "#4A1B07",
-            "completion_menu_meta_bg": "#120806",
-            "completion_menu_meta_current_bg": "#5A260D",
-        },
-        "spinner": {
-            "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
-            "thinking_faces": ["(✦)", "(▲)", "(◇)", "(⌁)", "(🔥)"],
-            "thinking_verbs": [
-                "banking into the draft", "measuring burn", "reading the updraft",
-                "tracking ember fall", "setting wing angle", "holding the flame core",
-                "plotting a hot landing", "coiling for lift",
-            ],
-            "wings": [
-                ["⟪✦", "✦⟫"],
-                ["⟪▲", "▲⟫"],
-                ["⟪◌", "◌⟫"],
-                ["⟪◇", "◇⟫"],
-            ],
-        },
-        "branding": {
-            "agent_name": "Charizard Agent",
-            "welcome": "Welcome to Charizard Agent! Type your message or /help for commands.",
-            "goodbye": "Flame out! ✦",
-            "response_label": " ✦ Charizard ",
-            "prompt_symbol": "✦",
-            "help_header": "(✦) Available Commands",
-        },
-        "tool_prefix": "│",
-        "banner_logo": """[bold #FFF0D4] ██████╗██╗  ██╗ █████╗ ██████╗ ██╗███████╗ █████╗ ██████╗ ██████╗        █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #FFD39A]██╔════╝██║  ██║██╔══██╗██╔══██╗██║╚══███╔╝██╔══██╗██╔══██╗██╔══██╗      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#F29C38]██║     ███████║███████║██████╔╝██║  ███╔╝ ███████║██████╔╝██║  ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#E2832B]██║     ██╔══██║██╔══██║██╔══██╗██║ ███╔╝  ██╔══██║██╔══██╗██║  ██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#C75B1D]╚██████╗██║  ██║██║  ██║██║  ██║██║███████╗██║  ██║██║  ██║██████╔╝      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#7A3511] ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝       ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
-        "banner_hero": """[#FFD39A]⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⠶⠶⠶⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#F29C38]⠀⠀⠀⠀⠀⠀⣴⠟⠁⠀⠀⠀⠀⠈⠻⣦⠀⠀⠀⠀⠀⠀[/]
-[#F29C38]⠀⠀⠀⠀⠀⣼⠏⠀⠀⠀✦⠀⠀⠀⠀⠹⣧⠀⠀⠀⠀⠀[/]
-[#E2832B]⠀⠀⠀⠀⢰⡟⠀⠀⣀⣤⣤⣤⣀⠀⠀⠀⢻⡆⠀⠀⠀⠀[/]
-[#E2832B]⠀⠀⣠⡾⠛⠁⣠⣾⠟⠉⠀⠉⠻⣷⣄⠀⠈⠛⢷⣄⠀⠀[/]
-[#C75B1D]⠀⣼⠟⠀⢀⣾⠟⠁⠀⠀⠀⠀⠀⠈⠻⣷⡀⠀⠻⣧⠀[/]
-[#C75B1D]⢸⡟⠀⠀⣿⡟⠀⠀⠀🔥⠀⠀⠀⠀⢻⣿⠀⠀⢻⡇[/]
-[#7A3511]⠀⠻⣦⡀⠘⢿⣧⡀⠀⠀⠀⠀⠀⢀⣼⡿⠃⢀⣴⠟⠀[/]
-[#7A3511]⠀⠀⠈⠻⣦⣀⠙⢿⣷⣤⣤⣤⣾⡿⠋⣀⣴⠟⠁⠀⠀[/]
-[#C75B1D]⠀⠀⠀⠀⠈⠙⠛⠶⠤⠭⠭⠤⠶⠛⠋⠁⠀⠀⠀⠀[/]
-[#F29C38]⠀⠀⠀⠀⠀⠀⠀⠀⣰⡿⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
-    },
-    "nautilus": {
+    "default": {
         "name": "nautilus",
         "description": "Ocean science theme — deep teal and seafoam for researchers",
         "colors": {
@@ -677,8 +231,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "completion_menu_meta_current_bg": "#2A7A72",
         },
         "spinner": {
-            "waiting_faces": ["(🐚)", "(≈)", "(∿)", "(◌)", "(○)"],
-            "thinking_faces": ["(🐚)", "(Ψ)", "(≈)", "(⌁)", "(∿)"],
+            "waiting_faces": ["(⚚)", "(≈)", "(∿)", "(◌)", "(○)"],
+            "thinking_faces": ["(⚚)", "(Ψ)", "(≈)", "(⌁)", "(∿)"],
             "thinking_verbs": [
                 "sounding depths", "charting currents", "reading samples",
                 "calibrating instruments", "tracing isotopes", "measuring pH",
@@ -687,40 +241,39 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "wings": [
                 ["⟪≈", "≈⟫"],
                 ["⟪∿", "∿⟫"],
-                ["⟪🐚", "🐚⟫"],
+                ["⟪⚚", "⚚⟫"],
                 ["⟪○", "○⟫"],
             ],
         },
         "branding": {
             "agent_name": "Nautilus Agent",
             "welcome": "Welcome to Nautilus Agent! Type your message or /help for commands.",
-            "goodbye": "Dive complete! 🐚",
-            "response_label": " 🐚 Nautilus ",
-            "prompt_symbol": "🐚",
-            "help_header": "(🐚) Available Commands",
+            "goodbye": "Dive complete! ⚚",
+            "response_label": " ⚚ Nautilus ",
+            "prompt_symbol": "⚚",
+            "help_header": "(⚚) Available Commands",
         },
         "tool_prefix": "│",
-        "banner_logo": """[bold #A8E6CF]███╗   ██╗ █████╗ ██╗   ██╗████████╗██╗██╗     ██╗   ██╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+        "banner_logo": """[bold #A8E6CF]███╗   ██╗ █████╗ ██╗   ██╗████████╗██╗██╗     ██╗   ██╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗(α)[/]
 [bold #88D8B0]████╗  ██║██╔══██╗██║   ██║╚══██╔══╝██║██║     ██║   ██║██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
 [#5DB8A8]██╔██╗ ██║███████║██║   ██║   ██║   ██║██║     ██║   ██║███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
 [#459A8C]██║╚██╗██║██╔══██║██║   ██║   ██║   ██║██║     ██║   ██║╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
 [#2A9D8F]██║ ╚████║██║  ██║╚██████╔╝   ██║   ██║███████╗╚██████╔╝███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
 [#1A5F5A]╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝    ╚═╝   ╚═╝╚══════╝ ╚═════╝ ╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
-        "banner_hero": """[#2A9D8F]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠃⠃⠏⠇⠃⠃⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#3AADA0]⠀⠀⠀⠀⠀⠀⠀⠀⠃⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠇⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#5DB8A8]⠀⠀⠀⠀⠀⠏⠏⠿⠿⠟⠿⠿⠟⠏⠿⠿⠿⠿⠿⠿⠿⠿⠏⠿⠿⠿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#78C8B0]⠀⠀⠀⠀⠇⠿⠿⠿⠇⠿⠿⠿⠿⠟⠏⠿⠿⠏⠟⠿⠿⠿⠿⠟⠏⠿⠿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#88D8B0]⠀⠀⠀⠿⠿⠿⠇⠿⠿⠿⠿⠇⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠏⠿⠿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#A8E6CF]⠀⠇⠿⠿⠿⠟⠿⠿⠟⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠏⠟⠿⠿⠁⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#A8E6CF]⠀⠃⠿⠿⠇⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠁⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#88D8B0]⠀⠏⠿⠟⠃⠿⠿⠇⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠏⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#78C8B0]⠀⠿⠿⠿⠟⠿⠿⠟⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#5DB8A8]⠀⠇⠿⠿⠃⠿⠿⠟⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#3AADA0]⠀⠀⠿⠿⠿⠿⠿⠿⠏⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#2A9D8F]⠀⠀⠏⠿⠿⠇⠇⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#1A5F5A]⠀⠀⠀⠁⠿⠿⠿⠿⠿⠿⠿⠟⠿⠿⠟⠿⠿⠿⠿⠿⠿⠿⠟⠿⠿⠿⠿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#1A5F5A]⠀⠀⠀⠀⠀⠏⠿⠿⠟⠏⠏⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠿⠟⠿⠿⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#5DB8A8]⠀⠀⠀⠀⠀⠀⠀⠁⠏⠿⠿⠿⠿⠟⠿⠟⠿⠿⠿⠟⠿⠿⠿⠿⠏⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+        "banner_hero": """[#2A9D8F]⠀⠀⠀⠀⠀⠀⠀⢀⠠⣀⣐⣦⣤⣤⠀⠀⠒⠂⠠⢀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#3AADA0]⠀⠀⠀⠀⠀⢔⣬⣾⣿⡿⣏⡝⠿⢯⠀⠠⠀⠀⠀⠀⠈⠐⢄⠀⠀⠀⠀⠀[/]
+[#5DB8A8]⠀⡄⢀⣠⣾⣿⣿⣿⣿⣯⣟⣯⢶⣾⠀⢹⡀⠠⠤⠤⠤⢀⡀⠐⢄⠀⠀⠀[/]
+[#78C8B0]⠀⡅⣵⣿⣿⣿⣿⣿⢿⣿⢿⡇⣿⠛⠊⠉⠉⠛⠷⣦⡀⠀⠹⣗⡢⡠⠀⠀[/]
+[#88D8B0]⠀⡅⣿⣿⣼⣿⣿⢿⡿⢟⠻⠩⢓⠑⠲⢴⣦⡀⠀⠸⠣⠀⠀⣽⠆⠈⣄⠀[/]
+[#A8E6CF]⠀⡃⣿⣿⣿⡿⡿⠫⠂⠀⠀⠀⠀⠑⡀⠀⠙⣿⠀⢰⡍⢀⣼⠋⠀⢠⡿⠀[/]
+[#A8E6CF]⠀⠅⣿⣿⣿⡟⠄⠀⠀⠀⠀⠀⠀⡠⠰⠠⣤⡿⠅⠋⠡⡉⠡⢤⡖⠟⠁⢠[/]
+[#88D8B0]⠀⠅⣿⣿⡿⣈⣠⡀⠀⠀⢞⣀⠴⢢⣤⢉⡚⠁⠀⠳⣄⢏⣠⠏⣤⣤⣔⠾[/]
+[#78C8B0]⠀⡅⣿⠿⠿⢋⠀⠹⠺⠤⠛⢰⣿⣧⣹⣬⢡⠞⠛⠲⠇⠆⠒⡢⣄⠀⢀⡀[/]
+[#5DB8A8]⠀⠠⢷⠶⠖⢁⡠⠀⡀⠂⠀⢈⢉⡁⣸⡻⡀⠀⣴⠟⢩⡏⢹⡄⠙⠛⠻⠀[/]
+[#3AADA0]⠀⠮⠐⢠⡴⠊⡀⠀⡠⢂⡾⢻⡉⢷⣝⠺⣧⢼⣿⠀⢸⣇⠀⠻⣶⡞⠁⡇[/]
+[#2A9D8F]⠀⠁⠂⠄⡴⡶⠅⣼⡇⠸⣷⣂⠙⢦⣌⡻⢮⣷⣿⣶⣹⣛⣱⡮⠊⠀⠀⡇[/]
+[#1A5F5A]⠀⠀⠀⠈⠀⠁⠁⢹⠿⢦⣙⣻⣷⣬⣝⣛⣿⣿⣿⣿⡿⠟⣉⣀⣀⣀⠀⠁[/]
+[dim #5DB8A8]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠈⠙⠉⠛⠛⠛⠛⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⠁[/]""",
     },
 }
 

@@ -97,4 +97,31 @@ describe('ProvidersSettings', () => {
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
     expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
+
+  it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
+    // A provider the backend catalog tags (provider/provider_label) but that has
+    // no desktop PROVIDER_GROUPS prefix row must still render its own card —
+    // this is the GUI/CLI drift fix: membership comes from the backend, not
+    // from the hand-maintained prefix list.
+    getEnvVars.mockResolvedValue({
+      WIDGETAI_API_KEY: {
+        advanced: false,
+        category: 'provider',
+        description: 'WidgetAI direct API',
+        is_password: true,
+        is_set: false,
+        provider: 'widgetai',
+        provider_label: 'WidgetAI',
+        redacted_value: null,
+        tools: [],
+        url: 'https://widgetai.example/keys'
+      }
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('WidgetAI')).toBeTruthy()
+  })
 })

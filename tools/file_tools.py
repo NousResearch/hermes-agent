@@ -245,6 +245,86 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     return (_resolve_base_dir(task_id) / p).resolve()
 
 
+def _workspace_root_applies_to_task(task_id: str = "default") -> bool:
+    """Return True when file tools are operating on the local host FS."""
+    try:
+        from tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
+
+        container_key = _resolve_container_task_id(task_id)
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+        if env is not None:
+            return env.__class__.__name__ == "LocalEnvironment"
+    except Exception:
+        pass
+
+    try:
+        from tools.terminal_tool import _get_env_config
+
+        return str(_get_env_config().get("env_type") or "local").lower() == "local"
+    except Exception:
+        return True
+
+
+def _configured_workspace_root_path() -> tuple[Path | None, str | None]:
+    """Return configured workspace root, or an error for invalid config."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:
+        return None, None
+
+    security = cfg.get("security", {}) if isinstance(cfg, dict) else {}
+    raw_root = security.get("workspace_root") if isinstance(security, dict) else None
+    if raw_root is None or str(raw_root).strip() == "":
+        return None, None
+
+    root = Path(str(raw_root)).expanduser()
+    if not root.is_absolute():
+        return None, (
+            "Invalid security.workspace_root: expected an absolute local path, "
+            f"got {raw_root!r}."
+        )
+
+    try:
+        resolved = root.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return None, f"Invalid security.workspace_root {str(root)!r}: {exc}"
+
+    if not resolved.exists():
+        return None, f"Invalid security.workspace_root {str(resolved)!r}: path does not exist."
+    if not resolved.is_dir():
+        return None, f"Invalid security.workspace_root {str(resolved)!r}: path is not a directory."
+    return resolved, None
+
+
+def _check_workspace_root_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return an error when a local file-tool path escapes workspace_root."""
+    if not _workspace_root_applies_to_task(task_id):
+        return None
+
+    root, root_error = _configured_workspace_root_path()
+    if root_error:
+        return root_error
+    if root is None:
+        return None
+
+    try:
+        resolved = _resolve_path_for_task(filepath, task_id)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"Cannot resolve path {filepath!r} under security.workspace_root: {exc}"
+
+    try:
+        resolved.relative_to(root)
+        return None
+    except ValueError:
+        return (
+            f"Path {filepath!r} resolves outside security.workspace_root "
+            f"({str(root)!r}): {str(resolved)!r}"
+        )
+
+
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
     """Warn when a relative path resolved OUTSIDE the task's workspace root.
 
@@ -797,6 +877,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
+        workspace_err = _check_workspace_root_path(path, task_id)
+        if workspace_err:
+            return json.dumps({"error": workspace_err}, ensure_ascii=False)
+
         _resolved = _resolve_path_for_task(path, task_id)
 
         # ── Structured-document extraction ────────────────────────────
@@ -1191,6 +1275,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    workspace_err = _check_workspace_root_path(path, task_id)
+    if workspace_err:
+        return tool_error(workspace_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
@@ -1293,6 +1380,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        workspace_err = _check_workspace_root_path(_p, task_id)
+        if workspace_err:
+            return tool_error(workspace_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
@@ -1434,6 +1524,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+
+        workspace_err = _check_workspace_root_path(path, task_id)
+        if workspace_err:
+            return tool_error(workspace_err)
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated

@@ -36,6 +36,12 @@ def _isolated_cwd(tmp_path, monkeypatch):
     # Process cwd = decoy, analogous to "main repo" while the terminal is in
     # the worktree.
     monkeypatch.chdir(decoy)
+    # These tests run in pytest temp dirs, which are under /private/var on
+    # macOS. Disable the unrelated system-path write guard for this cwd suite.
+    monkeypatch.setattr(ft, "_SENSITIVE_PATH_PREFIXES", ())
+    # Keep shell-backed patch tests focused on cwd resolution; on some macOS
+    # shells an inherited C.UTF-8 locale warning is emitted into redirected IO.
+    monkeypatch.setenv("LC_ALL", "C")
     # No live-terminal-cwd tracking recorded yet (fresh-session condition).
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
     return workspace, decoy

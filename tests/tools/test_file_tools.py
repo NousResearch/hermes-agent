@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -77,7 +78,10 @@ class TestWriteFileHandler:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        mock_ops.write_file.assert_called_once_with(
+            str(Path("/tmp/out.txt").resolve()),
+            "hello world!\n",
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -155,7 +159,12 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(
+            str(Path("/tmp/f.py").resolve()),
+            "foo",
+            "bar",
+            False,
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_replace_all_flag(self, mock_get):
@@ -168,7 +177,12 @@ class TestPatchHandler:
         from tools.file_tools import patch_tool
         patch_tool(mode="replace", path="/tmp/f.py",
                    old_string="x", new_string="y", replace_all=True)
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
+        mock_ops.patch_replace.assert_called_once_with(
+            str(Path("/tmp/f.py").resolve()),
+            "x",
+            "y",
+            True,
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_path_errors(self, mock_get):
@@ -463,6 +477,179 @@ class TestSensitivePathCheck:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/other.txt", "hello"))
         assert result["status"] == "ok"
+
+
+class TestWorkspaceRootEnforcement:
+    """security.workspace_root constrains local file-tool paths."""
+
+    def _set_workspace_root(self, monkeypatch, root):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setattr("tools.file_tools._SENSITIVE_PATH_PREFIXES", ())
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"workspace_root": str(root)}},
+        )
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_inside_workspace_root_allowed(self, mock_get, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        self._set_workspace_root(monkeypatch, workspace)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "path": "inside.txt"}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool("inside.txt", "ok"))
+
+        assert result["status"] == "ok"
+        mock_ops.write_file.assert_called_once_with(
+            str((workspace / "inside.txt").resolve()),
+            "ok",
+        )
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_outside_workspace_root_blocked_before_file_ops(self, mock_get, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        target = outside / "secret.txt"
+        target.write_text("nope")
+        self._set_workspace_root(monkeypatch, workspace)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        from tools.file_tools import read_file_tool
+
+        result = json.loads(read_file_tool(str(target)))
+
+        assert "error" in result
+        assert "security.workspace_root" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_relative_escape_blocked(self, mock_get, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        self._set_workspace_root(monkeypatch, workspace)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool("../outside/blocked.txt", "nope"))
+
+        assert "error" in result
+        assert "security.workspace_root" in result["error"]
+        assert not (outside / "blocked.txt").exists()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_replace_outside_workspace_root_blocked(self, mock_get, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        target = outside / "target.py"
+        target.write_text("old\n")
+        self._set_workspace_root(monkeypatch, workspace)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        from tools.file_tools import patch_tool
+
+        result = json.loads(patch_tool(
+            mode="replace",
+            path=str(target),
+            old_string="old",
+            new_string="new",
+        ))
+
+        assert "error" in result
+        assert "security.workspace_root" in result["error"]
+        assert target.read_text() == "old\n"
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_v4a_patch_outside_workspace_root_blocked(self, mock_get, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        target = outside / "target.py"
+        self._set_workspace_root(monkeypatch, workspace)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        from tools.file_tools import patch_tool
+
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                f"*** Add File: {target}\n"
+                "+print('nope')\n"
+                "*** End Patch\n"
+            ),
+        ))
+
+        assert "error" in result
+        assert "security.workspace_root" in result["error"]
+        assert not target.exists()
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_outside_workspace_root_blocked(self, mock_get, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        self._set_workspace_root(monkeypatch, workspace)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        from tools.file_tools import search_tool
+
+        result = json.loads(search_tool(pattern="needle", path=str(outside)))
+
+        assert "error" in result
+        assert "security.workspace_root" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_non_local_backend_keeps_backend_path_semantics(self, mock_get, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"workspace_root": str(workspace)}},
+        )
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"matches": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+
+        result = json.loads(search_tool(pattern="needle", path="/root/project"))
+
+        assert result["matches"] == []
+        mock_ops.search.assert_called_once_with(
+            pattern="needle",
+            path="/root/project",
+            target="content",
+            file_glob=None,
+            limit=50,
+            offset=0,
+            output_mode="content",
+            context=0,
+        )
 
 
 class TestPatchSchemaShape:

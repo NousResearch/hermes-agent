@@ -4064,7 +4064,12 @@ def run_conversation(
             
             else:
                 # No tool calls - this is the final response
-                final_response = assistant_message.content or ""
+                final_response = (
+                    assistant_message.content
+                    or getattr(assistant_message, "reasoning_content", None)
+                    or getattr(assistant_message, "reasoning", None)
+                    or ""
+                )
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
@@ -4238,6 +4243,15 @@ def run_conversation(
                     _truly_empty = not agent._strip_think_blocks(
                         final_response
                     ).strip()
+                    # If the model returned structured reasoning but no
+                    # visible content (e.g. MiniCPM5 think mode returning
+                    # content="" with reasoning_content populated), don't
+                    # treat as empty — the reasoning text IS the response.
+                    if _truly_empty and (
+                        getattr(assistant_message, "reasoning_content", None)
+                        or getattr(assistant_message, "reasoning", None)
+                    ):
+                        _truly_empty = False
                     _prefill_exhausted = (
                         _has_structured
                         and agent._thinking_prefill_retries >= 2

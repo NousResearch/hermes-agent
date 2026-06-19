@@ -2,31 +2,34 @@
 
 Twenty complete, self-contained reference HTML files — Anthropic's
 [html-effectiveness gallery](https://github.com/anthropics/html-effectiveness),
-MIT licensed. These are the ground-truth artifacts the patterns in this skill were
-distilled from. Reading a full polished example beats any prose description when you
-need to match the house style for a given artifact type.
+MIT licensed. These are the ground truth this skill is built on. **Reading the one
+that matches your mode is a required step before authoring** (workflow step 2): a
+full polished example carries density, spacing, and structure that no prose summary
+reproduces. The other references explain *why* the patterns are the way they are;
+these show you the patterns whole.
 
 They are **not committed into this skill** (it's someone else's living repo, ~384 KB).
-Fetch them on demand with the bundled script, then `read_file` the one that matches
-your task.
+Fetch them with the bundled script — it's idempotent, so just run it every time; it
+clones if the examples are missing and pulls the latest otherwise.
 
-## Fetch them
+## Fetch + read (do this before writing)
 
 ```
-terminal: bash scripts/fetch-examples.sh
+terminal:  bash scripts/fetch-examples.sh
+read_file  references/examples/<file-for-your-mode>.html
 ```
 
-Idempotent — clones on first run, pulls latest after. Files land in
-`references/examples/`. Then read whichever fits:
+The script lands the files in `references/examples/`. Always run it first — it's
+cheap and self-healing, so you never have to wonder whether the examples are
+present. Then read the index or jump straight to the file for your mode:
 
 ```
 read_file references/examples/index.html              # categorized index of all 20
 read_file references/examples/03-code-review-pr.html  # a specific example
 ```
 
-If the fetch fails (no network), fall back to the distilled patterns in the other
-references — they capture the same conventions. The examples are a richer supplement,
-not a hard dependency.
+Only if the fetch genuinely fails (no network) do you fall back to the distilled
+pattern references alone — and say so, since you're then working without the source.
 
 ## What each file demonstrates → which to read
 

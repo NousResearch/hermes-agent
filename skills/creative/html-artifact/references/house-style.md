@@ -137,15 +137,19 @@ Prism/highlight.js — wrap tokens in semantic spans:
 ```
 
 **Diff rendering** — a 3-column grid (line-no | mark | code) with tinted full-width
-rows:
+rows. Values match the gallery's `03-code-review-pr.html` verbatim:
 
 ```css
-.diff-row { display: grid; grid-template-columns: 48px 18px 1fr; white-space: pre; }
-.diff-row.add { background: rgba(120,140,93,0.18); }   /* olive tint */
+.diff-row { display: grid; grid-template-columns: 48px 18px 1fr; white-space: pre;
+            font-family: var(--mono); font-size: 12.5px; }
+.diff-row .ln   { color: var(--gray-500); text-align: right; padding-right: 10px; }
+.diff-row .code { color: #E8E6DC; }
+.diff-row.add { background: rgba(120,140,93,0.15); }   /* olive tint */
 .diff-row.add .mark { color: var(--olive); }
-.diff-row.del { background: rgba(176,74,63,0.18); }    /* rust tint */
+.diff-row.del { background: rgba(176,74,63,0.15); }    /* rust tint */
 .diff-row.del .mark { color: var(--rust); }
-.diff-row.ctx .code { color: #B8B6AC; }
+.diff-row.ctx  .code { color: #B8B6AC; }               /* unchanged context */
+.diff-row.hunk .code { color: var(--gray-500); }       /* @@ -0,0 +1,58 @@ headers */
 ```
 
 ## Callouts, pills, badges (pure CSS)

@@ -18,6 +18,26 @@ from unittest.mock import MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
+# Detect whether real discord.py is available.  Other test modules (e.g.
+# gateway slash-command tests) stub sys.modules["discord"] with a MagicMock
+# that lacks the real API surface.  We must not attempt class imports when
+# only the stub is present.
+# ---------------------------------------------------------------------------
+
+def _real_discord_available() -> bool:
+    """Return True only when the *real* discord.py (not a test mock) is loaded."""
+    mod = sys.modules.get("discord")
+    if mod is not None and hasattr(mod, "__file__"):
+        return True
+    # Not yet imported — try a fresh import.
+    try:
+        import discord  # noqa: F401
+        return hasattr(discord, "__file__")
+    except ImportError:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # _component_check_auth — pure function, always testable
 # ---------------------------------------------------------------------------
 from tools.discord_interactive_views import _component_check_auth, unwrap_modal_children
@@ -133,9 +153,12 @@ class TestComponentCheckAuth:
 # ===========================================================================
 
 discord = pytest.importorskip("discord")
+if not _real_discord_available():
+    pytest.skip("discord.py is stubbed by another test module", allow_module_level=True)
+
 _ui = discord.ui
 
-from tools.discord_interactive_views import (
+from tools.discord_interactive_views import (  # noqa: E402
     InteractivePromptView,
     InteractivePromptModal,
     build_prompt_embed,

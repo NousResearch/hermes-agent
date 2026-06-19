@@ -16,11 +16,16 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set
 
-# Conditional discord import — gracefully degrades when discord.py is absent.
+# Conditional discord import — gracefully degrades when discord.py is absent
+# or stubbed (e.g. another test replaces sys.modules["discord"] with a mock).
 try:
     import discord
     from discord import ui as _ui
-except ImportError:  # pragma: no cover
+    # Verify the real discord.py API surface exists — test mocks replace
+    # sys.modules["discord"] with a SimpleNamespace that lacks these.
+    _ui.View  # noqa: B018
+    _ui.Modal  # noqa: B018
+except (ImportError, AttributeError):  # pragma: no cover
     discord = None  # type: ignore[assignment]
     _ui = None  # type: ignore[assignment]
 

@@ -2568,6 +2568,17 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Human-readable progress heartbeats for long-running cron jobs.
+        # enabled: false/off disables; auto enables conservative likely-long jobs;
+        # true/all enables every cron run, including no_agent scripts.
+        # Env overrides: HERMES_CRON_PROGRESS_ENABLED,
+        # HERMES_CRON_PROGRESS_INITIAL_DELAY, HERMES_CRON_PROGRESS_INTERVAL.
+        "progress": {
+            "enabled": "auto",
+            "initial_delay_seconds": 90,
+            "interval_seconds": 120,
+            "edit_in_place": True,
+        },
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

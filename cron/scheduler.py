@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -1815,6 +1816,406 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
+_DEFAULT_CRON_PROGRESS_INITIAL_DELAY = 90.0
+_DEFAULT_CRON_PROGRESS_INTERVAL = 120.0
+_CRON_PROGRESS_AUTO_SKILL_MARKERS = frozenset({
+    "github-pr-workflow",
+    "github-ci-repair",
+    "github-code-review",
+    "requesting-code-review",
+    "systematic-debugging",
+    "test-driven-development",
+    "webapp-playwright-testing",
+})
+_CRON_PROGRESS_AUTO_TEXT_MARKERS = frozenset({
+    "cron-ready",
+    "implement",
+    "implementation",
+    "long-running",
+    "code change",
+    "pull request",
+    "github pr",
+    "focused checks",
+    "pytest",
+    "git diff",
+    "git status",
+})
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce common config/env bool spellings without raising."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "y", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled"}:
+        return False
+    return default
+
+
+def _positive_float(value: Any, default: float, *, minimum: float = 0.0) -> float:
+    """Parse a positive-ish float for timing config; fall back safely."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return default
+    return parsed
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    return _positive_float(raw, default, minimum=minimum)
+
+
+def _job_progress_override(job: dict) -> dict:
+    raw = job.get("progress")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _cron_progress_auto_enabled(job: dict) -> bool:
+    """Best-effort auto policy for cron progress heartbeats.
+
+    ``cron.progress.enabled: auto`` keeps fresh installs quiet for ordinary
+    reports/watchdogs, while still surfacing progress for jobs that look likely
+    to run for a long time: repo-scoped jobs, implementation/review skills, or
+    prompts containing long-running work markers. Operators can bypass this
+    classifier entirely with ``cron.progress.enabled: true`` or per-job
+    ``progress.enabled: true``.
+    """
+    if job.get("no_agent"):
+        return False
+
+    if (job.get("workdir") or "").strip():
+        return True
+
+    skills = {str(s).strip().lower() for s in (job.get("skills") or [])}
+    legacy_skill = str(job.get("skill") or "").strip().lower()
+    if legacy_skill:
+        skills.add(legacy_skill)
+    if skills & _CRON_PROGRESS_AUTO_SKILL_MARKERS:
+        return True
+
+    haystack = "\n".join(
+        str(part or "").lower()
+        for part in (
+            job.get("name"),
+            job.get("prompt"),
+            " ".join(str(s) for s in (job.get("skills") or [])),
+        )
+    )
+    return any(marker in haystack for marker in _CRON_PROGRESS_AUTO_TEXT_MARKERS)
+
+
+def _resolve_cron_progress_enabled(value: Any, job: dict, *, default: str = "auto") -> bool:
+    """Resolve cron progress enabled mode.
+
+    Accepted values:
+      - true/on/yes/all/always: every cron run, including no_agent scripts
+      - false/off/no/never: disabled
+      - auto: conservative classifier via _cron_progress_auto_enabled()
+    """
+    if value is None:
+        value = default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        text = default
+    if text in {"1", "true", "yes", "y", "on", "enabled", "all", "always"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled", "never"}:
+        return False
+    if text == "auto":
+        return _cron_progress_auto_enabled(job)
+    return _cron_progress_auto_enabled(job) if default == "auto" else _coerce_bool(text, False)
+
+
+def _extract_cron_progress_state_path(job: dict, workdir: Optional[str] = None) -> str:
+    """Find a useful state/plan path to show in progress heartbeats."""
+    override = _job_progress_override(job).get("state_path")
+    if override:
+        return str(override)
+
+    prompt = str(job.get("prompt") or "")
+    # Common dev-cron plans use `.hermes/plans/.../state.json`; keep the
+    # pattern intentionally narrow so arbitrary prose does not become noise.
+    match = re.search(r"(?P<path>(?:[\w./~:-]+)?(?:state|progress|handoff)\.json)", prompt)
+    if match:
+        return match.group("path")
+    match = re.search(r"(?P<path>(?:[\w./~:-]+)?\.hermes/plans/[\w./~:-]+\.md)", prompt)
+    if match:
+        return match.group("path")
+    return str(workdir or job.get("workdir") or "")
+
+
+def _resolve_cron_progress_config(job: dict, cfg: Any) -> dict:
+    """Resolve generic cron progress heartbeat settings for one job."""
+    job_progress = _job_progress_override(job)
+    cron_cfg = (cfg or {}).get("cron", {}) if isinstance(cfg, dict) else {}
+    raw_cfg = {}
+    if isinstance(cron_cfg, dict):
+        raw_cfg = cron_cfg.get("progress", {})
+    if isinstance(raw_cfg, bool):
+        progress_cfg: dict = {"enabled": raw_cfg}
+    elif isinstance(raw_cfg, dict):
+        progress_cfg = dict(raw_cfg)
+    else:
+        progress_cfg = {}
+
+    enabled_value = progress_cfg.get("enabled", "auto")
+    if "enabled" in job_progress:
+        enabled_value = job_progress.get("enabled")
+    explicit_bool = job.get("progress")
+    if isinstance(explicit_bool, bool):
+        enabled_value = explicit_bool
+    env_enabled = os.getenv("HERMES_CRON_PROGRESS_ENABLED", "").strip()
+    if env_enabled:
+        enabled_value = env_enabled
+    enabled = _resolve_cron_progress_enabled(enabled_value, job, default="auto")
+
+    initial_delay = _positive_float(
+        job_progress.get("initial_delay_seconds", progress_cfg.get("initial_delay_seconds")),
+        _DEFAULT_CRON_PROGRESS_INITIAL_DELAY,
+        minimum=0.0,
+    )
+    interval = _positive_float(
+        job_progress.get("interval_seconds", progress_cfg.get("interval_seconds")),
+        _DEFAULT_CRON_PROGRESS_INTERVAL,
+        minimum=1.0,
+    )
+    initial_delay = _env_float(
+        "HERMES_CRON_PROGRESS_INITIAL_DELAY",
+        initial_delay,
+        minimum=0.0,
+    )
+    interval = _env_float("HERMES_CRON_PROGRESS_INTERVAL", interval, minimum=1.0)
+    edit_in_place = _coerce_bool(
+        job_progress.get("edit_in_place", progress_cfg.get("edit_in_place")),
+        True,
+    )
+
+    return {
+        "enabled": enabled,
+        "initial_delay_seconds": initial_delay,
+        "interval_seconds": interval,
+        "edit_in_place": edit_in_place,
+        "state_path": str(job_progress.get("state_path") or ""),
+    }
+
+
+def _format_cron_progress_message(
+    job: dict,
+    activity: dict,
+    *,
+    elapsed_seconds: float,
+    state_path: str = "",
+) -> str:
+    """Render a compact, human-readable heartbeat for a cron run."""
+    job_name = str(job.get("name") or job.get("id") or "cron job")
+    job_id = str(job.get("id") or "")
+    elapsed_mins = max(0, int(elapsed_seconds // 60))
+    api_call_count = activity.get("api_call_count", 0)
+    max_iterations = activity.get("max_iterations", 0)
+    action = activity.get("current_tool") or activity.get("last_activity_desc") or "working"
+    idle = activity.get("seconds_since_activity")
+
+    lines = [f"⏳ Cron job: {job_name}"]
+    if job_id:
+        lines[0] += f" ({job_id})"
+    detail = f"{elapsed_mins} min elapsed"
+    if max_iterations:
+        detail += f" — iteration {api_call_count}/{max_iterations}"
+    lines.append(detail)
+    if action:
+        action_text = str(action)
+        if idle is not None:
+            action_text += f" ({float(idle):.0f}s since last activity)"
+        lines.append(f"Activity: {action_text}")
+    if state_path:
+        lines.append(f"State: {state_path}")
+    return "\n".join(lines)
+
+
+def _target_progress_key(target: dict) -> str:
+    return f"{target.get('platform', '').lower()}:{target.get('chat_id')}:{target.get('thread_id') or ''}"
+
+
+def _deliver_cron_progress_update(
+    job: dict,
+    content: str,
+    progress_state: dict,
+    *,
+    adapters=None,
+    loop=None,
+    edit_in_place: bool = True,
+) -> Optional[str]:
+    """Best-effort progress delivery for a running cron job."""
+    targets = _resolve_delivery_targets(job)
+    if not targets:
+        return None
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+        from tools.send_message_tool import _send_to_platform
+        config = load_gateway_config()
+    except Exception as exc:
+        msg = f"failed to load delivery config for cron progress: {exc}"
+        logger.debug("Job '%s': %s", job.get("id", "?"), msg)
+        return msg
+
+    message_ids = progress_state.setdefault("message_ids", {})
+    delivery_errors: list[str] = []
+
+    for target in targets:
+        platform_name = str(target["platform"]).lower()
+        chat_id = target["chat_id"]
+        thread_id = target.get("thread_id")
+        key = _target_progress_key(target)
+
+        try:
+            platform = Platform(platform_name)
+        except (ValueError, KeyError):
+            delivery_errors.append(f"unknown platform '{platform_name}'")
+            continue
+
+        pconfig = config.platforms.get(platform)
+        if not pconfig or not pconfig.enabled:
+            delivery_errors.append(f"platform '{platform_name}' not configured/enabled")
+            continue
+
+        runtime_adapter = (adapters or {}).get(platform)
+        send_metadata = {"thread_id": thread_id} if thread_id else None
+        delivered = False
+
+        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+            try:
+                from agent.async_utils import safe_schedule_threadsafe
+
+                message_id = message_ids.get(key)
+                if edit_in_place and message_id and hasattr(runtime_adapter, "edit_message"):
+                    edit_future = safe_schedule_threadsafe(
+                        runtime_adapter.edit_message(chat_id, message_id, content),
+                        loop,
+                    )
+                    if edit_future is not None:
+                        try:
+                            edit_result = edit_future.result(timeout=15)
+                            if edit_result and getattr(edit_result, "success", False):
+                                delivered = True
+                        except TimeoutError:
+                            edit_future.cancel()
+                            logger.debug("Job '%s': cron progress edit timed out", job.get("id", "?"))
+
+                if not delivered:
+                    send_future = safe_schedule_threadsafe(
+                        runtime_adapter.send(chat_id, content, metadata=send_metadata),
+                        loop,
+                    )
+                    if send_future is not None:
+                        send_result = send_future.result(timeout=15)
+                        if send_result and getattr(send_result, "success", True):
+                            delivered = True
+                            new_message_id = getattr(send_result, "message_id", None)
+                            if new_message_id:
+                                message_ids[key] = str(new_message_id)
+            except Exception as exc:
+                logger.debug(
+                    "Job '%s': live cron progress delivery to %s:%s failed: %s",
+                    job.get("id", "?"),
+                    platform_name,
+                    chat_id,
+                    exc,
+                )
+
+        if delivered:
+            continue
+
+        # Standalone fallback: cannot edit in place, but still gives visibility
+        # when the scheduler is not running inside a live gateway process.
+        try:
+            coro = _send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id)
+            try:
+                result = asyncio.run(coro)
+            except RuntimeError:
+                coro.close()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id),
+                    )
+                    result = future.result(timeout=15)
+            if result and result.get("error"):
+                delivery_errors.append(f"progress delivery error: {result['error']}")
+            elif result and result.get("message_id"):
+                message_ids[key] = str(result["message_id"])
+        except Exception as exc:
+            delivery_errors.append(f"progress delivery to {platform_name}:{chat_id} failed: {exc}")
+
+    if delivery_errors:
+        return "; ".join(delivery_errors)
+    return None
+
+
+def _maybe_send_cron_progress(
+    job: dict,
+    agent: Any,
+    progress_cfg: dict,
+    progress_state: dict,
+    *,
+    adapters=None,
+    loop=None,
+    workdir: Optional[str] = None,
+    activity_override: Optional[dict] = None,
+) -> None:
+    """Rate-limited progress heartbeat for long-running cron jobs."""
+    if not progress_cfg.get("enabled"):
+        return
+    now = time.time()
+    started_at = float(progress_state.setdefault("started_at", now))
+    last_sent_at = float(progress_state.get("last_sent_at") or 0.0)
+    elapsed = now - started_at
+    if elapsed < float(progress_cfg.get("initial_delay_seconds", _DEFAULT_CRON_PROGRESS_INITIAL_DELAY)):
+        return
+    if last_sent_at and now - last_sent_at < float(progress_cfg.get("interval_seconds", _DEFAULT_CRON_PROGRESS_INTERVAL)):
+        return
+
+    activity = activity_override or {}
+    if not activity and hasattr(agent, "get_activity_summary"):
+        try:
+            activity = agent.get_activity_summary() or {}
+        except Exception:
+            activity = {}
+    state_path = str(progress_cfg.get("state_path") or "") or _extract_cron_progress_state_path(job, workdir)
+    message = _format_cron_progress_message(
+        job,
+        activity,
+        elapsed_seconds=elapsed,
+        state_path=state_path,
+    )
+    # Update the throttle even when delivery fails so a bad platform config does
+    # not add a delivery attempt every 5s while the underlying cron continues.
+    progress_state["last_sent_at"] = now
+    error = _deliver_cron_progress_update(
+        job,
+        message,
+        progress_state,
+        adapters=adapters,
+        loop=loop,
+        edit_in_place=bool(progress_cfg.get("edit_in_place", True)),
+    )
+    if error:
+        logger.debug("Job '%s': cron progress delivery issue: %s", job.get("id", "?"), error)
+
+
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
@@ -1975,6 +2376,46 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
+
+
+
+def _run_job_script_with_progress(
+    job: dict,
+    script_path: str,
+    progress_cfg: dict,
+    progress_state: dict,
+    *,
+    adapters=None,
+    loop=None,
+    workdir: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Run a cron script while optionally sending generic progress heartbeats."""
+    if not progress_cfg.get("enabled"):
+        return _run_job_script(script_path)
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_run_job_script, script_path)
+    try:
+        while True:
+            done, _ = concurrent.futures.wait({future}, timeout=5.0)
+            if done:
+                return future.result()
+            _maybe_send_cron_progress(
+                job,
+                None,
+                progress_cfg,
+                progress_state,
+                adapters=adapters,
+                loop=loop,
+                workdir=workdir,
+                activity_override={
+                    "last_activity_desc": f"running script: {script_path}",
+                    "current_tool": "script",
+                    "seconds_since_activity": 0.0,
+                },
+            )
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -2322,7 +2763,7 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(job: dict, adapters=None, loop=None) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -2370,7 +2811,25 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            try:
+                _script_progress_cfg_source = load_config() or {}
+            except Exception:
+                _script_progress_cfg_source = {}
+            _script_progress_cfg = _resolve_cron_progress_config(job, _script_progress_cfg_source)
+            _script_progress_state = {
+                "started_at": time.time(),
+                "last_sent_at": 0.0,
+                "message_ids": {},
+            }
+            ok, output = _run_job_script_with_progress(
+                job,
+                script_path,
+                _script_progress_cfg,
+                _script_progress_state,
+                adapters=adapters,
+                loop=loop,
+                workdir=_job_workdir,
+            )
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2459,7 +2918,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        try:
+            _script_progress_cfg_source = load_config() or {}
+        except Exception:
+            _script_progress_cfg_source = {}
+        _script_progress_cfg = _resolve_cron_progress_config(job, _script_progress_cfg_source)
+        _script_progress_state = {
+            "started_at": time.time(),
+            "last_sent_at": 0.0,
+            "message_ids": {},
+        }
+        prerun_script = _run_job_script_with_progress(
+            job,
+            script_path,
+            _script_progress_cfg,
+            _script_progress_state,
+            adapters=adapters,
+            loop=loop,
+        )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -2925,6 +3401,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        _progress_cfg = _resolve_cron_progress_config(job, _cfg)
+        _progress_state = {
+            "started_at": time.time(),
+            "last_sent_at": 0.0,
+            "message_ids": {},
+        }
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
@@ -2934,29 +3416,36 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+            result = None
+            while True:
+                done, _ = concurrent.futures.wait(
+                    {_cron_future}, timeout=_POLL_INTERVAL,
+                )
+                if done:
+                    result = _cron_future.result()
+                    break
+                _maybe_send_cron_progress(
+                    job,
+                    agent,
+                    _progress_cfg,
+                    _progress_state,
+                    adapters=adapters,
+                    loop=loop,
+                    workdir=_job_workdir,
+                )
+                if _cron_inactivity_limit is None:
+                    continue
+                # Agent still running — check inactivity.
+                _idle_secs = 0.0
+                if hasattr(agent, "get_activity_summary"):
+                    try:
+                        _act = agent.get_activity_summary()
+                        _idle_secs = _act.get("seconds_since_activity", 0.0)
+                    except Exception:
+                        pass
+                if _idle_secs >= _cron_inactivity_limit:
+                    _inactivity_timeout = True
+                    break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
@@ -3203,7 +3692,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             build_profile_secret_scope(_get_hermes_home())
         )
         try:
-            success, output, final_response, error = run_job(job)
+            if adapters is None and loop is None:
+                # Preserve the historical run_job(job) call shape for tests
+                # and third-party monkeypatches that wrap the scheduler.
+                success, output, final_response, error = run_job(job)
+            else:
+                success, output, final_response, error = run_job(job, adapters=adapters, loop=loop)
         finally:
             reset_secret_scope(_scope_token)
 

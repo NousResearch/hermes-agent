@@ -206,16 +206,41 @@ def _file_content_hash(path: Path) -> str:
         return ""
 
 
+def _resolve_node() -> Optional[str]:
+    """Resolve the node executable, preferring Hermes-managed Node over PATH.
+
+    On Windows a broken, elevated, stale, or incompatible system Node on PATH
+    can make the WhatsApp bridge fail to start even though Hermes installed its
+    own Node under ``$HERMES_HOME/node``. Prefer the managed binary, then the
+    ``HERMES_NODE`` override, then fall back to PATH (which respects PATHEXT for
+    ``node.exe``). (#49242)
+    """
+    env_node = os.environ.get("HERMES_NODE")
+    if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
+        return env_node
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+        # Windows: npm -g --prefix drops node.exe in the prefix dir.
+        # POSIX: install.sh puts it under node/bin/.
+        for candidate in (home / "node" / "node.exe", home / "node" / "bin" / "node"):
+            if candidate.is_file():
+                return str(candidate)
+    except Exception:
+        pass
+    return shutil.which("node")
+
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
-    
+
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js.  Resolve via shutil.which so we respect PATHEXT
-    # (node.exe vs node) and get a meaningful "not installed" signal
-    # instead of spawning a cmd flash on Windows.
-    _node = shutil.which("node")
+    # Prefer Hermes-managed Node, then HERMES_NODE, then PATH (which respects
+    # PATHEXT for node.exe and gives a meaningful "not installed" signal
+    # instead of spawning a cmd flash on Windows). (#49242)
+    _node = _resolve_node()
     if not _node:
         return False
     try:
@@ -506,9 +531,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
+            # Launch with Hermes-managed Node when present so a broken/elevated
+            # system Node on PATH can't stop the bridge from starting (#49242).
+            node_bin = _resolve_node() or "node"
             self._bridge_process = subprocess.Popen(
                 [
-                    "node",
+                    node_bin,
                     str(bridge_path),
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),

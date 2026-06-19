@@ -614,6 +614,74 @@ class TestSendDocument:
         assert call_kwargs["caption"] == "Here's the report"
 
     @pytest.mark.asyncio
+    async def test_send_document_caption_truncated_by_utf16_length(
+        self, connected_adapter, tmp_path
+    ):
+        """Captions must be truncated to <=1024 UTF-16 code units, not codepoints.
+
+        Telegram measures caption length in UTF-16 code units (1024 cap).
+        Astral-plane chars (emoji, CJK Ext-B) encode as surrogate pairs and so
+        consume two units each. A naive ``caption[:1024]`` codepoint slice lets
+        a 700-emoji caption (700 codepoints == 1400 UTF-16 units) pass unchanged,
+        and Telegram then rejects the whole send with
+        ``Bad Request: message caption is too long``.
+        """
+        from gateway.platforms.base import utf16_len
+
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+
+        # 700 emoji = 700 codepoints but 1400 UTF-16 code units.
+        long_caption = "\U0001F600" * 700
+        assert utf16_len(long_caption) == 1400  # sanity: exceeds the 1024 cap
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 101
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path=str(test_file),
+            caption=long_caption,
+        )
+
+        assert result.success is True
+        connected_adapter._bot.send_document.assert_called_once()
+        sent_caption = connected_adapter._bot.send_document.call_args[1]["caption"]
+        # Codepoint slice would leave 1024 codepoints == 2048 UTF-16 units.
+        assert utf16_len(sent_caption) <= 1024
+        # The truncated caption must remain a valid prefix (no half surrogate).
+        assert long_caption.startswith(sent_caption)
+
+    @pytest.mark.asyncio
+    async def test_send_video_caption_truncated_by_utf16_length(
+        self, connected_adapter, tmp_path
+    ):
+        """Sibling site: send_video must apply the same UTF-16 caption cap."""
+        from gateway.platforms.base import utf16_len
+
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+        long_caption = "\U0001F600" * 700  # 1400 UTF-16 units
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 102
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+            caption=long_caption,
+        )
+
+        assert result.success is True
+        connected_adapter._bot.send_video.assert_called_once()
+        sent_caption = connected_adapter._bot.send_video.call_args[1]["caption"]
+        assert utf16_len(sent_caption) <= 1024
+        assert long_caption.startswith(sent_caption)
+
+    @pytest.mark.asyncio
     async def test_send_document_custom_filename(self, connected_adapter, tmp_path):
         """The file_name parameter overrides the basename for display."""
         test_file = tmp_path / "doc_abc123_ugly.csv"

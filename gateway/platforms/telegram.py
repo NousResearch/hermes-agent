@@ -81,6 +81,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
+    _prefix_within_utf16_limit,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -4475,7 +4476,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         {
                             "chat_id": int(chat_id),
                             "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
+                            "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,
                             **self._notification_kwargs(metadata),
@@ -4501,7 +4502,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         {
                             "chat_id": int(chat_id),
                             "audio": audio_file,
-                            "caption": caption[:1024] if caption else None,
+                            "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
@@ -4597,7 +4598,7 @@ class TelegramAdapter(BasePlatformAdapter):
             opened_files: List[Any] = []
             try:
                 for image_url, alt_text in chunk:
-                    caption = alt_text[:1024] if alt_text else None
+                    caption = _prefix_within_utf16_limit(alt_text, 1024) if alt_text else None
                     if image_url.startswith("file://"):
                         local_path = _unquote(image_url[7:])
                         if not os.path.exists(local_path):
@@ -4698,7 +4699,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     {
                         "chat_id": int(chat_id),
                         "photo": image_file,
-                        "caption": caption[:1024] if caption else None,
+                        "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
@@ -4795,7 +4796,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "chat_id": int(chat_id),
                         "document": f,
                         "filename": display_name,
-                        "caption": caption[:1024] if caption else None,
+                        "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
@@ -4842,7 +4843,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     {
                         "chat_id": int(chat_id),
                         "video": f,
-                        "caption": caption[:1024] if caption else None,
+                        "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
@@ -4894,7 +4895,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 {
                     "chat_id": int(chat_id),
                     "photo": image_url,
-                    "caption": caption[:1024] if caption else None,
+                    "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **photo_thread_kwargs,
                     **self._notification_kwargs(metadata),
@@ -4931,7 +4932,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     {
                         "chat_id": int(chat_id),
                         "photo": image_data,
-                        "caption": caption[:1024] if caption else None,
+                        "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **upload_thread_kwargs,
                         **self._notification_kwargs(metadata),
@@ -4978,7 +4979,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 {
                     "chat_id": int(chat_id),
                     "animation": animation_url,
-                    "caption": caption[:1024] if caption else None,
+                    "caption": _prefix_within_utf16_limit(caption, 1024) if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **animation_thread_kwargs,
                     **self._notification_kwargs(metadata),

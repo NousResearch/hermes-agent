@@ -21,7 +21,7 @@ description: "在构建前验证想法的一次性实验"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `spike`, `prototype`, `experiment`, `feasibility`, `throwaway`, `exploration`, `research`, `planning`, `mvp`, `proof-of-concept` |
-| 相关 skill | [`html-artifact`](/user-guide/skills/bundled/creative/creative-html-artifact)、[`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans)、[`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development)、[`plan`](/user-guide/skills/bundled/software-development/software-development-plan) |
+| 相关 skill | [`sketch`](/user-guide/skills/bundled/creative/creative-sketch)、[`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans)、[`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development)、[`plan`](/user-guide/skills/bundled/software-development/software-development-plan) |
 
 ## 参考：完整 SKILL.md
 

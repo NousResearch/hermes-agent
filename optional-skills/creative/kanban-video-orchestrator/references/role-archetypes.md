@@ -59,7 +59,7 @@ local skills.
 
 - **Toolsets:** kanban, terminal, file
 - **Skills:** `kanban-worker` plus any project-specific design skill —
-  `claude-design` (UI/web), `html-artifact` (quick mockup variants, explainers, diagrams),
+  `claude-design` (UI/web), `sketch` (quick mockup variants),
   `popular-web-designs` (matching known web aesthetic), `pixel-art` (retro),
   `ascii-art` (terminal/retro), `excalidraw` (hand-drawn frames),
   `design-md` (text-based design docs)
@@ -72,7 +72,8 @@ film and music video. Often pairs with a diagramming tool.
 
 - **Toolsets:** kanban, file
 - **Skills:** `kanban-worker` plus a diagram skill — `excalidraw` (sketch),
-  `html-artifact` (technical/system + educational/scientific diagrams)
+  `architecture-diagram` (technical/system), `concept-diagrams` (educational/
+  scientific)
 - **Outputs:** `storyboard.md` with one row per scene/shot, optional
   storyboard sketches
 

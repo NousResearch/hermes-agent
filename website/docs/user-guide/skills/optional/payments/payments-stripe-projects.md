@@ -44,7 +44,7 @@ Trigger phrases:
 - "manage my stack credentials", "rotate this key", "upgrade my plan"
 - "what providers can I add?"
 
-If the user already has a provider account, this skill can still connect it with `stripe projects link <provider>`. If the user wants to use an existing provider resource, such as an existing database or Vercel project, check provider support first; many providers currently support provisioning new resources but not importing existing ones.
+If the user already has a provider account, this skill can still connect it with `stripe projects link &lt;provider>`. If the user wants to use an existing provider resource, such as an existing database or Vercel project, check provider support first; many providers currently support provisioning new resources but not importing existing ones.
 
 ## Prerequisites
 

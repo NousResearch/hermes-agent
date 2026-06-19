@@ -96,7 +96,8 @@ texture inside the final scene.
 - **Terminal-only or with GUI?**
 - **Voiceover for narration?**
 - **Diagram support needed?** — Often these benefit from a diagram skill
-  alongside the screen-capture/render step (`excalidraw`, `html-artifact`)
+  alongside the screen-capture/render step (`excalidraw`,
+  `architecture-diagram`, `concept-diagrams`)
 
 ### ASCII / terminal art
 

@@ -1,7 +1,8 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import {
-  type CSSProperties,
   type ComponentProps,
+  type CSSProperties,
   type FC,
   memo,
   type ReactNode,
@@ -15,6 +16,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $connection } from '@/store/session'
 import {
   onScrollToBottomRequest,
   onThreadEditClose,
@@ -138,6 +140,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
   const secondaryWindow = isSecondaryWindow()
+  const usesNativeTitleBar = Boolean(useStore($connection)?.usesNativeTitleBar)
   // NB: CSS calc() requires whitespace around the +/- operator. This string is
   // assigned verbatim to the --sticky-human-top inline style below (it does not
   // go through Tailwind, which would auto-space it), so the spaces are load-
@@ -145,6 +148,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // sticky user bubble falls back to its ~4px default and slides under the OS
   // traffic lights.
   const secondaryTitlebarGap = 'calc(var(--titlebar-height) + 0.75rem)'
+
   const threadContentTopPad = secondaryWindow
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
     : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
@@ -262,11 +266,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         // Secondary windows hide the titlebar chrome, so the scroller runs to
         // the window's top edge and streamed text slides up under the OS
         // traffic lights. Content padding alone scrolls away with the text — a
-        // fixed opaque strip (the titlebar's drag region) masks anything behind
-        // it and keeps the window draggable, matching the main window's header.
+        // fixed opaque strip masks anything behind it. It doubles as a drag
+        // region only when the renderer owns custom chrome; Linux keeps the
+        // system titlebar outside the renderer to avoid the GNOME/X11 window
+        // menu freeze.
         <div
           aria-hidden="true"
-          className="absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background [-webkit-app-region:drag]"
+          className={cn(
+            'absolute inset-x-0 top-0 z-10 h-(--titlebar-height) bg-background',
+            !usesNativeTitleBar && '[-webkit-app-region:drag]'
+          )}
         />
       )}
       <div

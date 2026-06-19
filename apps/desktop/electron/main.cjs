@@ -20,7 +20,6 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
-const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -33,6 +32,11 @@ const {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
+const {
+  chatWindowChromeOptions,
+  nativeOverlayWidthForPlatform,
+  usesNativeSystemTitleBar
+} = require('./window-chrome.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
@@ -483,6 +487,23 @@ function getTitleBarOverlayOptions() {
     height: TITLEBAR_HEIGHT,
     symbolColor: useDarkColors ? '#f7f7f7' : '#242424'
   }
+}
+
+function getChatWindowChromeOptions() {
+  return chatWindowChromeOptions({
+    platform: process.platform,
+    isMac: IS_MAC,
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: WINDOW_BUTTON_POSITION
+  })
+}
+
+function applyTitleBarOverlay(win) {
+  if (usesNativeSystemTitleBar(process.platform)) {
+    return
+  }
+
+  win?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
 }
 
 const MEDIA_MIME_TYPES = {
@@ -3298,16 +3319,22 @@ function getWindowButtonPosition() {
 
 function getNativeOverlayWidth() {
   // macOS reports traffic-light coords via windowButtonPosition; the
-  // titlebarOverlay there doesn't reserve right-edge space. Windows/Linux
-  // render the native window-controls overlay on the right, so the renderer
-  // needs to inset its right cluster by this much to clear them.
-  return IS_MAC ? 0 : NATIVE_OVERLAY_BUTTON_WIDTH
+  // titlebarOverlay there doesn't reserve right-edge space. Windows renders the
+  // native window-controls overlay on the right, so the renderer needs to inset
+  // its right cluster by this much to clear them. Linux keeps the system
+  // titlebar, so there is no renderer overlay to clear.
+  return nativeOverlayWidthForPlatform({
+    platform: process.platform,
+    isMac: IS_MAC,
+    nativeOverlayButtonWidth: NATIVE_OVERLAY_BUTTON_WIDTH
+  })
 }
 
 function getWindowState() {
   return {
     isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
+    usesNativeTitleBar: usesNativeSystemTitleBar(process.platform),
     windowButtonPosition: getWindowButtonPosition()
   }
 }
@@ -5098,9 +5125,7 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    ...getChatWindowChromeOptions(),
     vibrancy: IS_MAC ? 'sidebar' : undefined,
     opacity: windowOpacity(),
     icon,
@@ -5162,15 +5187,12 @@ function createWindow() {
     minWidth: 400,
     minHeight: 620,
     title: 'Hermes',
-    // Frameless title bar on every platform so the renderer can paint the
-    // "hide sidebar" button (and other left-side titlebar tools) flush with
-    // the top edge — matching the macOS layout where the traffic lights sit
-    // inside the same band. On Windows/Linux, titleBarOverlay tells Electron
-    // to paint native min/max/close in the top-right of the renderer; on
-    // macOS it just reserves a content inset alongside the traffic lights.
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    // Frameless title bar where Electron's custom chrome is stable so the
+    // renderer can paint the "hide sidebar" button (and other left-side
+    // titlebar tools) flush with the top edge. Linux uses the system titlebar:
+    // on GNOME/X11 the hidden-titlebar drag region can expose a window menu
+    // whose selected actions freeze the desktop session.
+    ...getChatWindowChromeOptions(),
     vibrancy: IS_MAC ? 'sidebar' : undefined,
     opacity: windowOpacity(),
     icon,
@@ -5197,7 +5219,7 @@ function createWindow() {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
-        mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+        applyTitleBarOverlay(mainWindow)
       })
     }
   }
@@ -5756,7 +5778,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
     background: payload.background,
     foreground: payload.foreground
   }
-  mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+  applyTitleBarOverlay(mainWindow)
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).

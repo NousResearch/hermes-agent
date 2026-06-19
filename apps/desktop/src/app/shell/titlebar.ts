@@ -8,8 +8,9 @@ export const TITLEBAR_CONTROL_HEIGHT = 22
 export const TITLEBAR_CONTROLS_TOP = (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2
 export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
-// Windows/Linux (native overlay is on the right) and macOS fullscreen
-// (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
+// Windows (native overlay is on the right), Linux (system titlebar is outside
+// the renderer), and macOS fullscreen (traffic lights are hidden). Matches the
+// right-cluster's 0.75rem padding.
 export const TITLEBAR_EDGE_INSET = 14
 
 // Titlebar palette only. All sizing/radius/cursor/centering come from the
@@ -34,7 +35,8 @@ export function titlebarControlsPosition(
   const top = Math.max(0, TITLEBAR_CONTROLS_TOP)
 
   // No left-side native controls to dodge:
-  //   - Windows/Linux: native min/max/close render on the right via titleBarOverlay.
+  //   - Windows: native min/max/close render on the right via titleBarOverlay.
+  //   - Linux: the system titlebar is outside the renderer.
   //   - macOS fullscreen: traffic lights are hidden.
   // In both cases, pin the cluster to the edge with a small inset.
   if (windowButtonPosition === null || isFullscreen) {

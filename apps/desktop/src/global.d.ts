@@ -248,6 +248,7 @@ export interface HermesConnection {
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string
+  usesNativeTitleBar: boolean
   wsUrl: string
   logs: string[]
   // Set for pool (non-primary) backends so the renderer knows which profile a
@@ -264,6 +265,7 @@ export interface HermesTitleBarTheme {
 export interface HermesWindowState {
   isFullscreen: boolean
   nativeOverlayWidth: number
+  usesNativeTitleBar: boolean
   windowButtonPosition: { x: number; y: number } | null
 }
 

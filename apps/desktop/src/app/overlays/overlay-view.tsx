@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -5,6 +6,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { translateNow } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { $connection } from '@/store/session'
 
 interface OverlayViewProps {
   children: ReactNode
@@ -23,6 +25,8 @@ export function OverlayView({
   headerContent,
   rootClassName
 }: OverlayViewProps) {
+  const usesNativeTitleBar = Boolean(useStore($connection)?.usesNativeTitleBar)
+
   const closeOverlay = () => {
     triggerHaptic('close')
     onClose()
@@ -63,7 +67,12 @@ export function OverlayView({
           rootClassName
         )}
       >
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
+        <div
+          className={cn(
+            'pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)]',
+            !usesNativeTitleBar && '[-webkit-app-region:drag]'
+          )}
+        >
           {headerContent && (
             <div className="pointer-events-auto absolute left-1/2 top-[calc(0.5rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]">
               {headerContent}

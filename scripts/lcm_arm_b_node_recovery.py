@@ -798,9 +798,9 @@ class ArmBHarness:
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         md = _render_md(report)
-        out_path.write_text(md)
+        out_path.write_text(md, encoding="utf-8")
         json_path = out_path.with_suffix(".json")
-        json_path.write_text(json.dumps(report, indent=2))
+        json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         return report
 
 

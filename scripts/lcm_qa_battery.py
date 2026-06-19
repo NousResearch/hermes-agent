@@ -88,7 +88,7 @@ def run_tier0(json_out: Path) -> dict:
         "note": "Tier-0 = offline correctness. Coverage MAP (not test count) is "
                 "the bar (PRD-7 N3).",
     }
-    json_out.write_text(json.dumps(report, indent=2))
+    json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 
 
@@ -116,7 +116,7 @@ def run_tier1(json_out: Path, model: str, n: int, allow_underpowered: bool) -> d
         "note": "SHAKEDOWN, not the promotion gate. gate:false regardless of N. "
                 "Run the driver directly to execute; this records the contract.",
     }
-    json_out.write_text(json.dumps(report, indent=2))
+    json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 
 
@@ -141,7 +141,7 @@ def run_tier2(json_out: Path, model: str, n: int) -> dict:
         "note": "Gate-eligible. Drive scripts/lcm_live_recovery.py with --session-mode "
                 "at default Aegis config; this records the contract.",
     }
-    json_out.write_text(json.dumps(report, indent=2))
+    json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 
 

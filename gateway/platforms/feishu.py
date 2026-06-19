@@ -1284,6 +1284,7 @@ def _strip_edge_self_mentions(
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
+    from gateway.platforms.feishu_group_fallback import patch_ws_client_for_group_messages
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1320,6 +1321,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
+    patch_ws_client_for_group_messages(ws_client, adapter)
     try:
         ws_client.start()
     except Exception:
@@ -1524,7 +1526,7 @@ class FeishuAdapter(BasePlatformAdapter):
             verification_token=str(
                 extra.get("verification_token") or os.getenv("FEISHU_VERIFICATION_TOKEN", "")
             ).strip(),
-            group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            group_policy=str(extra.get("group_policy", os.getenv("FEISHU_GROUP_POLICY", "allowlist"))).strip().lower(),
             allowed_group_users=frozenset(
                 item.strip()
                 for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")

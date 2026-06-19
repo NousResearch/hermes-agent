@@ -259,6 +259,44 @@ class TestTimelineStorage:
         assert "preset reply" in (tmp_path / "preset.html").read_text()
 
 
+    def test_stats_prune_and_vacuum_retention_helpers(self, tmp_path, monkeypatch):
+        mod = _fresh_plugin(monkeypatch, tmp_path)
+        mod.on_pre_llm_call(session_id="s-old", turn_id="old", platform="slack", user_message="old")
+        mod.on_pre_llm_call(session_id="s-new", turn_id="new", platform="cli", user_message="new")
+
+        old_ts = mod._now() - (40 * 86400)
+        conn = mod._ensure_db()
+        try:
+            conn.execute("UPDATE timeline_runs SET started_at = ? WHERE run_id = ?", (old_ts, "turn:old"))
+            conn.execute("UPDATE timeline_events SET ts = ? WHERE run_id = ?", (old_ts, "turn:old"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        stats = mod.timeline_stats()
+        assert stats["runs"] == 2
+        assert stats["events"] == 2
+        assert stats["platforms"]["slack"] == 1
+        assert stats["platforms"]["cli"] == 1
+
+        dry = mod.prune_timeline(days=30, dry_run=True)
+        assert dry["runs_matched"] == 1
+        assert dry["events_matched"] == 1
+        assert dry["runs_deleted"] == 0
+        assert mod.get_run("turn:old")[0] is not None
+
+        pruned = mod.prune_timeline(days=30, vacuum=True)
+        assert pruned["runs_deleted"] == 1
+        assert pruned["events_deleted"] == 1
+        assert pruned["vacuumed"] is True
+        assert mod.get_run("turn:old") == (None, [])
+        assert mod.get_run("turn:new")[0] is not None
+
+        vacuumed = mod.vacuum_timeline()
+        assert vacuumed["bytes_before"] >= 0
+        assert vacuumed["bytes_after"] >= 0
+
+
     def test_session_end_finishes_session_run_even_when_turn_id_present(self, tmp_path, monkeypatch):
         mod = _fresh_plugin(monkeypatch, tmp_path)
         mod.on_session_start(session_id="session-2", platform="cli", model="m")
@@ -301,3 +339,6 @@ class TestCliRegistration:
         assert "serve" in help_text
         assert "current" in help_text
         assert "preset" in help_text
+        assert "stats" in help_text
+        assert "prune" in help_text
+        assert "vacuum" in help_text

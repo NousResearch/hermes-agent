@@ -49,6 +49,17 @@ def _db_path() -> Path:
     return base / "timeline.db"
 
 
+def _db_file_bytes(path: Optional[Path] = None) -> int:
+    db = path or _db_path()
+    total = 0
+    for candidate in (db, Path(str(db) + "-wal"), Path(str(db) + "-shm")):
+        try:
+            total += candidate.stat().st_size
+        except FileNotFoundError:
+            pass
+    return total
+
+
 def _connect(path: Optional[Path] = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path or _db_path()), timeout=10)
     conn.row_factory = sqlite3.Row
@@ -585,6 +596,91 @@ def get_run(run_id: str) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]]
             conn.close()
 
 
+def timeline_stats() -> dict[str, Any]:
+    """Return storage and row-count stats for the local timeline database."""
+    with _DB_LOCK:
+        conn = _ensure_db()
+        try:
+            runs = int(conn.execute("SELECT COUNT(*) FROM timeline_runs").fetchone()[0])
+            events = int(conn.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0])
+            oldest = conn.execute("SELECT MIN(started_at) FROM timeline_runs").fetchone()[0]
+            newest = conn.execute("SELECT MAX(started_at) FROM timeline_runs").fetchone()[0]
+            statuses = {
+                str(row["status"] or ""): int(row["count"])
+                for row in conn.execute("SELECT status, COUNT(*) AS count FROM timeline_runs GROUP BY status").fetchall()
+            }
+            platforms = {
+                str(row["platform"] or ""): int(row["count"])
+                for row in conn.execute("SELECT platform, COUNT(*) AS count FROM timeline_runs GROUP BY platform").fetchall()
+            }
+            return {
+                "db_path": str(_db_path()),
+                "db_bytes": _db_file_bytes(),
+                "runs": runs,
+                "events": events,
+                "oldest_started_at": float(oldest) if oldest is not None else None,
+                "oldest_started_at_iso": _iso(float(oldest)) if oldest is not None else "",
+                "newest_started_at": float(newest) if newest is not None else None,
+                "newest_started_at_iso": _iso(float(newest)) if newest is not None else "",
+                "statuses": statuses,
+                "platforms": platforms,
+            }
+        finally:
+            conn.close()
+
+
+def prune_timeline(*, days: int, dry_run: bool = False, vacuum: bool = False) -> dict[str, Any]:
+    """Delete runs older than ``days`` days. Events cascade via FK."""
+    if days < 1:
+        raise ValueError("days must be >= 1")
+    cutoff = _now() - (days * 86400)
+    before_bytes = _db_file_bytes()
+    with _DB_LOCK:
+        conn = _ensure_db()
+        try:
+            run_ids = [
+                str(row["run_id"])
+                for row in conn.execute("SELECT run_id FROM timeline_runs WHERE started_at < ?", (cutoff,)).fetchall()
+            ]
+            event_count = 0
+            if run_ids:
+                placeholders = ",".join("?" for _ in run_ids)
+                event_count = int(conn.execute(f"SELECT COUNT(*) FROM timeline_events WHERE run_id IN ({placeholders})", run_ids).fetchone()[0])
+            if not dry_run and run_ids:
+                conn.executemany("DELETE FROM timeline_runs WHERE run_id = ?", [(rid,) for rid in run_ids])
+                conn.commit()
+            if not dry_run and vacuum:
+                conn.execute("VACUUM")
+            after_bytes = _db_file_bytes()
+            return {
+                "dry_run": dry_run,
+                "days": days,
+                "cutoff": cutoff,
+                "cutoff_iso": _iso(cutoff),
+                "runs_deleted": len(run_ids) if not dry_run else 0,
+                "events_deleted": event_count if not dry_run else 0,
+                "runs_matched": len(run_ids),
+                "events_matched": event_count,
+                "vacuumed": bool(vacuum and not dry_run),
+                "bytes_before": before_bytes,
+                "bytes_after": after_bytes,
+            }
+        finally:
+            conn.close()
+
+
+def vacuum_timeline() -> dict[str, Any]:
+    before_bytes = _db_file_bytes()
+    with _DB_LOCK:
+        conn = _ensure_db()
+        try:
+            conn.execute("VACUUM")
+            after_bytes = _db_file_bytes()
+            return {"db_path": str(_db_path()), "bytes_before": before_bytes, "bytes_after": after_bytes}
+        finally:
+            conn.close()
+
+
 def _preset_path() -> Path:
     base = get_hermes_home() / "timelines"
     base.mkdir(parents=True, exist_ok=True)
@@ -648,6 +744,21 @@ def _apply_preset_args(args: argparse.Namespace) -> argparse.Namespace:
     if hasattr(args, "limit") and (getattr(args, "limit", None) in (None, 0)):
         setattr(args, "limit", int(preset.get("limit") or 50))
     return args
+
+
+def _format_bytes(num: Any) -> str:
+    try:
+        value = float(num or 0)
+    except Exception:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB"]
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    if idx == 0:
+        return f"{int(value)} {units[idx]}"
+    return f"{value:.1f} {units[idx]}"
 
 
 def _format_ms(ms: Any) -> str:
@@ -828,6 +939,47 @@ def _print_preset(args: argparse.Namespace) -> None:
     raise SystemExit(f"Unknown preset action: {action}")
 
 
+def _print_stats(args: argparse.Namespace) -> None:
+    stats = timeline_stats()
+    if args.json:
+        print(json.dumps(stats, ensure_ascii=False, indent=2, default=str))
+        return
+    print(f"Timeline DB: {stats['db_path']}")
+    print(f"Size: {_format_bytes(stats['db_bytes'])}")
+    print(f"Runs: {stats['runs']}  Events: {stats['events']}")
+    if stats.get("oldest_started_at_iso"):
+        print(f"Oldest: {stats['oldest_started_at_iso']}")
+    if stats.get("newest_started_at_iso"):
+        print(f"Newest: {stats['newest_started_at_iso']}")
+    if stats.get("statuses"):
+        print("Statuses: " + ", ".join(f"{k or '-'}={v}" for k, v in sorted(stats["statuses"].items())))
+    if stats.get("platforms"):
+        print("Platforms: " + ", ".join(f"{k or '-'}={v}" for k, v in sorted(stats["platforms"].items())))
+
+
+def _print_prune(args: argparse.Namespace) -> None:
+    result = prune_timeline(days=args.days, dry_run=args.dry_run, vacuum=args.vacuum)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return
+    action = "Would delete" if result["dry_run"] else "Deleted"
+    runs = result["runs_matched"] if result["dry_run"] else result["runs_deleted"]
+    events = result["events_matched"] if result["dry_run"] else result["events_deleted"]
+    print(f"{action} {runs} runs and {events} events older than {args.days} days (before {result['cutoff_iso']}).")
+    if result.get("vacuumed"):
+        print(f"Vacuumed: {_format_bytes(result['bytes_before'])} -> {_format_bytes(result['bytes_after'])}")
+    elif args.dry_run:
+        print("Dry run only; re-run without --dry-run to delete.")
+
+
+def _print_vacuum(args: argparse.Namespace) -> None:
+    result = vacuum_timeline()
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return
+    print(f"Vacuumed {result['db_path']}: {_format_bytes(result['bytes_before'])} -> {_format_bytes(result['bytes_after'])}")
+
+
 def _print_default(args: argparse.Namespace) -> None:
     for name, value in {
         "limit": 20,
@@ -915,6 +1067,21 @@ def setup_cli(parser: argparse.ArgumentParser) -> None:
     p_serve.add_argument("--thread-id", default="", help="Filter dashboard to a platform thread/topic id")
     p_serve.add_argument("--open", action="store_true", help="Open the dashboard in the default browser")
     p_serve.set_defaults(func=_print_serve)
+
+    p_stats = sub.add_parser("stats", help="Show local timeline database size and row counts")
+    p_stats.add_argument("--json", action="store_true")
+    p_stats.set_defaults(func=_print_stats)
+
+    p_prune = sub.add_parser("prune", help="Delete timeline runs older than N days")
+    p_prune.add_argument("--days", type=int, required=True, help="Delete runs older than this many days")
+    p_prune.add_argument("--dry-run", action="store_true", help="Report what would be deleted without changing the database")
+    p_prune.add_argument("--vacuum", action="store_true", help="Run VACUUM after deleting rows")
+    p_prune.add_argument("--json", action="store_true")
+    p_prune.set_defaults(func=_print_prune)
+
+    p_vacuum = sub.add_parser("vacuum", help="Compact the local timeline SQLite database")
+    p_vacuum.add_argument("--json", action="store_true")
+    p_vacuum.set_defaults(func=_print_vacuum)
 
     parser.set_defaults(func=_print_default)
 

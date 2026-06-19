@@ -495,12 +495,28 @@ class AIAgent:
         """
         if self._session_db is not None:
             return self._session_db
+        # MULTI-TENANT FAIL-CLOSED: on the Avocado-multiplexed API path the agent's
+        # gateway_session_key is "avocado:<user_id>". We must NEVER lazily open the
+        # shared global SessionDB() here — that would let session_search read every
+        # tenant's transcripts on a scoped-DB open failure. Open the tenant's OWN
+        # scoped DB; if that fails, fail closed (return None) rather than fall back
+        # to the global DB. Single-tenant (no "avocado:" prefix) keeps the legacy
+        # behavior of opening the default shared DB.
+        gsk = getattr(self, "_gateway_session_key", None)
+        avocado_scope = (
+            gsk.split(":", 1)[1]
+            if isinstance(gsk, str) and gsk.startswith("avocado:")
+            else None
+        )
         try:
             from hermes_state import SessionDB
 
-            self._session_db = SessionDB()
+            if avocado_scope:
+                self._session_db = SessionDB(user_scope=avocado_scope)
+            else:
+                self._session_db = SessionDB()
             return self._session_db
-        except Exception as exc:
+        except Exception:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
             return None
 

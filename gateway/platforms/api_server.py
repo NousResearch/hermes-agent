@@ -1085,6 +1085,48 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    @staticmethod
+    def _avocado_scope_from_key(gateway_session_key: Optional[str]) -> Optional[str]:
+        """Extract the Avocado end-user scope from a gateway_session_key.
+
+        Mirrors the memory-scope derivation in agent/agent_init.py: only keys of
+        the form ``avocado:<user_id>`` carry a per-user scope; everything else
+        (single-tenant CLI, Telegram fleet, explicit X-Hermes-Session-Key)
+        returns None so the shared session DB is used unchanged.
+        """
+        if isinstance(gateway_session_key, str) and gateway_session_key.startswith("avocado:"):
+            scope = gateway_session_key.split(":", 1)[1]
+            return scope or None
+        return None
+
+    @classmethod
+    def _scope_conversation_name(
+        cls,
+        conversation: Optional[str],
+        gateway_session_key: Optional[str],
+    ) -> Optional[str]:
+        """Namespace a Responses-API conversation NAME by tenant (FIX-002).
+
+        The conversation name is caller-chosen and collidable, and the response
+        store maps name -> response_id -> full conversation_history with NO user
+        scoping. On the multiplexed Avocado deploy two tenants both using
+        conversation="default" would resolve to each other's transcript. Prefix
+        the name with the sanitized tenant scope so the keyspace is partitioned
+        per tenant. None conversation, or no avocado scope, returns the input
+        unchanged (single-tenant byte-for-byte identical).
+        """
+        if not conversation:
+            return conversation
+        scope = cls._avocado_scope_from_key(gateway_session_key)
+        if not scope:
+            return conversation
+        from hermes_state import sanitize_session_scope
+
+        safe = sanitize_session_scope(scope)
+        if not safe:
+            return conversation
+        return f"avocado:{safe}\x00{conversation}"
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -1145,7 +1187,15 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
-            session_db=self._ensure_session_db(),
+            # Per-tenant session isolation: on the multiplexed Avocado path the
+            # gateway_session_key is "avocado:<user_id>", which selects a
+            # physically separate sessions/<user_id>/state.db. The agent's
+            # session_search / recall / continuation all operate on this scoped
+            # DB, so no tenant can reach another's transcripts. None scope =>
+            # shared DB (single-tenant unchanged).
+            session_db=self._ensure_session_db(
+                self._avocado_scope_from_key(gateway_session_key)
+            ),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
@@ -1916,7 +1966,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             session_id = provided_session_id
             try:
-                db = self._ensure_session_db()
+                # CRITICAL multi-tenant guard: on the shared Avocado deploy ONE
+                # gateway API key authenticates every tenant, so the "API key
+                # configured" gate above does NOT prove the caller owns this
+                # session_id. Resolve against the caller's OWN scoped session DB
+                # (sessions/<user_id>/state.db) — a session_id belonging to a
+                # different tenant simply does not exist in this DB, so the
+                # continuation returns no history instead of leaking another
+                # tenant's transcript. None scope => shared DB (unchanged).
+                db = self._ensure_session_db(
+                    self._avocado_scope_from_key(gateway_session_key)
+                )
                 if db is not None:
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
@@ -2097,9 +2157,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            # Per-tenant idempotency: namespace the caller-supplied key with the
+            # avocado scope so two tenants reusing the same Idempotency-Key (e.g.
+            # an SDK default) can never receive each other's cached response.
+            _idem_scope = self._avocado_scope_from_key(gateway_session_key)
+            idem_key = f"{_idem_scope}\x00{idempotency_key}" if _idem_scope else idempotency_key
             fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                result, usage = await _idem_cache.get_or_set(idem_key, fp, _compute_completion)
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
@@ -2954,6 +3019,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        # AVOCADO FORK: per-end-user multiplexing. Mirror the chat-completions
+        # path so the responses API is tenant-isolated too — the scoped session
+        # DB selection (FIX-001) and conversation-name namespacing (FIX-002)
+        # both key off this.
+        avocado_user_id, _avocado_mcp_key, avocado_err = self._parse_avocado_headers(request)
+        if avocado_err is not None:
+            return avocado_err
+        if avocado_user_id and not gateway_session_key:
+            gateway_session_key = f"avocado:{avocado_user_id}"
+
         # Parse request body
         try:
             body = await request.json()
@@ -2971,6 +3046,18 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
+
+        # FIX-002: namespace the caller-supplied conversation NAME with the
+        # tenant scope before any response-store lookup/write. The conversation
+        # name is user-chosen and collidable (two tenants both sending
+        # conversation="default"); without namespacing, tenant B's
+        # get_conversation("default") resolves to tenant A's latest response and
+        # pulls A's full conversation_history. The "\x00" separator can't appear
+        # in a header-derived scope (sanitized) or a JSON string the client
+        # typically sends, so collisions across the namespace boundary are
+        # impossible. No avocado scope => name is keyed exactly as before
+        # (single-tenant unchanged).
+        conversation = self._scope_conversation_name(conversation, gateway_session_key)
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
@@ -3143,12 +3230,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            # Per-tenant idempotency (see chat-completions path): namespace the
+            # caller-supplied key with the avocado scope so two tenants reusing the
+            # same Idempotency-Key can never receive each other's cached response.
+            _idem_scope = self._avocado_scope_from_key(gateway_session_key)
+            idem_key = f"{_idem_scope}\x00{idempotency_key}" if _idem_scope else idempotency_key
             fp = _make_request_fingerprint(
                 body,
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
             )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
+                result, usage = await _idem_cache.get_or_set(idem_key, fp, _compute_response)
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(

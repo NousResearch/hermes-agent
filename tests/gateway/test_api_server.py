@@ -330,7 +330,9 @@ class TestAdapterInit:
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        # _create_agent now passes a per-tenant scope into _ensure_session_db
+        # (avocado multiplexing). Accept the optional arg here.
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda *a, **k: None)
 
         agent = adapter._create_agent(session_id="api-session")
 

@@ -226,13 +226,13 @@ Note: `himalaya message write` without piped input opens `$EDITOR`. This works w
 Move to folder:
 
 ```bash
-himalaya message move 42 "Archive"
+himalaya message move "Archive" 42
 ```
 
 Copy to folder:
 
 ```bash
-himalaya message copy 42 "Important"
+himalaya message copy "Important" 42
 ```
 
 ### Delete an Email
@@ -280,7 +280,7 @@ himalaya attachment download 42
 Save to specific directory:
 
 ```bash
-himalaya attachment download 42 --dir ~/Downloads
+himalaya attachment download 42 --downloads-dir ~/Downloads
 ```
 
 ## Output Formats

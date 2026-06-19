@@ -76,6 +76,8 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     cron: { icon: Clock, color: "text-warning" },
   };
 
+const SESSION_TRANSCRIPT_REFRESH_MS = 5000;
+
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
@@ -386,30 +388,76 @@ function SessionRow({
   resumeInChatEnabled,
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
+  const [liveSessionId, setLiveSessionId] = useState(session.id);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
+  const hasLoadedMessagesRef = useRef(false);
   const { t } = useI18n();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isExpanded && messages === null && !loading) {
-      setLoading(true);
-      api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
-        .catch((err) => setError(String(err)))
-        .finally(() => setLoading(false));
-    }
-  }, [isExpanded, session.id, messages, loading]);
+    hasLoadedMessagesRef.current = messages !== null;
+  }, [messages]);
+
+  useEffect(() => {
+    if (!isExpanded) return;
+
+    let cancelled = false;
+
+    const refreshMessages = async (
+      showSpinner: boolean,
+      suppressBackgroundErrors: boolean,
+    ) => {
+      if (showSpinner) {
+        setLoading(true);
+      }
+
+      try {
+        const latest = await api.getSessionLatestDescendant(session.id);
+        if (cancelled) return;
+
+        const targetSessionId = latest.session_id || session.id;
+        setLiveSessionId((current) =>
+          current === targetSessionId ? current : targetSessionId,
+        );
+
+        const resp = await api.getSessionMessages(targetSessionId);
+        if (cancelled) return;
+
+        setMessages(resp.messages);
+        setError(null);
+      } catch (err) {
+        if (cancelled) return;
+        if (!suppressBackgroundErrors || !hasLoadedMessagesRef.current) {
+          setError(String(err));
+        }
+      } finally {
+        if (!cancelled && showSpinner) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void refreshMessages(!hasLoadedMessagesRef.current, false);
+    const id = window.setInterval(() => {
+      void refreshMessages(false, true);
+    }, SESSION_TRANSCRIPT_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [isExpanded, session.id]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
+  const transcriptSessionId = liveSessionId || session.id;
 
   const submitRename = async () => {
     const value = renameValue.trim();
@@ -441,7 +489,7 @@ function SessionRow({
           title={t.sessions.resumeInChat}
           onClick={(e) => {
             e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            navigate(`/chat?resume=${encodeURIComponent(transcriptSessionId)}`);
           }}
         >
           <Play />
@@ -475,7 +523,7 @@ function SessionRow({
         title="Export session JSON"
         onClick={(e) => {
           e.stopPropagation();
-          onExport(session.id);
+          onExport(transcriptSessionId);
         }}
       >
         <Download />

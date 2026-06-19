@@ -426,6 +426,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # clients that accept but render rich messages poorly via
         # platforms.telegram.extra.rich_messages: false.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", True)
+        # Allow operators to pin known-problem chats back to the legacy
+        # MarkdownV2/sendMessageDraft path without disabling rich delivery
+        # globally for every Telegram chat.
+        self._rich_messages_disable_chats: set[str] = self._config_chat_id_set(
+            "rich_messages_disable_chats"
+        )
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -981,6 +987,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    def _config_chat_id_set(self, key: str) -> set[str]:
+        raw = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if raw is None:
+            return set()
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _rich_messages_disabled_for_chat(self, chat_id: Optional[str]) -> bool:
+        normalized = str(chat_id or "").strip()
+        return bool(normalized and normalized in self._rich_messages_disable_chats)
+
     def _needs_rich_rendering(self, content: str) -> bool:
         """Return True for markdown constructs that the legacy path degrades.
 
@@ -1003,7 +1021,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _rich_eligible(self, content: str) -> bool:
+    def _rich_eligible(self, content: str, chat_id: Optional[str] = None) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.
 
         Shared core of :meth:`_should_attempt_rich` minus the per-call
@@ -1015,6 +1033,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return bool(
             getattr(self, "_rich_messages_enabled", True)
             and not getattr(self, "_rich_send_disabled", False)
+            and not self._rich_messages_disabled_for_chat(chat_id)
             and content
             and content.strip()
             and self._needs_rich_rendering(content)
@@ -1024,11 +1043,14 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     def _should_attempt_rich(
-        self, content: str, metadata: Optional[Dict[str, Any]] = None
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
     ) -> bool:
         return bool(
             not (metadata or {}).get("expect_edits")
-            and self._rich_eligible(content)
+            and self._rich_eligible(content, chat_id=chat_id)
         )
 
     def prefers_fresh_final_streaming(
@@ -1329,6 +1351,12 @@ class TelegramAdapter(BasePlatformAdapter):
             and not self._has_telegram_desktop_details_math_crash_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
+        )
+
+    def _should_attempt_rich_draft_for_chat(self, chat_id: str, content: str) -> bool:
+        return bool(
+            not self._rich_messages_disabled_for_chat(chat_id)
+            and self._should_attempt_rich_draft(content)
         )
 
     async def _try_send_rich_draft(
@@ -2343,7 +2371,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            if self._should_attempt_rich(content, metadata=metadata, chat_id=chat_id):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -2677,7 +2705,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # table that exceeds the MarkdownV2 limit must not be split into legacy
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
-        if finalize and self._rich_eligible(content):
+        if finalize and self._rich_eligible(content, chat_id=chat_id):
             rich_result = await self._try_edit_rich(chat_id, message_id, content)
             if rich_result is not None:
                 return rich_result
@@ -3069,7 +3097,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # streaming preview with the same raw markdown the final
         # sendRichMessage will persist, so the animated draft matches the final
         # message. Any failure degrades to the legacy plain-text draft below.
-        if self._should_attempt_rich_draft(content):
+        if self._should_attempt_rich_draft_for_chat(chat_id, content):
             if await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
                 # Drafts have no message_id; report success without one.
                 return SendResult(success=True, message_id=None)

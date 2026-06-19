@@ -186,6 +186,32 @@ async def test_rich_messages_opt_out_accepts_string_false():
 
 
 @pytest.mark.asyncio
+async def test_rich_messages_disable_chats_forces_legacy_send_path():
+    adapter = _make_adapter(extra={"rich_messages_disable_chats": ["12345"]})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_messages_disable_chats_accepts_comma_string():
+    adapter = _make_adapter(extra={"rich_messages_disable_chats": "12345, 67890"})
+
+    result = await adapter.send("67890", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_rich_messages_default_is_enabled():
     """Rich messages are on by default (Bot API 10.1); rich-eligible content
     (tables/task lists/details/math) goes through sendRichMessage without the
@@ -571,6 +597,19 @@ async def test_rich_draft_oversized_uses_legacy():
     assert result.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.send_message_draft.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_disable_chats_uses_legacy_draft():
+    adapter = _make_adapter(extra={"rich_messages_disable_chats": ["12345"]})
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message_draft.assert_awaited_once()
 
 
 # ----------------------------------------------------------------------

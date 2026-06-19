@@ -497,7 +497,8 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is not None
         assert response.card.type == "raw"
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
@@ -520,7 +521,8 @@ class TestCardActionCallbackResponse:
             response = adapter._on_card_action_trigger(data)
 
         assert response.card is not None
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert card["header"]["template"] == "red"
         assert "Denied" in card["header"]["title"]["content"]
 
@@ -567,7 +569,8 @@ class TestCardActionCallbackResponse:
         with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
             response = adapter._on_card_action_trigger(data)
 
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert "ou_unknown" in card["elements"][0]["content"]
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):
@@ -589,7 +592,8 @@ class TestCardActionCallbackResponse:
         with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
             response = adapter._on_card_action_trigger(data)
 
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert "Old Name" not in card["elements"][0]["content"]
         assert "ou_expired" in card["elements"][0]["content"]
 
@@ -659,7 +663,8 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is not None
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert card["header"]["template"] == "green"
         assert "answered: Yes" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
@@ -683,7 +688,8 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is not None
-        card = response.card.data
+        assert isinstance(response.card.data, str)
+        card = json.loads(response.card.data)
         assert card["header"]["template"] == "red"
         assert "answered: No" in card["header"]["title"]["content"]
 

@@ -62,15 +62,58 @@ def _pad_to_width(s: str, target: int) -> str:
     return s + " " * max(0, target - _disp_width(s))
 
 
+def _split_cells(s: str) -> List[str]:
+    r"""Split ``s`` on unescaped ``|`` separators, keeping ``\|`` in the cell.
+
+    GFM treats a backslash-escaped pipe (``\|``) as a literal pipe in cell
+    content, not a column separator. A bare ``str.split("|")`` tears such a
+    cell apart (``int \| None`` → ``int \`` + ``None``), desyncing the column
+    count so the realigner rebuilds the table with a phantom column. We walk
+    the string so an escaped pipe — or an escaped backslash (``\\``) — never
+    acts as a separator. The escape sequence itself is left intact: the
+    rebuilt rows are fed back through a Markdown renderer in ``render`` mode,
+    where the backslash must survive (unescaping here would re-introduce the
+    very ambiguity this split resolves).
+    """
+
+    cells: List[str] = []
+    buf: List[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n:
+            # Keep the backslash with the char it escapes so an escaped pipe
+            # (or escaped backslash) is never mistaken for a separator.
+            buf.append(s[i : i + 2])
+            i += 2
+        elif ch == "|":
+            cells.append("".join(buf))
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    cells.append("".join(buf))
+    return cells
+
+
 def split_table_row(row: str) -> List[str]:
-    """Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims."""
+    r"""Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims.
+
+    Honors GFM pipe escaping: a ``\|`` inside a cell is a literal pipe, not a
+    column separator, so an ``int \| None`` union-type cell stays one cell
+    instead of being torn into ``int \`` and ``None``.
+    """
 
     s = row.strip()
     if s.startswith("|"):
         s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
+    cells = _split_cells(s)
+    # Drop the empty cell produced by the closing border pipe. A trailing
+    # escaped ``\|`` does not yield an empty cell, so it is preserved.
+    if len(cells) > 1 and not cells[-1].strip():
+        cells.pop()
+    return [c.strip() for c in cells]
 
 
 def is_table_divider(row: str) -> bool:

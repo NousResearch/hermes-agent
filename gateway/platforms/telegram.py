@@ -219,14 +219,54 @@ def _is_table_row(line: str) -> bool:
     return bool(stripped) and '|' in stripped
 
 
+def _split_table_cells(s: str) -> list[str]:
+    r"""Split ``s`` on unescaped ``|`` separators, keeping ``\|`` in the cell.
+
+    GFM treats a backslash-escaped pipe (``\|``) as a literal pipe in cell
+    content, not a column separator. A bare ``str.split("|")`` tears such a
+    cell apart (``int \| None`` → ``int \`` + ``None``), which desyncs the
+    cell count and invents a phantom column. Walk the string so an escaped
+    pipe — or an escaped backslash (``\\``) — is never a separator.
+    """
+    cells: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n:
+            buf.append(s[i : i + 2])
+            i += 2
+        elif ch == "|":
+            cells.append("".join(buf))
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    cells.append("".join(buf))
+    return cells
+
+
 def _split_markdown_table_row(line: str) -> list[str]:
-    """Split a simple GFM table row into stripped cell values."""
+    r"""Split a GFM table row into stripped cell values.
+
+    Honors GFM pipe escaping: a ``\|`` is a literal pipe inside a cell, not a
+    column separator, so an ``int \| None`` cell is kept whole instead of
+    being torn into ``int \`` and ``None`` (which invents a phantom column and
+    scrambles the per-row bullets). The table-pipe escape is then resolved to
+    a bare ``|`` for display: these cells become Telegram bullet text rather
+    than a re-parsed pipe table, and ``_escape_mdv2`` re-escapes the pipe for
+    MarkdownV2 on the way out.
+    """
     stripped = line.strip()
     if stripped.startswith("|"):
         stripped = stripped[1:]
-    if stripped.endswith("|"):
-        stripped = stripped[:-1]
-    return [cell.strip() for cell in stripped.split("|")]
+    cells = _split_table_cells(stripped)
+    # Drop the empty cell from the closing border pipe; a trailing escaped
+    # ``\|`` yields no empty cell, so it survives.
+    if len(cells) > 1 and not cells[-1].strip():
+        cells.pop()
+    return [cell.strip().replace(r"\|", "|") for cell in cells]
 
 
 def _render_table_block_for_telegram(table_block: list[str]) -> str:

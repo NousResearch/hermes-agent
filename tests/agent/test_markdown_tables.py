@@ -43,6 +43,17 @@ def test_split_strips_outer_pipes_and_trims():
     assert split_table_row("a | b | c") == ["a", "b", "c"]
 
 
+def test_split_keeps_escaped_pipe_in_cell():
+    r"""A GFM-escaped pipe (``\|``) is a literal pipe inside the cell, not a
+    column separator, so the cell is kept whole and the escape preserved."""
+    # The reported case: an ``int \| None`` union type in a cell.
+    assert split_table_row(r"| value | int \| None |") == ["value", r"int \| None"]
+    # An escaped backslash (``\\``) before a real separator still splits.
+    assert split_table_row(r"| a\\ | b |") == [r"a\\", "b"]
+    # A row that ends with an escaped pipe (no closing border) keeps it.
+    assert split_table_row(r"| a | b \|") == ["a", r"b \|"]
+
+
 def test_is_table_divider_handles_alignment_colons():
     assert is_table_divider("|---|---|")
     assert is_table_divider("| :--- | ---: | :---: |")
@@ -72,6 +83,28 @@ def test_no_op_on_text_without_tables():
 def test_no_op_when_pipes_but_no_divider():
     text = "echo a | grep b\necho c | wc -l\n"
     assert realign_markdown_tables(text) == text
+
+
+def test_escaped_pipe_does_not_create_phantom_column():
+    r"""Realigning a two-column table whose cell holds an escaped pipe
+    (``int \| None``) must keep it two columns — the escaped pipe stays in
+    the cell instead of being treated as a separator and spawning a third
+    column with a dangling ``int \`` fragment."""
+    src = dedent(
+        """\
+        | param | type |
+        |-------|------|
+        | x | int \\| None |
+        | y | str |
+        """
+    )
+    out = realign_markdown_tables(src).rstrip("\n").split("\n")
+    # Every rebuilt row parses back to exactly two cells.
+    counts = {len(split_table_row(row)) for row in out}
+    assert counts == {2}, "phantom column:\n" + "\n".join(out)
+    # The escaped pipe survives intact in the body — preserved so the
+    # downstream Markdown renderer still emits a literal pipe.
+    assert any(r"int \| None" in row for row in out)
 
 
 def test_cjk_table_pipes_align_across_rows():

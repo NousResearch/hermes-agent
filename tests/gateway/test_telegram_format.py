@@ -38,6 +38,7 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _split_markdown_table_row,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -717,6 +718,31 @@ class TestWrapMarkdownTables:
         assert "• Score: 150" in out
         assert "• Rank: 1" in out
         assert "**Alice**\n• Score: 150\n• Rank: 1" in out
+
+    def test_escaped_pipe_in_cell_kept_whole(self):
+        r"""A GFM-escaped pipe (``\|``, e.g. an ``int \| None`` union type) is
+        a literal pipe inside the cell, not a column separator.  It must stay
+        in one cell — not spawn a phantom column or a dangling ``int \``
+        bullet — and resolve to a bare pipe for display."""
+        text = (
+            "| name | type |\n"
+            "|------|------|\n"
+            "| x | int \\| None |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        # Heading is the real first cell; the escaped-pipe cell maps to the
+        # right column, kept whole, with the escape resolved for display.
+        assert "**x**" in out
+        assert "• type: int | None" in out
+        # No torn cell leaks a dangling backslash fragment.
+        assert "int \\" not in out.replace("int | None", "")
+
+    def test_split_markdown_table_row_honors_escaped_pipe(self):
+        r"""Unit: the row splitter ignores ``\|`` as a separator and resolves
+        it to a literal pipe for the rendered cell."""
+        assert _split_markdown_table_row(r"| x | int \| None |") == ["x", "int | None"]
+        # A bare separator still splits; surrounding cells are unaffected.
+        assert _split_markdown_table_row(r"| a | b | c |") == ["a", "b", "c"]
 
 
 class TestFormatMessageTables:

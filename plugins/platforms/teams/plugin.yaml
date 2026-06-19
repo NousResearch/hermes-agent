@@ -54,3 +54,7 @@ optional_env:
     description: "Conversation ID to mirror (DLP-redacted) agent replies to for compliance"
     prompt: "Audit-log channel conversation ID (or empty)"
     password: false
+  - name: TEAMS_TRANSCRIBE_VOICE_MESSAGES
+    description: "Transcribe inbound Teams voice clips and fold the text into the agent's turn"
+    prompt: "Transcribe voice messages? (true/false)"
+    password: false

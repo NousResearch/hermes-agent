@@ -720,6 +720,10 @@ class TeamsAdapter(BasePlatformAdapter):
             str(extra.get("audit_channel") or "").strip()
             or os.getenv("TEAMS_AUDIT_CHANNEL", "").strip()
         )
+        self._transcribe_voice = str(
+            extra.get("transcribe_voice_messages", "")
+            or os.getenv("TEAMS_TRANSCRIBE_VOICE_MESSAGES", "")
+        ).strip().lower() in ("1", "true", "yes", "on")
 
     async def connect(self) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -772,6 +776,13 @@ class TeamsAdapter(BasePlatformAdapter):
                 ctx: ActivityContext[AdaptiveCardInvokeActivity],
             ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
                 return await self._on_card_action(ctx)
+
+            # "Ask Hermes about this" message command (composeExtension submit on a
+            # selected message). Requires the Teams app manifest to declare a
+            # composeExtensions command id "askHermes" with context ["message"].
+            @self._app.on_message_ext_submit
+            async def _handle_msg_ext(ctx):
+                return await self._on_message_action(ctx)
 
             # initialize() calls register_route() on the bridge, which adds
             # POST /api/messages to aiohttp_app automatically
@@ -975,7 +986,9 @@ class TeamsAdapter(BasePlatformAdapter):
         elif "video" in media_kinds:
             msg_type = MessageType.VIDEO
         elif "audio" in media_kinds:
-            msg_type = MessageType.AUDIO
+            # Opt-in: treat audio clips as VOICE so the gateway's STT transcribes
+            # them and folds the transcript into the agent's turn.
+            msg_type = MessageType.VOICE if self._transcribe_voice else MessageType.AUDIO
         else:
             msg_type = MessageType.TEXT
 
@@ -988,6 +1001,65 @@ class TeamsAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
         await self.handle_message(event)
+
+    @staticmethod
+    def _extract_message_action(value: "Any") -> tuple[str, str]:
+        """Pull ``(command_id, quoted_text)`` from a message-ext submit value.
+
+        Defensive across dict / object payload shapes; strips HTML from the
+        selected message body.
+        """
+        import re
+
+        data = value if isinstance(value, dict) else (getattr(value, "__dict__", None) or {})
+        command_id = str(data.get("commandId") or data.get("command_id") or "")
+        payload = data.get("messagePayload") or data.get("message_payload") or {}
+        if not isinstance(payload, dict):
+            payload = getattr(payload, "__dict__", None) or {}
+        quoted = ""
+        body = payload.get("body")
+        if isinstance(body, dict):
+            quoted = body.get("content") or ""
+        quoted = quoted or payload.get("text") or ""
+        if "<" in quoted:
+            quoted = re.sub(r"<[^>]+>", " ", quoted)
+        return command_id, re.sub(r"\s+", " ", quoted).strip()
+
+    async def _on_message_action(self, ctx: "Any") -> None:
+        """Handle the "Ask Hermes about this" message command — dispatch the
+        quoted message through the normal message path so the answer posts back."""
+        try:
+            activity = getattr(ctx, "activity", None)
+            command_id, quoted = self._extract_message_action(getattr(activity, "value", None))
+            if command_id and command_id != "askHermes":
+                return None
+            if not quoted:
+                return None
+            conv = getattr(activity, "conversation", None)
+            from_account = getattr(activity, "from_", None)
+            conv_type = getattr(conv, "conversation_type", None) or ""
+            chat_type = (
+                "dm" if conv_type == "personal"
+                else "channel" if conv_type == "channel"
+                else "group"
+            )
+            source = self.build_source(
+                chat_id=getattr(conv, "id", "") or "",
+                chat_name=getattr(conv, "name", None) or "",
+                chat_type=chat_type,
+                user_id=str(getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")),
+                user_name=getattr(from_account, "name", None) or "",
+                guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            )
+            event = MessageEvent(
+                text=f"Regarding this Teams message:\n\n> {quoted}\n\nPlease help with it.",
+                source=source,
+                message_type=MessageType.TEXT,
+            )
+            await self.handle_message(event)
+        except Exception as e:  # noqa: BLE001 — never crash the invoke path
+            logger.warning("[teams] message action failed: %s", e)
+        return None
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

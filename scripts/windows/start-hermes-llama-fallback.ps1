@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("rtx3080", "rtx3060")]
-    [string]$GpuProfile = "rtx3080",
+    [ValidateSet("rtx5060ti", "rtx3080", "rtx3060")]
+    [string]$GpuProfile = "rtx5060ti",
     [string]$ServerExe = "",
     [string]$ModelPath = "",
     [int]$Port = 8080,
@@ -34,6 +34,10 @@ function Resolve-LlamaFallbackDefaults {
     }
 
     if (-not $ModelPath) {
+        $ModelPath = $env:HERMES_LLAMA_GGUF_PATH
+    }
+
+    if (-not $ModelPath) {
         $ModelPath = $env:HERMES_LLAMA_MODEL_PATH
     }
 
@@ -47,9 +51,10 @@ function Resolve-DefaultContextSize {
     param([string]$Profile)
 
     switch ($Profile) {
+        "rtx5060ti" { return 65536 }
         "rtx3080" { return 49152 }
         "rtx3060" { return 65536 }
-        default { return 49152 }
+        default { return 65536 }
     }
 }
 
@@ -77,7 +82,7 @@ function Import-HermesLlamaEnv {
         $eq = $line.IndexOf('=')
         if ($eq -lt 1) { return }
         $key = $line.Substring(0, $eq).Trim()
-        if ($key -notin @('HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_SERVER_EXE')) { return }
+        if ($key -notin @('HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_GGUF_PATH', 'HERMES_LLAMA_SERVER_EXE')) { return }
         if (-not [string]::IsNullOrWhiteSpace((Get-Item -Path "Env:$key" -ErrorAction SilentlyContinue).Value)) { return }
         $value = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
         if ($value) { Set-Item -Path "Env:$key" -Value $value }
@@ -118,7 +123,7 @@ $serverArgs = @(
     "--host", "127.0.0.1",
     "--port", [string]$Port,
     "--ctx-size", [string]$ContextSize,
-    "--n-gpu-layers", "99",
+    "--n-gpu-layers", "all",
     "--flash-attn", "on",
     "--cache-type-k", $kv.K,
     "--cache-type-v", $kv.V,

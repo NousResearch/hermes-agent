@@ -1030,12 +1030,13 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model command — switch model for this session.
+        """Handle /model command — switch model.
 
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
-          /model <name>                       — switch for this session only
-          /model <name> --global              — switch and persist to config.yaml
+          /model <name>                       — switch model (persists by default)
+          /model <name> --session             — switch for this session only
+          /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
@@ -1043,6 +1044,7 @@ class GatewaySlashCommandsMixin:
         import yaml
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_flags,
+            resolve_persist_behavior,
             list_authenticated_providers,
             list_picker_providers,
         )
@@ -1050,8 +1052,15 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
 
-        # Parse --provider, --global, and --refresh flags
-        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+        # Parse --provider, --global, --session, and --refresh flags
+        (
+            model_input,
+            explicit_provider,
+            is_global_flag,
+            force_refresh,
+            is_session,
+        ) = parse_model_flags(raw_args)
+        persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1362,7 +1371,7 @@ class GatewaySlashCommandsMixin:
             # override rather than relying on cache signature mismatch detection.
             self._evict_cached_agent(session_key)
 
-            # Persist to config if --global
+            # Persist to config (default) unless --session opted out
             if persist_global:
                 try:
                     if config_path.exists():
@@ -2794,6 +2803,22 @@ class GatewaySlashCommandsMixin:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Propagate the user-chosen title to the visible Telegram
+                    # forum topic name too. Auto-generated titles already rename
+                    # the topic; without this, /title only updated the DB title
+                    # and the topic kept its auto-assigned name. No-ops off
+                    # Telegram topic lanes and when auto-rename is disabled.
+                    schedule_rename = getattr(
+                        self, "_schedule_telegram_topic_title_rename", None
+                    )
+                    if callable(schedule_rename):
+                        try:
+                            schedule_rename(source, session_id, sanitized)
+                        except Exception:
+                            logger.debug(
+                                "Failed to rename Telegram topic from /title",
+                                exc_info=True,
+                            )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")

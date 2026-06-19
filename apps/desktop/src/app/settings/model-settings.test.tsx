@@ -77,7 +77,11 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
-    expect(screen.getByText('nous / hermes-4')).toBeTruthy()
+    expect(screen.getByText('Nous')).toBeTruthy()
+    expect(screen.getByText('hermes-4')).toBeTruthy()
+
+    fireEvent.keyDown(screen.getAllByRole('combobox')[0], { key: 'Enter' })
+    expect(await screen.findByRole('option', { name: 'DeepSeek' })).toBeTruthy()
   }, 10_000)
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {

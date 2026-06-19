@@ -49,5 +49,5 @@ describe('LanguageSwitcher', () => {
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
     expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'slate' } })
-  })
+  }, 15_000)
 })

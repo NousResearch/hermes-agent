@@ -3,7 +3,10 @@ param(
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8088,
     [int]$StartupTimeoutSeconds = 90,
-    [string]$HfCacheRoot = ""
+    [string]$HfCacheRoot = "",
+    [string]$ModelDevice = "auto",
+    [string]$CodecDevice = "auto",
+    [string]$BackendExtra = "cu128"
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,6 +45,12 @@ $env:HF_HUB_ENABLE_HF_TRANSFER = "0"
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
 $env:TORCH_HOME = $torchCacheRoot
 $env:TORCHINDUCTOR_CACHE_DIR = $torchInductorCache
+if (-not [string]::IsNullOrWhiteSpace($ModelDevice)) {
+    $env:IRODORI_MODEL_DEVICE = $ModelDevice
+}
+if (-not [string]::IsNullOrWhiteSpace($CodecDevice)) {
+    $env:IRODORI_CODEC_DEVICE = $CodecDevice
+}
 
 $healthUrl = "http://${HostName}:${Port}/health"
 try {
@@ -55,9 +64,11 @@ try {
 
 $stdout = Join-Path $logDir "irodori-tts-stdout.log"
 $stderr = Join-Path $logDir "irodori-tts-stderr.log"
-$arguments = @(
-    "run",
-    "--no-sync",
+$arguments = @("run")
+if (-not [string]::IsNullOrWhiteSpace($BackendExtra)) {
+    $arguments += @("--extra", $BackendExtra)
+}
+$arguments += @(
     "python",
     "-m",
     "irodori_openai_tts",

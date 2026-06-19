@@ -1,7 +1,13 @@
+"""Each standalone config loader (gateway, TUI/desktop, cron) must honor managed scope.
+
+These loaders build their own config dict instead of routing through
+hermes_cli.config.load_config, so the managed overlay has to be wired into each.
+This is the regression guard for the whole bug class (a managed display.skin was
+silently ignored by the TUI; the same gap existed in the gateway and cron).
+"""
 import textwrap
 
 import pytest
-import yaml
 
 
 @pytest.fixture
@@ -42,7 +48,7 @@ def test_gateway_run_loader_honors_managed(homes, monkeypatch):
     assert (cfg.get("model") or {}).get("default") == "org/m"
 
 
-def test_gateway_config_loader_honors_managed(homes):
+def test_gateway_config_loader_honors_managed(homes, monkeypatch):
     home, managed = homes
     _seed(
         home,
@@ -52,7 +58,9 @@ def test_gateway_config_loader_honors_managed(homes):
     )
     import gateway.config as gc
 
+    # load_gateway_config resolves home via get_hermes_home() (HERMES_HOME env).
     cfg = gc.load_gateway_config()
+    # Managed value should have flowed into the GatewayConfig.
     assert cfg.group_sessions_per_user is True
 
 
@@ -70,6 +78,7 @@ def test_tui_loader_honors_managed(homes, monkeypatch):
 
 
 def test_tui_loader_does_not_persist_managed_back(homes, monkeypatch):
+    """The TUI caches RAW config so _save_cfg never writes managed values to disk."""
     home, managed = homes
     _seed(home, managed, user="display:\n  skin: user\n", mgd="display:\n  skin: charizard\n")
     import tui_gateway.server as ts
@@ -78,11 +87,13 @@ def test_tui_loader_does_not_persist_managed_back(homes, monkeypatch):
     monkeypatch.setattr(ts, "_cfg_cache", None, raising=False)
     monkeypatch.setattr(ts, "_cfg_mtime", None, raising=False)
     monkeypatch.setattr(ts, "get_hermes_home_override", lambda: None, raising=False)
-    ts._load_cfg()
+    ts._load_cfg()  # populates the cache
+    # The cache must hold the RAW user value, not the managed overlay, so a
+    # subsequent _save_cfg can't bake the managed skin into the user file.
     assert (ts._cfg_cache.get("display") or {}).get("skin") == "user"
 
 
-def test_logging_config_honors_managed(homes):
+def test_logging_config_honors_managed(homes, monkeypatch):
     home, managed = homes
     _seed(home, managed, user="logging:\n  level: INFO\n", mgd="logging:\n  level: DEBUG\n")
     import hermes_logging
@@ -93,6 +104,7 @@ def test_logging_config_honors_managed(homes):
 
 def test_timezone_honors_managed(homes, monkeypatch):
     home, managed = homes
+    # hermes_time checks an env override first; ensure it's unset so config wins.
     monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
     monkeypatch.delenv("TZ", raising=False)
     _seed(home, managed, user="timezone: America/New_York\n", mgd="timezone: Asia/Tokyo\n")
@@ -101,17 +113,30 @@ def test_timezone_honors_managed(homes, monkeypatch):
     assert hermes_time._resolve_timezone_name() == "Asia/Tokyo"
 
 
-def test_gateway_env_bridge_honors_managed(homes):
+def test_gateway_env_bridge_honors_managed(homes, monkeypatch):
+    """The gateway config→env bridge must bridge MANAGED values, not user ones.
+
+    gateway/run.py bridges config.yaml settings into os.environ at startup and on
+    every turn (HERMES_TIMEZONE, HERMES_REDACT_SECRETS, HERMES_MAX_ITERATIONS,
+    ...). A managed value must win at that env layer too — otherwise the bridge
+    writes the user's value into the env that the whole process then reads. This
+    is the regression that manual verification caught (managed timezone was
+    overridden by the user's value via the env bridge).
+
+    We assert on the managed-overlaid config the bridge consumes (rather than the
+    os.environ side effect, which leaks across same-process tests under the
+    runner) — the bridge writes whatever this dict carries, so a managed value
+    here proves the env var gets the managed value.
+    """
     home, managed = homes
-    _seed(
-        home,
-        managed,
-        user="timezone: America/New_York\n",
-        mgd="timezone: Asia/Tokyo\n",
-    )
+    _seed(home, managed, user="timezone: America/New_York\n", mgd="timezone: Asia/Tokyo\n")
     from hermes_cli import managed_scope
 
     managed_scope.invalidate_managed_cache()
+    # The bridge loads config.yaml, expands env, then applies this overlay before
+    # writing HERMES_TIMEZONE = cfg["timezone"]. Prove the overlay flips the value.
+    import yaml
+
     raw = yaml.safe_load((home / "config.yaml").read_text())
     bridged = managed_scope.apply_managed_overlay(raw)
     assert bridged.get("timezone") == "Asia/Tokyo"

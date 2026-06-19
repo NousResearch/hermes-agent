@@ -2174,14 +2174,25 @@ def _apply_model_switch(
     *,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
-    parsed_flags: tuple[str, str, bool, bool] | None = None,
+    parsed_flags: tuple[str, str, bool, bool, bool] | None = None,
 ) -> dict:
-    from hermes_cli.model_switch import parse_model_flags, switch_model
+    from hermes_cli.model_switch import (
+        parse_model_flags,
+        resolve_persist_behavior,
+        switch_model,
+    )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     if parsed_flags is None:
         parsed_flags = parse_model_flags(raw_input)
-    model_input, explicit_provider, persist_global, _force_refresh = parsed_flags
+    (
+        model_input,
+        explicit_provider,
+        is_global_flag,
+        _force_refresh,
+        is_session,
+    ) = parsed_flags
+    persist_global = resolve_persist_behavior(is_global_flag, is_session)
     if not model_input:
         raise ValueError("model value required")
 
@@ -3579,26 +3590,19 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             ):
                 return
             try:
-                from model_tools import get_tool_definitions
+                from tools.mcp_tool import refresh_agent_mcp_tools
 
-                new_defs = get_tool_definitions(
-                    enabled_toolsets=_load_enabled_toolsets(),
-                    quiet_mode=True,
-                )
+                added = refresh_agent_mcp_tools(agent, quiet_mode=True)
             except Exception as exc:
                 logger.warning(
-                    "Late MCP refresh: get_tool_definitions failed for %s: %s",
+                    "Late MCP refresh: tool snapshot rebuild failed for %s: %s",
                     sid,
                     exc,
                 )
                 return
-            # No change (discovery added nothing new) → don't churn the client.
-            if len(new_defs or []) == len(getattr(agent, "tools", []) or []):
+            # No new tools landed (discovery added nothing) → don't churn the client.
+            if not added:
                 return
-            agent.tools = new_defs
-            agent.valid_tool_names = (
-                {t["function"]["name"] for t in new_defs} if new_defs else set()
-            )
             info = _session_info(agent, session)
         # Emit outside the lock — write_json must not block under _sessions_lock.
         _emit("session.info", sid, info)
@@ -7719,7 +7723,7 @@ def _(rid, params: dict) -> dict:
                 from hermes_cli.model_switch import parse_model_flags
 
                 parsed_flags = parse_model_flags(value)
-                _model_input, explicit_provider, _persist_global, _force_refresh = parsed_flags
+                _model_input, explicit_provider, _persist_global, _force_refresh, _is_session = parsed_flags
                 if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)
@@ -8516,15 +8520,14 @@ def _(rid, params: dict) -> dict:
             # The user already consented to the prompt-cache invalidation via
             # the confirm gate above.  Mirrors gateway/run.py::_execute_mcp_reload.
             try:
-                from model_tools import get_tool_definitions
+                from tools.mcp_tool import refresh_agent_mcp_tools
 
-                new_defs = get_tool_definitions(
-                    enabled_toolsets=_load_enabled_toolsets(),
+                # Explicit reload: re-resolve enabled toolsets so a server the
+                # user just enabled in config this session is picked up.
+                refresh_agent_mcp_tools(
+                    agent,
+                    enabled_override=_load_enabled_toolsets(),
                     quiet_mode=True,
-                )
-                agent.tools = new_defs
-                agent.valid_tool_names = (
-                    {t["function"]["name"] for t in new_defs} if new_defs else set()
                 )
             except Exception as _exc:
                 logger.warning(

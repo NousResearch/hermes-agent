@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import ipaddress
 import json
@@ -32,6 +33,7 @@ except Exception:  # pragma: no cover - early import safety
 
 # Audio WebSocket push — optional, only when websockets is installed
 try:
+    import websockets.sync.client as _ws_client_mod
     import websockets.sync.server as _ws_server_mod
     import websockets.exceptions as _ws_exc
 
@@ -2144,11 +2146,116 @@ def _audio_ws_running() -> bool:
     return bool(_audio_ws_state.get("server"))
 
 
+def _audio_ws_send_json(websocket: Any, payload: dict[str, Any]) -> None:
+    try:
+        websocket.send(json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        _audio_ws_clients.discard(websocket)
+
+
+def _audio_ws_broadcast_bytes(data: bytes, exclude: Any | None = None) -> dict[str, Any]:
+    if not _audio_ws_clients:
+        return {"ok": True, "sent": 0, "info": "no clients connected"}
+    clients = list(_audio_ws_clients)
+    sent = 0
+    for ws in clients:
+        if ws is exclude:
+            continue
+        try:
+            ws.send(data)
+            sent += 1
+        except Exception:
+            _audio_ws_clients.discard(ws)
+    return {"ok": True, "sent": sent, "total": len(clients)}
+
+
+def _audio_ws_handle_text(websocket: Any, raw_message: str) -> None:
+    """Handle text commands from the browser-side avatar UI.
+
+    Binary frames are reserved for WAV push from PC -> browser. Text frames are
+    browser -> PC control messages. The primary command is:
+      {"type":"chat","text":"..."}
+    which asks Hakua to answer through the existing Hermes/TTS path. The TTS
+    result is broadcast back as WAV by synthesize_speech().
+    """
+    text = raw_message.strip()
+    if not text:
+        return
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = {"type": "chat", "text": text}
+    if not isinstance(parsed, dict):
+        _audio_ws_send_json(websocket, {"type": "error", "error": "Invalid WS message."})
+        return
+    message_type = str(parsed.get("type") or "chat").strip().lower()
+    if message_type in {"ping", "hello"}:
+        _audio_ws_send_json(websocket, {"type": "ready", "ok": True})
+        return
+    if message_type == "push_wav":
+        raw_b64 = str(parsed.get("wav_b64") or "")
+        if not raw_b64:
+            _audio_ws_send_json(websocket, {"type": "error", "error": "wav_b64 is required."})
+            return
+        try:
+            data = base64.b64decode(raw_b64, validate=True)
+        except Exception:
+            _audio_ws_send_json(websocket, {"type": "error", "error": "invalid wav_b64."})
+            return
+        result = _audio_ws_broadcast_bytes(data, exclude=websocket)
+        _audio_ws_send_json(websocket, {"type": "push_wav_result", **result})
+        return
+    if message_type not in {"chat", "say"}:
+        _audio_ws_send_json(
+            websocket,
+            {"type": "error", "error": f"Unsupported WS message type: {message_type}"},
+        )
+        return
+    prompt = str(parsed.get("text") or parsed.get("prompt") or "").strip()
+    if not prompt:
+        _audio_ws_send_json(websocket, {"type": "error", "error": "text is required."})
+        return
+
+    def worker() -> None:
+        _audio_ws_send_json(websocket, {"type": "thinking", "ok": True})
+        try:
+            values = {
+                "prompt": prompt,
+                "reply_backend": parsed.get("reply_backend") or "hermes",
+                "response_length": parsed.get("response_length") or "veryShort",
+                "speak": True,
+                "tts_provider": parsed.get("tts_provider") or _plugin_tts_provider(""),
+                "play": False,
+                "timeout_seconds": parsed.get("timeout_seconds") or 60,
+            }
+            result = run_hakua_once(values)
+            _audio_ws_send_json(
+                websocket,
+                {
+                    "type": "reply",
+                    "ok": bool(result.get("ok")),
+                    "reply": str(result.get("reply") or ""),
+                    "error": _safe_error_text(result.get("error") or result.get("recoverable_error") or ""),
+                },
+            )
+        except Exception as exc:
+            _audio_ws_send_json(
+                websocket,
+                {"type": "reply", "ok": False, "reply": "", "error": _safe_error_text(str(exc))},
+            )
+
+    threading.Thread(target=worker, daemon=True, name="audio-ws-chat").start()
+
+
 def _audio_ws_handler(websocket: Any) -> None:
     _audio_ws_clients.add(websocket)
+    _audio_ws_send_json(websocket, {"type": "ready", "ok": True})
     try:
-        for _ in websocket:
-            pass
+        for message in websocket:
+            if isinstance(message, str):
+                _audio_ws_handle_text(websocket, message)
+            elif isinstance(message, (bytes, bytearray, memoryview)):
+                _audio_ws_broadcast_bytes(bytes(message), exclude=websocket)
     except (_ws_exc.ConnectionClosed, Exception):
         pass
     finally:
@@ -2183,9 +2290,10 @@ def audio_ws_start(host: str | None = None, port: int | None = None) -> dict[str
             "info": "already running",
         }
     try:
-        server = _ws_server_mod.serve(_audio_ws_handler, host, port)
+        server = _ws_server_mod.serve(_audio_ws_handler, host, port, max_size=None)
     except OSError as exc:
         return {"ok": False, "error": f"audio WS bind failed: {exc}"}
+    actual_port = int(server.socket.getsockname()[1])
     thread = threading.Thread(
         target=lambda: server.serve_forever(),
         daemon=True,
@@ -2194,8 +2302,8 @@ def audio_ws_start(host: str | None = None, port: int | None = None) -> dict[str
     thread.start()
     _audio_ws_state["server"] = server
     _audio_ws_state["host"] = host
-    _audio_ws_state["port"] = port
-    return {"ok": True, "host": host, "port": port}
+    _audio_ws_state["port"] = actual_port
+    return {"ok": True, "host": host, "port": actual_port}
 
 
 def audio_ws_stop() -> dict[str, Any]:
@@ -2212,30 +2320,61 @@ def audio_ws_stop() -> dict[str, Any]:
 
 
 def audio_ws_push_wav(wav_path: Path | str) -> dict[str, Any]:
-    if not _audio_ws_running():
-        return {"ok": False, "error": "audio WS server is not running."}
-    if not _audio_ws_clients:
-        return {"ok": True, "sent": 0, "info": "no clients connected"}
     try:
         data = Path(wav_path).read_bytes()
     except (OSError, FileNotFoundError) as exc:
         return {"ok": False, "error": f"cannot read wav: {exc}"}
-    clients = list(_audio_ws_clients)
-    sent = 0
-    for ws in clients:
-        try:
-            ws.send(data)
-            sent += 1
-        except Exception:
-            _audio_ws_clients.discard(ws)
-    return {"ok": True, "sent": sent, "total": len(clients)}
+
+    if _audio_ws_running():
+        return _audio_ws_broadcast_bytes(data)
+
+    if not _HAS_WS:
+        return {"ok": False, "error": "websockets package is not installed."}
+
+    # AITuber tools often synthesize audio in short-lived worker processes while
+    # the audio WebSocket server lives in a long-running background process.
+    # This process has no in-memory server/client state in that case, so loop
+    # back into the running WS server and let it broadcast the binary WAV frame
+    # to connected browser clients such as the Galaxy VRM display.
+    host, port = _audio_ws_config()
+    connect_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    uri = f"ws://{connect_host}:{port}"
+    try:
+        with _ws_client_mod.connect(uri, open_timeout=5, close_timeout=2) as ws:
+            ws.recv(timeout=2)  # ready
+            ws.send(
+                json.dumps(
+                    {
+                        "type": "push_wav",
+                        "wav_b64": base64.b64encode(data).decode("ascii"),
+                    }
+                )
+            )
+            ack = ws.recv(timeout=10)
+        return {
+            "ok": True,
+            "sent_via": "loopback",
+            "uri": uri,
+            "size_bytes": len(data),
+            "ack": ack if isinstance(ack, str) else f"bytes:{len(ack)}",
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"audio WS loopback push failed: {exc}", "uri": uri}
 
 
 # ── Speech Synthesis ─────────────────────────────────────────────────────────
 def synthesize_speech(values: dict[str, Any]) -> dict[str, Any]:
+    requested_provider = _plugin_tts_provider(values.get("provider"))
     provider = _select_tts_provider(values.get("provider"))
     if provider == "irodori":
         result = _synthesize_irodori(values)
+        if not result.get("ok") and requested_provider == "auto":
+            voicevox = _voicevox_engine_status(values.get("voicevox_url"))
+            if voicevox.get("installed") or voicevox.get("reachable"):
+                fallback_result = _synthesize_voicevox(values)
+                fallback_result["fallback_from"] = "irodori"
+                fallback_result["fallback_error"] = _safe_error_text(result.get("error") or "")
+                result = fallback_result
     elif provider == "voicevox":
         result = _synthesize_voicevox(values)
     else:

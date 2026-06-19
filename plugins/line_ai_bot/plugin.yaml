@@ -1,0 +1,17 @@
+name: line-ai-bot
+version: 0.1.0
+description: "LINE-ready AI bot profile plugin that uses ctx.llm and the existing line-platform adapter boundary."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+requires_plugins:
+  - line-platform
+provides_tools:
+  - line_ai_bot_status
+  - line_ai_bot_reply
+bot:
+  channel: line
+  manifest: bot.yaml

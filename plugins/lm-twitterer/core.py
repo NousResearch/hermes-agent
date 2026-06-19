@@ -259,6 +259,7 @@ def _normalize_hashtag(raw: str) -> str:
 def settings() -> Settings:
     home = Path(get_hermes_home())
     state_dir = Path(_env("LM_TWITTERER_STATE_DIR", str(home / "lm-twitterer"))).expanduser()
+    media_dir = Path(_env("LM_TWITTERER_MEDIA_DIR", str(state_dir / "media"))).expanduser()
     whitelist_file = Path(_env("LM_TWITTERER_WHITELIST_FILE", str(state_dir / "whitelist.txt"))).expanduser()
     replied_ids_file = Path(_env("LM_TWITTERER_REPLIED_IDS_FILE", str(state_dir / "replied_ids.txt"))).expanduser()
     return Settings(
@@ -281,7 +282,7 @@ def settings() -> Settings:
         whitelist_file=whitelist_file,
         replied_ids_file=replied_ids_file,
         log_file=state_dir / "activity.jsonl",
-        media_dir=state_dir / "media",
+        media_dir=media_dir,
         memory_bridge_enabled=_bool_env("LM_TWITTERER_MEMORY_BRIDGE", True),
         memory_db=Path(
             _env("LM_TWITTERER_MEMORY_DB", str(home / "ebbinghaus_memory.db"))

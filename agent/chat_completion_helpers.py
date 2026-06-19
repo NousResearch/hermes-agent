@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -49,6 +50,52 @@ def _ra():
     import run_agent
 
     return run_agent
+
+
+def _run_fallback_start_command(agent, fb: Dict[str, Any], *, label: str) -> bool:
+    start_command = str(fb.get("start_command") or "").strip()
+    if not start_command:
+        return True
+
+    timeout_raw = fb.get("start_timeout_seconds", 180)
+    try:
+        timeout_seconds = max(1, int(timeout_raw))
+    except (TypeError, ValueError):
+        timeout_seconds = 180
+
+    agent._buffer_status(f"🔄 Starting fallback runtime: {label}")
+    logger.info("Starting fallback runtime for %s: %s", label, start_command)
+    try:
+        completed = subprocess.run(
+            start_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning(
+            "Fallback start command timed out for %s after %ss. stdout=%r stderr=%r",
+            label,
+            timeout_seconds,
+            (exc.stdout or "")[-2000:],
+            (exc.stderr or "")[-2000:],
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Fallback start command failed for %s: %s", label, exc)
+        return False
+
+    if completed.returncode != 0:
+        logger.warning(
+            "Fallback start command exited %s for %s. stdout=%r stderr=%r",
+            completed.returncode,
+            label,
+            (completed.stdout or "")[-2000:],
+            (completed.stderr or "")[-2000:],
+        )
+        return False
+    return True
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:
@@ -1164,6 +1211,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.
     try:
+        if not _run_fallback_start_command(
+            agent,
+            fb,
+            label=f"{fb_provider}/{fb_model}",
+        ):
+            return agent._try_activate_fallback()
+
         from agent.auxiliary_client import resolve_provider_client
 
         # Pass base_url and api_key from fallback config so custom

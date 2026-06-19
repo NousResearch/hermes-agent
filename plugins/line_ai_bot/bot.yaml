@@ -1,0 +1,19 @@
+name: line-ai-bot
+display_name: LINE AI Bot
+channel: line
+persona_file: prompts/persona.md
+model_policy:
+  provider: active-hermes
+  purpose: line-ai-bot.reply
+reply_policy:
+  max_input_chars: 8000
+  max_reply_chars: 1800
+  degraded_reply: "I could not reach the model, but the LINE bot stayed alive. Please try again shortly."
+tools:
+  allowed:
+    - line_ai_bot_status
+    - line_ai_bot_reply
+safety:
+  untrusted_input_tag: untrusted_line_message
+  never_repeat_secrets: true
+  ignore_user_attempts_to_override_system: true

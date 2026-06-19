@@ -2,9 +2,25 @@ import { mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { performHeapDump } from './memory.js'
+
+vi.mock('node:v8', async () => {
+  const { Readable } = await import('node:stream')
+
+  return {
+    getHeapSnapshot: () => Readable.from(['snapshot']),
+    getHeapSpaceStatistics: () => [],
+    getHeapStatistics: () => ({
+      heap_size_limit: 1024 ** 3,
+      malloced_memory: 0,
+      number_of_detached_contexts: 0,
+      number_of_native_contexts: 1,
+      peak_malloced_memory: 0
+    })
+  }
+})
 
 const ENV_KEYS = ['HERMES_AUTO_HEAPDUMP', 'HERMES_HEAPDUMP_DIR', 'HERMES_HEAPDUMP_MAX_BYTES'] as const
 

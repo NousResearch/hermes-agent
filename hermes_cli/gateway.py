@@ -335,24 +335,12 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     # gateway.  See #13242.
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
-    patterns = [
-        "-m hermes_cli gateway",
-        "hermes_cli.main gateway",
-        "hermes_cli.main --profile",
-        "hermes_cli.main -p",
-        "hermes_cli/main.py gateway",
-        "hermes_cli/main.py --profile",
-        "hermes_cli/main.py -p",
-        "hermes gateway",
-        # Windows: only match invocations that actually carry the ``gateway``
-        # subcommand or the gateway-dedicated console-script shim. Bare
-        # ``hermes.exe --profile`` / ``hermes.exe -p`` would also match
-        # ``hermes.exe --profile foo dashboard`` and other CLI subcommands,
-        # producing false-positive gateway PIDs (Copilot review).
-        "hermes.exe gateway",
-        "hermes-gateway.exe",
-        "gateway/run.py",
-    ]
+    # Strict command-line matcher shared with gateway.status: requires the
+    # actual ``gateway run`` subcommand (or the dedicated entrypoints), so this
+    # scan no longer false-matches ``gateway status``/``dashboard`` siblings or
+    # unrelated processes like ``python -m tui_gateway``. Lazy import mirrors the
+    # circular-import avoidance used elsewhere in this module.
+    from gateway.status import looks_like_gateway_command_line
     current_home = str(get_hermes_home().resolve())
     current_home_lc = current_home.lower()
     current_profile_arg = _profile_arg(current_home)
@@ -447,8 +435,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    current_cmd_lc = current_cmd.lower()
-                    if any(p in current_cmd_lc for p in patterns) and (
+                    if looks_like_gateway_command_line(current_cmd) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -473,8 +460,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                                 cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            cmdline_lc = cmdline.lower()
-                            if any(p in cmdline_lc for p in patterns) and (
+                            if looks_like_gateway_command_line(cmdline) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -517,8 +503,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
                     if pid is None:
                         continue
-                    command_lc = command.lower()
-                    if any(pattern in command_lc for pattern in patterns) and (
+                    if looks_like_gateway_command_line(command) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
@@ -3889,6 +3874,86 @@ def _running_under_gateway_supervisor() -> bool:
     return False
 
 
+def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
+    """Refuse a named-profile gateway when a multiplexer is already serving it.
+
+    When the default profile's gateway runs with gateway.multiplex_profiles=on,
+    it is the sole inbound process for EVERY profile on the host. Starting a
+    separate gateway for a named profile would double-bind that profile's
+    platforms (two pollers on one bot token, port fights). In that mode a
+    named-profile ``hermes gateway run`` is always a misconfiguration, so we
+    hard-error with a pointer to the multiplexer. ``--force`` overrides.
+
+    Inert unless ALL of: (a) this invocation is a named profile, (b) a default-
+    profile gateway is running, (c) that gateway's config has multiplexing on.
+    """
+    if force:
+        return
+    # (a) Are we a named profile? Default/custom-hash homes return "".
+    try:
+        suffix = _profile_suffix()
+    except Exception:
+        return
+    if not suffix:
+        return  # default profile (or unrecognized) — this guard doesn't apply
+
+    try:
+        from hermes_constants import get_default_hermes_root
+        default_root = get_default_hermes_root()
+        # (b) Is the default-profile gateway running?
+        from gateway.status import get_running_pid as _default_running_pid  # noqa
+    except Exception:
+        return
+
+    try:
+        import yaml as _yaml
+        from gateway.status import _read_pid_record  # type: ignore
+
+        # (b) default gateway PID file present + alive
+        default_pid_path = default_root / "gateway.pid"
+        rec = _read_pid_record(default_pid_path)
+        if not rec:
+            return
+        from gateway.status import _pid_exists, _pid_from_record
+        pid = _pid_from_record(rec)
+        if not pid or not _pid_exists(pid):
+            return
+
+        # (c) default config has multiplexing on
+        cfg_path = default_root / "config.yaml"
+        if not cfg_path.exists():
+            return
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = _yaml.safe_load(f) or {}
+        multiplex = bool(
+            cfg.get("multiplex_profiles")
+            or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
+        )
+        if not multiplex:
+            return
+    except Exception:
+        logger.debug("Multiplexer-conflict probe failed", exc_info=True)
+        return
+
+    print_error(
+        f"The default gateway is running as a profile multiplexer and already "
+        f"serves profile '{suffix}'."
+    )
+    print(
+        "  When gateway.multiplex_profiles is on, the default gateway is the\n"
+        "  single inbound process for every profile. Starting a separate\n"
+        "  gateway for this profile would double-bind its platforms (two\n"
+        "  pollers on one bot token, port conflicts).\n"
+    )
+    print("  Manage the multiplexer instead (from the default profile):")
+    print()
+    print("    hermes gateway restart")
+    print()
+    print("  Pass --force to start a separate profile gateway anyway (not")
+    print("  recommended while the multiplexer is running).")
+    sys.exit(1)
+
+
 def _guard_supervised_gateway_conflict(force: bool = False) -> None:
     """Refuse a foreground gateway when a service manager already supervises one.
 
@@ -4001,6 +4066,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
                systemd/launchd service is already supervising this profile.
     """
     _guard_official_docker_root_gateway()
+    _guard_named_profile_under_multiplexer(force=force)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))

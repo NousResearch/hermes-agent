@@ -40,6 +40,20 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{header}.{payload}.sig"
 
 
+class _FakeAnthropicStream:
+    def __init__(self, final_message):
+        self._final_message = final_message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get_final_message(self):
+        return self._final_message
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
@@ -1199,6 +1213,37 @@ class TestVisionClientFallback:
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
+
+    def test_anthropic_auxiliary_client_aggregates_stream_response(self):
+        from agent.auxiliary_client import AnthropicAuxiliaryClient
+
+        final_message = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="streamed aux response")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=3, output_tokens=4),
+        )
+        messages_api = SimpleNamespace(
+            stream=MagicMock(return_value=_FakeAnthropicStream(final_message)),
+            create=MagicMock(return_value="raw event-stream text"),
+        )
+        real_client = SimpleNamespace(messages=messages_api)
+        client = AnthropicAuxiliaryClient(
+            real_client,
+            "claude-sonnet-4-20250514",
+            "sk-test",
+            "https://sse-only.example/v1",
+        )
+
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": "summarize"}],
+            max_tokens=16,
+        )
+
+        messages_api.stream.assert_called_once()
+        messages_api.create.assert_not_called()
+        assert response.choices[0].message.content == "streamed aux response"
+        assert response.usage.prompt_tokens == 3
+        assert response.usage.completion_tokens == 4
 
 
 class TestAuxiliaryPoolAwareness:

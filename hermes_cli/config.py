@@ -1201,6 +1201,21 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
+    # Seconds to wait at agent-build time for in-flight MCP server discovery
+    # to finish before the agent snapshots its tool list.  MCP discovery runs
+    # in a background thread so a slow/dead server can't freeze startup; this
+    # bounds how long the first agent build blocks on it.  The wait returns
+    # the INSTANT discovery completes, so users with no MCP servers (the common
+    # case) or fast servers pay ~0s regardless of this value — the bound is
+    # only reached when a server is genuinely still connecting.  The old 0.75s
+    # default was a touch short for HTTP/OAuth servers on a cold connect; a
+    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
+    # only a turn-1 latency/UX knob: a server that misses this window is still
+    # picked up automatically on the next turn by the between-turns refresh
+    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
+    # small so a slow/dead server adds little to first-response latency.
+    "mcp_discovery_timeout": 1.5,
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -1592,6 +1607,14 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Seconds between prompt_toolkit redraws in the classic CLI when idle.
+        # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
+        # last-turn) ticking and keeps the bottom chrome alive during idle —
+        # without it prompt_toolkit stops repainting the status bar after a
+        # turn and it can go stale/disappear (#45592).
+        # Set 0 to disable the background refresh if it fights terminal
+        # auto-scroll in non-fullscreen mode on some emulators (#48309).
+        "cli_refresh_interval": 1.0,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,
@@ -2262,6 +2285,33 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Active cron SCHEDULER provider (Axis B — the trigger that decides
+        # WHEN a due job fires). Empty string = the built-in in-process 60s
+        # ticker (default). Name an installed provider (plugins/cron/<name>/ or
+        # $HERMES_HOME/plugins/<name>/) to relocate the trigger — e.g. "chronos",
+        # the NAS-mediated managed-cron provider for scale-to-zero deployments.
+        # An unknown or unavailable provider falls back to the built-in, so cron
+        # never loses its trigger.
+        "provider": "",
+        # Chronos (NAS-mediated managed cron) settings. Only consulted when
+        # provider == "chronos". All non-secret (URLs + the JWT audience): the
+        # agent holds NO external-scheduler credentials. For hosted agents, NAS
+        # sets these at provision time. The outbound provision call reuses the
+        # agent's existing Nous Portal token — there is no token key here.
+        "chronos": {
+            # NAS / portal base URL the agent calls to arm/cancel one-shots
+            # and that mints the inbound fire JWT (used as the expected issuer).
+            "portal_url": "https://portal.nousresearch.com",
+            # The agent's OWN publicly-reachable base URL for NAS→agent fires
+            # (NAS POSTs {callback_url}/api/cron/fire). Empty → Chronos is
+            # unavailable and the resolver falls back to the built-in ticker.
+            "callback_url": "",
+            # This agent's expected JWT audience (e.g. "agent:{instance_id}").
+            "expected_audience": "",
+            # NAS JWKS URL for verifying the inbound fire JWT's signature.
+            # Empty → the fire endpoint refuses all tokens (no unsigned decode).
+            "nas_jwks_url": "",
+        },
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
@@ -6394,12 +6444,38 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
+    # Managed scope: surface that some settings are administrator-pinned so the
+    # user understands why their config.yaml value may not be the effective one.
+    from hermes_cli import managed_scope
+
+    _managed_keys = managed_scope.managed_config_keys()
+    _managed_env = managed_scope.load_managed_env()
+    if _managed_keys or _managed_env:
+        _managed_dir = managed_scope.get_managed_dir()
+        print()
+        print(color(
+            f"  ⚷ Some settings are managed by your administrator ({_managed_dir}) "
+            f"and cannot be changed",
+            Colors.YELLOW,
+            Colors.BOLD,
+        ))
+        if _managed_keys:
+            print(color(
+                f"    Managed config keys: {', '.join(sorted(_managed_keys))}",
+                Colors.YELLOW,
+            ))
+        if _managed_env:
+            print(color(
+                f"    Managed env keys: {', '.join(sorted(_managed_env))}",
+                Colors.YELLOW,
+            ))
+
     # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))

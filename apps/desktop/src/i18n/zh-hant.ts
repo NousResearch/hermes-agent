@@ -677,6 +677,8 @@ export const zhHant = defineLocale({
       removedMessage: provider => `${provider} 已移除。`,
       failedRemove: provider => `無法移除 ${provider}`,
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
+      searchKeys: '搜尋提供方…',
+      noKeysMatch: '沒有符合的提供方。',
       loading: '正在載入提供方...'
     },
     sessions: {

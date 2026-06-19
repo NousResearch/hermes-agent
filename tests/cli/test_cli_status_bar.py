@@ -292,8 +292,10 @@ class TestCLIStatusBar:
     def test_input_rules_hide_while_resize_suppression_is_set(self):
         """When _status_bar_suppressed_after_resize is set, both rules hide.
 
-        Resize recovery owns the transient suppression flag. While it is set,
-        the live input rules should stay hidden.
+        See _recover_after_resize — column shrink reflows already-rendered
+        bars into scrollback, so we hide the separators while the reflow
+        settles, then clear the flag (either via the scheduled unsuppress
+        timer or the next submitted input).
         """
         cli_obj = _make_cli()
         cli_obj._status_bar_suppressed_after_resize = True
@@ -304,6 +306,48 @@ class TestCLIStatusBar:
         cli_obj._status_bar_suppressed_after_resize = False
         assert cli_obj._tui_input_rule_height("top", width=90) == 1
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_scheduled_unsuppress_clears_flag_and_repaints_without_input(self):
+        """The status bar returns during idle after a resize, without a keypress.
+
+        Regression: the suppression flag was only cleared on the next
+        *submitted* input, so a resize/reflow followed by idle left the bar
+        hidden indefinitely even while the refresh clock kept ticking. The
+        scheduled unsuppress timer must clear the flag and invalidate the app
+        on its own.
+        """
+        cli_obj = _make_cli()
+        cli_obj._status_bar_unsuppress_timer = None
+        cli_obj._status_bar_suppressed_after_resize = True
+        app = MagicMock()
+        app.loop = None  # force the synchronous _clear path
+
+        # Schedule with ~0 delay so the timer fires promptly under test.
+        cli_obj._schedule_status_bar_unsuppress(app, delay=0.01)
+        time.sleep(0.1)
+
+        assert cli_obj._status_bar_suppressed_after_resize is False
+        app.invalidate.assert_called()
+        # Bar chrome is visible again with no submitted input.
+        assert cli_obj._tui_input_rule_height("top", width=90) == 1
+
+    def test_scheduled_unsuppress_debounces_resize_storm(self):
+        """A fresh resize cancels the pending unsuppress and restarts it."""
+        cli_obj = _make_cli()
+        cli_obj._status_bar_unsuppress_timer = None
+        cli_obj._status_bar_suppressed_after_resize = True
+        app = MagicMock()
+        app.loop = None
+
+        # First schedule (long delay) then a second should cancel the first.
+        cli_obj._schedule_status_bar_unsuppress(app, delay=5.0)
+        first_timer = cli_obj._status_bar_unsuppress_timer
+        assert first_timer is not None
+        cli_obj._schedule_status_bar_unsuppress(app, delay=0.01)
+        assert first_timer is not cli_obj._status_bar_unsuppress_timer
+        assert not first_timer.is_alive() or first_timer.finished.is_set()
+        time.sleep(0.1)
+        assert cli_obj._status_bar_suppressed_after_resize is False
 
     def test_scrollback_box_width_returns_viewport_width(self):
         """Decorative scrollback boxes use the full viewport width.

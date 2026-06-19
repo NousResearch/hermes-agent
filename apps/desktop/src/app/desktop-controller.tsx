@@ -14,6 +14,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { storedSessionIdForNotification } from '../lib/session-ids'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -277,16 +278,20 @@ export function DesktopController() {
     }
   }, [])
 
-  // Notification click: the main process already focused the window; jump to its session.
+  // Notification click: the main process already focused the window; jump to its
+  // session. Notifications are tagged with the gateway *runtime* session id, but
+  // the chat route is keyed by the *stored* id — navigating with the runtime id
+  // resumes a non-existent stored session ("session not found") and strands the
+  // user. Translate runtime -> stored before navigating.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        navigate(sessionRoute(sessionId))
+        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current)))
       }
     })
 
     return () => unsubscribe?.()
-  }, [navigate])
+  }, [navigate, runtimeIdByStoredSessionIdRef])
 
   // Notification action button (Approve/Reject) — resolve in place, no navigation.
   useEffect(() => {

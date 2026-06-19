@@ -170,6 +170,44 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
+    def test_runs_start_command_before_resolving_fallback_client(self):
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "local-llama",
+                "base_url": "http://127.0.0.1:8081/v1",
+                "api_key": "local",
+                "start_command": "start-local-llama",
+                "start_timeout_seconds": 7,
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        events = []
+
+        def _start(*args, **kwargs):
+            events.append(("start", args, kwargs))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "ready"
+            result.stderr = ""
+            return result
+
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            events.append(("resolve", provider, model, kwargs))
+            return _mock_client("http://127.0.0.1:8081/v1", "local"), model
+
+        with (
+            patch("agent.chat_completion_helpers.subprocess.run", side_effect=_start),
+            patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert events[0][0] == "start"
+        assert events[1][0] == "resolve"
+        assert events[0][1][0] == "start-local-llama"
+        assert events[0][2]["timeout"] == 7
+        assert agent.base_url.rstrip("/") == "http://127.0.0.1:8081/v1"
+
     def test_second_fallback_works(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},

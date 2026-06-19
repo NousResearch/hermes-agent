@@ -1667,11 +1667,10 @@ function isShimLocked(shimPath) {
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
 // only signals the direct child, so on Windows a backend `hermes.exe` that
 // spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
-// gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
-// the whole tree synchronously. Windows-only: this is called solely from the
-// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
-// not a process-group leader — a POSIX negative-pgid kill would be meaningless
-// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
+// gateway) would survive and keep the venv shim / Electron tree locked.
+// taskkill /T /F reaps the whole tree synchronously. Windows-only: the backend
+// is NOT spawned detached (so it's not a process-group leader — a POSIX
+// negative-pgid kill would be meaningless here anyway).
 function forceKillProcessTree(pid) {
   if (!IS_WINDOWS) return
   if (!Number.isInteger(pid) || pid <= 0) return
@@ -6534,7 +6533,32 @@ function configureSpellChecker() {
   }
 }
 
-app.on('before-quit', () => {
+let quitBackendTeardownInProgress = false
+let quitBackendTeardownComplete = false
+
+function collectBackendChildrenForQuit() {
+  const children = []
+  if (hermesProcess) children.push(hermesProcess)
+  for (const entry of backendPool.values()) {
+    if (entry.process) children.push(entry.process)
+  }
+  return children
+}
+
+function isBackendChildRunning(child) {
+  return child && child.exitCode === null && child.signalCode === null
+}
+
+function forceKillWindowsBackendTrees(children) {
+  if (!IS_WINDOWS) return
+  for (const child of children) {
+    if (isBackendChildRunning(child) && Number.isInteger(child.pid)) {
+      forceKillProcessTree(child.pid)
+    }
+  }
+}
+
+function runBeforeQuitCleanup() {
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {
@@ -6561,6 +6585,31 @@ app.on('before-quit', () => {
     hermesProcess.kill('SIGTERM')
   }
   stopAllPoolBackends()
+}
+
+app.on('before-quit', event => {
+  const backendChildren = collectBackendChildrenForQuit()
+  runBeforeQuitCleanup()
+
+  if (
+    IS_WINDOWS &&
+    !quitBackendTeardownComplete &&
+    backendChildren.some(isBackendChildRunning)
+  ) {
+    event.preventDefault()
+    if (quitBackendTeardownInProgress) return
+
+    quitBackendTeardownInProgress = true
+    rememberLog('[quit] waiting for Windows backend process trees to exit')
+    // SIGTERM was sent above. Follow with taskkill while the direct backend PID
+    // still identifies its descendants; if the parent exits first, Windows can
+    // leave node/python grandchildren alive and holding update-time locks.
+    forceKillWindowsBackendTrees(backendChildren)
+    Promise.allSettled(backendChildren.map(child => waitForBackendExit(child))).finally(() => {
+      quitBackendTeardownComplete = true
+      app.quit()
+    })
+  }
 })
 
 app.on('window-all-closed', () => {

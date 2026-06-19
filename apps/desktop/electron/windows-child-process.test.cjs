@@ -28,14 +28,38 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
 
   requireHiddenChildOptions(source, "execFileSync(\n          'reg'")
-  requireHiddenChildOptions(source, 'execFileSync(pyExe')
-  requireHiddenChildOptions(source, 'spawn(resolveGitBinary()')
+  requireHiddenChildOptions(source, 'execFileSync(\n          pyExe')
+  requireHiddenChildOptions(source, 'spawn(\n      resolveGitBinary()')
   requireHiddenChildOptions(source, "execFileSync('taskkill'")
-  requireHiddenChildOptions(source, 'spawn(command, args')
+  requireHiddenChildOptions(source, 'spawn(\n        command')
   requireHiddenChildOptions(source, "spawn('curl'")
-  requireHiddenChildOptions(source, 'spawn(backend.command, backend.args')
-  requireHiddenChildOptions(source, 'hermesProcess = spawn(backend.command, backend.args')
-  requireHiddenChildOptions(source, "spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
+  requireHiddenChildOptions(source, 'spawn(\n    backend.command')
+  requireHiddenChildOptions(source, 'hermesProcess = spawn(\n      backend.command')
+  requireHiddenChildOptions(source, "spawn(\n        py,\n        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
+})
+
+test('Windows before-quit waits for backend process trees before exiting', () => {
+  const source = readElectronFile('main.cjs')
+  const index = source.indexOf("app.on('before-quit', event =>")
+  assert.notEqual(index, -1, 'missing before-quit lifecycle handler')
+
+  const helperIndex = source.indexOf('function forceKillWindowsBackendTrees(children)')
+  assert.notEqual(helperIndex, -1, 'missing Windows backend tree-kill helper')
+  const helper = source.slice(helperIndex, helperIndex + 500)
+  assert.match(helper, /isBackendChildRunning\(child\)/)
+  assert.match(helper, /forceKillProcessTree\(child\.pid\)/)
+
+  const snippet = source.slice(index, index + 1400)
+  assert.match(snippet, /collectBackendChildrenForQuit\(\)/)
+  assert.match(snippet, /event\.preventDefault\(\)/)
+  assert.match(snippet, /forceKillWindowsBackendTrees\(backendChildren\)/)
+  assert.match(snippet, /waitForBackendExit\(child\)/)
+  assert.ok(
+    snippet.indexOf('forceKillWindowsBackendTrees(backendChildren)') < snippet.indexOf('waitForBackendExit(child)'),
+    'backend trees must be killed while parent PIDs still identify descendants'
+  )
+  assert.match(snippet, /quitBackendTeardownComplete = true/)
+  assert.match(snippet, /app\.quit\(\)/)
 })
 
 test('intentional or interactive desktop child processes stay documented', () => {

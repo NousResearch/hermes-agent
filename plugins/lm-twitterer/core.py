@@ -203,6 +203,7 @@ class Settings:
     whitelist_file: Path
     replied_ids_file: Path
     log_file: Path
+    media_dir: Path | None = None
     memory_bridge_enabled: bool = True
     memory_db: Path | None = None
     memory_recall_limit: int = 5
@@ -280,6 +281,7 @@ def settings() -> Settings:
         whitelist_file=whitelist_file,
         replied_ids_file=replied_ids_file,
         log_file=state_dir / "activity.jsonl",
+        media_dir=state_dir / "media",
         memory_bridge_enabled=_bool_env("LM_TWITTERER_MEMORY_BRIDGE", True),
         memory_db=Path(
             _env("LM_TWITTERER_MEMORY_DB", str(home / "ebbinghaus_memory.db"))
@@ -437,6 +439,7 @@ def _verify_credentials_graphql(cfg: Settings, *, v11_http_status: int | None = 
 
 def _ensure_state(cfg: Settings) -> None:
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.media_dir or (cfg.state_dir / "media")).mkdir(parents=True, exist_ok=True)
     if not cfg.whitelist_file.exists():
         cfg.whitelist_file.write_text(
             "# One screen name per line, without @. Lines starting with # are comments.\n",
@@ -873,12 +876,30 @@ def _safe_post_create_tweet(
     )
 
 
-def _coerce_media_paths(media_paths: Iterable[str | os.PathLike[str]] | None) -> list[Path]:
+def _allowed_media_root(cfg: Settings) -> Path:
+    return (cfg.media_dir or (cfg.state_dir / "media")).expanduser().resolve(strict=False)
+
+
+def _coerce_media_paths(
+    media_paths: Iterable[str | os.PathLike[str]] | None,
+    cfg: Settings,
+) -> list[Path]:
+    allowed_root = _allowed_media_root(cfg)
     paths: list[Path] = []
     for raw in media_paths or []:
         path = Path(raw).expanduser()
-        if not path.exists() or not path.is_file():
+        try:
+            path = path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"media file not found: {path}") from exc
+        if not path.is_file():
             raise FileNotFoundError(f"media file not found: {path}")
+        try:
+            path.relative_to(allowed_root)
+        except ValueError as exc:
+            raise PermissionError(
+                f"media file must be under lm-twitterer media dir: {allowed_root}"
+            ) from exc
         paths.append(path)
     return paths
 
@@ -1014,7 +1035,7 @@ def post(
         return {"ok": False, "error": topic_error}
     media: list[Path]
     try:
-        media = _coerce_media_paths(media_paths)
+        media = _coerce_media_paths(media_paths, cfg)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
     tweet_text = (text or "").strip() or generate_post_text(topic, cfg)
@@ -1317,6 +1338,7 @@ def status() -> dict[str, Any]:
     return {
         "ok": True,
         "state_dir": str(cfg.state_dir),
+        "media_dir": str(_allowed_media_root(cfg)),
         "whitelist_file": str(cfg.whitelist_file),
         "replied_ids_file": str(cfg.replied_ids_file),
         "bot_screen_name_set": bool(cfg.bot_screen_name),

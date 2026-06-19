@@ -51,6 +51,7 @@ def make_settings(core, tmp_path, **overrides):
         "whitelist_file": state_dir / "whitelist.txt",
         "replied_ids_file": state_dir / "replied_ids.txt",
         "log_file": state_dir / "activity.jsonl",
+        "media_dir": state_dir / "media",
         "memory_bridge_enabled": False,
         "memory_db": tmp_path / "ebbinghaus_memory.db",
         "memory_recall_limit": 5,
@@ -444,7 +445,8 @@ def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, 
     plugin = load_plugin()
     core = plugin.core
     cfg = make_settings(core, tmp_path)
-    media = tmp_path / "clip.mp4"
+    media = cfg.media_dir / "clip.mp4"
+    media.parent.mkdir(parents=True)
     media.write_bytes(b"fake-mp4")
     def _boom(*_args, **_kwargs):
         raise AssertionError("LLM should not run when explicit text is supplied")
@@ -484,6 +486,25 @@ def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, 
     assert result["url"] == "https://x.com/i/web/status/999"
     assert result["media_ids"] == ["12345"]
     assert uploaded == ["clip.mp4"]
+
+
+def test_post_rejects_media_paths_outside_plugin_media_dir(tmp_path):
+    plugin = load_plugin()
+    core = plugin.core
+    cfg = make_settings(core, tmp_path)
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"not-for-posting")
+
+    result = core.post(
+        "",
+        text="Do not upload this 縺ｯ縺上≠ #hermesagent",
+        media_paths=[str(outside)],
+        dry_run=False,
+        cfg=cfg,
+    )
+
+    assert result["ok"] is False
+    assert "media file must be under lm-twitterer media dir" in result["error"]
 
 
 def test_dry_run_post_is_written_to_ebbinghaus_memory_db(tmp_path):

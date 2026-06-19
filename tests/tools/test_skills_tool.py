@@ -1370,3 +1370,19 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+def test_skill_view_prefers_local_duplicate_same_relative_path(tmp_path, monkeypatch):
+    local_root = tmp_path / "local"
+    external_root = tmp_path / "external"
+    _make_skill(local_root, "dupe", body="LOCAL COPY", category="software-development")
+    _make_skill(external_root, "dupe", body="EXTERNAL COPY", category="software-development")
+
+    monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", local_root)
+    monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", lambda: [external_root])
+
+    data = json.loads(skill_view("software-development/dupe"))
+
+    assert data["success"] is True
+    assert "LOCAL COPY" in data["content"]
+    assert "EXTERNAL COPY" not in data["content"]
+

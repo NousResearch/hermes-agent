@@ -8,6 +8,7 @@ from tools.memory_tool import (
     MemoryStore,
     memory_tool,
     _scan_memory_content,
+    sanitize_memory_scope,
     MEMORY_SCHEMA,
 )
 
@@ -251,6 +252,54 @@ class TestScanMemoryContent:
         assert _scan_memory_content("Check .hermes/config.yaml for settings") is None
         assert _scan_memory_content("Read .hermes/SOUL.md for agent personality") is None
         assert _scan_memory_content("The .hermes/config.yaml file contains runtime options") is None
+
+
+# =========================================================================
+# Per-user memory isolation (incident 2026-06-19: multi-tenant leak)
+# =========================================================================
+
+class TestMemoryScopeIsolation:
+    """Regression guard: in a single multi-tenant process, one user's
+    MEMORY.md / USER.md must NEVER leak into another user's store. The
+    in-app Super Agent multiplexes every Avocado user through one Hermes
+    process, so the built-in store must be scoped per x-avocado-user-id."""
+
+    def test_scoped_stores_are_isolated(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        alice = MemoryStore(user_scope="user_alice")
+        bob = MemoryStore(user_scope="user_bob")
+        alice.load_from_disk()
+        bob.load_from_disk()
+
+        alice.add("user", "Name: Alice, founder of Avocado AI")
+
+        # A fresh read of Bob's store must NOT see Alice's profile.
+        bob.load_from_disk()
+        assert bob.user_entries == []
+        assert "Alice" not in (bob.format_for_system_prompt("user") or "")
+
+        # Files land in separate per-user subdirectories.
+        assert (tmp_path / "user_alice" / "USER.md").exists()
+        assert not (tmp_path / "user_bob" / "USER.md").exists()
+
+    def test_unscoped_store_uses_shared_dir(self, tmp_path, monkeypatch):
+        """No scope (single-tenant deploys / Telegram fleet) keeps the
+        legacy shared dir, so existing deployments are unaffected."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore()
+        s.load_from_disk()
+        s.add("memory", "Shared note")
+        assert (tmp_path / "MEMORY.md").exists()
+
+    def test_sanitize_blocks_path_traversal(self):
+        # An attacker-controlled user id must not escape the memories dir.
+        assert "/" not in (sanitize_memory_scope("../../etc/passwd") or "")
+        assert "\\" not in (sanitize_memory_scope("..\\..\\win") or "")
+        assert sanitize_memory_scope("user_2abcDEF-09") == "user_2abcDEF-09"
+        assert sanitize_memory_scope("") is None
+        assert sanitize_memory_scope(None) is None
+        assert sanitize_memory_scope("...") is None
 
 
 # =========================================================================

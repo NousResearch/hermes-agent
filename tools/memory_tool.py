@@ -26,6 +26,7 @@ Design:
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -55,6 +56,22 @@ logger = logging.getLogger(__name__)
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
+
+
+def sanitize_memory_scope(scope: Optional[str]) -> Optional[str]:
+    """Make a per-user memory scope safe to use as a directory name.
+
+    The scope (e.g. an Avocado/Clerk end-user id from ``x-avocado-user-id``)
+    becomes a sub-directory under ``memories/``, so it MUST NOT be able to
+    contain path separators or traversal sequences. Keep only filesystem-safe
+    characters; everything else collapses to ``_``. Returns None when there is
+    no usable scope (callers then fall back to the single shared dir, which is
+    correct for single-tenant profile deployments).
+    """
+    if not scope:
+        return None
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", scope.strip()).strip("._")
+    return cleaned or None
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -121,13 +138,36 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        user_scope: Optional[str] = None,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Per-user memory isolation. When set, MEMORY.md / USER.md live under
+        # ``memories/<user_scope>/`` instead of the shared ``memories/`` dir.
+        # This is REQUIRED for multi-tenant deployments (the in-app Super Agent
+        # multiplexes every Avocado user through one process via the
+        # x-avocado-user-id header); without it one user's profile/memory leaks
+        # into every other user's system prompt. None = shared dir, which is
+        # correct for single-tenant profile deployments (e.g. the Telegram fleet,
+        # one deploy per customer).
+        self._user_scope: Optional[str] = sanitize_memory_scope(user_scope)
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+
+    def _mem_dir(self) -> Path:
+        """The directory this store reads from and writes to.
+
+        Scoped per-user when ``_user_scope`` is set; otherwise the shared dir.
+        Every read AND write path goes through here so they can never diverge.
+        """
+        base = get_memory_dir()
+        return base / self._user_scope if self._user_scope else base
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -147,7 +187,7 @@ class MemoryStore:
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
         """
-        mem_dir = get_memory_dir()
+        mem_dir = self._mem_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
@@ -242,9 +282,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = self._mem_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -269,7 +308,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        self._mem_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:

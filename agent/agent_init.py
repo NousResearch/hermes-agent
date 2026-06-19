@@ -1116,9 +1116,23 @@ def init_agent(
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
+                # Per-user memory isolation for multi-tenant deployments. The
+                # in-app Super Agent multiplexes every Avocado end user through
+                # ONE process and pins identity via the x-avocado-user-id
+                # header, which the API server surfaces as gateway_session_key
+                # "avocado:<user_id>". Scope the built-in MEMORY.md / USER.md to
+                # that user so one user's profile/memory can't leak into
+                # another's system prompt. Single-tenant deployments (profile
+                # CLI, Telegram fleet: one deploy per customer) carry no such
+                # prefix and keep the shared dir, so their behavior is unchanged.
+                _mem_scope = None
+                _gsk = getattr(agent, "_gateway_session_key", None)
+                if isinstance(_gsk, str) and _gsk.startswith("avocado:"):
+                    _mem_scope = _gsk.split(":", 1)[1]
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    user_scope=_mem_scope,
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

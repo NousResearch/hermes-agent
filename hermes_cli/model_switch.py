@@ -1207,6 +1207,7 @@ def list_authenticated_providers(
     force_fresh_nous_tier: bool = False,
     max_models: int | None = None,
     current_model: str = "",
+    refresh: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1227,6 +1228,12 @@ def list_authenticated_providers(
     ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
     account-sensitive flows. UI picker opens should leave it false so they do
     not block on fresh Portal/account checks every time.
+
+    ``refresh`` busts the per-provider model-id disk cache
+    (``provider_models_cache.json``) up front so every row re-fetches its
+    live catalog. Use for an explicit user-triggered "refresh models" action
+    (e.g. the desktop picker's refresh control); leave false for normal picker
+    opens so they stay snappy on the 1h cache.
     """
     import os
     from agent.models_dev import (
@@ -1238,8 +1245,20 @@ def list_authenticated_providers(
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
-        get_curated_nous_model_ids,
+        clear_provider_models_cache, get_curated_nous_model_ids,
     )
+
+    # Explicit refresh: drop every provider's cached model-id list so the
+    # cached_provider_model_ids() calls below all re-fetch live. Without this
+    # a stale 1h cache can fall back to the curated static list when its live
+    # fetch later fails, silently dropping live-only models (e.g. OpenCode
+    # Zen's free tier) the user had seen before.
+    if refresh:
+        try:
+            clear_provider_models_cache()
+        except Exception:
+            pass
+
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)

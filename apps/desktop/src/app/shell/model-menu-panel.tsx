@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
@@ -62,6 +62,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const copy = t.shell.modelMenu
   const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+  const queryClient = useQueryClient()
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
   // the parent to rebuild the menu content (which would close the dropdown).
@@ -109,6 +111,38 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   // scopes the switch to that session; with none it's UI state shipped on the
   // next session.create (see selectModel). The default lives in Settings → Model.
   const switchTo = (model: string, provider: string) => onSelectModel({ model, provider })
+
+  // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
+  // backend busts its 1h provider-model disk cache and re-pulls each provider's
+  // live list. Fixes live-only models (e.g. OpenCode Zen free tier) vanishing
+  // when the cache expires and falls back to the curated static list.
+  const refreshModels = async () => {
+    if (refreshing) {
+      return
+    }
+
+    setRefreshing(true)
+
+    try {
+      const queryKey = ['model-options', activeSessionId || 'global']
+
+      const next =
+        gateway && activeSessionId
+          ? await gateway.request<ModelOptionsResponse>('model.options', {
+              session_id: activeSessionId,
+              refresh: true
+            })
+          : await getGlobalModelOptions({ refresh: true })
+
+      queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
+    } catch {
+      // Network/backend hiccup — fall back to a plain invalidate so the next
+      // open re-fetches (still cached, but no worse than before).
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   // Selecting a model row restores that model's remembered preset onto the
   // session (effort/fast), gated by capability. Unset → Hermes defaults.
@@ -267,6 +301,18 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       )}
 
       <DropdownMenuSeparator className="mx-0" />
+
+      <DropdownMenuItem
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+        disabled={refreshing}
+        onSelect={event => {
+          event.preventDefault()
+          void refreshModels()
+        }}
+      >
+        <Codicon className={cn('mr-1.5', refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+        {copy.refreshModels}
+      </DropdownMenuItem>
 
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}

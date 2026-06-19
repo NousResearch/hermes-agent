@@ -1712,6 +1712,7 @@ export const zh: Translations = {
       search: '搜索模型',
       noModels: '未找到模型',
       editModels: '编辑模型…',
+      refreshModels: '刷新模型',
       fast: '快速',
       medium: '中'
     },

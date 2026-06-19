@@ -660,10 +660,10 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   })
 }
 
-export function getGlobalModelOptions(): Promise<ModelOptionsResponse> {
+export function getGlobalModelOptions(opts?: { refresh?: boolean }): Promise<ModelOptionsResponse> {
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
-    path: '/api/model/options'
+    path: opts?.refresh ? '/api/model/options?refresh=1' : '/api/model/options'
   })
 }
 

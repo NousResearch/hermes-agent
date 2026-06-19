@@ -1,4 +1,9 @@
-# nix/nixosModules.nix — NixOS module for hermes-agent
+# nix/module.nix — Standalone, flake-free NixOS module for hermes-agent
+#
+# Importable from plain Nix:  imports = [ "${hermesSrc}/nix/module.nix" ];
+# The default package resolves to `pkgs.hermes-agent`, so apply the overlay
+# (nix/overlay.nix) to your nixpkgs. The flake's nixosModules.default wires the
+# overlay automatically, so existing flake users need no changes.
 #
 # Two modes:
 #   container.enable = false (default) → native systemd service
@@ -23,8 +28,7 @@
 #     environmentFiles = [ config.sops.secrets."hermes/env".path ];
 #   };
 #
-{ inputs, ... }: {
-  flake.nixosModules.default = { config, lib, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
   let
     cfg = config.services.hermes-agent;
@@ -32,7 +36,7 @@
       if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ]
       then cfg.package
       else cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
-    hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+    hermes-agent = pkgs.hermes-agent;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
     deepConfigType = lib.types.mkOptionType {
@@ -1006,5 +1010,4 @@
         };
       })
     ]);
-  };
-}
+  }

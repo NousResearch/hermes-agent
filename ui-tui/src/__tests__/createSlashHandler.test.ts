@@ -2,17 +2,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { DASHBOARD_EXIT_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+
+// DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
+// so toggling process.env in a test body can't move it. Mock just that one
+// export (everything else stays real) and flip the holder per test.
+const envState = { dashboardTuiMode: false }
+vi.mock('../config/env.js', async importActual => {
+  const actual = await importActual<typeof import('../config/env.js')>()
+
+  return {
+    ...actual,
+    get DASHBOARD_TUI_MODE() {
+      return envState.dashboardTuiMode
+    }
+  }
+})
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
-    delete process.env.HERMES_TUI_INLINE
-    delete process.env.HERMES_HOME
-    delete process.env.HERMES_WRITE_SAFE_ROOT
-    delete process.env.HERMES_DISABLE_LAZY_INSTALLS
+    envState.dashboardTuiMode = false
   })
 
   it('opens the unified sessions overlay for /resume', () => {
@@ -73,25 +86,17 @@ describe('createSlashHandler', () => {
   })
 
   it('keeps hosted dashboard chat alive for /exit', () => {
-    process.env.HERMES_TUI_INLINE = '1'
-    process.env.HERMES_HOME = '/opt/data/profiles/worker'
-    process.env.HERMES_WRITE_SAFE_ROOT = '/opt/data'
-    process.env.HERMES_DISABLE_LAZY_INSTALLS = '1'
+    envState.dashboardTuiMode = true
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/exit')).toBe(true)
     expect(ctx.session.die).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(
-      'exit is disabled in hosted dashboard chat — use /new to start a fresh session'
-    )
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
   })
 
   it('keeps /quit available outside hosted dashboard chat', () => {
-    process.env.HERMES_TUI_INLINE = '1'
-    process.env.HERMES_HOME = '/Users/example/.hermes'
-    process.env.HERMES_WRITE_SAFE_ROOT = '/Users/example/.hermes'
-    process.env.HERMES_DISABLE_LAZY_INSTALLS = '1'
+    envState.dashboardTuiMode = false
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)

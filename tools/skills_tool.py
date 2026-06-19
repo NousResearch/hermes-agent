@@ -633,6 +633,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     skills = []
     seen_names: set = set()
+    # 去重策略：dirs_to_scan 已按优先级排列
+    # SKILLS_DIR 优先级最高，external_dirs 按 config 顺序
+    # 如果同一技能目录名已在更高优先级目录中出现，跳过
+    seen_dirs: set = set()
 
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -645,6 +649,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            # 目录级去重：同一技能目录名已在高优先级目录中出现则跳过
+            dir_name = skill_md.parent.name
+            if dir_name in seen_dirs:
+                continue
+            seen_dirs.add(dir_name)
+
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 

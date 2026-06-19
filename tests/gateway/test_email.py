@@ -1383,5 +1383,77 @@ class TestConnectSmtp(unittest.TestCase):
         self.assertIs(_socket.getaddrinfo, original_getaddrinfo)
 
 
+class TestLoginUsernameSeparation(unittest.TestCase):
+    """IMAP/SMTP login username can differ from the From address.
+
+    Some mail servers expect a login username distinct from the email
+    address used in the From header — e.g. a short-form Dovecot/IMAP login,
+    a Google Workspace mailbox, or a catch-all setup. EMAIL_IMAP_USERNAME /
+    EMAIL_SMTP_USERNAME override the login username while the From header
+    stays EMAIL_ADDRESS. Both default to EMAIL_ADDRESS so existing
+    deployments are unaffected.
+    """
+
+    def _make_adapter(self, extra_env=None):
+        from gateway.config import PlatformConfig
+        env = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }
+        if extra_env:
+            env.update(extra_env)
+        # clear=True so an ambient EMAIL_*_USERNAME can't leak into the
+        # "defaults" assertions.
+        with patch.dict(os.environ, env, clear=True):
+            from gateway.platforms.email import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_usernames_default_to_address_when_unset(self):
+        """Unset overrides → login username equals the From address."""
+        adapter = self._make_adapter()
+        self.assertEqual(adapter._imap_username, "hermes@test.com")
+        self.assertEqual(adapter._smtp_username, "hermes@test.com")
+
+    def test_username_overrides_applied(self):
+        """Set overrides → usernames take the override; From address unchanged."""
+        adapter = self._make_adapter({
+            "EMAIL_IMAP_USERNAME": "imapuser",
+            "EMAIL_SMTP_USERNAME": "smtpuser",
+        })
+        self.assertEqual(adapter._imap_username, "imapuser")
+        self.assertEqual(adapter._smtp_username, "smtpuser")
+        self.assertEqual(adapter._address, "hermes@test.com")
+
+    def test_imap_polling_uses_imap_username(self):
+        """The IMAP polling path must log in with EMAIL_IMAP_USERNAME, not the address."""
+        adapter = self._make_adapter({"EMAIL_IMAP_USERNAME": "imapuser"})
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        mock_imap.login.assert_called_once_with("imapuser", "secret")
+
+    def test_send_logs_in_as_smtp_username_but_from_is_address(self):
+        """A sent email authenticates as EMAIL_SMTP_USERNAME but From = EMAIL_ADDRESS."""
+        import asyncio
+        adapter = self._make_adapter({"EMAIL_SMTP_USERNAME": "smtpuser"})
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(adapter.send("user@test.com", "Hello"))
+
+        self.assertTrue(result.success)
+        mock_server.login.assert_called_once_with("smtpuser", "secret")
+        send_call = mock_server.send_message.call_args[0][0]
+        self.assertEqual(send_call["From"], "hermes@test.com")
+
+
 if __name__ == "__main__":
     unittest.main()

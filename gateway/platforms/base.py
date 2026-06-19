@@ -145,6 +145,20 @@ def utf16_len(s: str) -> int:
     return len(s.encode("utf-16-le")) // 2
 
 
+def utf16_slice(s: str, offset: int, length: int) -> str:
+    """Extract a substring by UTF-16 code-unit ``offset``/``length``.
+
+    Platform message entities (Telegram ``MessageEntity``, Signal styles, …)
+    address text in UTF-16 code units, not Python code-points. Slicing the
+    ``str`` directly with those values (``s[offset:offset+length]``) misaligns
+    as soon as a non-BMP character (emoji, CJK Ext-B, …) precedes the span,
+    because Python counts it as one index while the platform counts it as two.
+    Encode to UTF-16, slice on code-unit boundaries, then decode back.
+    """
+    u = s.encode("utf-16-le")
+    return u[offset * 2: (offset + length) * 2].decode("utf-16-le", errors="ignore")
+
+
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     """Return the longest prefix of *s* whose UTF-16 length ≤ *limit*.
 

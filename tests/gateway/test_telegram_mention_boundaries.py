@@ -31,6 +31,18 @@ def _mention_entity(text, mention="@hermes_bot"):
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
 
 
+def _mention_entity_utf16(text, mention="@hermes_bot"):
+    """Build a MENTION entity using UTF-16 code-unit coordinates, the way
+    Telegram's server actually reports them (offsets shift past non-BMP chars)."""
+    from gateway.platforms.base import utf16_len
+    cp_index = text.index(mention)
+    return SimpleNamespace(
+        type="mention",
+        offset=utf16_len(text[:cp_index]),
+        length=utf16_len(mention),
+    )
+
+
 def _text_mention_entity(offset, length, user_id):
     """Build a TEXT_MENTION entity (used when the target user has no public @handle)."""
     return SimpleNamespace(
@@ -78,6 +90,15 @@ class TestRealMentionsAreDetected:
         adapter = _make_adapter()
         caption = "photo for @hermes_bot"
         msg = _message(caption=caption, caption_entities=[_mention_entity(caption)])
+        assert adapter._message_mentions_bot(msg) is True
+
+    def test_mention_after_leading_emoji(self):
+        # A non-BMP char before the mention shifts the UTF-16 entity offset past
+        # what Python code-point indexing expects. Code-point slicing would miss
+        # the mention and the bot would ignore a message that @-addressed it.
+        adapter = _make_adapter()
+        text = "😀 @hermes_bot can you help?"
+        msg = _message(text=text, entities=[_mention_entity_utf16(text)])
         assert adapter._message_mentions_bot(msg) is True
 
     def test_text_mention_entity_targets_bot(self):

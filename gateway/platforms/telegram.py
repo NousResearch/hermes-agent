@@ -81,6 +81,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
+    utf16_slice,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -5444,7 +5445,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 if offset < 0 or length <= 0:
                     continue
 
-                entity_text = source_text[offset:offset + length].strip()
+                # Entity offset/length are UTF-16 code units; slice accordingly
+                # so a leading emoji/non-BMP char can't misalign the span.
+                entity_text = utf16_slice(source_text, offset, length).strip()
                 if entity_type == "mention":
                     handle = entity_text.lstrip("@").lower()
                     if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
@@ -5499,7 +5502,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     length = int(getattr(entity, "length", 0))
                     if offset < 0 or length <= 0:
                         continue
-                    if source_text[offset:offset + length].strip().lower() == expected:
+                    # UTF-16 code-unit offsets: a leading emoji would otherwise
+                    # shift the slice and hide a real @mention of the bot.
+                    if utf16_slice(source_text, offset, length).strip().lower() == expected:
                         return True
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
@@ -5519,7 +5524,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     length = int(getattr(entity, "length", 0))
                     if offset < 0 or length <= 0:
                         continue
-                    command_text = source_text[offset:offset + length]
+                    command_text = utf16_slice(source_text, offset, length)
                     at_index = command_text.find("@")
                     if at_index < 0:
                         continue

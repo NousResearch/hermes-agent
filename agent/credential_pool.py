@@ -823,6 +823,11 @@ class CredentialPool:
                     _store_provider_state(auth_store, "nous", state, set_active=False)
 
                 elif self.provider == "openai-codex":
+                    # Check BEFORE _store_provider_state modifies auth_store —
+                    # once we write the codex block into the profile store, the
+                    # profile looks like it has its own block and the check
+                    # would always return True.
+                    write_through_to_root = not auth_mod._profile_has_own_codex_state(auth_store)
                     state = _load_provider_state(auth_store, "openai-codex")
                     if not isinstance(state, dict):
                         return
@@ -835,8 +840,17 @@ class CredentialPool:
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
                     _store_provider_state(auth_store, "openai-codex", state, set_active=False)
+                    # Multi-profile write-through (#48415): when this profile
+                    # lacks its own openai-codex block, it resolved the grant
+                    # from the root fallback. The rotated refresh token must
+                    # also land in root, or sibling profiles reading root's
+                    # stale grant die with refresh_token_reused.
+                    if write_through_to_root:
+                        auth_mod._write_through_codex_to_global_root(state)
 
                 elif self.provider == "xai-oauth":
+                    # Same pre-save check as openai-codex above.
+                    write_through_to_root = not auth_mod._profile_has_own_xai_oauth_state(auth_store)
                     state = _load_provider_state(auth_store, "xai-oauth")
                     if not isinstance(state, dict):
                         return
@@ -849,6 +863,11 @@ class CredentialPool:
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
                     _store_provider_state(auth_store, "xai-oauth", state, set_active=False)
+                    # Multi-profile write-through (#43589): mirror the same
+                    # pattern for xAI — a profile reading root's grant via
+                    # fallback must push rotated tokens back to root.
+                    if write_through_to_root:
+                        auth_mod._write_through_xai_oauth_to_global_root(state)
 
                 else:
                     return

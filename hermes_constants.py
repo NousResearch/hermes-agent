@@ -254,6 +254,9 @@ def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
     root = home or get_hermes_home()
     dirs = [root / "node"]
     bin_dir = root / "node" / "bin"
+    # NOTE: keep this ordering in sync with hermesManagedNodePathEntries() in
+    # apps/desktop/electron/main.cjs — the Electron main process is Node and
+    # cannot import this module, so the platform-ordering rule is mirrored there.
     if sys.platform == "win32":
         return dirs + [bin_dir]
     return [bin_dir] + dirs
@@ -276,8 +279,9 @@ def _candidate_node_command_names(command: str) -> list[str]:
 
 def find_hermes_node_executable(command: str) -> str | None:
     """Return a Hermes-managed Node/npm executable path, if installed."""
+    names = _candidate_node_command_names(command)
     for directory in iter_hermes_node_dirs():
-        for name in _candidate_node_command_names(command):
+        for name in names:
             candidate = directory / name
             if candidate.is_file() and (
                 sys.platform == "win32" or os.access(candidate, os.X_OK)

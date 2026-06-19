@@ -270,6 +270,9 @@ function resolveHermesHome() {
 const HERMES_HOME = resolveHermesHome()
 
 function hermesManagedNodePathEntries() {
+  // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
+  // hermes_constants.py — this Node main process cannot import the Python
+  // module, so the platform-ordering rule is mirrored here.
   const root = path.join(HERMES_HOME, 'node')
   const bin = path.join(root, 'bin')
   const entries = IS_WINDOWS ? [root, bin] : [bin, root]

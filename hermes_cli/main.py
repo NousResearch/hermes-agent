@@ -5407,7 +5407,8 @@ def cmd_gui(args: argparse.Namespace):
 
     from hermes_constants import find_node_executable, with_hermes_node_path
 
-    env = with_hermes_node_path(os.environ.copy())
+    # with_hermes_node_path() copies os.environ when called with no arg.
+    env = with_hermes_node_path()
     if getattr(args, "fake_boot", False):
         env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
     if getattr(args, "ignore_existing", False):

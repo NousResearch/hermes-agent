@@ -12,7 +12,7 @@ Verifies that:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -147,6 +147,17 @@ class TestRunConversationCodexPath:
         final = [m for m in msgs if m.get("role") == "assistant"
                  and m.get("content") == "echo: hello"]
         assert final, f"expected final assistant message in {msgs}"
+
+    def test_projected_messages_are_synced_to_external_memory(self, fake_session):
+        agent = _make_codex_agent()
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        agent._memory_manager.sync_all.assert_called_once()
+        assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
 
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across

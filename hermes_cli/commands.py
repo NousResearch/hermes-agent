@@ -215,6 +215,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("credits", "Show Nous credit balance and top up", "Info"),
+    CommandDef("billing", "Manage Nous terminal billing — buy credits, auto-reload, limits", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -1053,8 +1054,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
+#   - billing: the terminal-billing surface (buy/auto-reload/limit); /hermes billing.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "debug"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

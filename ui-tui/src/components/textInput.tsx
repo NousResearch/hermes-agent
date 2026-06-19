@@ -359,6 +359,13 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
     return false
   }
 
+  // tmux adds a PTY multiplexing layer that desyncs stdout.write() cursor
+  // advances from its internal cursor model, causing cursor drift and ghost
+  // whitespace under the fast-echo bypass path.
+  if ((env.TMUX ?? '').trim().length > 0) {
+    return false
+  }
+
   // Termux terminals are especially sensitive to bypass-path cursor drift and
   // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
   // off by default in Termux mode; allow explicit opt-in for local debugging.

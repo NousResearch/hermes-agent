@@ -512,6 +512,14 @@ _OPENVIKING_RECALL_TOOL_NAMES = {
     BROWSE_SCHEMA["name"],
 }
 
+# Canonical tool_status values emitted in OpenViking batch tool parts.
+_TOOL_STATUS_COMPLETED = "completed"
+_TOOL_STATUS_ERROR = "error"
+_TOOL_STATUS_PENDING = "pending"
+# Inbound status aliases (from varied tool-result shapes) -> canonical above.
+_TOOL_STATUS_ERROR_ALIASES = {"error", "failed", "failure"}
+_TOOL_STATUS_COMPLETED_ALIASES = {"completed", "complete", "success", "succeeded"}
+
 
 def _zip_directory(dir_path: Path) -> Path:
     """Create a temporary zip file containing a directory tree."""
@@ -2429,10 +2437,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
     @classmethod
     def _tool_result_status(cls, message: Dict[str, Any]) -> str:
         raw_status = str(message.get("status") or message.get("tool_status") or "").lower()
-        if raw_status in {"error", "failed", "failure"}:
-            return "error"
-        if raw_status in {"completed", "complete", "success", "succeeded"}:
-            return "completed"
+        if raw_status in _TOOL_STATUS_ERROR_ALIASES:
+            return _TOOL_STATUS_ERROR
+        if raw_status in _TOOL_STATUS_COMPLETED_ALIASES:
+            return _TOOL_STATUS_COMPLETED
 
         text = cls._message_text(message.get("content")).strip()
         if text:
@@ -2444,13 +2452,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 status = str(parsed.get("status") or "").lower()
                 exit_code = parsed.get("exit_code")
                 if (
-                    status in {"error", "failed", "failure"}
+                    status in _TOOL_STATUS_ERROR_ALIASES
                     or parsed.get("success") is False
                     or bool(parsed.get("error"))
                     or (isinstance(exit_code, int) and exit_code != 0)
                 ):
-                    return "error"
-        return "completed"
+                    return _TOOL_STATUS_ERROR
+
+        return _TOOL_STATUS_COMPLETED
 
     @classmethod
     def _messages_to_openviking_batch(
@@ -2562,7 +2571,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                         "tool_id": tool_id,
                         "tool_name": tool_name,
                         "tool_input": tool_input,
-                        "tool_status": "pending",
+                        "tool_status": _TOOL_STATUS_PENDING,
                     })
 
             if parts:

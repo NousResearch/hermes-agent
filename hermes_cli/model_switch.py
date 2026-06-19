@@ -879,6 +879,53 @@ def switch_model(
                                 resolved_in_current_catalog = True
                                 break
 
+        # --- Step d2: Configured provider catalog check ---
+        # When the user's config.yaml specifies a default provider (e.g.
+        # ``model.provider: opencode-go``) and the current session is on a
+        # different provider, the configured provider's live catalog may
+        # contain the bare model name.  Check it before falling to static
+        # catalog detection, which would pick the native provider instead.
+        # See #48731.
+        if (
+            not resolved_in_current_catalog
+            and not resolved_alias
+            and target_provider == current_provider
+        ):
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _cfg = _load_cfg()
+                _model_cfg = _cfg.get("model")
+                _configured_prov = (
+                    _model_cfg.get("provider", "")
+                    if isinstance(_model_cfg, dict)
+                    else ""
+                )
+                if (
+                    _configured_prov
+                    and _configured_prov != current_provider
+                    and is_aggregator(_configured_prov)
+                ):
+                    _cat = list_provider_models(_configured_prov)
+                    if _cat:
+                        _nl = new_model.lower()
+                        for _mid in _cat:
+                            if _mid.lower() == _nl:
+                                new_model = _mid
+                                target_provider = _configured_prov
+                                resolved_in_current_catalog = True
+                                break
+                        if not resolved_in_current_catalog:
+                            for _mid in _cat:
+                                if "/" in _mid:
+                                    _, _bare = _mid.split("/", 1)
+                                    if _bare.lower() == _nl:
+                                        new_model = _mid
+                                        target_provider = _configured_prov
+                                        resolved_in_current_catalog = True
+                                        break
+            except Exception:
+                pass  # config unavailable — fall through to static detection
+
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
         is_custom = current_provider in {"custom", "local"} or (

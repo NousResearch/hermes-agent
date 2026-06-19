@@ -1179,6 +1179,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            # Resolve per-group ephemeral system prompt (channel_prompts).
+            # Follows same pattern as Telegram/Discord/Slack adapters.
+            from gateway.platforms.base import resolve_channel_prompt
+            chat_id_str = str(data.get("chatId", ""))
+            channel_prompt = resolve_channel_prompt(
+                self.config.extra, chat_id_str
+            )
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1187,6 +1195,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                channel_prompt=channel_prompt,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

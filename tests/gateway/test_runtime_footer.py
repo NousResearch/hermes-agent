@@ -153,14 +153,14 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {"enabled": False, "fields": ["provider", "model", "effort", "context_pct", "cwd"]}
 
 
 def test_resolve_global_enable():
     user = {"display": {"runtime_footer": {"enabled": True}}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
-    assert cfg["fields"] == ["model", "context_pct", "cwd"]
+    assert cfg["fields"] == ["provider", "model", "effort", "context_pct", "cwd"]
 
 
 def test_resolve_platform_override_wins():
@@ -189,7 +189,7 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
+    assert tg["fields"] == ["provider", "model", "effort", "context_pct", "cwd"]
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
@@ -249,7 +249,7 @@ def test_build_footer_per_platform_off_suppresses():
 
 
 def test_build_footer_no_data_returns_empty_even_when_enabled():
-    # Enabled, but context_length is None AND cwd empty AND model empty ⇒ no fields
+    # Enabled, but context_length is None AND cwd empty AND model empty AND no provider ⇒ no fields
     out = build_footer_line(
         user_config={"display": {"runtime_footer": {"enabled": True}}},
         platform_key="telegram",
@@ -260,3 +260,72 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# provider and reasoning_effort fields
+# ---------------------------------------------------------------------------
+
+def test_format_footer_provider_and_effort():
+    out = format_runtime_footer(
+        model="gpt-5.5",
+        context_tokens=19000,
+        context_length=100000,
+        provider="openai-codex",
+        reasoning_effort="high",
+        fields=["provider", "model", "effort", "context_pct"],
+    )
+    assert out == "codex · gpt-5.5 · high · 19%"
+
+
+def test_format_footer_provider_aliases():
+    assert format_runtime_footer(
+        model="m", context_tokens=1, context_length=100,
+        provider="opencode-go", fields=["provider"],
+    ) == "oc-go"
+    assert format_runtime_footer(
+        model="m", context_tokens=1, context_length=100,
+        provider="google-gemini", fields=["provider"],
+    ) == "gemini"
+    assert format_runtime_footer(
+        model="m", context_tokens=1, context_length=100,
+        provider="some-unknown-provider", fields=["provider"],
+    ) == "some-unknown-provider"
+
+
+def test_format_footer_effort_skipped_when_none():
+    out = format_runtime_footer(
+        model="gpt-5.5",
+        context_tokens=10,
+        context_length=100,
+        provider="openai-codex",
+        reasoning_effort=None,
+        fields=["provider", "model", "effort", "context_pct"],
+    )
+    assert out == "codex · gpt-5.5 · 10%"
+
+
+def test_format_footer_provider_skipped_when_none():
+    out = format_runtime_footer(
+        model="gpt-5.5",
+        context_tokens=10,
+        context_length=100,
+        provider=None,
+        reasoning_effort="medium",
+        fields=["provider", "model", "effort", "context_pct"],
+    )
+    assert out == "gpt-5.5 · medium · 10%"
+
+
+def test_build_footer_passes_provider_and_effort(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["provider", "model", "effort", "context_pct"]}}},
+        platform_key="telegram",
+        model="gpt-5.5",
+        context_tokens=50000,
+        context_length=128000,
+        provider="openai-codex",
+        reasoning_effort="xhigh",
+    )
+    assert out == "codex · gpt-5.5 · xhigh · 39%"

@@ -9566,6 +9566,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    provider=agent_result.get("provider"),
+                    reasoning_effort=agent_result.get("reasoning_effort"),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -15813,6 +15815,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _resolved_provider = getattr(_agent, "provider", None) if _agent else None
+            # Reasoning effort: extract from agent's reasoning_config, then config.yaml
+            _resolved_effort = None
+            if _agent:
+                _rc = getattr(_agent, "reasoning_config", None)
+                if isinstance(_rc, dict) and _rc.get("enabled") and _rc.get("effort"):
+                    _resolved_effort = _rc["effort"]
+            if not _resolved_effort:
+                try:
+                    _eff_cfg = cfg_get(user_config, "agent", "reasoning_effort", default="")
+                    if _eff_cfg:
+                        from hermes_constants import parse_reasoning_effort
+                        _parsed = parse_reasoning_effort(str(_eff_cfg))
+                        if _parsed and _parsed.get("effort"):
+                            _resolved_effort = _parsed["effort"]
+                except Exception:
+                    pass
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return
@@ -15890,6 +15909,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "provider": _resolved_provider,
+                    "reasoning_effort": _resolved_effort,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -15990,6 +16011,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "provider": _resolved_provider,
+                "reasoning_effort": _resolved_effort,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
             }

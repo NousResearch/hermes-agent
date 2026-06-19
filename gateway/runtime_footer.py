@@ -1,15 +1,15 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
-appends it to the FINAL message of an agent turn when enabled.  Off by default
-to keep replies minimal.
+Renders a compact footer showing runtime state (provider, model, reasoning
+effort, context %, cwd) and appends it to the FINAL message of an agent turn
+when enabled.  Off by default to keep replies minimal.
 
 Config (``~/.hermes/config.yaml``)::
 
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [provider, model, effort, context_pct, cwd]   # order shown; drop any to hide
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
-_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_FIELDS: tuple[str, ...] = ("provider", "model", "effort", "context_pct", "cwd")
 _SEP = " · "
 
 
@@ -51,6 +51,32 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _provider_short(provider: Optional[str]) -> str:
+    """Shorten provider name for the footer.
+
+    Drops common suffixes (``-direct``, ``-payg``) and maps long names to
+    compact aliases.
+    """
+    if not provider:
+        return ""
+    aliases = {
+        "openai-codex": "codex",
+        "opencode-go": "oc-go",
+        "opencode-zen": "oc-zen",
+        "google-gemini": "gemini",
+        "google-gemini-cli": "gemini",
+        "anthropic": "anthropic",
+    }
+    return aliases.get(provider, provider)
+
+
+def _effort_short(effort: Optional[str]) -> str:
+    """Format reasoning effort for the footer.  Empty string when unset."""
+    if not effort:
+        return ""
+    return effort
 
 
 def resolve_footer_config(
@@ -95,6 +121,8 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    provider: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -103,10 +131,18 @@ def format_runtime_footer(
     """
     parts: list[str] = []
     for field in fields:
-        if field == "model":
+        if field == "provider":
+            p = _provider_short(provider)
+            if p:
+                parts.append(p)
+        elif field == "model":
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "effort":
+            e = _effort_short(reasoning_effort)
+            if e:
+                parts.append(e)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
@@ -130,6 +166,8 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    provider: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +184,6 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        provider=provider,
+        reasoning_effort=reasoning_effort,
     )

@@ -126,6 +126,7 @@ class TestSecurityRiskAnnotation:
         assert result["approved"] is True
         cb.assert_called_once()
         assert "HIGH risk" in cb.call_args[0][1]
+        assert "advisory signal, not a security scan" in cb.call_args[0][1]
         assert cb.call_args[1]["allow_permanent"] is False
 
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))

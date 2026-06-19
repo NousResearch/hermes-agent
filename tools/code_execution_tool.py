@@ -1795,7 +1795,9 @@ _TOOL_DOC_LINES = [
      "    Replaces old_string with new_string in the file."),
     ("terminal",
      "  terminal(command: str, timeout=None, workdir=None, security_risk=None) -> dict\n"
-     "    Foreground only (no background/pty). security_risk is optional: LOW/MEDIUM/HIGH/UNKNOWN. Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "    Foreground only (no background/pty). security_risk is an optional "
+     "advisory self-annotation, not a security scan: LOW/MEDIUM/HIGH/UNKNOWN. "
+     "Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
 

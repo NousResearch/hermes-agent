@@ -1952,7 +1952,7 @@ def _terminal_policy_key(prefix: str, command: str) -> str:
 
 def _security_risk_warning(command: str, security_risk,
                            confirmation_policy: str) -> tuple[str, str] | None:
-    """Return an approval warning for LLM risk annotations, if policy requires it."""
+    """Return an advisory approval warning for LLM risk annotations."""
     normalized_risk = _normalize_security_risk(security_risk)
 
     if confirmation_policy == "always":
@@ -1970,7 +1970,10 @@ def _security_risk_warning(command: str, security_risk,
     if normalized_risk in {"HIGH", "UNKNOWN"}:
         return (
             _terminal_policy_key(f"risk:{normalized_risk.lower()}", command),
-            f"LLM self-annotation marked this terminal command {normalized_risk} risk",
+            (
+                "LLM self-annotation marked this terminal command "
+                f"{normalized_risk} risk (advisory signal, not a security scan)"
+            ),
         )
 
     return None

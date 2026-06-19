@@ -2054,7 +2054,8 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
-        security_risk: Optional LLM self-annotation: LOW, MEDIUM, HIGH, or UNKNOWN.
+        security_risk: Optional advisory LLM self-annotation: LOW, MEDIUM,
+            HIGH, or UNKNOWN. This is not a security scan.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -3039,7 +3040,20 @@ TERMINAL_SCHEMA = {
             "security_risk": {
                 "type": "string",
                 "enum": ["LOW", "MEDIUM", "HIGH", "UNKNOWN"],
-                "description": "Optional but recommended LLM self-annotation for this command's security risk. LOW = read-only or inspection-only commands. MEDIUM = project-scoped changes such as builds, installs, edits, or tests. HIGH = destructive/system-level changes, credential exposure, privileged operations, or data leaving the environment. UNKNOWN = uncertain risk; prefer UNKNOWN over under-classifying. HIGH/UNKNOWN may trigger the existing approval flow depending on terminal.confirmation_policy.",
+                "description": (
+                    "Optional but recommended advisory LLM self-annotation for this "
+                    "command's security risk. This is not a security scan or an "
+                    "authoritative safety decision: LOW/MEDIUM are not proof that a "
+                    "command is safe, and deterministic guards still run separately. "
+                    "LOW = read-only or inspection-only commands. MEDIUM = "
+                    "project-scoped changes such as builds, installs, edits, or "
+                    "tests. HIGH = destructive/system-level changes, credential "
+                    "exposure, privileged operations, or data leaving the environment. "
+                    "UNKNOWN = uncertain risk; prefer UNKNOWN over under-classifying. "
+                    "HIGH/UNKNOWN may trigger the existing approval flow depending on "
+                    "terminal.confirmation_policy; trusted environments can set that "
+                    "policy to never while hardline guards still apply."
+                ),
             }
         },
         "required": ["command"]

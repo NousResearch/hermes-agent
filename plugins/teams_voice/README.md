@@ -24,26 +24,25 @@ The worker is the **WebSocket client**; this plugin is the **server**
 actions, meeting-recap posting) are handled by the existing
 `plugins/platforms/teams` adapter (the `microsoft-teams-apps` SDK), **not** here.
 
-## Status
+## Status — implemented
 
 | Layer | File | Status |
 |---|---|---|
-| Bridge WS server (HMAC, lifecycle, dispatch, ping/pong) | `bridge_server.py` | ✅ scaffolded |
+| Bridge WS server (HMAC, replay guard, lifecycle, ping/pong, conn caps) | `bridge_server.py` | ✅ |
 | Wire protocol (mirrors worker `Protocol.cs`) | `protocol.py` | ✅ |
-| HMAC handshake + single-use replay guard | `hmac_auth.py` | ✅ |
-| Config resolution | `config.py` | ✅ |
-| Expression heuristic (port) | `expression.py` | ✅ + tests |
-| Viseme estimator (port; Latin) | `viseme_estimate.py` | ✅ + tests · Arabic TODO |
-| Group-call gate (port) | `group_call_gate.py` | ✅ + tests |
-| Status tool + CLI | `tools.py`, `cli.py` | ✅ minimal |
-| **Realtime speech-to-speech brain** | `realtime/openai_client.py` | 🚧 **stub** |
-| Streaming STT→agent→TTS path | — | ⬜ not started |
-| Vision store / `look_at_screen` / `show_to_caller` | — | ⬜ not started |
-| Outbound "call me back" | — | ⬜ not started |
+| Config (config.yaml + env, allowlist, vision cap, recap, …) | `config.py` | ✅ |
+| **Realtime mode** (OpenAI/Azure speech-to-speech) | `realtime/openai_client.py`, `handlers.py` | ✅ |
+| **Streaming mode** (STT→agent→TTS; needs `ffmpeg` on PATH) | `streaming_audio.py`, `handlers.py` | ✅ |
+| Echo guard · group gate · verbal interrupts (EN/AR) · DTMF · bilingual | `echo_guard.py`, `group_call_gate.py`, `verbal_interrupts.py` | ✅ + tests |
+| Vision (`look_at_screen` live/history) · ambient push · budget cap | `vision_store.py`, `vision_budget.py` | ✅ + tests |
+| Tools: consult, agent_task, show_to_caller, call_me_back, post_meeting_minutes | `realtime_tools.py`, `handlers.py` | ✅ |
+| Visemes (estimator; Latin) | `viseme_estimate.py` | ✅ + tests · Arabic + real ElevenLabs alignment = follow-up |
+| Meeting recap/minutes (text; posts via Bot Framework REST) | `meeting.py` | ✅ · DOCX attach = follow-up |
+| CLI: `hermes teams-voice serve --handler {logging,echo,realtime,streaming}` | `cli.py` | ✅ |
 
-The wire layer is complete enough that the existing C# worker can **connect,
-authenticate, and exchange session/ping frames today**; the dialogue brain
-(`CallSessionHandler`) is where the realtime client plugs in next.
+Validated on a live Teams call (realtime): connect, recording gate, expression
+cues, avatar rendered, audio out, clean teardown. The Windows .NET media worker
+renders the avatar tile and is paired over the HMAC bridge.
 
 ## Wire contract (fixed by the worker — do not drift)
 

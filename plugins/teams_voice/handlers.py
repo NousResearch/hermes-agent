@@ -26,7 +26,7 @@ from . import audio, expression, group_call_gate, meeting, protocol, realtime_to
 from .agent_consult import AgentConsult
 from .meeting import MeetingTranscript
 from .bridge_server import CallSession, CallSessionHandler
-from .config import BYTES_PER_FRAME, FRAME_DURATION_MS, PCM_SAMPLE_RATE_HZ, TeamsVoiceConfig
+from .config import BYTES_PER_FRAME, FRAME_DURATION_MS, PCM_SAMPLE_RATE_HZ, TeamsVoiceConfig, caller_allowed
 from .echo_guard import EchoGuard
 from .outbound import OutboundError, place_call
 from .realtime.openai_client import REALTIME_SAMPLE_RATE_HZ, RealtimeConfig, RealtimeSession
@@ -39,8 +39,27 @@ logger = logging.getLogger(__name__)
 
 # Shared across connections: the inbound call that requests a callback and the
 # outbound leg that delivers it are *different* WebSocket connections, so the
-# pending spoken result is keyed by the worker's callId here.
-_PENDING_OUTBOUND: dict[str, str] = {}
+# pending spoken result is keyed by the worker's callId here. Entries carry a TTL
+# so a never-answered call-back can't leak its result string indefinitely.
+_PENDING_OUTBOUND: dict[str, tuple[str, float]] = {}
+_PENDING_TTL_S = 600.0
+
+
+def _pending_prune() -> None:
+    now = time.monotonic()
+    for k in [k for k, (_t, exp) in _PENDING_OUTBOUND.items() if exp <= now]:
+        _PENDING_OUTBOUND.pop(k, None)
+
+
+def _pending_set(call_id: str, text: str) -> None:
+    _pending_prune()
+    _PENDING_OUTBOUND[call_id] = (text, time.monotonic() + _PENDING_TTL_S)
+
+
+def _pending_pop(call_id: str) -> str | None:
+    _pending_prune()
+    entry = _PENDING_OUTBOUND.pop(call_id, None)
+    return entry[0] if entry else None
 
 
 class EchoCallSessionHandler(CallSessionHandler):
@@ -74,6 +93,7 @@ class RealtimeCallSessionHandler(CallSessionHandler):
     def __init__(self, config: RealtimeConfig, bridge_config: TeamsVoiceConfig | None = None) -> None:
         self._cfg = config
         self._bridge = bridge_config
+        self._require_recording = bridge_config.require_recording_status if bridge_config else True
         self._rt: RealtimeSession | None = None
         self._session: CallSession | None = None
         self._caller: protocol.CallerInfo | None = None
@@ -115,16 +135,15 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         self._outbound = (msg.direction or "").lower() == "outbound"
         # If this is the delivery leg of a call-back, fetch the pending result.
         if self._outbound:
-            self._pending_greeting = _PENDING_OUTBOUND.pop(msg.call_id, None)
+            self._pending_greeting = _pending_pop(msg.call_id)
 
         # Caller allowlist (enforced only when configured): reject unmatched inbound.
-        if not self._outbound and self._bridge and self._bridge.allowlist:
-            ident = (msg.caller.aad_id or "").lower()
-            name = (msg.caller.display_name or "").lower()
-            if ident not in self._bridge.allowlist and name not in self._bridge.allowlist:
-                logger.info("[teams_voice] caller not allowlisted; rejecting %s", session.call_id)
-                await session._ws.close()
-                return
+        if not self._outbound and self._bridge and not caller_allowed(
+            self._bridge, msg.caller.aad_id, msg.caller.display_name
+        ):
+            logger.info("[teams_voice] caller not allowlisted; rejecting %s", session.call_id)
+            await session._ws.close()
+            return
 
         # Agent session continuity scope.
         scope = self._bridge.session_scope if self._bridge else "per-call"
@@ -197,8 +216,18 @@ class RealtimeCallSessionHandler(CallSessionHandler):
                 f"Greet{who} warmly and briefly, then ask how you can help."
             )
 
+    async def on_participants(self, session: CallSession, msg: protocol.Participants) -> None:
+        await super().on_participants(session, msg)  # sets session.human_count
+        # Race-free group gate: in a meeting (2+ humans) turn OFF server-VAD
+        # auto-response, so the model only speaks when we explicitly create a
+        # response for an addressed turn (no audio can leak before a cancel).
+        if self._rt is not None:
+            await self._rt.set_auto_response(session.human_count < 2)
+
     async def on_audio_frame(self, session: CallSession, msg: protocol.AudioFrame) -> None:
-        if not session.recording_active or self._rt is None:
+        if self._require_recording and not session.recording_active:
+            return
+        if self._rt is None:
             return
         if msg.speaker_name:  # unmixed-audio attribution for the meeting transcript
             self._last_speaker = msg.speaker_name
@@ -209,7 +238,7 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         await self._rt.push_audio(pcm24)
 
     async def on_video_frame(self, session: CallSession, msg: protocol.VideoFrame) -> None:
-        if not session.recording_active:
+        if self._require_recording and not session.recording_active:
             return
         self._vision.store(
             StoredFrame(
@@ -224,7 +253,7 @@ class RealtimeCallSessionHandler(CallSessionHandler):
     async def on_dtmf(self, session: CallSession, msg: protocol.Dtmf) -> None:
         # Surface keypad input to the realtime model (recording-gated) so it can
         # run "press 1 to…" flows.
-        if not session.recording_active or self._rt is None:
+        if (self._require_recording and not session.recording_active) or self._rt is None:
             return
         await self._rt.send_user_text(f"The caller pressed the {msg.digit} key on the keypad.")
 
@@ -347,8 +376,11 @@ class RealtimeCallSessionHandler(CallSessionHandler):
         if decision.respond:
             if decision.addressed:
                 self._last_addressed_ms = now
+            # In group mode auto-response is OFF, so trigger the reply ourselves.
+            if is_group and self._rt is not None:
+                await self._rt.create_response()
         else:
-            # Unaddressed meeting turn: drop the auto-created reply at the egress.
+            # Unaddressed meeting turn: egress-drop backstop + cancel any response.
             self._drop_response = True
             if self._rt is not None:
                 await self._rt.cancel_response()
@@ -498,13 +530,14 @@ class RealtimeCallSessionHandler(CallSessionHandler):
                 tenant_id=tenant,
                 shared_secret=self._bridge.shared_secret,
                 worker_base_url=self._bridge.worker_base_url,
+                allow_remote=self._bridge.allow_remote_worker,
             )
         except OutboundError as exc:
             logger.warning("[teams_voice] call_me_back failed: %s", exc)
             return "I couldn't place the call-back just now."
         call_id = result.get("callId")
         if call_id:
-            _PENDING_OUTBOUND[call_id] = message or "Here's what you asked for."
+            _pending_set(call_id, message or "Here's what you asked for.")
         return "Okay — I'll call you right back with that."
 
     async def _agent_task(self, query: str) -> str:
@@ -536,13 +569,14 @@ class RealtimeCallSessionHandler(CallSessionHandler):
                 tenant_id=tenant,
                 shared_secret=self._bridge.shared_secret,
                 worker_base_url=self._bridge.worker_base_url,
+                allow_remote=self._bridge.allow_remote_worker,
             )
         except OutboundError as exc:
             logger.warning("[teams_voice] background callback failed: %s", exc)
             return
         cid = res.get("callId")
         if cid:
-            _PENDING_OUTBOUND[cid] = result
+            _pending_set(cid, result)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -568,6 +602,8 @@ class StreamingCallSessionHandler(CallSessionHandler):
         from .streaming_audio import UtteranceBuffer
 
         self._bridge = bridge_config
+        self._require_recording = bridge_config.require_recording_status if bridge_config else True
+        self._utterance_task: asyncio.Task | None = None
         self._session: CallSession | None = None
         self._caller: protocol.CallerInfo | None = None
         self._buf = UtteranceBuffer()
@@ -586,6 +622,13 @@ class StreamingCallSessionHandler(CallSessionHandler):
         self._session = session
         self._caller = msg.caller
         self._thread_id = msg.thread_id
+        # Caller allowlist parity with the realtime path.
+        if (msg.direction or "").lower() != "outbound" and self._bridge and not caller_allowed(
+            self._bridge, msg.caller.aad_id, msg.caller.display_name
+        ):
+            logger.info("[teams_voice] caller not allowlisted; rejecting %s", session.call_id)
+            await session._ws.close()
+            return
         scope = self._bridge.session_scope if self._bridge else "per-call"
         key = msg.thread_id if scope == "per-thread" else (msg.caller.aad_id if scope == "per-aad" else msg.call_id)
         self._consult = AgentConsult(session_id=f"teams:{key or msg.call_id}")
@@ -593,19 +636,23 @@ class StreamingCallSessionHandler(CallSessionHandler):
 
     async def on_session_end(self, session: CallSession, msg: protocol.SessionEnd) -> None:
         await super().on_session_end(session, msg)
+        # Cancel an in-flight utterance job so we don't speak after hangup.
+        if self._utterance_task is not None:
+            self._utterance_task.cancel()
+            self._utterance_task = None
         if self._bridge and self._bridge.meeting_recap and not self._meeting.is_empty():
             asyncio.create_task(
                 meeting.post_minutes(self._consult, self._meeting, self._thread_id)
             )
 
     async def on_audio_frame(self, session: CallSession, msg: protocol.AudioFrame) -> None:
-        if not session.recording_active or self._processing:
+        if (self._require_recording and not session.recording_active) or self._processing:
             return
         pcm = base64.b64decode(msg.payload_base64)
         utterance = self._buf.push(pcm, audio.pcm16_rms(pcm))
         if utterance is not None:
             self._processing = True
-            asyncio.create_task(self._handle_utterance(utterance))
+            self._utterance_task = asyncio.create_task(self._handle_utterance(utterance))
 
     async def _handle_utterance(self, pcm: bytes) -> None:
         try:

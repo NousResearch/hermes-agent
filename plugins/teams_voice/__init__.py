@@ -10,9 +10,10 @@ Chat-plane integration (Teams messages, message actions, meeting-recap posting)
 is handled by the existing ``plugins/platforms/teams`` adapter — this plugin is
 the *media/voice* half and deliberately does not duplicate it.
 
-Status: SCAFFOLD. The wire layer (bridge server, protocol, HMAC) and the
-pure-logic ports (expression, visemes, group-call gate) are complete and the C#
-worker can connect; the realtime speech-to-speech brain (``realtime/``) is a stub.
+Status: implemented. Realtime (OpenAI/Azure speech-to-speech) and streaming
+(STT->agent->TTS) call modes; vision, tools (consult/agent_task/look_at_screen/
+show_to_caller/call_me_back/post_meeting_minutes), group gate, verbal interrupts,
+DTMF, bilingual, meeting recap. The Windows .NET media worker renders the avatar.
 """
 
 from __future__ import annotations

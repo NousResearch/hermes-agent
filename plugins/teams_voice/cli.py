@@ -78,6 +78,10 @@ def teams_voice_command(args) -> int:
                 return 1
             factory = lambda: RealtimeCallSessionHandler(rt_cfg, bridge_config=cfg)  # noqa: E731
         elif handler_kind == "streaming":
+            import shutil
+
+            if shutil.which("ffmpeg") is None:
+                print("warning: streaming mode needs 'ffmpeg' on PATH to decode TTS audio")
             from .handlers import StreamingCallSessionHandler
 
             factory = lambda: StreamingCallSessionHandler(bridge_config=cfg)  # noqa: E731

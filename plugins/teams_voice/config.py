@@ -49,8 +49,13 @@ class TeamsVoiceConfig:
     # Outbound "call me back": the worker's loopback HTTP endpoint + default tenant.
     worker_base_url: str = "http://127.0.0.1:9440"
     tenant_id: str = ""
-    # Caller allowlist (AAD object ids or display names). Empty = allow all.
+    # Caller allowlist (AAD object ids). Empty = allow all. Display-name matching
+    # is weaker (spoofable) and off unless ``allowlist_allow_names`` is set.
     allowlist: tuple[str, ...] = ()
+    allowlist_allow_names: bool = False
+    # Refuse outbound place-call to a non-loopback worker unless explicitly allowed
+    # (the shared secret would otherwise be sent to that host).
+    allow_remote_worker: bool = False
     # Per-call vision spend cap across look_at_screen + ambient push (0 = unlimited).
     max_vision_per_minute: int = 30
     # Agent session continuity: "per-call" | "per-thread" | "per-aad".
@@ -158,6 +163,27 @@ def resolve_config(extra: Mapping[str, Any] | None = None) -> TeamsVoiceConfig:
         session_scope=session_scope,
         wake_phrases=wake or ("assistant", "hermes"),
         meeting_recap=meeting_recap,
+        allowlist_allow_names=_coerce_bool(extra.get("allowlist_allow_names"), "TEAMS_VOICE_ALLOWLIST_ALLOW_NAMES"),
+        allow_remote_worker=_coerce_bool(extra.get("allow_remote_worker"), "TEAMS_VOICE_ALLOW_REMOTE_WORKER"),
+    )
+
+
+def caller_allowed(config: "TeamsVoiceConfig", aad_id: str | None, display_name: str | None) -> bool:
+    """Allowlist check: AAD id by default; display name only if opted in.
+
+    Empty allowlist = allow all (backward-compatible)."""
+    if not config.allowlist:
+        return True
+    if (aad_id or "").strip().lower() in config.allowlist:
+        return True
+    if config.allowlist_allow_names and (display_name or "").strip().lower() in config.allowlist:
+        return True
+    return False
+
+
+def _coerce_bool(value: Any, env: str) -> bool:
+    return str(value if value not in (None, "") else os.getenv(env, "")).strip().lower() in (
+        "1", "true", "yes", "on",
     )
 
 

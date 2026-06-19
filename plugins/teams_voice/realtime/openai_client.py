@@ -188,6 +188,7 @@ class RealtimeSession:
         self._recv_task: Optional[asyncio.Task] = None
         self._closed = False
         self._response_active = False  # True between response.created and response.done
+        self._auto_response = True  # turn_detection.create_response (off in group mode)
 
         # Function tools exposed to the model (realtime shape: flat
         # {type:"function", name, description, parameters}). Set before connect().
@@ -271,6 +272,33 @@ class RealtimeSession:
             {"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm24k).decode("ascii")}
         )
 
+    async def set_auto_response(self, enabled: bool) -> None:
+        """Toggle server-VAD auto-response (off in group mode for a race-free gate)."""
+        if self._closed or enabled == self._auto_response:
+            return
+        self._auto_response = enabled
+        await self._send(
+            {
+                "type": "session.update",
+                "session": {
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": self._cfg.vad_threshold,
+                        "prefix_padding_ms": self._cfg.prefix_padding_ms,
+                        "silence_duration_ms": self._cfg.silence_duration_ms,
+                        "create_response": enabled,
+                    }
+                },
+            }
+        )
+
+    async def create_response(self) -> None:
+        """Manually request a response (used when auto-response is off in groups)."""
+        if self._closed or self._response_active:
+            return
+        self._response_active = True
+        await self._send({"type": "response.create"})
+
     async def cancel_response(self) -> None:
         """Cancel the in-flight model response (barge-in), if one is active.
 
@@ -341,7 +369,9 @@ class RealtimeSession:
                 "item": {"type": "function_call_output", "call_id": call_id, "output": output},
             }
         )
-        await self._send({"type": "response.create"})
+        if not self._response_active:  # guard like send_user_text (no double-create)
+            self._response_active = True
+            await self._send({"type": "response.create"})
 
     async def _send(self, obj: dict) -> None:
         if self._ws is None or self._ws.closed:

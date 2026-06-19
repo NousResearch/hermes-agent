@@ -1897,3 +1897,28 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         )
         image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
         assert len(image_blocks) == 1
+
+
+def test_oauth_system_prompt_sanitizer_preserves_docs_url():
+    kwargs = build_anthropic_kwargs(
+        model="claude-sonnet-4-20250514",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Hermes Agent by Nous Research uses hermes-agent skills. "
+                    "Docs: https://hermes-agent.nousresearch.com/docs"
+                ),
+            },
+            {"role": "user", "content": "Hi"},
+        ],
+        tools=None,
+        max_tokens=4096,
+        reasoning_config=None,
+        is_oauth=True,
+    )
+
+    system_text = "\n".join(block["text"] for block in kwargs["system"])
+    assert "Claude Code by Anthropic uses claude-code skills." in system_text
+    assert "https://hermes-agent.nousresearch.com/docs" in system_text
+    assert "claude-code.nousresearch.com" not in system_text

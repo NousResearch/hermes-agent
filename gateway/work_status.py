@@ -278,12 +278,12 @@ def interpret_status_request(source: str, mode: str) -> str:
     if mode == "Debug":
         if re.search(r"\bpinned (message|status|work[- ]?status|summary)\b", lowered):
             return "Investigate pinned message code"
-        if lowered in {"itsnot", "it's not", "its not", "not working"}:
-            return "Investigate reported status issue"
         if re.search(r"\b(work[- ]?status|status card|live status)\b", lowered):
             return "Investigate work-status code"
         if re.search(r"\b(gateway|telegram)\b", lowered):
             return "Investigate Telegram gateway behavior"
+        if re.search(r"\b(not working|isn['’]?t working|its ?not|it's not|broken|wrong|dumb)\b", lowered):
+            return "Investigate reported issue"
 
     if mode == "Plan":
         target = re.sub(r"\b(plan|strategy|design|outline|roadmap|proposal|approach)\b", "", cleaned, flags=re.I)

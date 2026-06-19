@@ -45,22 +45,68 @@ logger = logging.getLogger(__name__)
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 
 
-def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
-    """Return whether external memory-provider tools should be exposed."""
-    if enabled_toolsets is None:
-        return True
-    if not enabled_toolsets:
-        return False
-    if "memory" in enabled_toolsets:
-        return True
-
+def _resolve_toolset_safely(name: str) -> set[str]:
     try:
         from toolsets import resolve_toolset
 
-        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
+        return set(resolve_toolset(name))
+    except Exception:
+        logger.debug("Failed to resolve toolset '%s' for memory-provider tools", name, exc_info=True)
+        return set()
+
+
+def _enabled_memory_provider_tool_names(
+    enabled_toolsets: Optional[List[str]],
+    provider_tool_names: set[str],
+) -> Optional[set[str]]:
+    """Return enabled provider tool names, or None when all provider tools are enabled."""
+    if enabled_toolsets is None:
+        return None
+    if not enabled_toolsets:
+        return set()
+    if "memory" in enabled_toolsets:
+        return None
+
+    try:
+        enabled_names: set[str] = set()
+        for name in enabled_toolsets:
+            resolved = _resolve_toolset_safely(name)
+            if "memory" in resolved:
+                return None
+            enabled_names.update(provider_tool_names & resolved)
+        return enabled_names
     except Exception:
         logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
-        return False
+        return set()
+
+
+def memory_provider_tools_enabled(
+    enabled_toolsets: Optional[List[str]],
+    provider_tool_names: Optional[set[str]] = None,
+) -> bool:
+    """Return whether external memory-provider tools should be exposed."""
+    enabled_names = _enabled_memory_provider_tool_names(
+        enabled_toolsets,
+        provider_tool_names or set(),
+    )
+    return enabled_names is None or bool(enabled_names)
+
+
+def _disabled_memory_provider_tool_names(
+    disabled_toolsets: Optional[List[str]],
+    provider_tool_names: set[str],
+) -> Optional[set[str]]:
+    """Return disabled provider tool names, or None when all memory tools are disabled."""
+    if not disabled_toolsets:
+        return set()
+
+    disabled_names: set[str] = set()
+    for toolset_name in disabled_toolsets:
+        resolved = _resolve_toolset_safely(toolset_name)
+        if toolset_name in {"memory", "*", "all"}:
+            return None
+        disabled_names.update(provider_tool_names & resolved)
+    return disabled_names
 
 
 def inject_memory_provider_tools(agent: Any) -> int:
@@ -70,19 +116,34 @@ def inject_memory_provider_tools(agent: Any) -> int:
     if not memory_manager or tools is None:
         return 0
 
+    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
+    if not callable(get_schemas):
+        return 0
+
+    provider_schemas = [
+        schema for schema in get_schemas()
+        if isinstance(schema, dict) and schema.get("name", "")
+    ]
+    provider_tool_names = {schema["name"] for schema in provider_schemas}
+    enabled_tool_names = _enabled_memory_provider_tool_names(
+        getattr(agent, "enabled_toolsets", None),
+        provider_tool_names,
+    )
     existing_tool_names = {
         tool.get("function", {}).get("name")
         for tool in tools
         if isinstance(tool, dict)
     }
-    if (
-        "memory" not in existing_tool_names
-        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
-    ):
+    if "memory" in existing_tool_names:
+        enabled_tool_names = None
+    elif enabled_tool_names == set():
         return 0
 
-    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
-    if not callable(get_schemas):
+    disabled_tool_names = _disabled_memory_provider_tool_names(
+        getattr(agent, "disabled_toolsets", None),
+        provider_tool_names,
+    )
+    if disabled_tool_names is None:
         return 0
 
     valid_tool_names = getattr(agent, "valid_tool_names", None)
@@ -91,10 +152,12 @@ def inject_memory_provider_tools(agent: Any) -> int:
         agent.valid_tool_names = valid_tool_names
 
     added = 0
-    for schema in get_schemas():
-        if not isinstance(schema, dict):
+    for schema in provider_schemas:
+        tool_name = schema["name"]
+        if enabled_tool_names is not None and tool_name not in enabled_tool_names:
             continue
-        tool_name = schema.get("name", "")
+        if tool_name in disabled_tool_names:
+            continue
         if not tool_name or tool_name in existing_tool_names:
             continue
         tools.append({"type": "function", "function": schema})

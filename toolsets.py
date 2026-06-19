@@ -241,8 +241,21 @@ TOOLSETS = {
         "includes": []
     },
 
-    # "honcho" toolset removed — Honcho is now a memory provider plugin.
-    # Tools are injected via MemoryManager, not the toolset system.
+    "honcho": {
+        "description": "Honcho memory provider tools (available when Honcho is the configured memory provider)",
+        "tools": [
+            "honcho_conclude",
+            "honcho_search",
+            "honcho_profile",
+            "honcho_reasoning",
+            "honcho_context",
+        ],
+        # Memory provider tools are injected by MemoryManager after built-in
+        # schemas are assembled. Keeping this leaf toolset free of the core
+        # ``memory`` tool lets restricted cron/subagent runs opt into Honcho
+        # without also granting local MEMORY.md writes.
+        "includes": [],
+    },
 
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",

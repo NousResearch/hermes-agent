@@ -28,6 +28,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _extract_output_tail,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -498,7 +499,7 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message, task_id=None):
+            def capture_and_return(user_message, task_id=None, stream_callback=None):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
@@ -553,6 +554,71 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("args_bytes", entry["tool_trace"][0])
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+
+    def test_tool_trace_handles_list_content_blocks(self):
+        """Tool-result content blocks should not crash observability metadata."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "image_generate", "arguments": '{"prompt": "x"}'}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1", "content": [
+                        {"type": "text", "text": '{"success": true}'},
+                    ]},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test list content", parent_agent=parent))
+            trace = result["results"][0]["tool_trace"]
+            self.assertEqual(trace[0]["tool"], "image_generate")
+            self.assertEqual(trace[0]["status"], "ok")
+            self.assertGreater(trace[0]["result_bytes"], 0)
+
+    def test_output_tail_flattens_list_content_blocks(self):
+        """_extract_output_tail (live overlay) must flatten content-block lists
+        so error markers buried inside blocks are detected and previews are
+        real text, not a "[{'type': 'text'...}]" repr blob."""
+        result = {
+            "messages": [
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t1", "function": {"name": "terminal", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "t1", "content": [
+                    {"type": "text", "text": "Error: command not found"},
+                ]},
+                {"role": "assistant", "tool_calls": [
+                    {"id": "t2", "function": {"name": "vision", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "t2", "content": [
+                    {"type": "text", "text": "all good"},
+                    {"type": "image_url", "image_url": {"url": "data:x"}},
+                ]},
+            ]
+        }
+        tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+        by_tool = {t["tool"]: t for t in tail}
+
+        # Block-wrapped error is correctly flagged (crude str() would miss it).
+        self.assertTrue(by_tool["terminal"]["is_error"])
+        self.assertEqual(by_tool["terminal"]["preview"], "Error: command not found")
+        # Non-error multimodal result is not flagged, and the text is readable.
+        self.assertFalse(by_tool["vision"]["is_error"])
+        self.assertIn("all good", by_tool["vision"]["preview"])
+        # No raw content-block repr leaked into any preview.
+        for entry in tail:
+            self.assertNotIn("'type'", entry["preview"])
 
     def test_tool_trace_detects_error(self):
         """Tool results containing 'error' should be marked as error status."""
@@ -1449,6 +1515,73 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         with patch("agent.credential_pool.load_pool", side_effect=Exception("disk error")):
             result = _resolve_child_credential_pool("anthropic", parent)
+
+        self.assertIsNone(result)
+
+    # --- Custom-endpoint identity resolution (issue #7833) ---
+
+    def test_custom_different_endpoint_does_not_inherit_parent_pool(self):
+        """A child on custom endpoint B must not inherit the parent's custom
+        endpoint A pool just because both normalize to provider='custom'."""
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.base_url = "https://endpoint-a.example.com/v1"
+        parent._credential_pool = MagicMock(name="parent_custom_a_pool")
+
+        child_pool = MagicMock(name="endpoint_b_pool")
+        child_pool.has_credentials.return_value = True
+
+        def fake_key(base_url, provider_name=None):
+            return {
+                "https://endpoint-a.example.com/v1": "custom:endpoint-a",
+                "https://endpoint-b.example.com/v1": "custom:endpoint-b",
+            }.get(base_url)
+
+        with patch("agent.credential_pool.get_custom_provider_pool_key", side_effect=fake_key), \
+             patch("agent.credential_pool.load_pool", return_value=child_pool) as load_mock:
+            result = _resolve_child_credential_pool(
+                "custom", parent, "https://endpoint-b.example.com/v1"
+            )
+
+        # Loaded the child's OWN endpoint pool, not the parent's.
+        load_mock.assert_called_once_with("custom:endpoint-b")
+        self.assertIs(result, child_pool)
+        self.assertIsNot(result, parent._credential_pool)
+
+    def test_custom_same_endpoint_shares_parent_pool(self):
+        """A child on the SAME custom endpoint as the parent reuses the parent's
+        pool so rotation/cooldown state stays synchronized."""
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.base_url = "https://endpoint-a.example.com/v1"
+        parent._credential_pool = MagicMock(name="parent_custom_a_pool")
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:endpoint-a",
+        ):
+            result = _resolve_child_credential_pool(
+                "custom", parent, "https://endpoint-a.example.com/v1"
+            )
+
+        self.assertIs(result, parent._credential_pool)
+
+    def test_custom_unregistered_endpoint_returns_none(self):
+        """A raw delegation.base_url with no matching custom_providers entry
+        must NOT inherit the parent's pool — return None so the child keeps its
+        fixed delegated credential."""
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.base_url = "https://endpoint-a.example.com/v1"
+        parent._credential_pool = MagicMock(name="parent_custom_a_pool")
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value=None,
+        ):
+            result = _resolve_child_credential_pool(
+                "custom", parent, "https://raw-unregistered.example.com/v1"
+            )
 
         self.assertIsNone(result)
 
@@ -2483,7 +2616,7 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m.thinking_callback = None
                 orch_mock["agent"] = m
 
-                def _orchestrator_run(user_message=None, task_id=None):
+                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
                     # Re-entrant: orchestrator spawns two leaves
                     delegate_task(
                         tasks=[{"goal": "leaf-A"}, {"goal": "leaf-B"}],

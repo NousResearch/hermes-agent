@@ -5,10 +5,19 @@
 
 import type { DesktopTheme, DesktopThemeTypography } from './types'
 
-const SYSTEM_SANS =
-  '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif'
+// Color-emoji fonts to append to every stack as a last resort. None of the UI
+// text/mono fonts carry emoji glyphs, so without this emoji render as tofu
+// boxes on platforms whose default text font lacks them (e.g. Linux/#40364).
+// Covers macOS, Windows, Linux, plus the `emoji` generic for anything else.
+export const EMOJI_FALLBACK =
+  '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
 
-const SYSTEM_MONO = '"Cascadia Code", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace'
+const SYSTEM_SANS =
+  '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
+  EMOJI_FALLBACK
+
+const SYSTEM_MONO =
+  '"Cascadia Code", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace, ' + EMOJI_FALLBACK
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
@@ -228,8 +237,8 @@ export const cyberpunkTheme: DesktopTheme = {
     userBubbleBorder: '#004800'
   },
   typography: {
-    fontMono: `"Courier New", Courier, monospace`,
-    fontSans: `"Courier New", Courier, monospace`
+    fontMono: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`,
+    fontSans: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`
   }
 }
 

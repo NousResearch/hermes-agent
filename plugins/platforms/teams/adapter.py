@@ -96,6 +96,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_image_from_url,
+    cache_media_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -616,7 +617,74 @@ async def _standalone_send(
 
 
 # Keep the old name as an alias so existing test imports don't break.
-check_teams_requirements = check_requirements
+# NOTE: ``check_requirements`` is the PASSIVE probe (used as the registry
+# ``check_fn`` and by ``gateway status``) — it must never trigger a pip
+# install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
+# from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
+# SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+def check_teams_requirements() -> bool:
+    """Ensure the Teams SDK is importable, lazy-installing it on first use.
+
+    Lazy-installs ``microsoft-teams-apps`` via
+    ``tools.lazy_deps.ensure("platform.teams")`` if not present, then rebinds
+    all module-level SDK globals on success. Returns True once the SDK (and
+    aiohttp) are importable, False if they couldn't be installed/imported.
+    """
+    if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
+        return True
+
+    def _import() -> dict:
+        from aiohttp import web as _web
+        from microsoft_teams.apps import App, ActivityContext
+        from microsoft_teams.common.http.client import ClientOptions
+        from microsoft_teams.api import MessageActivity, ConversationReference
+        from microsoft_teams.api.activities.typing import TypingActivityInput
+        from microsoft_teams.api.activities.invoke.adaptive_card import (
+            AdaptiveCardInvokeActivity,
+        )
+        from microsoft_teams.api.models.adaptive_card import (
+            AdaptiveCardActionCardResponse,
+            AdaptiveCardActionMessageResponse,
+        )
+        from microsoft_teams.api.models.invoke_response import (
+            InvokeResponse,
+            AdaptiveCardInvokeResponse,
+        )
+        from microsoft_teams.apps.http.adapter import (
+            HttpMethod,
+            HttpRequest,
+            HttpResponse,
+            HttpRouteHandler,
+        )
+        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+        return {
+            "web": _web,
+            "AIOHTTP_AVAILABLE": True,
+            "App": App,
+            "ActivityContext": ActivityContext,
+            "ClientOptions": ClientOptions,
+            "MessageActivity": MessageActivity,
+            "ConversationReference": ConversationReference,
+            "TypingActivityInput": TypingActivityInput,
+            "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
+            "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
+            "AdaptiveCardActionMessageResponse": AdaptiveCardActionMessageResponse,
+            "InvokeResponse": InvokeResponse,
+            "AdaptiveCardInvokeResponse": AdaptiveCardInvokeResponse,
+            "HttpMethod": HttpMethod,
+            "HttpRequest": HttpRequest,
+            "HttpResponse": HttpResponse,
+            "HttpRouteHandler": HttpRouteHandler,
+            "AdaptiveCard": AdaptiveCard,
+            "ExecuteAction": ExecuteAction,
+            "TextBlock": TextBlock,
+            "TEAMS_SDK_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+
+    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
 
 
 class TeamsAdapter(BasePlatformAdapter):
@@ -641,10 +709,13 @@ class TeamsAdapter(BasePlatformAdapter):
         self._conv_refs: Dict[str, Any] = {}
 
     async def connect(self) -> bool:
+        # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
+        # then re-check the module globals it rebinds.
+        check_teams_requirements()
         if not TEAMS_SDK_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_SDK",
-                "microsoft-teams-apps not installed. Run: pip install microsoft-teams-apps",
+                "microsoft-teams-apps could not be installed. Run: pip install microsoft-teams-apps",
                 retryable=False,
             )
             return False
@@ -725,6 +796,34 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
+    async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
+        """Download attachment bytes with SSRF protection.
+
+        Teams file attachments carry pre-authenticated SharePoint download
+        URLs (no extra auth header needed). Validates the URL against the
+        SSRF guard and follows redirects through the shared redirect guard,
+        matching the cache_*_from_url helpers in gateway.platforms.base.
+        """
+        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
+
+        if not is_safe_url(url):
+            raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
+
+        import httpx
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
+            response = await client.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
+            )
+            response.raise_for_status()
+            return response.content
+
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
         activity = ctx.activity
@@ -779,22 +878,93 @@ class TeamsAdapter(BasePlatformAdapter):
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
         )
 
-        # Handle image attachments
+        # Handle attachments (images, documents, video, audio)
         media_urls = []
         media_types = []
+        media_kinds = []
         for att in getattr(activity, "attachments", None) or []:
             content_url = getattr(att, "content_url", None)
-            content_type = getattr(att, "content_type", None) or ""
+            content_type = (getattr(att, "content_type", None) or "").lower()
+            att_name = getattr(att, "name", None) or ""
+
+            # Skip non-file payloads: Teams mirrors the message body as a
+            # text/html attachment on every message, and adaptive/hero cards
+            # arrive as application/vnd.microsoft.card.* attachments.
+            if content_type in ("text/html", "text/plain") and not content_url:
+                continue
+            if content_type.startswith("application/vnd.microsoft.card"):
+                continue
+
+            if content_type == "application/vnd.microsoft.teams.file.download.info":
+                # File consent-free download: content carries a pre-authed
+                # SharePoint downloadUrl plus the real file type.
+                content = getattr(att, "content", None)
+                if not isinstance(content, dict):
+                    content = getattr(content, "__dict__", None) or {}
+                download_url = content.get("downloadUrl") or content.get("download_url")
+                file_type = (content.get("fileType") or content.get("file_type") or "").lstrip(".")
+                if not download_url:
+                    continue
+                filename = att_name or (f"document.{file_type}" if file_type else "document")
+                try:
+                    data = await self._fetch_attachment_bytes(download_url)
+                    cached = cache_media_bytes(data, filename=filename, mime_type="")
+                    if cached:
+                        media_urls.append(cached.path)
+                        media_types.append(cached.media_type)
+                        media_kinds.append(cached.kind)
+                    else:
+                        logger.warning(
+                            "[teams] Unsupported document type for attachment '%s', skipping",
+                            filename,
+                        )
+                except Exception as e:
+                    logger.warning("[teams] Failed to cache file attachment '%s': %s", filename, e)
+                continue
+
             if content_url and content_type.startswith("image/"):
                 try:
                     cached = await cache_image_from_url(content_url)
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)
+                        media_kinds.append("image")
                 except Exception as e:
                     logger.warning("[teams] Failed to cache image attachment: %s", e)
+                continue
 
-        msg_type = MessageType.PHOTO if media_urls else MessageType.TEXT
+            if content_url:
+                # Direct-URL non-image attachment (video/audio/document).
+                try:
+                    data = await self._fetch_attachment_bytes(content_url)
+                    cached = cache_media_bytes(
+                        data, filename=att_name, mime_type=content_type
+                    )
+                    if cached:
+                        media_urls.append(cached.path)
+                        media_types.append(cached.media_type)
+                        media_kinds.append(cached.kind)
+                except Exception as e:
+                    logger.warning(
+                        "[teams] Failed to cache attachment '%s' (%s): %s",
+                        att_name or content_url, content_type, e,
+                    )
+
+        # Classification: DOCUMENT wins over PHOTO/VIDEO/AUDIO for mixed
+        # attachments — run.py's image handling keys off the per-path image/*
+        # mime types regardless of message_type, but document-context
+        # injection gates strictly on MessageType.DOCUMENT (same precedence
+        # as Email/Signal, PR #44695).
+        if "document" in media_kinds:
+            msg_type = MessageType.DOCUMENT
+        elif "image" in media_kinds:
+            msg_type = MessageType.PHOTO
+        elif "video" in media_kinds:
+            msg_type = MessageType.VIDEO
+        elif "audio" in media_kinds:
+            msg_type = MessageType.AUDIO
+        else:
+            msg_type = MessageType.TEXT
 
         event = MessageEvent(
             text=text,

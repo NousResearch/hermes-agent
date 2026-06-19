@@ -14,12 +14,14 @@ import hashlib
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import tempfile
 import threading
 import time
 from collections import defaultdict
+from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -28,8 +30,46 @@ VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
+_DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+# Discord enforces a hard cap of 100 global application (slash) commands per
+# app. Registering more makes the ENTIRE sync fail with error 30032
+# ("Maximum number of application commands reached"), which silently breaks
+# every slash command — not just the overflow ones. We keep the desired set
+# at or below this limit at registration time.
+_DISCORD_MAX_APP_COMMANDS = 100
+_DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
+    "non_conversational",
+    "non_conversational_history",
+})
+# Upgrade-bridge fallback only. The primary mechanism is the persisted
+# non-conversational message-ID set populated from explicitly marked sends
+# (metadata["non_conversational"]). These regexes exist solely to recognize
+# status bumps emitted by an older gateway version that pre-dates the marking,
+# so they don't partition history after an upgrade. New emitters should set the
+# metadata flag, not rely on a regex here.
+_DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
+    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
+    # Legacy/background-review test doubles used this shorter form before the
+    # self-improvement prefix became the stable emitter contract.
+    re.compile(
+        r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*⏳\s+Working\s+—\s+\d+\s+min(?:\s|$)", re.IGNORECASE),
+    re.compile(
+        r"^\s*\[Background process\s+\S+\s+"
+        r"(?:finished with exit code|is still running~)[\s\S]*\]\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:✅|❌)\s+Hermes update\s+"
+        r"(?:finished|failed|timed out)[\s\S]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
+)
 
 try:
     import discord
@@ -48,7 +88,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -66,6 +105,43 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
+
+
+async def _wait_for_ready_or_bot_exit(
+    ready_event: asyncio.Event,
+    bot_task: asyncio.Task,
+    timeout: float,
+) -> None:
+    """Wait until Discord is ready, or surface early bot startup failure.
+
+    ``discord.py`` startup errors (including SOCKS/proxy failures from
+    aiohttp-socks/python-socks) happen inside ``Bot.start()``.  If ``connect()``
+    only waits on ``ready_event``, a dead background task still burns the full
+    ready timeout before the gateway supervisor can reconnect.  Racing the ready
+    event against the bot task keeps failures fast and preserves the original
+    exception for logging/classification.
+    """
+    ready_task = asyncio.create_task(ready_event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {ready_task, bot_task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            raise asyncio.TimeoutError
+        if bot_task in done:
+            exc = bot_task.exception()
+            if exc is not None:
+                raise exc
+            if not ready_task.done():
+                raise RuntimeError("Discord bot task exited before ready")
+        await ready_task
+    finally:
+        if not ready_task.done():
+            ready_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ready_task
 
 
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
@@ -86,6 +162,73 @@ def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[s
     if bundled.is_file():
         return str(bundled)
     return None
+
+
+class _DiscordNonConversationalMessageTracker:
+    """Persistent bounded set of Discord message IDs that are status noise."""
+
+    _MAX_TRACKED = 2000
+
+    def __init__(self, max_tracked: int = _MAX_TRACKED):
+        self._max_tracked = max_tracked
+        self._ids: dict[str, None] = dict.fromkeys(self._load())
+
+    def _state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return (
+            get_hermes_home()
+            / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+            / _DISCORD_NONCONVERSATIONAL_STATE_FILENAME
+        )
+
+    def _load(self) -> list[str]:
+        path = self._state_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(message_id) for message_id in data if str(message_id).strip()]
+        except Exception:
+            logger.debug("[%s] Failed to load non-conversational Discord IDs", "Discord")
+        return []
+
+    def _save(self) -> None:
+        ids = list(self._ids)
+        if len(ids) > self._max_tracked:
+            ids = ids[-self._max_tracked:]
+            self._ids = dict.fromkeys(ids)
+        try:
+            atomic_json_write(self._state_path(), ids, indent=None)
+        except Exception:
+            logger.debug("[%s] Failed to save non-conversational Discord IDs", "Discord", exc_info=True)
+
+    def mark_many(self, message_ids: List[str]) -> None:
+        changed = False
+        for message_id in message_ids:
+            key = str(message_id or "").strip()
+            if key and key not in self._ids:
+                self._ids[key] = None
+                changed = True
+        if changed:
+            self._save()
+
+    def __contains__(self, message_id: str) -> bool:
+        return str(message_id or "") in self._ids
+
+
+def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
+    """Return True when an outbound send was explicitly marked as status-only."""
+    if not isinstance(metadata, dict):
+        return False
+    return any(bool(metadata.get(key)) for key in _DISCORD_NONCONVERSATIONAL_METADATA_KEYS)
+
+
+def _looks_like_nonconversational_history_message(content: str) -> bool:
+    """Fallback recognizer for legacy status bumps missing persisted IDs."""
+    text = content or ""
+    return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -520,6 +663,7 @@ class VoiceReceiver:
                 ],
                 check=True,
                 timeout=10,
+                stdin=subprocess.DEVNULL,
             )
         finally:
             try:
@@ -573,6 +717,7 @@ class DiscordAdapter(BasePlatformAdapter):
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
+    supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -600,6 +745,11 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
+        # linked text-channel id; set by run.py. Lets the inactivity timer leave
+        # the bot in the channel when the user deliberately picked text-only
+        # (/voice off) instead of leaving (/voice leave).
+        self._voice_mode_getter: Optional[Callable] = None  # set by run.py
         # Phase 3: continuous voice mixer (ambient idle bed + ducked speech).
         # Installed once per guild on join; lets acks / TTS / the "thinking"
         # loop overlap in one outgoing stream instead of stop-and-swap.
@@ -615,6 +765,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        # True while disconnect() is intentionally closing discord.py. The
+        # bot task's done callback uses this to distinguish an operator/service
+        # shutdown from a runtime websocket crash.
+        self._disconnecting = False
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -626,6 +780,68 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Persistent set of bot-authored lifecycle/status message IDs that
+        # should not act as conversational history boundaries after restart.
+        self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
+
+    def _handle_bot_task_done(self, task: asyncio.Task) -> None:
+        """Surface post-startup discord.py task exits to the gateway supervisor.
+
+        discord.py reconnects normal gateway interruptions internally. When its
+        top-level ``Bot.start()`` task actually exits after the adapter has been
+        marked running, the Discord websocket is dead while the Hermes gateway
+        process can remain alive. Treat that split-brain state as a retryable
+        fatal adapter error so ``GatewayRunner._handle_adapter_fatal_error`` can
+        remove this adapter and queue Discord for the existing reconnect watcher.
+        """
+        if getattr(self, "_disconnecting", False):
+            # Intentional service/operator shutdown. Drain the task result so
+            # asyncio doesn't emit "exception was never retrieved" warnings.
+            with suppress(asyncio.CancelledError, Exception):
+                task.exception()
+            return
+
+        # Ignore stale callbacks from an older client if a reconnect already
+        # installed a newer Bot.start() task on this adapter instance.
+        if self._bot_task is not None and task is not self._bot_task:
+            with suppress(asyncio.CancelledError, Exception):
+                task.exception()
+            return
+
+        if not self._running:
+            # Startup failures are handled by _wait_for_ready_or_bot_exit() in
+            # connect(); this callback is only for post-startup split-brain.
+            with suppress(asyncio.CancelledError, Exception):
+                task.exception()
+            return
+
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as err:  # pragma: no cover - defensive
+            exc = err
+
+        if exc is None:
+            message = "Discord gateway task exited without an exception"
+        else:
+            message = f"Discord gateway task exited: {exc}"
+
+        logger.error("[%s] %s", self.name, message, exc_info=exc if exc else False)
+        self._set_fatal_error("discord_gateway_task_exited", message, retryable=True)
+
+        async def _notify() -> None:
+            try:
+                await self._notify_fatal_error()
+            except Exception as notify_exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "[%s] Failed to notify gateway supervisor about Discord task exit: %s",
+                    self.name,
+                    notify_exc,
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_notify())
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -787,6 +1003,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
+                _role_authorized = False
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
@@ -810,6 +1027,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=_is_dm,
                     ):
                         return
+                    _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
                 
                 # Multi-agent filtering: if the message mentions specific bots
                 # but NOT this bot, the sender is talking to another agent —
@@ -851,7 +1069,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
-                await self._handle_message(message)
+                await self._handle_message(message, role_authorized=_role_authorized)
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
@@ -891,25 +1109,55 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._register_slash_commands()
 
             # Start the bot in background
+            self._disconnecting = False
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task.add_done_callback(self._handle_bot_task_done)
 
-            # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            # Wait for ready, but fail fast if discord.py's background startup
+            # task dies first (for example on SOCKS/proxy connect errors).
+            await _wait_for_ready_or_bot_exit(self._ready_event, self._bot_task, timeout=30)
 
             self._running = True
             return True
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            # Cancel the background bot task so it cannot fire on_message after
+            # this adapter is discarded.  Without this, the task keeps running and
+            # a later successful reconnect leaves two active Discord clients that
+            # each process every message, producing duplicate threads/responses.
+            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            # Same zombie-client hazard as the timeout branch: the background
+            # client.start() task may already be running when a later setup
+            # step raises. Cancel it so the discarded adapter cannot connect.
+            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
 
+    async def _cancel_bot_task(self) -> None:
+        """Cancel and await the background client.start() task, if running."""
+        if self._bot_task and not self._bot_task.done():
+            self._bot_task.cancel()
+            try:
+                await self._bot_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._bot_task = None
+
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        self._disconnecting = True
+        # Cancel the bot task before closing the client.  If connect() timed out
+        # and returned False, the background client.start() task may still be
+        # running; calling client.close() alone is not enough to stop it because
+        # discord.py's reconnect loop can ignore the closed flag while a
+        # WebSocket handshake is in flight.  Explicitly cancelling the task here
+        # ensures the zombie client cannot receive or dispatch any further events.
+        await self._cancel_bot_task()
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
@@ -1431,6 +1679,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id = None
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
+            nonconversational = _metadata_marks_nonconversational(metadata)
 
             if thread_id:
                 # Fetch the thread directly — threads are addressed by their own ID.
@@ -1508,7 +1757,10 @@ class DiscordAdapter(BasePlatformAdapter):
             # backfill — avoids a full channel.history() scan on hot paths.
             if message_ids:
                 _target_id = thread_id or chat_id
-                self._last_self_message_id[_target_id] = message_ids[-1]
+                if nonconversational:
+                    self._nonconversational_messages.mark_many(message_ids)
+                elif not _looks_like_nonconversational_history_message(content):
+                    self._last_self_message_id[_target_id] = message_ids[-1]
 
             return SendResult(
                 success=True,
@@ -2263,6 +2515,20 @@ class DiscordAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
+        # ``/voice off`` mutes spoken replies but deliberately keeps the bot in
+        # the channel (leaving is ``/voice leave``). The inactivity timer only
+        # counts the bot's OWN audio as activity, so under voice-off mode it
+        # fires every VOICE_TIMEOUT seconds, yanks the bot out, and spams the
+        # text channel with "Left voice channel (inactivity timeout)." Honor the
+        # user's choice: skip the auto-disconnect while voice replies are off.
+        # (The timer re-arms when the bot next speaks or hears a user.)
+        _mode_getter = getattr(self, "_voice_mode_getter", None)
+        if text_ch_id is not None and _mode_getter is not None:
+            try:
+                if _mode_getter(str(text_ch_id)) == "off":
+                    return
+            except Exception:
+                pass
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:
@@ -2393,6 +2659,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=False,
                     ):
                         continue
+                    # A user speaking to the bot is activity too — not just the
+                    # bot's own playback. Reset the inactivity timer so an active
+                    # listener isn't disconnected mid-conversation (this also
+                    # covers voice-on text-only sessions that never play audio).
+                    self._reset_voice_timeout(guild_id)
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
             pass
@@ -3359,6 +3630,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
         already_registered: set[str] = set()
+        # Native commands above are registered first and are the highest
+        # priority, so they always survive the 100-command cap. Reserve one
+        # slot for the consolidated ``/skill`` group registered further below.
+        slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
+        dropped_over_cap = 0
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
@@ -3375,6 +3651,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Discord command names: lowercase, hyphens OK, max 32 chars.
                 discord_name = cmd_def.name.lower()[:32]
                 if discord_name in already_registered:
+                    continue
+                if len(already_registered) >= slot_cap:
+                    dropped_over_cap += 1
                     continue
                 auto_cmd = _build_auto_slash_command(
                     cmd_def.name,
@@ -3408,6 +3687,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 discord_name = plugin_name.lower()[:32]
                 if discord_name in already_registered:
                     continue
+                if len(already_registered) >= slot_cap:
+                    dropped_over_cap += 1
+                    continue
                 auto_cmd = _build_auto_slash_command(
                     plugin_name,
                     plugin_desc,
@@ -3429,6 +3711,20 @@ class DiscordAdapter(BasePlatformAdapter):
         # subcommand groups.  This uses 1 top-level slot instead of N,
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
+
+        if dropped_over_cap:
+            # Staying under the cap keeps the whole sync succeeding; without
+            # this guard a single over-limit command makes Discord reject the
+            # entire batch (error 30032), breaking every slash command.
+            logger.warning(
+                "[%s] Reached Discord's limit of %d slash commands; skipped %d "
+                "lower-priority command(s) to keep the command sync working. "
+                "Disable slash commands you don't need or trim installed plugins "
+                "to surface them all.",
+                self.name,
+                _DISCORD_MAX_APP_COMMANDS,
+                dropped_over_cap,
+            )
 
         # Optional defense-in-depth: hide every slash command from non-admin
         # guild members in Discord's slash picker. Server-side authorization
@@ -4013,15 +4309,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 after=_after_obj,
                 oldest_first=False,
             ):
+                # Skip system messages (pins, joins, thread renames, etc.)
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    continue
+
+                content = getattr(msg, "clean_content", msg.content) or ""
+                if (
+                    str(getattr(msg, "id", "")) in self._nonconversational_messages
+                    or _looks_like_nonconversational_history_message(content)
+                ):
+                    continue
+
                 # Stop at our own message — this is the partition point.
                 # Everything before this is already in the session transcript.
                 # (Redundant when _after_obj is set, but needed for cold start.)
                 if msg.author == self._client.user:
                     break
-
-                # Skip system messages (pins, joins, thread renames, etc.)
-                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
-                    continue
 
                 # Respect DISCORD_ALLOW_BOTS for other bots.
                 # For history context, "mentions" is treated as "all" — we are
@@ -4029,7 +4332,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 if getattr(msg.author, "bot", False) and not include_other_bots:
                     continue
 
-                content = getattr(msg, "clean_content", msg.content) or ""
                 if not content and msg.attachments:
                     content = "(attachment)"
                 if not content:
@@ -4376,6 +4678,13 @@ class DiscordAdapter(BasePlatformAdapter):
         Open-ended mode (``choices`` empty/None): renders the question as
         plain embed text — no buttons. The gateway's text-intercept captures
         the next message in this session and resolves the clarify.
+
+        Choice normalisation: ``choices`` may contain bare strings OR dicts
+        (LLMs sometimes emit ``[{"description": "..."}]`` instead of bare
+        strings, which would otherwise render as raw Python repr on the
+        button label). Dict choices are unwrapped against the canonical
+        LLM tool-call keys ``label``, ``description``, ``text``, ``title``
+        in that order. Dicts with none of those keys are dropped.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -4401,8 +4710,37 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.orange(),
             )
 
+            # Normalise choices: LLMs sometimes emit `[{"description": "..."}]`
+            # instead of bare strings, which would render as raw Python repr on
+            # the button label. Unwrap the common shapes, then stringify.
+            def _flatten_choice(c):
+                if c is None:
+                    return ""
+                if isinstance(c, str):
+                    return c.strip()
+                if isinstance(c, dict):
+                    # Prefer the canonical LLM tool-call user-facing keys
+                    # in the order the LLM is most likely to emit them.
+                    # 'name' and 'value' are deliberately NOT here: they're
+                    # Discord-component-shaped fields that could appear in
+                    # dicts that aren't meant to be choices (e.g., a
+                    # developer-error wiring that passes a Button-shaped
+                    # object). Picking them would leak raw enum values
+                    # or 4-char model identifiers onto user-facing buttons.
+                    # If a dict has none of the canonical keys, drop it
+                    # rather than picking some random field — a garbage
+                    # button label is worse than no button at all.
+                    for key in ("label", "description", "text", "title"):
+                        v = c.get(key)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+                    return ""
+                if isinstance(c, (list, tuple)):
+                    return " ".join(_flatten_choice(x) for x in c).strip()
+                return str(c).strip()
+
             clean_choices = [
-                str(c).strip() for c in (choices or []) if c is not None and str(c).strip()
+                s for s in (_flatten_choice(c) for c in (choices or [])) if s
             ]
             # Discord allows up to 5 buttons per row, 5 rows per view = 25.
             # We reserve one slot for the "Other" button, so cap at 24 choices.
@@ -4467,6 +4805,8 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             msg = await channel.send(embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
+            if _metadata_marks_nonconversational(metadata):
+                self._nonconversational_messages.mark_many([str(msg.id)])
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -4700,7 +5040,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
-    async def _handle_message(self, message: DiscordMessage) -> None:
+    async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
@@ -4814,7 +5154,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
-        all_attachments = list(message.attachments) + snapshot_attachments
+        referenced_attachments = []
+        reference = getattr(message, "reference", None)
+        resolved_reference = getattr(reference, "resolved", None) if reference else None
+        if resolved_reference is not None:
+            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
+
+        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -4884,6 +5230,7 @@ class DiscordAdapter(BasePlatformAdapter):
             guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
+            role_authorized=role_authorized,
         )
 
         # Build media URLs -- download image attachments to local cache so the
@@ -5188,34 +5535,35 @@ def _component_check_auth(
 ) -> bool:
     """Shared user-or-role OR semantics for component view button clicks.
 
-    Mirrors ``DiscordAdapter._is_allowed_user`` / the slash and on_message
-    gates so every Discord interaction surface honors the same trust
-    boundary. Component views (ExecApprovalView, SlashConfirmView,
-    UpdatePromptView, ModelPickerView) used to receive only
-    ``allowed_user_ids``: in role-only deployments
-    (DISCORD_ALLOWED_ROLES set, DISCORD_ALLOWED_USERS empty) the user
-    set was empty and the legacy "no allowlist = allow everyone" branch
-    let any guild member click the buttons -- approving exec commands,
-    cancelling slash confirmations, switching the model.
+    Mirrors the gateway's external-surface authorization model: component
+    button clicks must be explicitly authorized by a Discord user/role
+    allowlist, a global user allowlist, or an explicit allow-all flag.
 
     Behavior:
 
-      - both allowlists empty -> allow (preserves existing no-allowlist
-        deployments, no regression)
-      - user is in user allowlist -> allow
+      - DISCORD_ALLOW_ALL_USERS or GATEWAY_ALLOW_ALL_USERS -> allow
+      - user is in DISCORD_ALLOWED_USERS or GATEWAY_ALLOWED_USERS -> allow
       - role allowlist set + user has a role in it -> allow
       - role allowlist set + interaction.user has no resolvable
         ``roles`` attribute (e.g. DM context with a role policy active)
         -> reject (fail closed)
       - otherwise -> reject
     """
-    user_set = allowed_user_ids or set()
-    role_set = allowed_role_ids or set()
-    has_users = bool(user_set)
-    has_roles = bool(role_set)
-    if not has_users and not has_roles:
+    if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+        return True
+    if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
         return True
 
+    user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
+    global_allowed = {
+        uid.strip()
+        for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",")
+        if uid.strip()
+    }
+    user_set.update(global_allowed)
+    role_set = set(allowed_role_ids or set())
+    has_users = bool(user_set)
+    has_roles = bool(role_set)
     user = getattr(interaction, "user", None)
     if user is None:
         return False
@@ -5225,7 +5573,7 @@ def _component_check_auth(
             uid = str(user.id)
         except AttributeError:
             uid = ""
-        if uid and uid in user_set:
+        if "*" in user_set or (uid and uid in user_set):
             return True
 
     if has_roles:
@@ -5608,6 +5956,7 @@ def _define_discord_view_classes() -> None:
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._selected_provider: str = ""
+            self._pending_expensive_model: str = ""
 
             self._build_provider_select()
 
@@ -5690,6 +6039,41 @@ def _define_discord_view_classes() -> None:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
+        def _build_expensive_confirm(self, model_id: str):
+            """Build confirmation buttons for unusually expensive models."""
+            self.clear_items()
+            self._pending_expensive_model = model_id
+
+            confirm_btn = discord.ui.Button(
+                label="Switch anyway",
+                style=discord.ButtonStyle.red,
+                custom_id="model_expensive_confirm",
+            )
+            confirm_btn.callback = self._on_expensive_confirm
+            self.add_item(confirm_btn)
+
+            cancel_btn = discord.ui.Button(
+                label="Cancel",
+                style=discord.ButtonStyle.grey,
+                custom_id="model_expensive_cancel",
+            )
+            cancel_btn.callback = self._on_cancel
+            self.add_item(cancel_btn)
+
+        async def _expensive_warning_for(self, model_id: str):
+            try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                return await asyncio.to_thread(
+                    expensive_model_warning,
+                    model_id,
+                    provider=self._selected_provider,
+                )
+            except Exception:
+                return None
+
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
@@ -5719,7 +6103,11 @@ def _define_discord_view_classes() -> None:
                 view=self,
             )
 
-        async def _on_model_selected(self, interaction: discord.Interaction):
+        async def _switch_selected_model(
+            self,
+            interaction: discord.Interaction,
+            model_id: str,
+        ):
             if self.resolved:
                 await interaction.response.send_message(
                     "Already resolved~", ephemeral=True
@@ -5732,7 +6120,6 @@ def _define_discord_view_classes() -> None:
                 return
 
             self.resolved = True
-            model_id = interaction.data["values"][0]
             self.clear_items()
             await interaction.response.edit_message(
                 embed=discord.Embed(
@@ -5759,6 +6146,50 @@ def _define_discord_view_classes() -> None:
                     color=discord.Color.green(),
                 ),
                 view=None,
+            )
+
+        async def _on_model_selected(self, interaction: discord.Interaction):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "Already resolved~", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            model_id = interaction.data["values"][0]
+            warning = await self._expensive_warning_for(model_id)
+            if warning is not None:
+                self._build_expensive_confirm(model_id)
+                await interaction.response.edit_message(
+                    embed=discord.Embed(
+                        title="⚠ Expensive Model Warning",
+                        description=warning.message,
+                        color=discord.Color.red(),
+                    ),
+                    view=self,
+                )
+                return
+
+            await self._switch_selected_model(interaction, model_id)
+
+        async def _on_expensive_confirm(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+            if not self._pending_expensive_model:
+                await interaction.response.send_message(
+                    "Model selection expired.", ephemeral=True
+                )
+                return
+            await self._switch_selected_model(
+                interaction,
+                self._pending_expensive_model,
             )
 
         async def _on_back(self, interaction: discord.Interaction):
@@ -5848,10 +6279,47 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars.
-                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
+                # Discord button labels are capped at 80 chars. On mobile the
+                # visible width is much narrower (often <40 chars before it
+                # wraps to 2 lines and the second line gets cut off), so we
+                # cap aggressively and cut at a word boundary when possible
+                # to keep the trailing text readable.
+                #
+                # Cut strategy (most-preferred to least-preferred):
+                #   1. Last space in the trailing half of the budget
+                #      (cleanest word boundary)
+                #   2. Last soft boundary in the trailing half of the
+                #      budget (hyphen, comma, period, paren)
+                #   3. Hard cut at the budget limit (last resort)
+                prefix = f"{index + 1}. "
+                budget = 80 - len(prefix)
+                if len(choice) <= budget:
+                    label_body = choice
+                else:
+                    truncated = choice[: budget - 1].rstrip()
+                    cut_at = -1
+                    # 1. Last space in the trailing half of the budget.
+                    space = truncated.rfind(" ")
+                    if space >= budget // 2:
+                        cut_at = space
+                    # 2. Soft boundary — only if no word boundary found.
+                    # Find the latest soft boundary in the trailing half
+                    # of the budget; that maximizes preserved text length.
+                    # Cut AT the soft boundary (inclusive) so the label
+                    # ends on the soft char (e.g. "-" or ",") rather than
+                    # on the alpha char that followed it.
+                    if cut_at < 0:
+                        latest_soft = max(
+                            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
+                            default=-1,
+                        )
+                        if latest_soft >= budget // 2:
+                            cut_at = latest_soft + 1
+                    if cut_at > 0:
+                        truncated = truncated[:cut_at]
+                    label_body = truncated.rstrip() + "…"
                 button = discord.ui.Button(
-                    label=f"{index + 1}. {label_body}",
+                    label=f"{prefix}{label_body}",
                     style=discord.ButtonStyle.primary,
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )

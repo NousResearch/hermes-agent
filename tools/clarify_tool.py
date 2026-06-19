@@ -20,6 +20,39 @@ from typing import List, Optional, Callable
 MAX_CHOICES = 4
 
 
+def _flatten_choice(c) -> str:
+    """Coerce a single choice into its user-facing display string.
+
+    The schema declares choices as bare strings, but LLMs sometimes emit
+    dict-shaped choices like ``[{"description": "..."}]``. A naive ``str(c)``
+    turns the whole dict into its Python repr — ``{'description': '...'}`` —
+    which then leaks onto every surface that renders the choice (CLI panel,
+    Discord buttons, Telegram numbered list) AND is returned verbatim as the
+    user's answer. Normalising here, at the one platform-agnostic entry point,
+    fixes the whole class in one place instead of per-adapter.
+
+    Dict unwrap order is the canonical LLM tool-call user-facing keys:
+    ``label`` → ``description`` → ``text`` → ``title``. ``name`` and ``value``
+    are deliberately excluded — they're component-shaped fields that could
+    carry raw enum values or short identifiers, not human-readable labels. A
+    dict with none of the canonical keys is dropped (returns ""), since a
+    garbage label is worse than no choice at all.
+    """
+    if c is None:
+        return ""
+    if isinstance(c, str):
+        return c.strip()
+    if isinstance(c, dict):
+        for key in ("label", "description", "text", "title"):
+            v = c.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+    if isinstance(c, (list, tuple)):
+        return " ".join(_flatten_choice(x) for x in c).strip()
+    return str(c).strip()
+
+
 def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
@@ -48,7 +81,12 @@ def clarify_tool(
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
-        choices = [str(c).strip() for c in choices if str(c).strip()]
+        # LLMs sometimes emit dict-shaped choices (e.g. [{"description": "..."}])
+        # instead of bare strings. _flatten_choice unwraps them to their
+        # user-facing text here — the single platform-agnostic entry point —
+        # so the CLI panel, Discord buttons, and Telegram list all render clean
+        # text and the resolved answer is never a raw Python dict repr.
+        choices = [s for s in (_flatten_choice(c) for c in choices) if s]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:

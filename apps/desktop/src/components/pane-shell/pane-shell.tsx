@@ -99,35 +99,39 @@ const remPx = () =>
     ? 16
     : Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16
 
-const viewportPx = () => (typeof window === 'undefined' ? 1280 : window.innerWidth)
-
-// Resolves PaneProps.minWidth/maxWidth (number | "Npx" | "Nrem" | "Nvw" | "N%") to
-// pixels for drag clamping. Viewport units resolve against the current window width.
+// Resolves PaneProps.minWidth/maxWidth (number | "Npx" | "Nrem" | "Nvw" | "Nvh" | "N%")
+// to pixels for drag clamping.
 function widthToPx(value: WidthValue | undefined) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : undefined
   }
 
-  const match = value?.trim().match(/^(-?\d*\.?\d+)(px|rem|vw|%)?$/)
+  const match = value?.trim().match(/^(\-?\d*\.?\d+)(px|rem|vw|vh|%)?$/)
 
   if (!match) {
     return undefined
   }
 
-  const n = Number.parseFloat(match[1])
+  const amount = Number.parseFloat(match[1])
+  const unit = match[2] ?? 'px'
 
-  switch (match[2]) {
-    case 'rem':
-      return n * remPx()
-
-    case 'vw':
-
-    case '%':
-      return (n * viewportPx()) / 100
-
-    default:
-      return n
+  if (unit === 'rem') {
+    return amount * remPx()
   }
+
+  if (unit === 'vw') {
+    return typeof window === 'undefined' ? undefined : window.innerWidth * (amount / 100)
+  }
+
+  if (unit === 'vh') {
+    return typeof window === 'undefined' ? undefined : window.innerHeight * (amount / 100)
+  }
+
+  if (unit === '%') {
+    return typeof window === 'undefined' ? undefined : window.innerWidth * (amount / 100)
+  }
+
+  return amount
 }
 
 function isRole(child: unknown, role: 'pane' | 'main'): child is ReactElement {

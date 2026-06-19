@@ -303,6 +303,7 @@ async def test_html_mx_reply_sets_reply_to_text_when_plain_body_has_no_fallback(
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
+    adapter._client = SimpleNamespace(get_event=AsyncMock())
     _set_dm(adapter)
     formatted = (
         '<mx-reply><blockquote>'
@@ -325,6 +326,95 @@ async def test_html_mx_reply_sets_reply_to_text_when_plain_body_has_no_fallback(
     assert msg.text == "follow up"
     assert msg.reply_to_message_id == "$quoted2"
     assert msg.reply_to_text == "quoted HTML text"
+    adapter._client.get_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reply_without_fallback_fetches_parent_event_text(monkeypatch):
+    """Clients that only send m.in_reply_to should still get reply context."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(
+        get_event=AsyncMock(
+            return_value=SimpleNamespace(
+                content={"body": "parent message from Cinny", "msgtype": "m.text"}
+            )
+        )
+    )
+    _set_dm(adapter)
+    event = _make_event("follow up", reply_to_event_id="$cinny-parent")
+
+    await adapter._on_room_message(event)
+
+    adapter._client.get_event.assert_awaited_once_with(
+        "!room1:example.org", "$cinny-parent"
+    )
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "follow up"
+    assert msg.reply_to_message_id == "$cinny-parent"
+    assert msg.reply_to_text == "parent message from Cinny"
+
+
+@pytest.mark.asyncio
+async def test_reply_parent_fetch_failure_keeps_message_without_reply_text(monkeypatch):
+    """Parent fetch is best effort; failures must not drop the current reply."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(get_event=AsyncMock(side_effect=RuntimeError("boom")))
+    _set_dm(adapter)
+    event = _make_event("follow up", reply_to_event_id="$missing-parent")
+
+    await adapter._on_room_message(event)
+
+    adapter._client.get_event.assert_awaited_once_with(
+        "!room1:example.org", "$missing-parent"
+    )
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "follow up"
+    assert msg.reply_to_message_id == "$missing-parent"
+    assert msg.reply_to_text is None
+
+
+@pytest.mark.asyncio
+async def test_media_reply_without_fallback_fetches_parent_event_text(monkeypatch):
+    """Media replies from clients without fallback should still carry context."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(
+        get_event=AsyncMock(
+            return_value=SimpleNamespace(
+                content={"body": "please inspect this image", "msgtype": "m.text"}
+            )
+        )
+    )
+    _set_dm(adapter)
+    event = _make_event(
+        "screenshot.png",
+        reply_to_event_id="$cinny-media-parent",
+        msgtype="m.image",
+    )
+
+    await adapter._on_room_message(event)
+
+    adapter._client.get_event.assert_awaited_once_with(
+        "!room1:example.org", "$cinny-media-parent"
+    )
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == ""
+    assert msg.reply_to_message_id == "$cinny-media-parent"
+    assert msg.reply_to_text == "please inspect this image"
 
 
 @pytest.mark.asyncio

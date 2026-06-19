@@ -583,6 +583,25 @@ def _extract_matrix_reply_context(
     return stripped_body, _extract_html_matrix_reply_fallback(formatted_body)
 
 
+def _extract_matrix_event_text(event: Any) -> Optional[str]:
+    """Extract the visible body text from a Matrix event fetched by event ID."""
+    content = getattr(event, "content", None)
+    if hasattr(content, "serialize"):
+        try:
+            content = content.serialize()
+        except Exception:
+            return None
+    if not isinstance(content, dict):
+        return None
+
+    body = content.get("body")
+    if not isinstance(body, str):
+        return None
+    stripped_body, _ = _extract_matrix_reply_context(body, content.get("formatted_body"))
+    text = stripped_body.strip()
+    return text or None
+
+
 def _create_matrix_session(proxy_url: str | None):
     """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
 
@@ -2726,6 +2745,37 @@ class MatrixAdapter(BasePlatformAdapter):
 
         return body, is_dm, chat_type, thread_id, display_name, source
 
+    async def _resolve_reply_context(
+        self,
+        room_id: str,
+        reply_to_event_id: str,
+        body: str,
+        raw_body: str,
+        formatted_body: Any = None,
+    ) -> tuple[str, Optional[str]]:
+        """Strip local reply fallback and best-effort resolve replied-to text."""
+        _, reply_to_text = _extract_matrix_reply_context(raw_body, formatted_body)
+        stripped_body, _ = _extract_matrix_reply_context(body, formatted_body)
+        if reply_to_text:
+            return stripped_body, reply_to_text
+
+        client = self._client
+        if not client or not hasattr(client, "get_event"):
+            return stripped_body, None
+
+        try:
+            parent_event = await client.get_event(room_id, reply_to_event_id)
+        except Exception as exc:
+            logger.debug(
+                "Matrix: could not fetch replied-to event %s in %s: %s",
+                reply_to_event_id,
+                room_id,
+                exc,
+            )
+            return stripped_body, None
+
+        return stripped_body, _extract_matrix_event_text(parent_event)
+
     async def _handle_text_message(
         self,
         room_id: str,
@@ -2763,8 +2813,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if reply_to:
             formatted_body = source_content.get("formatted_body")
             raw_body = source_content.get("body", "") or ""
-            _, reply_to_text = _extract_matrix_reply_context(raw_body, formatted_body)
-            body, _ = _extract_matrix_reply_context(body, formatted_body)
+            body, reply_to_text = await self._resolve_reply_context(
+                room_id,
+                reply_to,
+                body,
+                raw_body,
+                formatted_body,
+            )
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
@@ -2979,8 +3034,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if reply_to:
             formatted_body = source_content.get("formatted_body")
             raw_body = source_content.get("body", "") or ""
-            _, reply_to_text = _extract_matrix_reply_context(raw_body, formatted_body)
-            body, _ = _extract_matrix_reply_context(body, formatted_body)
+            body, reply_to_text = await self._resolve_reply_context(
+                room_id,
+                reply_to,
+                body,
+                raw_body,
+                formatted_body,
+            )
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""

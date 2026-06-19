@@ -227,6 +227,16 @@ export function BrowserPane() {
           label={state.loading ? b.stop : b.reload}
           onClick={reloadOrStop}
         />
+        {/* Grouped with the left nav buttons (not at the toolbar's right edge):
+            the right edge abuts the file-browser pane's hover-reveal trigger
+            strip, so a right-edge button makes hovering it slide the file list
+            out instead of showing the button. */}
+        <NavButton
+          disabled={!/^https?:\/\//i.test(state.url)}
+          icon="link-external"
+          label={b.openInSystemBrowser}
+          onClick={() => openCurrentInSystemBrowser()}
+        />
         <form className="min-w-0 flex-1" onSubmit={submitAddress}>
           <input
             aria-label={b.addressBar}
@@ -242,12 +252,6 @@ export function BrowserPane() {
             value={draftUrl}
           />
         </form>
-        <NavButton
-          disabled={!/^https?:\/\//i.test(state.url)}
-          icon="link-external"
-          label={b.openInSystemBrowser}
-          onClick={() => openCurrentInSystemBrowser()}
-        />
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">

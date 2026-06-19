@@ -181,7 +181,16 @@ def build_models_payload(
         user_models: set[str] = set()
         for row in rows:
             if row.get("is_user_defined"):
-                user_models.update(m.lower() for m in (row.get("models") or []))
+                # Only collect models from custom/local proxy providers
+                # (slug starts with "custom:").  Named third-party providers
+                # like volcengine-agent-plan are independent services, not
+                # local proxies — their models should NOT cause aggregator
+                # dedup, otherwise models silently disappear from aggregators
+                # like OpenCode Go simply because they share a name with a
+                # separate configured provider.  (#49126)
+                slug = row.get("slug", "")
+                if slug.startswith("custom:"):
+                    user_models.update(m.lower() for m in (row.get("models") or []))
         if user_models:
             for row in rows:
                 # A user's own configured provider is never an "aggregator

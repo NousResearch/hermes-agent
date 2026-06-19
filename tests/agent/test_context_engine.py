@@ -190,6 +190,73 @@ class TestCompressorSessionReset:
         assert c._previous_summary is None
 
 
+class TestCompressorCustomProvidersOverride:
+    """Verify ContextCompressor respects per-model custom_providers context_length overrides.
+
+    Regression: before #47784, ContextCompressor.__init__ called
+    get_model_context_length() without the custom_providers parameter, so
+    per-model overrides in config.yaml's ``providers.<key>.models.<model>.
+    context_length`` were silently ignored — the compressor fell through to
+    the M3 hardcoded 1M bump (and similar provider-specific overrides)
+    instead of using the user-set value.
+    """
+
+    def test_custom_providers_per_model_override_reaches_compressor(self):
+        """Per-model context_length in custom_providers is honored."""
+        custom_providers = [
+            {
+                "name": "opencode-go",
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "models": {
+                    "minimax-m3": {"context_length": 524288},
+                },
+            },
+        ]
+        c = ContextCompressor(
+            model="minimax-m3",
+            base_url="https://opencode.ai/zen/go/v1",
+            provider="opencode-go",
+            quiet_mode=True,
+            custom_providers=custom_providers,
+        )
+        # Without the fix, this would be 1,000,000 (M3 hardcoded bump).
+        assert c.context_length == 524288
+
+    def test_custom_providers_none_falls_back_to_legacy_path(self):
+        """custom_providers=None is a valid no-op (backward compatible)."""
+        c = ContextCompressor(
+            model="minimax-m3",
+            base_url="https://opencode.ai/zen/go/v1",
+            provider="opencode-go",
+            quiet_mode=True,
+            config_context_length=524288,
+            custom_providers=None,
+        )
+        # config_context_length still works on its own (step 0 of the chain).
+        assert c.context_length == 524288
+
+    def test_custom_providers_does_not_override_explicit_config(self):
+        """config_context_length (step 0) wins over custom_providers (step 0b)."""
+        custom_providers = [
+            {
+                "name": "opencode-go",
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "models": {
+                    "minimax-m3": {"context_length": 524288},
+                },
+            },
+        ]
+        c = ContextCompressor(
+            model="minimax-m3",
+            base_url="https://opencode.ai/zen/go/v1",
+            provider="opencode-go",
+            quiet_mode=True,
+            config_context_length=200000,  # user-set, should win
+            custom_providers=custom_providers,
+        )
+        assert c.context_length == 200000
+
+
 # ---------------------------------------------------------------------------
 # Plugin slot (PluginManager integration)
 # ---------------------------------------------------------------------------

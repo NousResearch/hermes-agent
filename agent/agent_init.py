@@ -1542,6 +1542,7 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            custom_providers=_custom_providers,
         )
     agent.compression_enabled = compression_enabled
 

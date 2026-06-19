@@ -396,6 +396,24 @@ export default function App() {
       .catch(() => setShowTokenAnalytics(false));
   }, []);
 
+  // Sync the Dashboard locale choice to `display.language` in config.yaml
+  // so the embedded TUI picks it up via `useConfigSync` mtime polling.
+  const handleLocaleChange = useCallback((code: string) => {
+    api
+      .getConfig()
+      .then((cfg) => {
+        const next = { ...cfg };
+        const display = { ...((next.display as Record<string, unknown>) ?? {}) };
+        display.language = code;
+        next.display = display;
+        return api.saveConfig(next);
+      })
+      .catch(() => {
+        // Fire-and-forget: Dashboard UI already reflects the choice.
+        // If the config write fails, TUI locale won't sync this time.
+      });
+  }, []);
+
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
   // element for <PluginPage /> — but we also have to suppress the
@@ -700,7 +718,7 @@ export default function App() {
                   label={t.language.switchTo}
                   tooltipWarmRef={tooltipWarmRef}
                 >
-                  <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp />
+                  <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp onLocaleChange={handleLocaleChange} />
                 </SidebarIconWithTooltip>
               </div>
             </div>

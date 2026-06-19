@@ -1,4 +1,13 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { api } from "../lib/api";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
@@ -66,19 +75,96 @@ export const LOCALE_META: Record<Locale, { name: string }> = {
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
 const STORAGE_KEY = "hermes-locale";
+const LOCALE_ALIASES: Record<string, Locale> = {
+  english: "en",
+  german: "de",
+  deutsch: "de",
+  spanish: "es",
+  espanol: "es",
+  español: "es",
+  french: "fr",
+  francais: "fr",
+  français: "fr",
+  turkish: "tr",
+  turkce: "tr",
+  türkçe: "tr",
+  ukrainian: "uk",
+  українська: "uk",
+  afrikaans: "af",
+  korean: "ko",
+  한국어: "ko",
+  japanese: "ja",
+  日本語: "ja",
+  italian: "it",
+  italiano: "it",
+  irish: "ga",
+  gaeilge: "ga",
+  portuguese: "pt",
+  portugues: "pt",
+  português: "pt",
+  russian: "ru",
+  русский: "ru",
+  hungarian: "hu",
+  magyar: "hu",
+  mandarin: "zh",
+  chinese: "zh",
+  "simplified-chinese": "zh",
+  "traditional-chinese": "zh-hant",
+};
 
 function isLocale(value: string): value is Locale {
   return (SUPPORTED_LOCALES as string[]).includes(value);
 }
 
+function normalizeLocale(value: unknown): Locale | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-")
+    .replace(/\s+/g, "-");
+  if (!normalized) return null;
+  if (isLocale(normalized)) return normalized;
+  const alias = LOCALE_ALIASES[normalized];
+  if (alias) return alias;
+
+  if (
+    normalized === "zh-tw" ||
+    normalized === "zh-hk" ||
+    normalized === "zh-mo" ||
+    normalized.startsWith("zh-hant")
+  ) {
+    return "zh-hant";
+  }
+  if (normalized.startsWith("zh")) return "zh";
+
+  const primary = normalized.split("-")[0];
+  return isLocale(primary) ? primary : null;
+}
+
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && isLocale(stored)) return stored;
+    const locale = normalizeLocale(stored);
+    if (locale) return locale;
   } catch {
     // SSR or privacy mode
   }
   return "en";
+}
+
+function persistLocale(locale: Locale) {
+  try {
+    localStorage.setItem(STORAGE_KEY, locale);
+  } catch {
+    // SSR or privacy mode
+  }
+}
+
+function readConfiguredLocale(config: Record<string, unknown>): Locale | null {
+  const display = config.display;
+  if (!display || typeof display !== "object") return null;
+  return normalizeLocale((display as Record<string, unknown>).language);
 }
 
 interface I18nContextValue {
@@ -95,15 +181,35 @@ const I18nContext = createContext<I18nContextValue>({
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+  const userSelectedLocaleRef = useRef(false);
+
+  const applyLocale = useCallback((l: Locale) => {
+    setLocaleState(l);
+    persistLocale(l);
+  }, []);
 
   const setLocale = useCallback((l: Locale) => {
-    setLocaleState(l);
-    try {
-      localStorage.setItem(STORAGE_KEY, l);
-    } catch {
-      // ignore
-    }
-  }, []);
+    userSelectedLocaleRef.current = true;
+    applyLocale(l);
+  }, [applyLocale]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getConfig()
+      .then((config) => {
+        const configuredLocale = readConfiguredLocale(config);
+        if (!cancelled && configuredLocale && !userSelectedLocaleRef.current) {
+          applyLocale(configuredLocale);
+        }
+      })
+      .catch(() => {
+        // Keep the local preference/default when config is unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyLocale]);
 
   const value: I18nContextValue = {
     locale,

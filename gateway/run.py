@@ -15170,9 +15170,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             initial_reply_to_id=event_message_id,
                         )
                         if _want_stream_deltas:
+                            _typing_stopped_on_stream = [False]
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
+                                    # Stop typing indicator on first content
+                                    # delta so the platform clears it before
+                                    # the streamed response is fully visible
+                                    # (Discord keeps the indicator ~10 s after
+                                    # the last POST).
+                                    if not _typing_stopped_on_stream[0] and text:
+                                        _typing_stopped_on_stream[0] = True
+                                        _typing_adp = self.adapters.get(source.platform)
+                                        if _typing_adp and hasattr(_typing_adp, "stop_typing"):
+                                            try:
+                                                safe_schedule_threadsafe(
+                                                    _typing_adp.stop_typing(source.chat_id),
+                                                    _loop_for_step,
+                                                    logger=logger,
+                                                    log_message="stop_typing on first stream delta",
+                                                )
+                                            except Exception:
+                                                pass
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)

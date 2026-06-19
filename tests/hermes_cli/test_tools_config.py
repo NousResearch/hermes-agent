@@ -21,6 +21,7 @@ from hermes_cli.tools_config import (
     _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
+    gui_toolset_label,
     _visible_providers,
     tools_command,
 )
@@ -79,8 +80,11 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
 
 
-def test_configurable_toolsets_include_messaging():
-    assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+def test_gui_toolset_label_strips_leading_emoji():
+    assert gui_toolset_label("🔍 Web Search & Scraping") == "Web Search & Scraping"
+    assert gui_toolset_label("👁️  Vision / Image Analysis") == "Vision / Image Analysis"
+    assert gui_toolset_label("🔌 My Plugin") == "My Plugin"
+    assert gui_toolset_label("Terminal & Processes") == "Terminal & Processes"
 
 
 def test_configurable_toolsets_include_context_engine():
@@ -120,12 +124,6 @@ def test_get_platform_tools_context_engine_respects_explicit_empty_selection():
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
     assert "context_engine" not in enabled
-
-
-def test_get_platform_tools_default_telegram_includes_messaging():
-    enabled = _get_platform_tools({}, "telegram")
-
-    assert "messaging" in enabled
 
 
 def test_get_platform_tools_default_whatsapp_includes_web():

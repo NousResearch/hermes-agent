@@ -505,6 +505,171 @@ def test_stale_claim_with_live_pid_uses_env_ttl_override(
         assert task.claim_expires > int(time.time()) + 3000
 
 
+def test_stale_claim_deferred_when_live_worker_survives_termination(
+    kanban_home, monkeypatch,
+):
+    """A TTL-expired claim whose worker survives the kill must NOT be released.
+
+    Releasing would let the dispatcher spawn a duplicate beside the still-alive
+    worker — the runaway seen when a cgroup memory.high throttle parks a worker
+    in uninterruptible (D) state, where a pending SIGKILL cannot land. The claim
+    is held (extended) and retried next tick instead.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+
+        old_expires = int(time.time()) - 60
+        # Heartbeat stale by > 1h so the live-pid EXTEND branch is skipped and
+        # the terminate path (the wedged-worker case) runs.
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (old_expires, int(time.time()) - 7200, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": False,
+            },
+        )
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 0
+
+        assert kb.get_task(conn, t).status == "running"
+        worker_pid = conn.execute(
+            "SELECT worker_pid FROM tasks WHERE id = ?", (t,),
+        ).fetchone()[0]
+        assert worker_pid == 12345  # worker not orphaned
+        claim_expires = conn.execute(
+            "SELECT claim_expires FROM tasks WHERE id = ?", (t,),
+        ).fetchone()[0]
+        assert claim_expires > old_expires  # claim held, not released
+
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "reclaim_deferred" in kinds
+        assert "reclaimed" not in kinds
+
+
+def test_stale_claim_reclaimed_when_termination_succeeds(
+    kanban_home, monkeypatch,
+):
+    """When the worker is actually killed, the claim is released as before."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (int(time.time()) - 60, int(time.time()) - 7200, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": True,
+            },
+        )
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 1
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_stale_claim_released_when_worker_not_host_local(
+    kanban_home, monkeypatch,
+):
+    """The defer guard only holds OUR own surviving workers.
+
+    A claim we cannot manage (different host, or no kill attempted) must still
+    be released, otherwise a foreign-host claim could strand a task forever.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (int(time.time()) - 60, int(time.time()) - 7200, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": False,
+                "host_local": False,
+                "terminated": False,
+            },
+        )
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 1
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_detect_stale_defers_when_live_worker_survives(kanban_home, monkeypatch):
+    """detect_stale_running must also hold the claim when the worker survives."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="wedged", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, os.getpid())
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = NULL "
+                "WHERE id = ?",
+                (five_hours_ago, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": False,
+            },
+        )
+        stale = kb.detect_stale_running(
+            conn, stale_timeout_seconds=14400, signal_fn=lambda p, s: None,
+        )
+        assert stale == []
+        assert kb.get_task(conn, t).status == "running"
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "reclaim_deferred" in kinds
+
+
 def test_stale_claim_reclaim_event_records_diagnostic_payload(
     kanban_home, monkeypatch,
 ):
@@ -2004,6 +2169,91 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
         kb.complete_task(conn, t, result="ok")
 
     assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
+
+
+# ---------------------------------------------------------------------------
+# Deferred scratch cleanup for parent/child handoff (#33774)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_workspace_deferred_while_child_active(kanban_home):
+    """A scratch parent's workspace survives completion while a child is still active.
+
+    The dependency chain (parents=[A]) must guarantee child B can read A's
+    handoff artifacts. The old cleanup deleted A's scratch dir immediately on
+    A's completion, before B ever ran.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)  # child depends on parent
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        assert parent_ws.is_dir()
+        # Parent completes; child is still 'todo' -> cleanup must be deferred.
+        kb.complete_task(conn, parent, result="handoff written")
+
+    assert parent_ws.exists(), (
+        "Parent scratch workspace must survive while a linked child is active"
+    )
+
+
+def test_cleanup_workspace_swept_after_last_child_completes(kanban_home):
+    """Once all children are terminal, the deferred parent scratch dir is removed."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        # Give the child its own scratch dir too.
+        c_task = kb.get_task(conn, child)
+        child_ws = kb.resolve_workspace(c_task)
+        kb.set_workspace_path(conn, child, child_ws)
+
+        kb.complete_task(conn, parent, result="ok")
+        assert parent_ws.exists(), "deferred while child active"
+
+        # Child completes -> recompute promotes nothing new; the child's
+        # cleanup sweep should now reap the parent's deferred workspace.
+        kb.complete_task(conn, child, result="done")
+
+    assert not parent_ws.exists(), (
+        "Parent scratch workspace should be swept once all children are terminal"
+    )
+    assert not child_ws.exists(), "Child scratch workspace should be cleaned up too"
+
+
+def test_dir_child_completion_unblocks_deferred_scratch_parent(kanban_home, tmp_path):
+    """A non-scratch ('dir') child completing must still sweep its scratch parent.
+
+    Regression for the gap where ``_cleanup_workspace`` returned early for a
+    non-scratch task and never ran the parent sweep — leaking the parent's
+    deferred scratch dir forever.
+    """
+    child_dir = tmp_path / "persistent-child"
+    child_dir.mkdir()
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="scratch parent")
+        child = kb.create_task(
+            conn, title="dir child", workspace_kind="dir",
+            workspace_path=str(child_dir),
+        )
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+
+        kb.complete_task(conn, parent, result="handoff")
+        assert parent_ws.exists(), "deferred while dir child active"
+
+        kb.complete_task(conn, child, result="built")
+
+    assert not parent_ws.exists(), (
+        "A 'dir' child completing must trigger the parent scratch sweep"
+    )
+    assert child_dir.exists(), "Non-scratch 'dir' child workspace is never deleted"
 
 
 def test_is_managed_scratch_path_accepts_per_board_workspaces(kanban_home, tmp_path):

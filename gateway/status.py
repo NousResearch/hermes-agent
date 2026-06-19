@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -164,20 +165,86 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+def looks_like_gateway_command_line(command: str | None) -> bool:
+    """Return True only for a real ``gateway run`` process command line.
+
+    Lifecycle decisions (is the gateway up? did restart relaunch it?) must not
+    fire on loose substring matches.  The previous ``"... gateway" in cmdline``
+    test also matched ``hermes_cli.main gateway status`` and even unrelated
+    processes like ``python -m tui_gateway`` -- which made ``restart()`` race
+    against a still-draining old process and ``status``/``start`` report false
+    positives.  This requires the actual ``gateway`` subcommand followed by
+    ``run`` (or one of the gateway-dedicated entrypoints), excluding the other
+    ``gateway`` management subcommands and any process that merely contains the
+    word "gateway".
+
+    Tokenizes quote-aware (``shlex``) so quoted Windows paths with spaces
+    (``"C:\\Program Files\\...\\hermes-gateway.exe"``) survive, and strips
+    ``--profile``/``-p`` selectors from anywhere in argv -- Hermes's
+    ``_apply_profile_override`` removes them before argparse, so the profile
+    flag (and a profile literally named ``gateway``) can legally appear on
+    either side of the ``gateway`` subcommand.
+    """
+    if not command:
+        return False
+
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    # Strip surrounding quotes, normalize slashes + case per token.
+    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    if not tokens:
+        return False
+
+    # Gateway-dedicated entrypoints carry no subcommand to inspect.
+    for token in tokens:
+        if token == "gateway/run.py" or token.endswith("/gateway/run.py"):
+            return True
+        basename = token.rsplit("/", 1)[-1]
+        if basename in ("hermes-gateway", "hermes-gateway.exe"):
+            return True
+
+    joined = " ".join(tokens)
+    has_gateway_entry = (
+        "hermes_cli.main" in joined
+        or "hermes_cli/main.py" in joined
+        or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
+    )
+    if not has_gateway_entry:
+        return False
+
+    # Drop profile selectors anywhere: --profile X / -p X / --profile=X / -p=X.
+    # This consumes a profile VALUE of "gateway" too, so the real subcommand
+    # token is the one we land on below.
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ("--profile", "-p"):
+            skip_next = True
+            continue
+        if token.startswith("--profile=") or token.startswith("-p="):
+            continue
+        filtered.append(token)
+
+    for i, token in enumerate(filtered):
+        if token != "gateway":
+            continue
+        if i + 1 >= len(filtered):
+            return True  # bare `hermes gateway` defaults to `run`
+        return filtered[i + 1] == "run"
+    return False
+
+
 def _looks_like_gateway_process(pid: int) -> bool:
     """Return True when the live PID still looks like the Hermes gateway."""
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
         return False
-
-    patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "hermes-gateway",
-        "gateway/run.py",
-    )
-    return any(pattern in cmdline for pattern in patterns)
+    return looks_like_gateway_command_line(cmdline)
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
@@ -189,15 +256,8 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     if not isinstance(argv, list) or not argv:
         return False
 
-    # Normalize Windows backslashes so patterns match cross-platform.
-    cmdline = " ".join(str(part) for part in argv).replace("\\", "/")
-    patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
-        "hermes gateway",
-        "gateway/run.py",
-    )
-    return any(pattern in cmdline for pattern in patterns)
+    cmdline = " ".join(str(part) for part in argv)
+    return looks_like_gateway_command_line(cmdline)
 
 
 def _build_pid_record() -> dict:
@@ -227,7 +287,10 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
         return None
     try:
         raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # OSError: file vanished or permission flipped between exists() and
+        # read. UnicodeDecodeError: file holds non-UTF-8 / binary garbage
+        # (a truncated or clobbered status file). Either way it's unusable.
         return None
     if not raw:
         return None
@@ -249,8 +312,9 @@ def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
 
     try:
         raw = pid_path.read_text().strip()
-    except OSError:
-        # File was deleted between exists() and read_text(), or permission flipped.
+    except (OSError, UnicodeDecodeError):
+        # File was deleted between exists() and read_text(), permission
+        # flipped, or it holds non-UTF-8 / binary garbage.
         return None
     if not raw:
         return None
@@ -511,6 +575,7 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    served_profiles: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -531,6 +596,11 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = max(0, int(active_agents))
+    if served_profiles is not _UNSET:
+        # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
+        # for a single-profile gateway. Lets `hermes status` show per-profile
+        # coverage without a second probe.
+        payload["served_profiles"] = list(served_profiles or [])
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
@@ -549,6 +619,41 @@ def write_runtime_status(
 def read_runtime_status() -> Optional[dict[str, Any]]:
     """Read the persisted gateway runtime health/status information."""
     return _read_json_file(_get_runtime_status_path())
+
+
+def get_runtime_status_running_pid(
+    runtime: Optional[dict[str, Any]] = None,
+) -> Optional[int]:
+    """Return a live gateway PID from the runtime status record, if valid.
+
+    ``get_running_pid()`` is the primary liveness source because it verifies the
+    runtime lock and PID file.  Launch-service managers can still leave us with
+    a live process and a fresh ``gateway_state.json`` but no ``gateway.pid``; use
+    this as a conservative fallback by checking both the persisted state and the
+    OS process identity.
+    """
+    payload = runtime if runtime is not None else read_runtime_status()
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
+        return None
+
+    pid = _pid_from_record(payload)
+    if pid is None or not _pid_exists(pid):
+        return None
+
+    recorded_start = payload.get("start_time")
+    current_start = _get_process_start_time(pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return None
+
+    if _looks_like_gateway_process(pid) or _record_looks_like_gateway(payload):
+        return pid
+    return None
 
 
 def remove_pid_file() -> None:
@@ -638,6 +743,21 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 ):
                     live_cmdline = _read_process_cmdline(existing_pid)
                     if live_cmdline is not None or not _record_looks_like_gateway(existing):
+                        stale = True
+                # Secondary defence against boot-time PID+start_time collisions:
+                # systemd spawns core services deterministically, so an unrelated
+                # process (e.g. cron) can land on the exact same PID and jiffy
+                # count as a previous gateway. If both start_times are known and
+                # match but the live process is not a gateway, and we can confirm
+                # that by reading its cmdline, the lock is stale.
+                if (
+                    not stale
+                    and existing.get("start_time") is not None
+                    and current_start is not None
+                    and not _looks_like_gateway_process(existing_pid)
+                ):
+                    live_cmdline = _read_process_cmdline(existing_pid)
+                    if live_cmdline is not None:
                         stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still appear alive to _pid_exists but are not

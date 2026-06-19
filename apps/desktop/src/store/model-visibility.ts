@@ -7,11 +7,24 @@ const STORAGE_KEY = 'hermes.desktop.visible-models'
 
 /** Models shown per provider in the status-bar dropdown before the user has
  *  customized the list. Backend `models` are already relevance-ordered. */
-export const DEFAULT_VISIBLE_PER_PROVIDER = 5
+export const DEFAULT_VISIBLE_PER_PROVIDER = 50
 
 /** Stable key for a provider/model pair (`::` avoids colliding with model ids
  *  that contain a single colon, e.g. `model:tag`). */
 export const modelVisibilityKey = (provider: string, model: string): string => `${provider}::${model}`
+
+/** Sentinel key suffix stored when the user explicitly hides ALL models for a
+ *  provider.  Distinguishes "user hid everything" from "never customized" so
+ *  `effectiveVisibleKeys` does not re-add defaults for that provider. */
+export const EMPTY_PROVIDER_SENTINEL = ''
+
+/** Build the sentinel key for a provider whose last model was toggled off. */
+export const emptyProviderSentinelKey = (provider: string): string =>
+  modelVisibilityKey(provider, EMPTY_PROVIDER_SENTINEL)
+
+/** Check whether a stored key is a provider-hidden sentinel. */
+export const isProviderSentinel = (key: string): boolean =>
+  key.endsWith('::')
 
 /** A model and its optional `…-fast` sibling, collapsed into one logical row.
  *  `id` is the canonical (base) model; `fastId` is the fast variant if present. */
@@ -35,6 +48,11 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
 
     if (/-fast$/i.test(model) && present.has(model.replace(/-fast$/i, ''))) {
       // Represented by its base entry — the base attaches it as `fastId`.
+      continue
+    }
+
+    if (/-\d{8}$/.test(model) && present.has(model.replace(/-\d{8}$/, ''))) {
+      // A date-pinned snapshot superseded by its rolling alias — drop the dupe.
       continue
     }
 
@@ -104,5 +122,40 @@ export function effectiveVisibleKeys(
   stored: Set<string> | null,
   providers: readonly ModelOptionProvider[]
 ): Set<string> {
-  return stored ?? defaultVisibleKeys(providers)
+  if (!stored) {
+    return defaultVisibleKeys(providers)
+  }
+
+  if (stored.size === 0) {
+    return new Set()
+  }
+
+  const next = new Set(stored)
+
+  for (const provider of providers) {
+    const providerPrefix = `${provider.slug}::`
+    const hasStoredProvider = [...stored].some(
+      key => key.startsWith(providerPrefix) && !isProviderSentinel(key)
+    )
+    const hasSentinel = stored.has(emptyProviderSentinelKey(provider.slug))
+
+    if (hasStoredProvider || hasSentinel) {
+      continue
+    }
+
+    const families = collapseModelFamilies(provider.models ?? [])
+
+    for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
+      next.add(modelVisibilityKey(provider.slug, family.id))
+    }
+  }
+
+  // Strip sentinel keys — they are bookkeeping, not real visibility entries.
+  for (const key of [...next]) {
+    if (isProviderSentinel(key)) {
+      next.delete(key)
+    }
+  }
+
+  return next
 }

@@ -222,6 +222,58 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
+    def test_anthropic_provider_uses_configured_base_url_for_live_catalog(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "enterprise-claude"}]}'
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "anthropic",
+                    "base_url": "http://localhost:6655/anthropic/v1",
+                    "api_key": "proxy-key",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=_Resp(),
+        ) as mock_urlopen:
+            assert provider_model_ids("anthropic") == ["enterprise-claude"]
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.get_header("X-api-key") == "proxy-key"
+
+    def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {
+                    "provider": "custom",
+                    "base_url": "http://localhost:6655/anthropic/v1",
+                    "api_key": "proxy-key",
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["enterprise-claude"],
+        ) as mock_fetch:
+            assert provider_model_ids("custom") == ["enterprise-claude"]
+
+        mock_fetch.assert_called_once_with(
+            "proxy-key",
+            "http://localhost:6655/anthropic/v1",
+            api_mode="anthropic_messages",
+        )
+
 
 # -- fetch_api_models --------------------------------------------------------
 

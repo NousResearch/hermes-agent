@@ -85,7 +85,7 @@ export function ChatSessionList({
     setLoading(true);
     setError(null);
     api
-      .getSessions(SESSION_LIMIT, 0, scopeKey)
+      .getSessions(SESSION_LIMIT, 0, scopeKey, "recent")
       .then((res) => {
         if (reqRef.current !== myReq) return;
         setSessions(res.sessions);

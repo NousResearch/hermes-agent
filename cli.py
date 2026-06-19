@@ -4085,6 +4085,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        rc = getattr(self, "reasoning_config", None)
+        if rc and rc.get("enabled"):
+            effort = str(rc.get("effort", "medium") or "medium")
+            suffix = f"[{effort}]"
+            if not model_short.endswith(suffix):
+                model_short = f"{model_short}{suffix}"
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,

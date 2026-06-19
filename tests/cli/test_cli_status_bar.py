@@ -105,6 +105,25 @@ class TestCLIStatusBar:
         assert "-1" not in text
         assert "0/200K" in text
 
+    def test_status_bar_model_short_includes_reasoning_effort_once(self):
+        cli_obj = _make_cli()
+        cli_obj.model = "openai/gpt-5.5"
+        cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["model_short"].endswith("[high]")
+        assert snapshot["model_short"].count("[high]") == 1
+
+    def test_status_bar_model_short_omits_reasoning_when_disabled(self):
+        cli_obj = _make_cli()
+        cli_obj.model = "openai/gpt-5.5"
+        cli_obj.reasoning_config = {"enabled": False, "effort": "high"}
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert "[high]" not in snapshot["model_short"]
+
     def test_input_height_counts_prompt_only_on_first_wrapped_row(self):
         # Regression for prompt_toolkit classic CLI resize glitches: the prompt
         # is inserted by BeforeInput only on logical line 0. At three terminal

@@ -636,8 +636,12 @@ def check_available() -> bool:
     return True
 
 
+def _json_fallback(value: Any) -> str:
+    return str(value)
+
+
 def _json(data: dict[str, Any]) -> str:
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    return json.dumps(data, ensure_ascii=False, indent=2, default=_json_fallback)
 
 
 def _now_utc() -> str:
@@ -3397,6 +3401,61 @@ def _should_try_hermes_cli_fallback(payload: dict[str, Any]) -> bool:
     )
 
 
+def _safe_error_text(value: Any) -> str:
+    text = str(value or "").strip()
+    for pattern in SENSITIVE_TEXT_PATTERNS:
+        text = pattern.sub("<redacted>", text)
+    return text[:1000]
+
+
+def _recover_hakua_reply(payload: dict[str, Any], *, reply_backend: str) -> dict[str, Any]:
+    if payload.get("ok") or payload.get("reply"):
+        return payload
+    error = _safe_error_text(
+        payload.get("error") or payload.get("provider_error") or payload.get("stderr")
+    )
+    payload["ok"] = True
+    payload["degraded"] = True
+    payload["reply_backend"] = reply_backend
+    payload["reply"] = (
+        "[neutral] "
+        "\u3054\u3081\u3093\u306d\u3001\u4ecaAPI\u306e\u5fdc\u7b54\u304c"
+        "\u4e0d\u5b89\u5b9a\u3067\u3059\u3002\u5c11\u3057\u5f85\u3063\u3066"
+        "\u304b\u3089\u3082\u3046\u4e00\u5ea6\u8a71\u3057\u304b\u3051\u3066"
+        "\u304f\u3060\u3055\u3044\u3002"
+    )
+    payload["recoverable_error"] = error or "Hakua reply backend returned no reply."
+    payload["error"] = ""
+    return payload
+
+
+def _attach_tts_if_requested(
+    payload: dict[str, Any], values: dict[str, Any]
+) -> dict[str, Any]:
+    if not values.get("speak") or not payload.get("reply"):
+        return payload
+    try:
+        payload["tts"] = synthesize_speech(
+            {
+                "text": payload["reply"],
+                "provider": values.get("tts_provider"),
+                "output_path": values.get("output_path"),
+                "format": values.get("format"),
+                "voice": values.get("tts_voice") or values.get("voice"),
+                "speed": values.get("tts_speed") or values.get("speed"),
+                "play": values.get("play"),
+            }
+        )
+    except Exception as exc:
+        payload["tts"] = {
+            "ok": False,
+            "provider": _select_tts_provider(values.get("tts_provider")),
+            "error": _safe_error_text(exc),
+            "handled": True,
+        }
+    return payload
+
+
 def _run_hermes_llm_once(
     *,
     prompt: str,
@@ -3544,19 +3603,8 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
             )
             payload["reply_backend"] = "hermes"
             payload["hermes_facade_error"] = hermes_error
-        if values.get("speak") and payload.get("reply"):
-            payload["tts"] = synthesize_speech(
-                {
-                    "text": payload["reply"],
-                    "provider": values.get("tts_provider"),
-                    "output_path": values.get("output_path"),
-                    "format": values.get("format"),
-                    "voice": values.get("tts_voice") or values.get("voice"),
-                    "speed": values.get("tts_speed") or values.get("speed"),
-                    "play": values.get("play"),
-                }
-            )
-        return payload
+        payload = _recover_hakua_reply(payload, reply_backend="hermes")
+        return _attach_tts_if_requested(payload, values)
 
     if reply_backend == "hermes":
         payload = _run_hermes_cli_once(
@@ -3567,19 +3615,8 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
             values=values,
         )
         payload["reply_backend"] = "hermes"
-        if values.get("speak") and payload.get("reply"):
-            payload["tts"] = synthesize_speech(
-                {
-                    "text": payload["reply"],
-                    "provider": values.get("tts_provider"),
-                    "output_path": values.get("output_path"),
-                    "format": values.get("format"),
-                    "voice": values.get("tts_voice") or values.get("voice"),
-                    "speed": values.get("tts_speed") or values.get("speed"),
-                    "play": values.get("play"),
-                }
-            )
-        return payload
+        payload = _recover_hakua_reply(payload, reply_backend="hermes")
+        return _attach_tts_if_requested(payload, values)
 
     repo, error = _resolve_required_repo(values.get("repo_root"))
     if error:
@@ -3706,19 +3743,7 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
             payload["error"] = "Codex character chat returned no reply."
         else:
             payload["error"] = "Codex character chat command failed."
-    if values.get("speak") and reply:
-        payload["tts"] = synthesize_speech(
-            {
-                "text": reply,
-                "provider": values.get("tts_provider"),
-                "output_path": values.get("output_path"),
-                "format": values.get("format"),
-                "voice": values.get("tts_voice") or values.get("voice"),
-                "speed": values.get("tts_speed") or values.get("speed"),
-                "play": values.get("play"),
-            }
-        )
-    return payload
+    return _attach_tts_if_requested(payload, values)
 
 
 def handle_say(args: dict[str, Any] | None = None) -> str:

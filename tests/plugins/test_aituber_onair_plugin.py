@@ -524,6 +524,120 @@ def test_run_hakua_once_falls_back_to_hermes_cli_when_bound_model_is_unsupported
     assert "gpt-5.5-low" in result["hermes_facade_error"]
 
 
+def test_run_hakua_once_returns_degraded_reply_when_hermes_api_fails(
+    monkeypatch, tmp_path
+):
+    repo = _fake_repo(tmp_path)
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            raise RuntimeError("upstream 503 api_key=secret-token-value")
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(
+        core,
+        "_run_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("CLI fallback should not be required for generic API errors")
+        ),
+    )
+    core.bind_llm_factory(lambda: FakeLlm())
+    try:
+        result = core.run_hakua_once(
+            {"repo_root": str(repo), "prompt": "say hello", "reply_backend": "hermes"}
+        )
+    finally:
+        core.bind_llm_factory(None)
+
+    assert result["ok"] is True
+    assert result["degraded"] is True
+    assert result["reply"].startswith("[neutral]")
+    assert "503" in result["recoverable_error"]
+    assert "secret-token-value" not in result["recoverable_error"]
+
+
+def test_run_hakua_once_keeps_reply_when_tts_raises(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+
+    class Result:
+        text = "[happy] text survived"
+        provider = "local"
+        model = "main"
+        usage = None
+        audit = None
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            return Result()
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(
+        core,
+        "synthesize_speech",
+        lambda _values: (_ for _ in ()).throw(RuntimeError("tts api timeout")),
+    )
+    core.bind_llm_factory(lambda: FakeLlm())
+    try:
+        result = core.run_hakua_once(
+            {
+                "repo_root": str(repo),
+                "prompt": "say hello",
+                "reply_backend": "hermes",
+                "speak": True,
+            }
+        )
+    finally:
+        core.bind_llm_factory(None)
+
+    assert result["ok"] is True
+    assert result["reply"] == "[happy] text survived"
+    assert result["tts"]["ok"] is False
+    assert result["tts"]["handled"] is True
+    assert "timeout" in result["tts"]["error"]
+
+
+def test_handle_say_serializes_non_json_hermes_api_metadata(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+
+    class Metadata:
+        def __str__(self):
+            return "metadata-object"
+
+    class Result:
+        text = "[happy] serializable"
+        provider = "local"
+        model = "main"
+        usage = Metadata()
+        audit = Metadata()
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            return Result()
+
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    core.bind_llm_factory(lambda: FakeLlm())
+    try:
+        payload = json.loads(
+            core.handle_say(
+                {
+                    "repo_root": str(repo),
+                    "prompt": "say hello",
+                    "reply_backend": "hermes",
+                }
+            )
+        )
+    finally:
+        core.bind_llm_factory(None)
+
+    assert payload["ok"] is True
+    assert payload["reply"] == "[happy] serializable"
+    assert payload["usage"] == "metadata-object"
+    assert payload["audit"] == "metadata-object"
+
+
 def test_run_hakua_once_can_synthesize_reply(monkeypatch, tmp_path):
     repo = _fake_repo(tmp_path)
 

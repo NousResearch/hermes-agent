@@ -321,3 +321,33 @@ class TestRestoreSessionCwdMarkup:
             assert "Working directory" in printed or "working" in printed.lower()
         finally:
             os.chdir(original_cwd)
+
+
+class TestResumeFlushesBeforeEndSession:
+    """Regression for #47202: /resume must flush un-persisted messages to
+    the session DB before ending the old session, just like /new and
+    compress_context() already do."""
+
+    def test_resume_flushes_when_agent_present(self):
+        cli_obj = _make_cli()
+        cli_obj.conversation_history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        agent = MagicMock()
+        cli_obj.agent = agent
+
+        cli_obj._session_db.get_session.return_value = {"id": "target", "title": "T"}
+        cli_obj._session_db.get_messages_as_conversation.return_value = []
+        cli_obj._session_db.resolve_resume_session_id.return_value = "target"
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
+            patch("cli._cprint"),
+        ):
+            cli_obj._handle_resume_command("/resume target")
+
+        agent._flush_messages_to_session_db.assert_called_once_with(
+            [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+        )
+        cli_obj._session_db.end_session.assert_called_once()

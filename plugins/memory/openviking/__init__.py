@@ -49,7 +49,7 @@ from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
-from utils import atomic_json_write
+from utils import atomic_json_write, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ def _derive_openviking_user_text(content: Any) -> str:
 
 
 def _sync_trace_enabled() -> bool:
-    return os.environ.get(_SYNC_TRACE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_var_enabled(_SYNC_TRACE_ENV)
 
 
 def _preview(value: Any, limit: int = 160) -> str:
@@ -2461,8 +2461,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 tool_id = str(message.get("tool_call_id") or message.get("id") or "")
                 if tool_id:
                     completed_tool_ids.add(tool_id)
-                if cls._is_openviking_recall_tool_name(message.get("name")):
-                    skipped_tool_ids.add(tool_id)
+                    if cls._is_openviking_recall_tool_name(message.get("name")):
+                        skipped_tool_ids.add(tool_id)
                 continue
             if message.get("role") != "assistant":
                 continue

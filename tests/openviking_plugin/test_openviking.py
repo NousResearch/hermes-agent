@@ -539,6 +539,51 @@ class TestOpenVikingTurnConversion:
             assert recall_tool_name not in batch_text
             assert "Old OpenViking memory content" not in batch_text
 
+    def test_messages_to_openviking_batch_empty_tool_id_does_not_drop_other_results(self):
+        # A recall tool result that arrives with an empty tool_call_id must not
+        # poison the skip set with "" and silently drop unrelated tool results
+        # that also lack an id. Empty tool_call_id is reachable in the canonical
+        # transcript (agent_runtime_helpers defaults it to "").
+        turn = [
+            {"role": "user", "content": "What did we decide?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {
+                            "name": "viking_search",
+                            "arguments": json.dumps({"query": "decision"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "",
+                "name": "viking_search",
+                "content": json.dumps({"results": ["recall stuff"]}),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "",
+                "name": "shell_command",
+                "content": "important shell output",
+            },
+            {"role": "assistant", "content": "done"},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        batch_text = json.dumps(batch)
+        # The unrelated (empty-id) shell result must survive.
+        assert "important shell output" in batch_text
+        # The recall tool result must still be excluded.
+        assert "recall stuff" not in batch_text
+        assert "viking_search" not in batch_text
+
     def test_messages_to_openviking_batch_preserves_responses_text_parts(self):
         turn = [
             {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -54,20 +56,29 @@ def baseline_search(query: str, limit: int) -> list[dict[str, Any]]:
     return [_normalize(r) for r in ard_local_search(query, limit=limit)]
 
 
-def find_skill_search_command() -> str | None:
-    return shutil.which("skill-search")
+def find_skill_search_command() -> list[str] | None:
+    configured = os.environ.get("ARD_SKILL_SEARCH_COMMAND")
+    if configured:
+        parsed = shlex.split(configured)
+        return parsed or None
+    found = shutil.which("skill-search")
+    return [found] if found else None
 
 
-def external_skill_search(query: str, limit: int, command: str | None = None) -> list[dict[str, Any]]:
+def external_skill_search(query: str, limit: int, command: str | list[str] | None = None) -> list[dict[str, Any]]:
     cmd = command or find_skill_search_command()
-    if not cmd:
+    if isinstance(cmd, str):
+        base_cmd = [cmd]
+    else:
+        base_cmd = cmd
+    if not base_cmd:
         return []
     # Support a conservative JSON interface. `skill-search-cli` (npm) accepts
     # the query as positional args and returns `{local: [...], remote: [...]}`;
     # older/prototype tools may use a `search` subcommand with `{results: [...]}`.
     attempts = [
-        [cmd, query, "--limit", str(limit), "--json"],
-        [cmd, "search", query, "--limit", str(limit), "--json"],
+        [*base_cmd, query, "--limit", str(limit), "--json"],
+        [*base_cmd, "search", query, "--limit", str(limit), "--json"],
     ]
     data: Any = None
     for argv in attempts:

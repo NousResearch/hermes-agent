@@ -5847,7 +5847,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Config File: {config_path} {config_status}")
         print()
     
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
+    def _list_recent_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
         """Return recent CLI sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
             return []
@@ -5866,7 +5866,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             return []
 
-    def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
+    def _show_recent_sessions(self, *, reason: str = "history", limit: int = 50) -> bool:
         """Render recent sessions inline from the active chat TUI.
 
         Returns True when something was shown, False if no session list was available.

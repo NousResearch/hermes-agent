@@ -41,6 +41,11 @@ def find_shell_configs() -> list:
         home / ".profile",
         home / ".zshrc",
         home / ".zprofile",
+        # scripts/install.sh writes `fish_add_path "$HOME/.local/bin"` (under our
+        # `# Hermes Agent` comment) to this fish rc file. Without it here the
+        # fish_add_path removal branch below is dead code and a fish user's
+        # PATH entry is orphaned on uninstall.
+        home / ".config" / "fish" / "config.fish",
     ]
     
     for config in candidates:

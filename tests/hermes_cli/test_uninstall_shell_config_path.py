@@ -65,6 +65,31 @@ def test_strips_orphaned_usr_local_bin_export(fake_home):
     assert "export EDITOR=nano" in content
 
 
+def test_strips_orphaned_fish_add_path(fake_home):
+    """The fish installer block (comment + fish_add_path) is stripped too.
+
+    scripts/install.sh writes the fish PATH entry to ~/.config/fish/config.fish,
+    which find_shell_configs() must scan or the fish_add_path removal branch is
+    dead code and the entry is orphaned on uninstall.
+    """
+    fish_config = fake_home / ".config" / "fish" / "config.fish"
+    fish_config.parent.mkdir(parents=True)
+    fish_config.write_text(
+        "set -x EDITOR vim\n"
+        "\n"
+        "# Hermes Agent — ensure ~/.local/bin is on PATH\n"
+        'fish_add_path "$HOME/.local/bin"\n'
+    )
+
+    uninstall.remove_path_from_shell_configs()
+
+    content = fish_config.read_text()
+    assert 'fish_add_path "$HOME/.local/bin"' not in content
+    assert "Hermes Agent" not in content
+    # Unrelated user config must survive untouched.
+    assert "set -x EDITOR vim" in content
+
+
 def test_leaves_unrelated_path_export_untouched(fake_home):
     """A user's own non-Hermes PATH export (no preceding comment) survives."""
     zshrc = fake_home / ".zshrc"

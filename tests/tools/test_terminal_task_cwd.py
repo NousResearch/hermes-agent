@@ -6,6 +6,10 @@ from types import SimpleNamespace
 import tools.terminal_tool as terminal_tool
 
 
+def _approve_guard(command, env_type, security_risk=None, has_host_access=False):
+    return {"approved": True}
+
+
 def _minimal_terminal_config(cwd="/default"):
     return {
         "env_type": "local",
@@ -34,7 +38,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        _approve_guard,
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -61,7 +65,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        _approve_guard,
     )
 
     result = json.loads(
@@ -98,7 +102,7 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        _approve_guard,
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -136,7 +140,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
+        _approve_guard,
     )
     monkeypatch.setattr(process_registry_mod, "process_registry", registry)
 

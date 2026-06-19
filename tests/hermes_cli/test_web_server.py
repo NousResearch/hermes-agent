@@ -1341,6 +1341,15 @@ class TestWebServerEndpoints:
         # Shared GITHUB_TOKEN must NOT be hijacked into the copilot provider card.
         assert data.get("GITHUB_TOKEN", {}).get("provider", "") != "copilot"
 
+    def test_get_env_vars_bedrock_aws_vars_tagged_to_provider(self):
+        """Bedrock (aws_sdk, no api-key) must still appear on the Keys tab: its
+        AWS_REGION/AWS_PROFILE settings are tagged to the bedrock provider card.
+        """
+        data = self.client.get("/api/env").json()
+        assert data["AWS_REGION"]["provider"] == "bedrock"
+        assert data["AWS_REGION"]["category"] == "provider"
+        assert data["AWS_PROFILE"]["provider"] == "bedrock"
+
     def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
         from hermes_cli.web_server import (
             _MESSAGING_KEYS_PAGE_KEYS,

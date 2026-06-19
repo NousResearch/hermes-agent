@@ -51,7 +51,7 @@ def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
         return None, "unavailable"
     try:
         Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
-        handle = open(str(lock_path), "a+")
+        handle = open(str(lock_path), "a+", encoding="utf-8")
     except OSError:
         return None, "unavailable"
     if not _try_acquire_file_lock(handle):

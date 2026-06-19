@@ -30,6 +30,7 @@ import {
   Package,
   Palette,
   Plus,
+  RefreshCw,
   Settings,
   Settings2,
   Sun,
@@ -41,6 +42,7 @@ import {
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
+import { runGatewayRestart } from '@/store/system-actions'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -360,6 +362,13 @@ export function CommandPalette() {
             keywords: ['command center', 'usage', 'tokens', 'cost'],
             label: cc.sections.usage,
             run: go(`${COMMAND_CENTER_ROUTE}?section=usage`)
+          },
+          {
+            icon: RefreshCw,
+            id: 'cc-restart-gateway',
+            keywords: ['gateway', 'restart', 'messaging', 'reconnect', 'system'],
+            label: cc.restartGateway,
+            run: () => void runGatewayRestart()
           }
         ]
       },

@@ -659,3 +659,69 @@ def test_two_custom_providers_with_overlap_both_survive():
     assert b_row["models"] == ["shared/model", "b/only"]
     assert a_row["total_models"] == 2
     assert b_row["total_models"] == 2
+
+
+def test_build_models_payload_no_max_models_returns_full_list():
+    """When max_models is not passed (None), build_models_payload must
+    return the full model list — not truncate to the old default of 50.
+    Regression for #48279: Kilo Gateway picker was capped at 50 of 336
+    models, making most models undiscoverable via search."""
+    full_models = [f"model-{i}" for i in range(100)]
+    rows = [
+        {
+            "slug": "kilocode",
+            "name": "Kilo Code",
+            "models": full_models,
+            "total_models": len(full_models),
+            "is_current": False,
+            "is_user_defined": False,
+            "source": "built-in",
+        },
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        # No max_models argument — should return all 100 models
+        payload = build_models_payload(ctx)
+
+    kilo_row = next(r for r in payload["providers"] if r["slug"] == "kilocode")
+    assert kilo_row["models"] == full_models
+    assert kilo_row["total_models"] == 100
+    assert len(kilo_row["models"]) == 100
+
+
+# ─── refresh flag (cache-bust) ─────────────────────────────────────────
+
+
+def test_build_models_payload_forwards_refresh_flag():
+    """build_models_payload must forward refresh= to list_authenticated_providers.
+
+    The desktop picker's "Refresh Models" control passes refresh=True; the
+    flag has to reach list_authenticated_providers so the per-provider
+    model-id cache gets busted. Default opens pass refresh=False.
+    """
+    captured: dict = {}
+
+    def _capture(*args, **kwargs):
+        captured["refresh"] = kwargs.get("refresh")
+        return []
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+        build_models_payload(_empty_ctx())
+    assert captured["refresh"] is False
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+        build_models_payload(_empty_ctx(), refresh=True)
+    assert captured["refresh"] is True
+
+
+def test_list_authenticated_providers_refresh_busts_cache():
+    """refresh=True clears the provider-model disk cache exactly once;
+    refresh=False leaves it untouched (so normal picker opens stay snappy)."""
+    from hermes_cli import model_switch
+
+    with patch("hermes_cli.models.clear_provider_models_cache") as clear:
+        model_switch.list_authenticated_providers(refresh=False)
+        assert clear.call_count == 0
+        model_switch.list_authenticated_providers(refresh=True)
+        assert clear.call_count == 1
+

@@ -350,52 +350,124 @@ def get_managed_update_command() -> Optional[str]:
     return None
 
 
+def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
+    """Resolve the directory that holds the *running code* (the install tree).
+
+    This is the parent of ``hermes_cli/`` — i.e. the git checkout for source
+    installs, ``/opt/hermes`` inside the published image, the venv's
+    site-packages root for pip installs. It is a property of the running
+    interpreter, NOT of ``$HERMES_HOME``, which is why a code-scoped stamp
+    here is immune to two installs sharing one data directory.
+    """
+    if project_root is not None:
+        return project_root
+    return Path(__file__).parent.parent.resolve()
+
+
 def detect_install_method(project_root: Optional[Path] = None) -> str:
     """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
 
     Resolution order:
-    1. Stamped ``~/.hermes/.install_method`` file (written by installers)
-    2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
-    3. .git directory presence -> 'git'
-    4. Fallback -> 'pip'
+    1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
+       running code) — the authoritative marker.
+    2. Legacy home-scoped stamp ``$HERMES_HOME/.install_method`` — read for
+       backward compatibility, but a ``docker`` value is IGNORED when we are
+       not actually running inside a container (see below).
+    3. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
+    4. .git directory presence -> 'git'
+    5. Fallback -> 'pip'
+
+    Why the stamp is code-scoped, not home-scoped (issue: shared ``~/.hermes``)
+    --------------------------------------------------------------------------
+    The install method describes *the binary that is running*, but
+    ``$HERMES_HOME`` is a shared DATA directory — the Docker docs deliberately
+    bind-mount it (``~/.hermes:/opt/data``) so config/sessions/memory persist
+    and can be shared with a host-side Desktop/CLI install. When a
+    containerised gateway and a host install share one ``$HERMES_HOME``, a
+    home-scoped stamp is a single slot describing two different installs:
+    the container stamps ``docker`` on every boot, the host install then reads
+    ``docker`` and ``hermes update`` refuses to run ("doesn't apply inside the
+    Docker container") even though the host binary is a perfectly updatable
+    git/pip install. Scoping the stamp to the install tree gives each install
+    its own truthful marker.
+
+    Self-healing for already-poisoned homes: a legacy ``docker`` value in the
+    home-scoped stamp is only honoured when we are genuinely in a container.
+    On a host install that read a contaminating ``docker`` stamp, we fall
+    through to managed/.git/pip detection instead — so existing shared-home
+    setups recover without the user touching anything.
 
     Note: running inside a container is NOT treated as "docker" on its own.
-    The two supported install paths both self-identify via the
-    ``.install_method`` stamp (caught by step 1), so neither relies on
-    container detection here:
+    The supported installs self-identify via the code-scoped stamp:
       - the curl installer (scripts/install.sh, the README/website install
-        command) git-clones the repo and stamps ``git``;
-      - the published ``nousresearch/hermes-agent`` image stamps ``docker``
-        at boot via ``docker/stage2-hook.sh``.
-    An unsupported manual install dropped into a container (no stamp) was
-    wrongly classified as the published image by bare container detection,
-    so ``hermes update`` bailed with "doesn't apply inside the Docker
-    container". Without that fallback such installs fall through to the
-    ``.git``/pip checks and behave like any off-path install. See issue #34397.
+        command) git-clones the repo and stamps ``git`` next to the code;
+      - the published ``nousresearch/hermes-agent`` image bakes a ``docker``
+        stamp into ``/opt/hermes`` at build time.
+    An unsupported manual install dropped into a container (no stamp) falls
+    through to the ``.git``/pip checks and behaves like any off-path install.
+    See issue #34397.
     """
-    stamp = get_hermes_home() / ".install_method"
+    root = _install_method_project_root(project_root)
+
+    # 1. Code-scoped stamp — authoritative, immune to shared $HERMES_HOME.
     try:
-        method = stamp.read_text(encoding="utf-8").strip().lower()
+        method = (root / ".install_method").read_text(encoding="utf-8").strip().lower()
         if method:
             return method
     except OSError:
         pass
+
+    # 2. Legacy home-scoped stamp — back-compat. Ignore a ``docker`` value
+    #    when we are not actually containerised: that is the signature of a
+    #    host install whose shared $HERMES_HOME was stamped by a co-located
+    #    container, and honouring it wrongly blocks ``hermes update``.
+    try:
+        method = (
+            (get_hermes_home() / ".install_method")
+            .read_text(encoding="utf-8")
+            .strip()
+            .lower()
+        )
+        if method and not (method == "docker" and not _running_in_container()):
+            return method
+    except OSError:
+        pass
+
     managed = get_managed_system()
     if managed:
         return managed.lower().replace(" ", "-")
-    if project_root is None:
-        project_root = Path(__file__).parent.parent.resolve()
-    if (project_root / ".git").is_dir():
+    if (root / ".git").is_dir():
         return "git"
     return "pip"
 
 
-def stamp_install_method(method: str) -> None:
-    """Write the install method to ~/.hermes/.install_method."""
-    stamp = get_hermes_home() / ".install_method"
+def _running_in_container() -> bool:
+    """Thin wrapper around ``hermes_constants.is_container`` (import-safe)."""
     try:
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(method + "\n", encoding="utf-8")
+        from hermes_constants import is_container
+
+        return is_container()
+    except Exception:
+        return False
+
+
+def stamp_install_method(method: str, project_root: Optional[Path] = None) -> None:
+    """Write the install method next to the running code (code-scoped stamp).
+
+    The stamp lives in the install tree (``<install tree>/.install_method``),
+    not in ``$HERMES_HOME``, so that two installs sharing one data directory
+    do not overwrite each other's marker. See ``detect_install_method`` for
+    the full rationale.
+
+    Best-effort: if the install tree is read-only (e.g. the immutable
+    ``/opt/hermes`` in the published image, which instead bakes the stamp at
+    build time) the write silently no-ops and detection falls back to its
+    other signals.
+    """
+    root = _install_method_project_root(project_root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".install_method").write_text(method + "\n", encoding="utf-8")
     except OSError:
         pass
 
@@ -853,6 +925,15 @@ DEFAULT_CONFIG = {
         # plausible-looking output when a real path is blocked.  Costs ~80
         # tokens in the cached system prompt.  Set False to disable globally.
         "task_completion_guidance": True,
+        # Universal parallel-tool-call guidance — short prompt block applied to
+        # all models that tells the model to batch independent tool calls
+        # (reads, searches, web fetches, read-only commands) into one turn
+        # instead of one call per turn.  The runtime already runs independent
+        # calls concurrently, so this just steers the model to produce the
+        # batch — cutting round-trips and the resent-context cost that
+        # compounds over a long conversation.  Costs ~70 tokens in the cached
+        # system prompt.  Set False to disable globally.
+        "parallel_tool_call_guidance": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP
@@ -1120,10 +1201,13 @@ DEFAULT_CONFIG = {
         "min_interval_hours": 24,
     },
 
-    # Maximum characters loaded from a single automatic context file such as
-    # SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes
-    # applies head/tail truncation. This is separate from read_file tool limits.
-    "context_file_max_chars": 20_000,
+    # Hard cap (chars) for a single automatic context file such as SOUL.md,
+    # AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes applies
+    # head/tail truncation. ``null`` (the default) lets the cap scale with the
+    # model's context window (floor 20K, ceiling 500K) so large-context models
+    # rarely truncate a project doc. Set a positive integer to pin a fixed cap
+    # and override the dynamic behavior. Separate from read_file tool limits.
+    "context_file_max_chars": None,
 
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
@@ -1201,6 +1285,21 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+    },
+
+    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
+    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
+    # implementations. Per-platform notification opt-out is handled by the
+    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
+    "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -1911,6 +2010,14 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Run the LLM consolidation (umbrella-building) pass. OFF by default.
+        # When off, a curator run does ONLY the deterministic inactivity prune
+        # (mark stale / archive long-unused skills) and skips the forked
+        # aux-model review entirely — no umbrella-building, no aux-model cost.
+        # Set to true to opt back into merging overlapping skills into
+        # class-level umbrellas. `hermes curator run --consolidate` overrides
+        # this for a single invocation.
+        "consolidate": False,
         # Also prune (archive) bundled built-in skills after the inactivity
         # period, not just agent-created ones. ON by default. Built-ins are
         # normally restored on every `hermes update`, so pruning them only
@@ -2078,6 +2185,22 @@ DEFAULT_CONFIG = {
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
+
+    # Per-platform system-prompt hint overrides. Lets an admin append to or
+    # replace Hermes' built-in platform hint for a single messaging platform
+    # (WhatsApp, Slack, Telegram, ...) without affecting other platforms.
+    # Useful for enterprise/managed profiles that ship platform-aware skills.
+    # Each key is a platform name; the value is either:
+    #   { "append": "extra text" }   — keep the default hint, append text
+    #   { "replace": "full text" }   — substitute the default hint entirely
+    #   "extra text"                 — shorthand for { "append": ... }
+    # `replace` wins over `append` if both are given. Example:
+    #   platform_hints:
+    #     whatsapp:
+    #       append: >
+    #         When tabular output would be useful, invoke the
+    #         table_formatting skill instead of emitting a Markdown table.
+    "platform_hints": {},
 
     # Shell-script hooks — declarative bridge that invokes shell scripts
     # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
@@ -2429,11 +2552,14 @@ DEFAULT_CONFIG = {
     "updates": {
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Off by default —
-        # on large HERMES_HOME directories the zip can add minutes to every
-        # update.  Set to true to re-enable, or pass ``--backup`` to opt in
-        # for a single update run.
-        "pre_update_backup": False,
+        # can be restored with ``hermes import <path>``.  Defaults to true
+        # after the #48200 incident: a ``hermes update --yes`` run that
+        # computed a wrong path silently wiped the user's ``.env``,
+        # ``MEMORY.md``, ``kanban.db``, custom skills, and scripts in one
+        # go.  The cost of a few minutes of zip time per update is
+        # negligible compared to the alternative.  Set to false to opt
+        # out, or pass ``--no-backup`` for a single update run.
+        "pre_update_backup": True,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.  Values below 1 are
         # floored to 1 — the backup just created is always preserved.  To
@@ -2585,7 +2711,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 29,
+    "_config_version": 30,
 }
 
 # =============================================================================
@@ -4873,6 +4999,29 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+
+    # ── Version 29 → 30: seed curator.consolidate (default false) ──
+    # Consolidation (the LLM umbrella-building fork) is now an opt-in toggle,
+    # OFF by default. The deterministic inactivity prune still runs whenever
+    # the curator is enabled; only the opinionated, aux-model-cost LLM pass is
+    # gated. The runtime deep-merge already supplies the default, but we seed
+    # the key so it's visible/editable in config.yaml. Existing installs that
+    # WANT the old always-consolidate behavior must set it to true explicitly.
+    # Only add the key when a curator section exists and lacks it — never
+    # clobber a value the user already set.
+    if current_ver < 30:
+        config = read_raw_config()
+        raw_curator = config.get("curator")
+        if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
+            raw_curator["consolidate"] = False
+            config["curator"] = raw_curator
+            save_config(config)
+            results["config_added"].append("curator.consolidate=false")
+            if not quiet:
+                print(
+                    "  ✓ Seeded curator.consolidate: false "
+                    "(LLM consolidation is now opt-in; pruning stays on)"
+                )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

@@ -1188,7 +1188,6 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
                 current_model=ctx.current_model,
                 user_providers=ctx.user_providers,
                 custom_providers=ctx.custom_providers,
-                max_models=50,
             )
         except Exception:
             # Best-effort warmup — never surface errors into the session.
@@ -1206,8 +1205,9 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     *,
     force_fresh_nous_tier: bool = False,
-    max_models: int = 8,
+    max_models: int | None = None,
     current_model: str = "",
+    refresh: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1228,6 +1228,12 @@ def list_authenticated_providers(
     ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
     account-sensitive flows. UI picker opens should leave it false so they do
     not block on fresh Portal/account checks every time.
+
+    ``refresh`` busts the per-provider model-id disk cache
+    (``provider_models_cache.json``) up front so every row re-fetches its
+    live catalog. Use for an explicit user-triggered "refresh models" action
+    (e.g. the desktop picker's refresh control); leave false for normal picker
+    opens so they stay snappy on the 1h cache.
     """
     import os
     from agent.models_dev import (
@@ -1239,8 +1245,20 @@ def list_authenticated_providers(
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
-        get_curated_nous_model_ids,
+        clear_provider_models_cache, get_curated_nous_model_ids,
     )
+
+    # Explicit refresh: drop every provider's cached model-id list so the
+    # cached_provider_model_ids() calls below all re-fetch live. Without this
+    # a stale 1h cache can fall back to the curated static list when its live
+    # fetch later fails, silently dropping live-only models (e.g. OpenCode
+    # Zen's free tier) the user had seen before.
+    if refresh:
+        try:
+            clear_provider_models_cache()
+        except Exception:
+            pass
+
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -1426,7 +1444,7 @@ def list_authenticated_providers(
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = model_ids[:max_models] if max_models is not None else model_ids
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -1589,7 +1607,7 @@ def list_authenticated_providers(
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = model_ids[:max_models] if max_models is not None else model_ids
 
         results.append({
             "slug": hermes_slug,
@@ -1664,7 +1682,7 @@ def list_authenticated_providers(
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
-        _cp_top = _cp_model_ids[:max_models]
+        _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
 
         results.append({
             "slug": _cp.slug,
@@ -1813,7 +1831,7 @@ def list_authenticated_providers(
             "name": "Custom endpoint",
             "is_current": True,
             "is_user_defined": True,
-            "models": _models[:max_models] if max_models else _models,
+            "models": _models[:max_models] if max_models is not None else _models,
             "total_models": len(_models),
             "source": "model-config",
             "api_url": str(current_base_url).strip().rstrip("/"),
@@ -2040,7 +2058,7 @@ def list_picker_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
-    max_models: int = 8,
+    max_models: int | None = None,
     current_model: str = "",
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
@@ -2083,7 +2101,7 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = live_ids[:max_models]
+            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
             p["total_models"] = len(live_ids)
 
         has_models = bool(p.get("models"))

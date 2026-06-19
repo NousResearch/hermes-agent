@@ -142,6 +142,7 @@ class TestDefaultContextLengths:
                 ("grok-4", 256000),
                 ("grok-4-0709", 256000),
                 ("grok-build-0.1", 256000),
+                ("grok-composer-2.5-fast", 200000),
                 ("grok-code-fast-1", 256000),
                 ("grok-3", 131072),
                 ("grok-3-mini", 131072),

@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import fnmatch
 import logging
 import os
 import re
@@ -883,6 +884,43 @@ def load_permanent(patterns: set):
         _permanent_approved.update(patterns)
 
 
+_ALLOWLIST_SHELL_OPERATOR_RE = re.compile(r"(?:\n|&&|\|\||[;&|<>`]|\$\()")
+
+
+def _has_allowlist_shell_operator(command: str) -> bool:
+    """Return True when a command is too compound for the allowlist shortcut."""
+    return bool(_ALLOWLIST_SHELL_OPERATOR_RE.search(command or ""))
+
+
+def _command_matches_permanent_allowlist(command: str) -> bool:
+    """Return True when command_allowlist contains this command or a glob.
+
+    Permanent approvals historically store dangerous-pattern keys such as
+    ``recursive delete``. Manual entries in ``command_allowlist`` are command
+    text, and may include shell-style wildcards like ``podman *``.
+    """
+    command = (command or "").strip()
+    if not command:
+        return False
+    if _has_allowlist_shell_operator(command):
+        return False
+
+    with _lock:
+        patterns = tuple(_permanent_approved)
+
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            continue
+        pattern = pattern.strip()
+        if not pattern:
+            continue
+        if command == pattern:
+            return True
+        if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern):
+            return True
+    return False
+
+
 
 # =========================================================================
 # Config persistence for permanent allowlist
@@ -1169,6 +1207,9 @@ def check_dangerous_command(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
+    if _command_matches_permanent_allowlist(command):
+        return {"approved": True, "message": None}
+
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
@@ -1409,6 +1450,9 @@ def check_all_command_guards(command: str, env_type: str,
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
+
+    if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
     is_cli = env_var_enabled("HERMES_INTERACTIVE")

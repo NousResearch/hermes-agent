@@ -28,6 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
   buildSessionWindowUrl,
+  chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
@@ -44,6 +45,7 @@ const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
+const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -2008,10 +2010,14 @@ async function applyUpdatesPosixInApp() {
   }
 
   emitUpdateProgress({ stage: 'rebuild', message: 'Rebuilding the desktop app…', percent: 60 })
-  const rebuilt = await runStreamedUpdate(hermes, ['desktop', '--build-only'], {
-    cwd: updateRoot,
-    env,
-    stage: 'rebuild'
+  // Retry-once: a first rebuild can fail on a still-settling tree or a
+  // self-healed (network-blocked) Electron download; a second run builds clean
+  // off the healed dist so we reach the swap+relaunch below instead of bailing.
+  const rebuilt = await runRebuildWithRetry(attempt => {
+    if (attempt > 0) {
+      emitUpdateProgress({ stage: 'rebuild', message: 'Retrying the desktop rebuild…', percent: 60 })
+    }
+    return runStreamedUpdate(hermes, ['desktop', '--build-only'], { cwd: updateRoot, env, stage: 'rebuild' })
   })
   if (rebuilt.code !== 0) {
     emitUpdateProgress({
@@ -5106,14 +5112,7 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
     // themes/context.tsx, so the window appears already themed.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      webviewTag: true,
-      sandbox: true,
-      nodeIntegration: false,
-      devTools: true
-    }
+    webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
   })
 
   if (IS_MAC) {
@@ -5180,23 +5179,11 @@ function createWindow() {
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      webviewTag: true,
-      sandbox: true,
-      nodeIntegration: false,
-      devTools: true,
-      // Keep timers + requestAnimationFrame running at full speed when the
-      // window is blurred/occluded. The chat transcript streams to the screen
-      // through a requestAnimationFrame-gated flush (useSessionStateCache),
-      // so with Chromium's default background throttling the live answer
-      // stalls whenever this window isn't focused (e.g. you switch to your
-      // editor mid-turn, or open detached devtools) and only appears once you
-      // refocus or refresh. A streaming chat app must render in the
-      // background, so opt out — matching the secondary windows above.
-      backgroundThrottling: false
-    }
+    // Shared with the secondary session windows (chatWindowWebPreferences) so
+    // both keep `backgroundThrottling: false` — the chat transcript streams via
+    // a requestAnimationFrame-gated flush that Chromium pauses for blurred
+    // windows, stalling the live answer until refocus. See session-windows.cjs.
+    webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
   })
 
   if (IS_MAC) {
@@ -6563,6 +6550,12 @@ app.on('before-quit', () => {
   }
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+
+  // Kill open PTYs before environment teardown to avoid the node-pty#904
+  // ThreadSafeFunction SIGABRT race.
+  for (const id of [...terminalSessions.keys()]) {
+    disposeTerminalSession(id)
+  }
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')

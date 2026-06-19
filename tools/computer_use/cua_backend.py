@@ -7,6 +7,7 @@ macOS permission context that the Swift app can onboard, monitor, and stop.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -18,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
+_CUA_DRIVER_ARGS = ["mcp"]
 
 _WINDOW_LINE_RE = re.compile(r'^-\s+(.+?)\s+\(pid\s+(\d+)\)\s+.*\[window_id:\s+(\d+)\]', re.MULTILINE)
 _ELEMENT_LINE_RE = re.compile(
@@ -217,6 +220,115 @@ def _split_tree_text(full_text: str) -> Tuple[str, str]:
     return lines[0], lines[1] if len(lines) > 1 else ""
 
 
+class _AsyncBridge:
+    """Compatibility bridge for MCP-session tests; production uses the daemon CLI path."""
+
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._ready = threading.Event()
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._ready.clear()
+
+        def _run() -> None:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._ready.set()
+            self._loop.run_forever()
+
+        self._thread = threading.Thread(target=_run, daemon=True, name="cua-driver-loop")
+        self._thread.start()
+        if not self._ready.wait(timeout=5.0):
+            raise RuntimeError("cua-driver asyncio bridge failed to start")
+
+    def run(self, coro, timeout: Optional[float] = 30.0) -> Any:
+        from agent.async_utils import safe_schedule_threadsafe
+        if not self._loop or not self._thread or not self._thread.is_alive():
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            raise RuntimeError("cua-driver bridge not started")
+        fut = safe_schedule_threadsafe(coro, self._loop)
+        if fut is None:
+            raise RuntimeError("cua-driver bridge not started")
+        return fut.result(timeout=timeout)
+
+    def stop(self) -> None:
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self._loop = None
+
+
+class _CuaDriverSession:
+    """Legacy MCP session shim kept for tests and external imports."""
+
+    def __init__(self, bridge: _AsyncBridge) -> None:
+        self._bridge = bridge
+        self._session = None
+        self._exit_stack = None
+        self._lock = threading.Lock()
+        self._started = False
+
+    async def _aenter(self) -> None:
+        from contextlib import AsyncExitStack
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from tools.environments.local import _sanitize_subprocess_env
+
+        if not cua_driver_binary_available():
+            raise RuntimeError(cua_driver_install_hint())
+
+        params = StdioServerParameters(
+            command=_CUA_DRIVER_CMD,
+            args=_CUA_DRIVER_ARGS,
+            env=_sanitize_subprocess_env(dict(os.environ)),
+        )
+        stack = AsyncExitStack()
+        read, write = await stack.enter_async_context(stdio_client(params))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        self._exit_stack = stack
+        self._session = session
+
+    async def _aexit(self) -> None:
+        if self._exit_stack is not None:
+            try:
+                await self._exit_stack.aclose()
+            except Exception as e:
+                logger.warning("cua-driver shutdown error: %s", e)
+        self._exit_stack = None
+        self._session = None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._bridge.start()
+            self._bridge.run(self._aenter(), timeout=15.0)
+            self._started = True
+
+    def stop(self) -> None:
+        with self._lock:
+            if not self._started:
+                return
+            try:
+                self._bridge.run(self._aexit(), timeout=5.0)
+            finally:
+                self._started = False
+
+    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        if self._session is None:
+            raise RuntimeError("cua-driver session not started")
+        result = self._bridge.run(self._session.call_tool(name, args), timeout=timeout)
+        data = getattr(result, "structuredContent", None)
+        return {"data": data, "images": [], "structuredContent": data, "isError": bool(getattr(result, "isError", False))}
+
+
 def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
     modifiers = []
     key = None
@@ -228,6 +340,7 @@ def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
         else:
             key = part
     return key, modifiers
+
 
 
 class CuaDriverBackend(ComputerUseBackend):

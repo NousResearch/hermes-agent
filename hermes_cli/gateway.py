@@ -7,6 +7,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -3478,6 +3479,52 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
+
+    # If this refresh is running INSIDE the gateway's own launchd process tree
+    # (e.g. the agent triggered a self-update via its terminal tool), a direct
+    # `launchctl bootout` tears down the service's process group — which
+    # includes THIS CLI — before the follow-up `bootstrap` can run. The gateway
+    # then stays unloaded and KeepAlive can't revive it (#43842). Detect that
+    # case and hand the reload to a detached session that survives the bootout.
+    gateway_pid = None
+    try:
+        from gateway.status import get_running_pid
+        gateway_pid = get_running_pid()
+    except Exception:
+        gateway_pid = None
+
+    if (
+        gateway_pid is not None
+        and _is_pid_ancestor_of_current_process(gateway_pid)
+        and hasattr(os, "setsid")  # POSIX-only; launchd is macOS so always true here
+    ):
+        # Delegate to a new session: `start_new_session=True` detaches the
+        # helper from the gateway's process group, so the bootout that kills
+        # the gateway (and us) does not kill the helper before it bootstraps.
+        reload_script = (
+            f"sleep 2; "
+            f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
+            f"sleep 1; "
+            f"launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null"
+        )
+        try:
+            subprocess.Popen(
+                ["/bin/bash", "-c", reload_script],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.warning("Deferred launchd reload could not be spawned: %s", e)
+            return False
+        print(
+            "↻ Updated gateway launchd service definition; reload deferred to a "
+            "detached helper (refresh ran inside the gateway process tree)"
+        )
+        return True
+
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(
         [_launchctl_bin(), "bootout", f"{_launchd_domain()}/{label}"],

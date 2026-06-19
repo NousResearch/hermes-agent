@@ -1572,6 +1572,12 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Layer 3: check send_gate before running agent
+        send_gate_err = self._check_send_gate()
+        if send_gate_err:
+            return send_gate_err
+
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -1616,6 +1622,12 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+
+        # Layer 3: check send_gate before running agent
+        send_gate_err = self._check_send_gate()
+        if send_gate_err:
+            return send_gate_err
+
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err

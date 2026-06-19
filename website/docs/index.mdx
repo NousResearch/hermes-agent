@@ -9,56 +9,48 @@ displayed_sidebar: docs
 
 import Link from "@docusaurus/Link";
 
-# Hermes Agent
+<div className="hero--hermes">
+  <p className="hero-eyebrow">Premium AI agent OS · Liquid Glass UI</p>
+  <h1>Hermes Agent</h1>
+  <p className="hero-lead">
+    The self-improving AI agent built by <a href="https://nousresearch.com">Nous Research</a>. Hermes creates skills from experience, improves them during use, persists memory across sessions, and gives you one intelligent agent across CLI, Telegram, web, desktop, and automation workflows.
+  </p>
 
-The self-improving AI agent built by [Nous Research](https://nousresearch.com). The only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, and builds a deepening model of who you are across sessions.
-
-<div
-  style={{
-    display: "flex",
-    gap: "1rem",
-    marginBottom: "2rem",
-    flexWrap: "wrap",
-  }}
->
+<div className="hero-actions">
   <Link
+    className="button button--primary button--lg"
     to="/getting-started/installation"
-    style={{
-      display: "inline-block",
-      padding: "0.6rem 1.2rem",
-      backgroundColor: "#FFD700",
-      color: "#07070d",
-      borderRadius: "8px",
-      fontWeight: 600,
-      textDecoration: "none",
-    }}
   >
     Get Started →
   </Link>
   <a
+    className="button button--secondary button--lg"
     href="https://hermes-agent.nousresearch.com/"
-    style={{
-      display: "inline-block",
-      padding: "0.6rem 1.2rem",
-      border: "1px solid rgba(255,215,0,0.2)",
-      borderRadius: "8px",
-      textDecoration: "none",
-    }}
   >
     Download Desktop
   </a>
   <a
+    className="button button--secondary button--lg"
     href="https://github.com/NousResearch/hermes-agent"
-    style={{
-      display: "inline-block",
-      padding: "0.6rem 1.2rem",
-      border: "1px solid rgba(255,215,0,0.2)",
-      borderRadius: "8px",
-      textDecoration: "none",
-    }}
   >
     View on GitHub
   </a>
+</div>
+
+  <div className="hero-stats" aria-label="Hermes Agent highlights">
+    <div className="hero-stat">
+      <strong>20+</strong>
+      <span>platforms from one gateway</span>
+    </div>
+    <div className="hero-stat">
+      <strong>60+</strong>
+      <span>built-in tools and MCP-ready workflows</span>
+    </div>
+    <div className="hero-stat">
+      <strong>Closed loop</strong>
+      <span>memory, skills, and self-improvement baked in</span>
+    </div>
+  </div>
 </div>
 
 ## Install

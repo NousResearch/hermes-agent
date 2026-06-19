@@ -9,8 +9,7 @@ import type { DesktopTheme, DesktopThemeTypography } from './types'
 // text/mono fonts carry emoji glyphs, so without this emoji render as tofu
 // boxes on platforms whose default text font lacks them (e.g. Linux/#40364).
 // Covers macOS, Windows, Linux, plus the `emoji` generic for anything else.
-export const EMOJI_FALLBACK =
-  '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
+export const EMOJI_FALLBACK = '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
 
 const SYSTEM_SANS =
   '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
@@ -95,6 +94,113 @@ export const nousTheme: DesktopTheme = {
     fontSans: SYSTEM_SANS,
     fontMono: `"Courier Prime", ${SYSTEM_MONO}`,
     fontUrl: 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap'
+  }
+}
+
+/** Premium dark glass with luminous Hermes accents. */
+export const liquidGlassTheme: DesktopTheme = {
+  name: 'liquid-glass',
+  label: 'Liquid Glass',
+  description: 'Premium dark glass surfaces with luminous Hermes accents',
+  colors: {
+    background: '#070914',
+    foreground: '#FFE6CB',
+    card: 'rgba(255, 230, 203, 0.075)',
+    cardForeground: '#FFF7EF',
+    muted: 'rgba(255, 230, 203, 0.08)',
+    mutedForeground: '#C9B7A3',
+    popover: 'rgba(13, 16, 28, 0.92)',
+    popoverForeground: '#FFF7EF',
+    primary: '#FFE6CB',
+    primaryForeground: '#070914',
+    secondary: 'rgba(255, 230, 203, 0.10)',
+    secondaryForeground: '#FFE6CB',
+    accent: '#00D4FF',
+    accentForeground: '#061018',
+    border: 'rgba(255, 230, 203, 0.16)',
+    input: 'rgba(255, 230, 203, 0.13)',
+    ring: '#00D4FF',
+    midground: '#FFE6CB',
+    composerRing: '#00D4FF',
+    destructive: '#FB2C36',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: 'rgba(7, 9, 20, 0.82)',
+    sidebarBorder: 'rgba(255, 230, 203, 0.12)',
+    userBubble: 'rgba(255, 230, 203, 0.12)',
+    userBubbleBorder: 'rgba(255, 230, 203, 0.18)'
+  },
+  darkColors: {
+    background: '#070914',
+    foreground: '#FFE6CB',
+    card: 'rgba(255, 230, 203, 0.09)',
+    cardForeground: '#FFF7EF',
+    muted: 'rgba(255, 230, 203, 0.10)',
+    mutedForeground: '#C9B7A3',
+    popover: 'rgba(13, 16, 28, 0.94)',
+    popoverForeground: '#FFF7EF',
+    primary: '#FFE6CB',
+    primaryForeground: '#070914',
+    secondary: 'rgba(255, 230, 203, 0.12)',
+    secondaryForeground: '#FFE6CB',
+    accent: '#00D4FF',
+    accentForeground: '#061018',
+    border: 'rgba(255, 230, 203, 0.18)',
+    input: 'rgba(255, 230, 203, 0.14)',
+    ring: '#00D4FF',
+    midground: '#FFE6CB',
+    composerRing: '#00D4FF',
+    destructive: '#FB2C36',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: 'rgba(7, 9, 20, 0.86)',
+    sidebarBorder: 'rgba(255, 230, 203, 0.14)',
+    userBubble: 'rgba(255, 230, 203, 0.14)',
+    userBubbleBorder: 'rgba(255, 230, 203, 0.20)'
+  },
+  typography: {
+    fontSans: '"Inter", ' + SYSTEM_SANS,
+    fontMono: '"JetBrains Mono", ' + SYSTEM_MONO,
+    fontUrl:
+      'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
+/** Bright glass variant with Nous-blue accents and a cream canvas. */
+export const liquidGlassLightTheme: DesktopTheme = {
+  name: 'liquid-glass-light',
+  label: 'Liquid Glass Light',
+  description: 'Bright glass surfaces with Nous-blue accents and cream canvas',
+  colors: {
+    background: '#F7F2EA',
+    foreground: '#111827',
+    card: 'rgba(255, 255, 255, 0.76)',
+    cardForeground: '#111827',
+    muted: 'rgba(0, 83, 253, 0.07)',
+    mutedForeground: '#5B6475',
+    popover: 'rgba(255, 255, 255, 0.92)',
+    popoverForeground: '#111827',
+    primary: '#0053FD',
+    primaryForeground: '#FFFFFF',
+    secondary: 'rgba(0, 83, 253, 0.08)',
+    secondaryForeground: '#003EA8',
+    accent: '#FFAC02',
+    accentForeground: '#1A1200',
+    border: 'rgba(0, 83, 253, 0.16)',
+    input: 'rgba(0, 83, 253, 0.12)',
+    ring: '#0053FD',
+    midground: '#0053FD',
+    composerRing: '#0053FD',
+    destructive: '#C72E4D',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: 'rgba(255, 255, 255, 0.70)',
+    sidebarBorder: 'rgba(0, 83, 253, 0.12)',
+    userBubble: 'rgba(0, 83, 253, 0.08)',
+    userBubbleBorder: 'rgba(0, 83, 253, 0.16)'
+  },
+  typography: {
+    fontSans: '"Inter", ' + SYSTEM_SANS,
+    fontMono: '"JetBrains Mono", ' + SYSTEM_MONO,
+    fontUrl:
+      'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap'
   }
 }
 
@@ -279,6 +385,8 @@ export const slateTheme: DesktopTheme = {
 }
 
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
+  'liquid-glass': liquidGlassTheme,
+  'liquid-glass-light': liquidGlassLightTheme,
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
@@ -290,4 +398,4 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'liquid-glass'

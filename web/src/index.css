@@ -1,12 +1,12 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 /* `fonts.css` must come BEFORE `globals.css`: as of @nous-research/ui 0.14.x,
    `globals.css` only declares the `--font-*` CSS variables (Collapse, Rules
    Compressed/Expanded, Mondwest). The `@font-face` registrations live in
    `fonts.css`, so without this import the DS variables resolve to font
    families the browser never loads and components fall back to a system
    stack (Tabs, Segmented, Typography, Buttons, etc. all look unstyled). */
-@import '@nous-research/ui/styles/fonts.css';
-@import '@nous-research/ui/styles/globals.css';
+@import "@nous-research/ui/styles/fonts.css";
+@import "@nous-research/ui/styles/globals.css";
 
 /* Scan the published design-system bundle so its utility classes survive
    Tailwind's JIT purge. */
@@ -21,25 +21,25 @@
 /* ------------------------------------------------------------------ */
 
 @font-face {
-  font-family: 'JetBrains Mono';
+  font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('/fonts-terminal/JetBrainsMono-Regular.woff2') format('woff2');
+  src: url("/fonts-terminal/JetBrainsMono-Regular.woff2") format("woff2");
 }
 @font-face {
-  font-family: 'JetBrains Mono';
+  font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url('/fonts-terminal/JetBrainsMono-Bold.woff2') format('woff2');
+  src: url("/fonts-terminal/JetBrainsMono-Bold.woff2") format("woff2");
 }
 @font-face {
-  font-family: 'JetBrains Mono';
+  font-family: "JetBrains Mono";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url('/fonts-terminal/JetBrainsMono-Italic.woff2') format('woff2');
+  src: url("/fonts-terminal/JetBrainsMono-Italic.woff2") format("woff2");
 }
 
 /* ------------------------------------------------------------------ */
@@ -69,10 +69,11 @@
 
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
      system stack so themes that don't override look native. */
-  --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
-    Consolas, monospace;
+  --theme-font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --theme-font-mono:
+    ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --theme-font-display: var(--theme-font-sans);
   --theme-base-size: 15px;
   --theme-line-height: 1.55;
@@ -114,7 +115,12 @@ body {
   overflow: hidden;
 }
 
-code, kbd, pre, samp, .font-mono, .font-mono-ui {
+code,
+kbd,
+pre,
+samp,
+.font-mono,
+.font-mono-ui {
   font-family: var(--theme-font-mono);
 }
 
@@ -149,8 +155,12 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
 
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
-small { font-size: 1.0625rem; }
-code { font-size: 0.875rem; }
+small {
+  font-size: 1.0625rem;
+}
+code {
+  font-size: 0.875rem;
+}
 
 /* Shadcn-compat tokens.
    The dashboard's page code predates the Nous DS and uses shadcn-style
@@ -162,19 +172,35 @@ code { font-size: 0.875rem; }
      stay visible — in LENS_0, `--foreground` itself has alpha 0. */
   --color-foreground: var(--midground);
 
-  --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  --color-card: color-mix(
+    in srgb,
+    var(--midground-base) 4%,
+    var(--background-base)
+  );
   --color-card-foreground: var(--midground);
   --color-primary: var(--midground);
   --color-primary-foreground: var(--background-base);
-  --color-secondary: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
+  --color-secondary: color-mix(
+    in srgb,
+    var(--midground-base) 6%,
+    var(--background-base)
+  );
   --color-secondary-foreground: var(--midground);
-  --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
+  --color-muted: color-mix(
+    in srgb,
+    var(--midground-base) 8%,
+    var(--background-base)
+  );
   /* Routes the shadcn `muted-foreground` slot through the DS semantic
      text-secondary token (defaults to midground 80%) so legacy call
      sites that use `text-muted-foreground` get a readable color
      instead of the old 55%-transparent default. */
   --color-muted-foreground: var(--color-text-secondary);
-  --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
+  --color-accent: color-mix(
+    in srgb,
+    var(--midground-base) 10%,
+    var(--background-base)
+  );
   --color-accent-foreground: var(--midground);
   --color-destructive: #fb2c36;
   --color-destructive-foreground: #ffffff;
@@ -183,7 +209,11 @@ code { font-size: 0.875rem; }
   --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
   --color-input: color-mix(in srgb, var(--midground-base) 15%, transparent);
   --color-ring: var(--midground);
-  --color-popover: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
+  --color-popover: color-mix(
+    in srgb,
+    var(--midground-base) 4%,
+    var(--background-base)
+  );
   --color-popover-foreground: var(--midground);
 
   --radius-sm: calc(var(--theme-radius) - 4px);
@@ -192,31 +222,58 @@ code { font-size: 0.875rem; }
   --radius-xl: calc(var(--theme-radius) + 4px);
 }
 
-
 /* Collapsed sidebar tooltip entrance — skipped when moving between items. */
 @keyframes sidebar-tooltip-in {
-  from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
-  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-50%) translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
 }
 
 /* Toast animations used by `components/Toast.tsx`. */
 @keyframes toast-in {
-  from { opacity: 0; transform: translateX(16px); }
-  to   { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes toast-out {
-  from { opacity: 1; transform: translateX(0); }
-  to   { opacity: 0; transform: translateX(16px); }
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(16px);
+  }
 }
 
 /* Generic fade + dialog entrance used by popovers and confirm dialogs. */
 @keyframes fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 @keyframes dialog-in {
-  from { opacity: 0; transform: translateY(4px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */
@@ -247,7 +304,7 @@ code { font-size: 0.875rem; }
   position: relative;
 }
 .grain::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
   opacity: 0.12;
@@ -263,7 +320,377 @@ code { font-size: 0.875rem; }
 :root:not([style*="--theme-asset-bg:"]) .theme-default-filler {
   display: block;
 }
-:root[style*="--theme-asset-bg:"] .theme-default-filler {
+:root[style*="--background-base:#170d02"] .theme-default-filler {
   display: none;
 }
+:root[style*="--background-base:#170d02"] {
+  --liquid-accent: #0053fd;
+  --liquid-accent-2: #ffac02;
+  --liquid-surface: rgba(255, 255, 255, 0.62);
+  --liquid-surface-strong: rgba(255, 255, 255, 0.78);
+  --liquid-border: rgba(0, 83, 253, 0.18);
+  --liquid-border-soft: rgba(0, 83, 253, 0.11);
+  --liquid-shadow: 0 24px 80px rgba(15, 23, 42, 0.14);
+  --liquid-text-shadow: 0 0 34px rgba(0, 83, 253, 0.16);
+}
 
+/* ── Premium “Liquid Glass” design pass ───────────────────────────────────
+   Applies across the dashboard shell, routed pages, and shared UI surfaces.
+   This intentionally uses CSS variables and broad semantic selectors so the
+   redesign reaches all 19 dashboard pages without rewriting each route. */
+:root {
+  --liquid-accent: var(--midground);
+  --liquid-accent-2: #00d4ff;
+  --liquid-violet: #a78bfa;
+  --liquid-surface: color-mix(in srgb, var(--midground-base) 5%, transparent);
+  --liquid-surface-strong: color-mix(
+    in srgb,
+    var(--midground-base) 10%,
+    transparent
+  );
+  --liquid-border: color-mix(in srgb, var(--midground-base) 22%, transparent);
+  --liquid-border-soft: color-mix(
+    in srgb,
+    var(--midground-base) 12%,
+    transparent
+  );
+  --liquid-shadow: 0 24px 80px
+    color-mix(in srgb, var(--midground-base) 18%, transparent);
+  --liquid-shadow-soft: 0 14px 44px
+    color-mix(in srgb, var(--midground-base) 12%, transparent);
+  --liquid-text-shadow: 0 0 40px
+    color-mix(in srgb, var(--midground-base) 18%, transparent);
+  --liquid-radius: max(var(--theme-radius), 1.125rem);
+}
+
+body,
+body::selection {
+  background-color: var(--background-base);
+}
+
+body {
+  background:
+    radial-gradient(
+      circle at 12% 8%,
+      color-mix(in srgb, var(--liquid-accent) 24%, transparent),
+      transparent 30rem
+    ),
+    radial-gradient(
+      circle at 88% 12%,
+      color-mix(in srgb, var(--liquid-accent-2) 18%, transparent),
+      transparent 28rem
+    ),
+    radial-gradient(
+      circle at 72% 88%,
+      color-mix(in srgb, var(--liquid-violet) 16%, transparent),
+      transparent 32rem
+    ),
+    linear-gradient(
+      135deg,
+      var(--background-base),
+      color-mix(in srgb, var(--background-base) 88%, #000)
+    );
+}
+
+#app-sidebar,
+header[role="banner"],
+[data-slot="card"],
+.card,
+[data-slot="popover"],
+.popover,
+[data-slot="dialog"],
+.dialog,
+[data-slot="sheet"],
+.sheet {
+  position: relative;
+  isolation: isolate;
+  border-color: var(--liquid-border) !important;
+  box-shadow: var(--liquid-shadow-soft);
+  backdrop-filter: blur(22px) saturate(145%);
+  -webkit-backdrop-filter: blur(22px) saturate(145%);
+}
+
+#app-sidebar {
+  overflow: hidden;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--midground-base) 8%, transparent),
+    color-mix(in srgb, var(--background-base) 68%, transparent)
+  ) !important;
+  border-right-color: var(--liquid-border-soft) !important;
+}
+
+#app-sidebar::before,
+header[role="banner"]::before,
+[data-slot="card"]::before,
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--liquid-accent) 18%, transparent),
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 16% 0%,
+      color-mix(in srgb, var(--liquid-accent-2) 16%, transparent),
+      transparent 24rem
+    );
+  opacity: 0.62;
+}
+
+#app-sidebar > *,
+header[role="banner"] > *,
+[data-slot="card"] > *,
+.card > * {
+  position: relative;
+  z-index: 1;
+}
+
+header[role="banner"] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--background-base) 42%, transparent),
+    color-mix(in srgb, var(--liquid-accent) 5%, transparent)
+  ) !important;
+  border-bottom-color: var(--liquid-border-soft) !important;
+}
+
+header[role="banner"] h1 {
+  text-shadow: var(--liquid-text-shadow);
+  letter-spacing: 0.095em;
+}
+
+main {
+  scrollbar-color: color-mix(in srgb, var(--liquid-accent) 42%, transparent)
+    transparent;
+}
+
+main > * {
+  animation: liquid-page-in 180ms ease-out both;
+}
+
+@keyframes liquid-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.992);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+[data-slot="card"],
+.card {
+  border-radius: var(--liquid-radius) !important;
+  background: linear-gradient(
+    180deg,
+    var(--liquid-surface-strong),
+    var(--liquid-surface)
+  ) !important;
+}
+
+[data-slot="card"] + [data-slot="card"],
+.card + .card,
+.card + [data-slot="card"],
+[data-slot="card"] + .card {
+  margin-top: 0.75rem;
+}
+
+[data-slot="card-header"],
+.card-header {
+  padding: 1.1rem 1.2rem 0.65rem !important;
+}
+
+[data-slot="card-title"],
+.card-title {
+  color: var(--midground) !important;
+  font-weight: 760 !important;
+  letter-spacing: 0.035em !important;
+  text-transform: uppercase !important;
+}
+
+[data-slot="card-content"],
+.card-content {
+  padding: 1rem 1.2rem 1.2rem !important;
+}
+
+[data-slot="button"],
+.button,
+button,
+[class*="button"] {
+  border-radius: 999px !important;
+  border-color: var(--liquid-border) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 10px 24px color-mix(in srgb, var(--liquid-accent) 12%, transparent);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease !important;
+}
+
+[data-slot="button"]:not(:disabled):hover,
+.button:not(:disabled):hover,
+button:not(:disabled):hover,
+[class*="button"]:not(:disabled):hover {
+  transform: translateY(-1px);
+  border-color: var(--liquid-accent) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 14px 32px color-mix(in srgb, var(--liquid-accent) 18%, transparent);
+}
+
+[data-slot="input"],
+.input,
+input,
+textarea,
+select {
+  border-color: var(--liquid-border) !important;
+  border-radius: 999px !important;
+  background: color-mix(
+    in srgb,
+    var(--background-base) 54%,
+    transparent
+  ) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease !important;
+}
+
+[data-slot="input"]:focus,
+.input:focus,
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--liquid-accent) !important;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--liquid-accent) 22%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+}
+
+[data-slot="badge"],
+.badge,
+[class*="badge"] {
+  border: 1px solid var(--liquid-border-soft) !important;
+  border-radius: 999px !important;
+  background: color-mix(
+    in srgb,
+    var(--liquid-accent) 12%,
+    transparent
+  ) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  overflow: hidden;
+  border-radius: var(--liquid-radius) !important;
+}
+
+table thead th {
+  background: color-mix(
+    in srgb,
+    var(--liquid-accent) 10%,
+    transparent
+  ) !important;
+  border-bottom-color: var(--liquid-border) !important;
+  color: var(--midground) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+}
+
+table tbody tr {
+  transition:
+    background 160ms ease,
+    transform 160ms ease !important;
+}
+
+table tbody tr:hover {
+  background: color-mix(
+    in srgb,
+    var(--liquid-accent) 8%,
+    transparent
+  ) !important;
+}
+
+[data-slot="tabs-list"],
+.tabs-list,
+[role="tablist"] {
+  border-color: var(--liquid-border-soft) !important;
+  background: color-mix(
+    in srgb,
+    var(--background-base) 40%,
+    transparent
+  ) !important;
+  border-radius: 999px !important;
+  padding: 0.25rem !important;
+}
+
+[role="tab"] {
+  border-radius: 999px !important;
+}
+
+[role="tab"][aria-selected="true"] {
+  color: var(--background-base) !important;
+  background: var(--liquid-accent) !important;
+  box-shadow: 0 10px 24px
+    color-mix(in srgb, var(--liquid-accent) 18%, transparent);
+}
+
+[data-slot="alert"],
+.alert,
+[data-slot="toast"],
+.toast {
+  border-color: var(--liquid-border) !important;
+  border-radius: var(--liquid-radius) !important;
+  background: linear-gradient(
+    180deg,
+    var(--liquid-surface-strong),
+    var(--liquid-surface)
+  ) !important;
+  box-shadow: var(--liquid-shadow-soft);
+}
+
+.progress,
+[data-slot="progress"],
+[role="progressbar"] {
+  overflow: hidden;
+  border-radius: 999px !important;
+  background: color-mix(
+    in srgb,
+    var(--liquid-accent) 10%,
+    transparent
+  ) !important;
+}
+
+.progress > *,
+[data-slot="progress"] > *,
+[role="progressbar"] > * {
+  border-radius: 999px !important;
+  background: linear-gradient(
+    90deg,
+    var(--liquid-accent),
+    var(--liquid-accent-2)
+  ) !important;
+  box-shadow: 0 0 24px color-mix(in srgb, var(--liquid-accent) 40%, transparent);
+}
+
+/* Keep terminal and docs surfaces readable while still using the premium shell. */
+[data-chat-active="true"] iframe,
+iframe[title*="Documentation" i] {
+  border-color: var(--liquid-border) !important;
+  border-radius: var(--liquid-radius) !important;
+  box-shadow: var(--liquid-shadow);
+}

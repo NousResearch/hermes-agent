@@ -1345,3 +1345,486 @@ canvas {
     animation: none;
   }
 }
+
+/* Liquid Glass desktop surfaces — premium dark/light pass for the app shell. */
+:root[data-hermes-theme='liquid-glass'],
+:root[data-hermes-theme='liquid-glass-light'] {
+  --radius-scalar: 0.78;
+  --dt-border: rgba(255, 230, 203, 0.16);
+  --dt-card: rgba(255, 230, 203, 0.075);
+  --dt-card-foreground: #fff7ef;
+  --dt-muted: rgba(255, 230, 203, 0.08);
+  --dt-popover: rgba(13, 16, 28, 0.92);
+  --dt-primary: var(--dt-midground);
+  --dt-secondary: rgba(255, 230, 203, 0.1);
+  --dt-accent: rgba(0, 212, 255, 0.14);
+  --dt-ring: #00d4ff;
+  --dt-input: rgba(255, 230, 203, 0.13);
+  --dt-sidebar-bg: rgba(7, 9, 20, 0.82);
+  --dt-sidebar-border: rgba(255, 230, 203, 0.12);
+  --ui-bg-card: rgba(255, 230, 203, 0.07);
+  --ui-bg-elevated: rgba(13, 16, 28, 0.82);
+  --ui-bg-primary: rgba(255, 230, 203, 0.16);
+  --ui-bg-secondary: rgba(255, 230, 203, 0.1);
+  --ui-bg-tertiary: rgba(255, 230, 203, 0.08);
+  --ui-bg-quaternary: rgba(255, 230, 203, 0.06);
+  --ui-bg-quinary: rgba(255, 230, 203, 0.045);
+  --ui-row-hover-background: rgba(255, 230, 203, 0.08);
+  --ui-row-active-background: rgba(0, 212, 255, 0.12);
+  --ui-control-hover-background: rgba(255, 230, 203, 0.1);
+  --ui-control-active-background: rgba(0, 212, 255, 0.14);
+  --ui-chat-bubble-background: rgba(255, 230, 203, 0.12);
+  --ui-chat-bubble-opaque-background: rgba(13, 16, 28, 0.78);
+  --ui-inline-code-background: rgba(255, 230, 203, 0.08);
+  --ui-inline-code-border: rgba(255, 230, 203, 0.12);
+  --ui-inline-code-foreground: #ffe6cb;
+  --ui-selection-background: rgba(0, 212, 255, 0.24);
+  --ui-stroke-primary: rgba(255, 230, 203, 0.2);
+  --ui-stroke-secondary: rgba(255, 230, 203, 0.14);
+  --ui-stroke-tertiary: rgba(255, 230, 203, 0.09);
+  --ui-stroke-quaternary: rgba(255, 230, 203, 0.06);
+  --ui-sash-hover-border: rgba(0, 212, 255, 0.3);
+  --ui-sash-hover-background: rgba(0, 212, 255, 0.1);
+  --warm-glow: rgba(255, 230, 203, 0.28);
+}
+
+:root[data-hermes-theme='liquid-glass-light'] {
+  --dt-border: rgba(0, 83, 253, 0.16);
+  --dt-card: rgba(255, 255, 255, 0.76);
+  --dt-card-foreground: #111827;
+  --dt-muted: rgba(0, 83, 253, 0.07);
+  --dt-popover: rgba(255, 255, 255, 0.92);
+  --dt-primary: #0053fd;
+  --dt-secondary: rgba(0, 83, 253, 0.08);
+  --dt-accent: rgba(255, 172, 2, 0.14);
+  --dt-ring: #0053fd;
+  --dt-input: rgba(0, 83, 253, 0.12);
+  --dt-sidebar-bg: rgba(255, 255, 255, 0.7);
+  --dt-sidebar-border: rgba(0, 83, 253, 0.12);
+  --ui-bg-card: rgba(255, 255, 255, 0.7);
+  --ui-bg-elevated: rgba(255, 255, 255, 0.86);
+  --ui-bg-primary: rgba(0, 83, 253, 0.1);
+  --ui-bg-secondary: rgba(0, 83, 253, 0.07);
+  --ui-bg-tertiary: rgba(0, 83, 253, 0.055);
+  --ui-bg-quaternary: rgba(0, 83, 253, 0.045);
+  --ui-bg-quinary: rgba(0, 83, 253, 0.035);
+  --ui-row-hover-background: rgba(0, 83, 253, 0.07);
+  --ui-row-active-background: rgba(255, 172, 2, 0.12);
+  --ui-control-hover-background: rgba(0, 83, 253, 0.08);
+  --ui-control-active-background: rgba(255, 172, 2, 0.12);
+  --ui-chat-bubble-background: rgba(0, 83, 253, 0.08);
+  --ui-chat-bubble-opaque-background: rgba(255, 255, 255, 0.88);
+  --ui-inline-code-background: rgba(0, 83, 253, 0.06);
+  --ui-inline-code-border: rgba(0, 83, 253, 0.12);
+  --ui-inline-code-foreground: #111827;
+  --ui-selection-background: rgba(255, 172, 2, 0.24);
+  --ui-stroke-primary: rgba(0, 83, 253, 0.18);
+  --ui-stroke-secondary: rgba(0, 83, 253, 0.14);
+  --ui-stroke-tertiary: rgba(0, 83, 253, 0.08);
+  --ui-stroke-quaternary: rgba(0, 83, 253, 0.055);
+  --ui-sash-hover-border: rgba(0, 83, 253, 0.26);
+  --ui-sash-hover-background: rgba(0, 83, 253, 0.08);
+  --warm-glow: rgba(255, 172, 2, 0.22);
+}
+
+:root[data-hermes-theme='liquid-glass'] {
+  --liquid-glass-orb-a: rgba(0, 212, 255, 0.24);
+  --liquid-glass-orb-b: rgba(255, 172, 2, 0.16);
+  --liquid-glass-orb-c: rgba(255, 230, 203, 0.08);
+}
+
+:root[data-hermes-theme='liquid-glass-light'] {
+  --liquid-glass-orb-a: rgba(0, 83, 253, 0.18);
+  --liquid-glass-orb-b: rgba(255, 172, 2, 0.2);
+  --liquid-glass-orb-c: rgba(255, 255, 255, 0.7);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 12% -10%, var(--liquid-glass-orb-a), transparent 30rem),
+    radial-gradient(circle at 88% 4%, var(--liquid-glass-orb-b), transparent 28rem),
+    radial-gradient(circle at 52% 118%, var(--liquid-glass-orb-c), transparent 34rem);
+}
+
+:root[data-hermes-theme='liquid-glass'] body::before {
+  background:
+    radial-gradient(circle at 12% -10%, rgba(0, 212, 255, 0.24), transparent 30rem),
+    radial-gradient(circle at 88% 4%, rgba(255, 172, 2, 0.16), transparent 28rem),
+    radial-gradient(circle at 52% 118%, rgba(255, 230, 203, 0.08), transparent 34rem);
+}
+
+:root[data-hermes-theme='liquid-glass-light'] body::before {
+  background:
+    radial-gradient(circle at 12% -10%, rgba(0, 83, 253, 0.18), transparent 30rem),
+    radial-gradient(circle at 88% 4%, rgba(255, 172, 2, 0.2), transparent 28rem),
+    radial-gradient(circle at 52% 118%, rgba(255, 255, 255, 0.7), transparent 34rem);
+}
+
+:root[data-hermes-theme='liquid-glass'] body,
+:root[data-hermes-theme='liquid-glass-light'] body {
+  background: linear-gradient(
+    135deg,
+    var(--dt-background) 0%,
+    color-mix(in srgb, var(--dt-midground) 7%, var(--dt-background)) 46%,
+    var(--dt-background) 100%
+  );
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+}
+
+.h-screen.min-h-0.flex-col.bg-background {
+  background: transparent !important;
+}
+
+:root[data-hermes-theme='liquid-glass'] .h-screen.min-h-0.flex-col.bg-background,
+:root[data-hermes-theme='liquid-glass-light'] .h-screen.min-h-0.flex-col.bg-background {
+  background: transparent !important;
+}
+
+[data-pane-id][data-pane-open='true'],
+[data-slot='sidebar'],
+[data-slot='sidebar-inner'],
+[data-slot='sidebar-content'],
+[data-slot='command'],
+[data-slot='dialog-content'],
+[data-slot='sheet-content'],
+[data-slot='popover-content'],
+[data-slot='context-menu-content'],
+[data-slot='dropdown-menu-content'],
+[data-slot='select-content'],
+[data-slot='tooltip-content'],
+[data-slot='composer-surface'],
+[data-slot='composer-root'],
+[data-slot='aui_assistant-message-root'],
+[data-slot='aui_user-message-root'],
+[data-slot='aui_system-message-root'],
+[data-slot='aui_thread-content'],
+[data-slot='aui_msg-actions'] {
+  border-color: var(--dt-border) !important;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--dt-card) 88%, rgba(255, 255, 255, 0.1)),
+    var(--dt-card)
+  ) !important;
+  box-shadow:
+    inset 0 0.0625rem 0 rgba(255, 255, 255, 0.08),
+    inset 0 -0.0625rem 0 rgba(0, 0, 0, 0.08),
+    0 1rem 2.5rem rgba(0, 0, 0, 0.16) !important;
+  backdrop-filter: blur(1.25rem) saturate(1.18);
+  -webkit-backdrop-filter: blur(1.25rem) saturate(1.18);
+}
+
+:root[data-hermes-theme='liquid-glass-light'] [data-pane-id][data-pane-open='true'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='sidebar'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='sidebar-inner'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='sidebar-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='command'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='dialog-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='sheet-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='popover-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='context-menu-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='dropdown-menu-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='select-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='tooltip-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='composer-surface'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='composer-root'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='aui_assistant-message-root'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='aui_user-message-root'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='aui_system-message-root'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='aui_thread-content'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='aui_msg-actions'] {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.7)) !important;
+  box-shadow:
+    inset 0 0.0625rem 0 rgba(255, 255, 255, 0.82),
+    inset 0 -0.0625rem 0 rgba(0, 83, 253, 0.05),
+    0 1rem 2.5rem rgba(17, 24, 39, 0.1) !important;
+}
+
+[data-slot='sidebar'],
+[data-slot='sidebar-inner'],
+[data-slot='sidebar-content'] {
+  background: linear-gradient(
+    180deg,
+    var(--dt-sidebar-bg),
+    color-mix(in srgb, var(--dt-sidebar-bg) 72%, transparent)
+  ) !important;
+}
+
+[data-pane-id][data-pane-open='true'] {
+  border-right-color: var(--dt-sidebar-border) !important;
+  border-left-color: var(--dt-sidebar-border) !important;
+}
+
+[data-slot='sidebar-separator'],
+[data-slot='separator'],
+[data-slot='command-separator'],
+[data-slot='dropdown-menu-separator'],
+[data-slot='context-menu-separator'] {
+  background: var(--ui-stroke-tertiary) !important;
+}
+
+[data-slot='button'] {
+  border-color: color-mix(in srgb, var(--dt-ring) 18%, transparent) !important;
+  box-shadow:
+    inset 0 0.0625rem 0 rgba(255, 255, 255, 0.1),
+    0 0.375rem 1rem rgba(0, 0, 0, 0.08) !important;
+}
+
+[data-slot='button'][data-variant='default'] {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--dt-primary) 88%, #fff),
+    color-mix(in srgb, var(--dt-primary) 72%, #000)
+  ) !important;
+  color: var(--dt-primary-foreground) !important;
+}
+
+[data-slot='button'][data-variant='outline'] {
+  background: color-mix(in srgb, var(--dt-card) 72%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dt-border) 72%, transparent) !important;
+}
+
+[data-slot='button'][data-variant='ghost'],
+[data-slot='button'][data-variant='secondary'] {
+  background: color-mix(in srgb, var(--dt-muted) 72%, transparent) !important;
+}
+
+[data-slot='input'],
+[data-slot='textarea'],
+[data-slot='select-trigger'],
+[data-slot='search-field'],
+[data-slot='command-input'],
+[data-slot='command-input-wrapper'] {
+  border-color: var(--dt-input) !important;
+  background: color-mix(in srgb, var(--dt-card) 70%, transparent) !important;
+  box-shadow: inset 0 0.0625rem 0 rgba(255, 255, 255, 0.06) !important;
+  backdrop-filter: blur(1rem);
+  -webkit-backdrop-filter: blur(1rem);
+}
+
+[data-slot='input']:focus-visible,
+[data-slot='textarea']:focus-visible,
+[data-slot='select-trigger']:focus-visible,
+[data-slot='search-field']:focus-visible,
+[data-slot='command-input']:focus-visible {
+  border-color: var(--dt-ring) !important;
+  box-shadow: 0 0 0 0.1875rem color-mix(in srgb, var(--dt-ring) 18%, transparent) !important;
+}
+
+[data-slot='badge'] {
+  border-color: color-mix(in srgb, var(--dt-ring) 24%, transparent) !important;
+  background: linear-gradient(135deg, var(--dt-accent), var(--dt-muted)) !important;
+  box-shadow: inset 0 0.0625rem 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-slot='kbd'] {
+  border-color: color-mix(in srgb, var(--dt-foreground) 22%, transparent) !important;
+  background: color-mix(in srgb, var(--dt-card) 78%, transparent) !important;
+  box-shadow: inset 0 -0.125rem 0 rgba(0, 0, 0, 0.12);
+}
+
+[data-slot='scroll-area-scrollbar'] {
+  width: 0.625rem !important;
+  background: transparent !important;
+}
+
+[data-slot='scroll-area-thumb'] {
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--dt-ring) 28%, transparent) !important;
+}
+
+[data-slot='aui_assistant-message-root'],
+[data-slot='aui_user-message-root'],
+[data-slot='aui_system-message-root'] {
+  border-radius: var(--radius-xl) !important;
+}
+
+[data-slot='aui_thread-content'] {
+  padding-block: 0.5rem !important;
+}
+
+[data-slot='aui_msg-actions'] {
+  border-radius: 0.75rem !important;
+}
+
+[data-slot='aui_generated-image'] {
+  border-color: var(--dt-border) !important;
+  border-radius: var(--radius-xl) !important;
+  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.2);
+}
+
+[data-slot='aui_intro'] {
+  border-color: var(--dt-border) !important;
+  border-radius: var(--radius-2xl) !important;
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--dt-ring) 16%, transparent), transparent 42%),
+    linear-gradient(135deg, var(--dt-card), color-mix(in srgb, var(--dt-card) 58%, transparent)) !important;
+}
+
+[data-slot='dialog-overlay'],
+[data-slot='sheet-overlay'],
+[data-slot='popover-content'] {
+  backdrop-filter: blur(1.25rem) saturate(1.15);
+  -webkit-backdrop-filter: blur(1.25rem) saturate(1.15);
+}
+
+[data-slot='dialog-content'] {
+  border-radius: var(--radius-2xl) !important;
+}
+
+[data-slot='sheet-content'] {
+  border-radius: var(--radius-2xl) var(--radius-2xl) 0 0 !important;
+}
+
+[data-slot='command'] {
+  border-radius: var(--radius-2xl) !important;
+}
+
+[data-slot='command-input-wrapper'] {
+  border-bottom-color: var(--ui-stroke-tertiary) !important;
+}
+
+[data-slot='command-item'] {
+  border-radius: var(--radius-lg) !important;
+}
+
+[data-slot='command-item'][data-selected='true'] {
+  background: linear-gradient(135deg, var(--ui-row-active-background), var(--dt-accent)) !important;
+}
+
+[data-slot='dropdown-menu-item'],
+[data-slot='context-menu-item'],
+[data-slot='select-item'] {
+  border-radius: var(--radius-md) !important;
+}
+
+[data-slot='dropdown-menu-item'][data-highlighted='true'],
+[data-slot='context-menu-item'][data-highlighted='true'],
+[data-slot='select-item'][data-highlighted='true'] {
+  background: var(--ui-row-active-background) !important;
+}
+
+[data-slot='tabs-trigger'] {
+  border-radius: var(--radius-lg) !important;
+}
+
+[data-slot='tabs-trigger'][data-state='active'] {
+  background: linear-gradient(135deg, var(--dt-accent), color-mix(in srgb, var(--dt-card) 72%, transparent)) !important;
+  box-shadow: inset 0 0.0625rem 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-slot='switch'] {
+  border-color: var(--dt-input) !important;
+  background: color-mix(in srgb, var(--dt-muted) 82%, transparent) !important;
+}
+
+[data-slot='switch'][data-state='checked'] {
+  background: color-mix(in srgb, var(--dt-ring) 48%, var(--dt-card)) !important;
+}
+
+[data-slot='checkbox'] {
+  border-color: var(--dt-input) !important;
+  background: color-mix(in srgb, var(--dt-card) 74%, transparent) !important;
+}
+
+[data-slot='checkbox'][data-state='checked'] {
+  background: var(--dt-ring) !important;
+}
+
+[data-slot='sidebar-menu-button'],
+[data-slot='sidebar-menu-sub-button'] {
+  border-radius: var(--radius-lg) !important;
+}
+
+[data-slot='sidebar-menu-button'][data-active='true'],
+[data-slot='sidebar-menu-sub-button'][data-active='true'] {
+  background: linear-gradient(135deg, var(--ui-row-active-background), var(--dt-accent)) !important;
+}
+
+:root[data-hermes-theme='liquid-glass'] [data-slot='sidebar-menu-button'],
+:root[data-hermes-theme='liquid-glass'] [data-slot='sidebar-menu-sub-button'] {
+  color: #ffe6cb !important;
+}
+
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='sidebar-menu-button'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='sidebar-menu-sub-button'] {
+  color: #111827 !important;
+}
+
+[data-slot='alert'] {
+  border-color: var(--dt-border) !important;
+  border-radius: var(--radius-xl) !important;
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--dt-ring) 16%, transparent), transparent 42%),
+    linear-gradient(135deg, var(--dt-card), color-mix(in srgb, var(--dt-card) 62%, transparent)) !important;
+}
+
+[data-slot='error-state'] {
+  border-color: var(--dt-border) !important;
+  border-radius: var(--radius-2xl) !important;
+  background: linear-gradient(135deg, var(--dt-card), color-mix(in srgb, var(--dt-card) 62%, transparent)) !important;
+}
+
+[data-slot='aui_response-loading'] {
+  border-color: var(--dt-border) !important;
+  border-radius: var(--radius-xl) !important;
+  background: linear-gradient(135deg, var(--dt-muted), transparent) !important;
+}
+
+[data-slot='aui_stream-stall'] {
+  border-color: color-mix(in srgb, var(--ui-yellow) 40%, var(--dt-border)) !important;
+  border-radius: var(--radius-xl) !important;
+  background: color-mix(in srgb, var(--ui-yellow) 12%, var(--dt-card)) !important;
+}
+
+:root[data-hermes-theme='liquid-glass'] [data-slot='aui_stream-stall'] {
+  box-shadow: 0 0 2rem rgba(255, 172, 2, 0.1);
+}
+
+[data-slot='pagination-button'],
+[data-slot='pagination-previous'],
+[data-slot='pagination-next'] {
+  border-radius: var(--radius-md) !important;
+}
+
+[data-slot='pagination-button'][aria-current='page'],
+[data-slot='pagination-previous'][aria-disabled='false'],
+[data-slot='pagination-next'][aria-disabled='false'] {
+  background: var(--ui-row-active-background) !important;
+}
+
+:root[data-hermes-theme='liquid-glass'] [data-slot='aui_assistant-message-content'] .aui-md pre,
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='aui_assistant-message-content'] .aui-md pre,
+:root[data-hermes-theme='liquid-glass'] [data-slot='code-card'],
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='code-card'] {
+  border-color: var(--dt-border) !important;
+  border-radius: var(--radius-xl) !important;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.05)), color-mix(in srgb, var(--dt-card) 84%, #000) !important;
+  box-shadow: inset 0 0.0625rem 0 rgba(255, 255, 255, 0.06);
+}
+
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='aui_assistant-message-content'] .aui-md pre,
+:root[data-hermes-theme='liquid-glass-light'] [data-slot='code-card'] {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.18)),
+    color-mix(in srgb, var(--dt-card) 84%, #fff) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-hermes-theme='liquid-glass'] *,
+  :root[data-hermes-theme='liquid-glass-light'] * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

@@ -40,18 +40,59 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "Liquid Glass",
+  description: "Premium dark glass surfaces with luminous Hermes accents",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
+    background: { hex: "#070914", alpha: 1 },
+    midground: { hex: "#FFE6CB", alpha: 1 },
     foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    warmGlow: "rgba(255, 230, 203, 0.34)",
+    noiseOpacity: 0.72,
   },
-  typography: DEFAULT_TYPOGRAPHY,
-  layout: DEFAULT_LAYOUT,
-  terminalBackground: "#000000",
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    letterSpacing: "-0.01em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "1rem",
+  },
+  componentStyles: {
+    backdrop: {
+      fillerOpacity: "0.055",
+    },
+    card: {
+      borderRadius: "1.25rem",
+      background:
+        "linear-gradient(180deg, rgba(255,230,203,0.10), rgba(255,230,203,0.045))",
+      border: "1px solid rgba(255,230,203,0.16)",
+    },
+    sidebar: {
+      background:
+        "linear-gradient(180deg, rgba(255,230,203,0.09), rgba(7,9,20,0.78))",
+      borderImage:
+        "linear-gradient(180deg, rgba(255,230,203,0.18), rgba(255,230,203,0.04)) 1",
+    },
+    header: {
+      background:
+        "linear-gradient(90deg, rgba(255,230,203,0.07), rgba(7,9,20,0.48))",
+      borderImage:
+        "linear-gradient(90deg, rgba(255,230,203,0.18), rgba(255,230,203,0.03)) 1",
+    },
+    page: {
+      radius: "1.25rem",
+    },
+  },
+  seriesColors: {
+    inputTokenAccent: "#FFE6CB",
+    outputTokenAccent: "#00D4FF",
+  },
+  swatchColors: ["#FFE6CB", "#00D4FF", "#070914"],
+  terminalBackground: "#050711",
 };
 
 export const midnightTheme: DashboardTheme = {
@@ -285,23 +326,86 @@ export const nousBlueTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "Liquid Glass (Large)",
+  description: "Liquid Glass with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
     baseSize: "18px",
     lineHeight: "1.65",
   },
   layout: {
     ...DEFAULT_LAYOUT,
+    radius: "1.15rem",
     density: "spacious",
   },
+  componentStyles: defaultTheme.componentStyles,
+  seriesColors: defaultTheme.seriesColors,
+  swatchColors: defaultTheme.swatchColors,
+  terminalBackground: defaultTheme.terminalBackground,
+};
+
+export const liquidGlassLightTheme: DashboardTheme = {
+  name: "liquid-glass-light",
+  label: "Liquid Glass Light",
+  description: "Bright glass surfaces with Nous-blue accents and cream canvas",
+  palette: {
+    background: { hex: "#F7F2EA", alpha: 1 },
+    midground: { hex: "#0053FD", alpha: 1 },
+    foreground: { hex: "#FFFFFF", alpha: 0 },
+    warmGlow: "rgba(0, 83, 253, 0.22)",
+    noiseOpacity: 0.42,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    letterSpacing: "-0.01em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "1rem",
+  },
+  componentStyles: {
+    backdrop: {
+      fillerOpacity: "0.035",
+    },
+    card: {
+      borderRadius: "1.25rem",
+      background:
+        "linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.62))",
+      border: "1px solid rgba(0,83,253,0.16)",
+    },
+    sidebar: {
+      background:
+        "linear-gradient(180deg, rgba(255,255,255,0.78), rgba(247,242,234,0.68))",
+      borderImage:
+        "linear-gradient(180deg, rgba(0,83,253,0.18), rgba(0,83,253,0.04)) 1",
+    },
+    header: {
+      background:
+        "linear-gradient(90deg, rgba(255,255,255,0.72), rgba(247,242,234,0.58))",
+      borderImage:
+        "linear-gradient(90deg, rgba(0,83,253,0.18), rgba(0,83,253,0.03)) 1",
+    },
+    page: {
+      radius: "1.25rem",
+    },
+  },
+  seriesColors: {
+    inputTokenAccent: "#0053FD",
+    outputTokenAccent: "#FFAC02",
+  },
+  swatchColors: ["#F7F2EA", "#0053FD", "#FFAC02"],
+  terminalBackground: "#FFFFFF",
 };
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
+  "liquid-glass-light": liquidGlassLightTheme,
   "nous-blue": nousBlueTheme,
   midnight: midnightTheme,
   ember: emberTheme,

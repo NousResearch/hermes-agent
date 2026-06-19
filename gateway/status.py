@@ -208,6 +208,7 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
     joined = " ".join(tokens)
     has_gateway_entry = (
         "hermes_cli.main" in joined
+        or "hermes_cli" in tokens
         or "hermes_cli/main.py" in joined
         or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
     )
@@ -597,6 +598,8 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = max(0, int(active_agents))
+    if platforms is not _UNSET:
+        payload["platforms"] = dict(platforms or {})
     if served_profiles is not _UNSET:
         # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
         # for a single-profile gateway. Lets `hermes status` show per-profile

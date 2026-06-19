@@ -1309,6 +1309,45 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            # Per-channel auto-loaded skill(s) and ephemeral prompt.
+            # Mirrors Slack/Discord -- whatsapp.py previously dropped both, so
+            # channel_skill_bindings / channel_prompts never reached the agent.
+            # WhatsApp delivers the same person under either a phone-JID
+            # ("<num>@s.whatsapp.net") or a LID ("<lid>@lid"); config binds by the
+            # phone number. Resolve against EVERY alias form (same identity model
+            # as gateway.session.build_session_key) so a LID-delivered DM still
+            # matches. Wrapped so a resolver hiccup never drops the user's message.
+            _wa_extra = getattr(self.config, "extra", None) or {}
+            _channel_prompt = None
+            _auto_skill = None
+            try:
+                from gateway.platforms.base import (
+                    resolve_channel_prompt,
+                    resolve_channel_skills,
+                )
+                from gateway.whatsapp_identity import (
+                    canonical_whatsapp_identifier,
+                    expand_whatsapp_aliases,
+                )
+                _wa_chat_id = data.get("chatId", "") or ""
+                _wa_candidates: list[str] = []
+                for _c in (
+                    _wa_chat_id,
+                    canonical_whatsapp_identifier(_wa_chat_id),
+                    *sorted(expand_whatsapp_aliases(_wa_chat_id)),
+                ):
+                    if _c and _c not in _wa_candidates:
+                        _wa_candidates.append(_c)
+                for _cand in _wa_candidates:
+                    if _channel_prompt is None:
+                        _channel_prompt = resolve_channel_prompt(_wa_extra, _cand, None)
+                    if _auto_skill is None:
+                        _auto_skill = resolve_channel_skills(_wa_extra, _cand, None)
+                    if _channel_prompt is not None and _auto_skill is not None:
+                        break
+            except Exception as _e:
+                print(f"[{self.name}] channel skill/prompt resolution failed: {_e}", flush=True)
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1317,6 +1356,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                channel_prompt=_channel_prompt,
+                auto_skill=_auto_skill,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

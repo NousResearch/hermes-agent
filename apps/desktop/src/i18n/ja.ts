@@ -700,6 +700,8 @@ export const ja = defineLocale({
       removedMessage: provider => `${provider} を削除しました。`,
       failedRemove: provider => `${provider} を削除できませんでした`,
       noProviderKeys: '利用可能なプロバイダー API キーがありません。',
+      searchKeys: 'プロバイダーを検索…',
+      noKeysMatch: '一致するプロバイダーがありません。',
       loading: 'プロバイダーを読み込み中...'
     },
     sessions: {

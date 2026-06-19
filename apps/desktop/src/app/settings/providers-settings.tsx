@@ -12,6 +12,7 @@ import {
   sortProviders
 } from '@/components/desktop-onboarding-overlay'
 import { Button } from '@/components/ui/button'
+import { SearchField } from '@/components/ui/search-field'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
@@ -145,6 +146,7 @@ function OAuthPicker({
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
   // Keep connected accounts grouped and always visible; only the unconnected
   // providers hide behind the disclosure, so the page leads with what's set up.
+  // Both lists preserve `sortProviders` order (curated priority, then name).
   const connected = rest.filter(p => p.status?.logged_in)
   const others = rest.filter(p => !p.status?.logged_in)
   const collapsible = others.length > 0
@@ -298,6 +300,8 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
+  // Free-text filter for the API-keys view (provider name / env-var key / desc).
+  const [keyQuery, setKeyQuery] = useState('')
   // The onboarding overlay owns the OAuth flow. Watch its `manual` flag so we
   // re-read connection state when the user finishes (or dismisses) a sign-in
   // they launched from this page — otherwise the cards keep their stale status.
@@ -386,20 +390,49 @@ export function ProvidersSettings({ onClose, onViewChange, view }: ProvidersSett
   const keyGroups = buildProviderKeyGroups(vars)
 
   if (showApiKeys) {
+    const q = keyQuery.trim().toLowerCase()
+    const visibleGroups = q
+      ? keyGroups.filter(group => {
+          const haystack = [
+            group.name,
+            group.description ?? '',
+            group.primary[0],
+            ...group.advanced.map(([k]) => k)
+          ]
+
+          return haystack.some(s => s.toLowerCase().includes(q))
+        })
+      : keyGroups
+
     return (
       <SettingsContent>
         {keyGroups.length > 0 ? (
-          <div className="grid gap-2">
-            {keyGroups.map(group => (
-              <ProviderKeyRows
-                expanded={openProvider === group.name}
-                group={group}
-                key={group.name}
-                onExpand={() => setOpenProvider(group.name)}
-                onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                rowProps={rowProps}
-              />
-            ))}
+          <div className="grid gap-3">
+            <SearchField
+              aria-label={t.settings.providers.searchKeys}
+              containerClassName="w-full"
+              onChange={setKeyQuery}
+              placeholder={t.settings.providers.searchKeys}
+              value={keyQuery}
+            />
+            {visibleGroups.length > 0 ? (
+              <div className="grid gap-2">
+                {visibleGroups.map(group => (
+                  <ProviderKeyRows
+                    expanded={openProvider === group.name}
+                    group={group}
+                    key={group.name}
+                    onExpand={() => setOpenProvider(group.name)}
+                    onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                    rowProps={rowProps}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+                {t.settings.providers.noKeysMatch}
+              </div>
+            )}
           </div>
         ) : (
           <NoProviderKeys />

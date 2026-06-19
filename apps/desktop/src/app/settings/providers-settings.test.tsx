@@ -36,6 +36,22 @@ function provider(id: string, loggedIn: boolean, patch: Partial<OAuthProvider> =
   }
 }
 
+// A backend-tagged provider env var (category=provider) for the API-keys view.
+function keyVar(label: string, slug: string) {
+  return {
+    advanced: false,
+    category: 'provider',
+    description: `${label} direct API`,
+    is_password: true,
+    is_set: false,
+    provider: slug,
+    provider_label: label,
+    redacted_value: null,
+    tools: [],
+    url: ''
+  }
+}
+
 beforeEach(() => {
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
@@ -123,5 +139,37 @@ describe('ProvidersSettings', () => {
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     expect(await screen.findByText('WidgetAI')).toBeTruthy()
+  })
+
+  it('orders API-key providers by priority then name, and filters them via search', async () => {
+    // These three providers have no curated PROVIDER_GROUPS priority, so they
+    // share the default priority and fall back to alphabetical among themselves
+    // (Acme, Middle, Zebra) — exercising the name tiebreak of the priority sort.
+    getEnvVars.mockResolvedValue({
+      ZEBRA_API_KEY: keyVar('Zebra', 'zebra'),
+      ACME_API_KEY: keyVar('Acme', 'acme'),
+      MIDDLE_API_KEY: keyVar('Middle', 'middle')
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    // Equal priority → alphabetical tiebreak: Acme, Middle, Zebra.
+    await screen.findByText('Acme')
+    const labels = screen.getAllByText(/Acme|Middle|Zebra/).map(el => el.textContent)
+    expect(labels).toEqual(['Acme', 'Middle', 'Zebra'])
+
+    // Typing narrows the list to matching providers only.
+    const search = screen.getByPlaceholderText('Search providers…')
+    fireEvent.change(search, { target: { value: 'mid' } })
+
+    await waitFor(() => expect(screen.queryByText('Acme')).toBeNull())
+    expect(screen.getByText('Middle')).toBeTruthy()
+    expect(screen.queryByText('Zebra')).toBeNull()
+
+    // A non-matching query shows the empty-state copy.
+    fireEvent.change(search, { target: { value: 'nonesuch-xyz' } })
+    expect(await screen.findByText('No providers match your search.')).toBeTruthy()
   })
 })

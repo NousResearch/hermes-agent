@@ -581,6 +581,8 @@ export const en: Translations = {
       removedMessage: provider => `${provider} was removed.`,
       failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
+      searchKeys: 'Search providers…',
+      noKeysMatch: 'No providers match your search.',
       loading: 'Loading providers...'
     },
     sessions: {

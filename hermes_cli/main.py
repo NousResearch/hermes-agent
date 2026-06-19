@@ -1650,6 +1650,22 @@ def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     return bundled if bundled.is_file() else None
 
 
+def _exit_missing_tui_workspace(tui_dir: Path) -> "NoReturn":
+    """Abort TUI launch with a recovery hint when the workspace checkout is missing."""
+    print(
+        "Error: the TUI workspace is missing from this Hermes checkout.\n"
+        f"Expected directory: {tui_dir}\n"
+        "This usually means `hermes update` left tracked ui-tui files deleted.\n"
+        "Recovery:\n"
+        "  1. From the Hermes checkout, run `git restore -- ui-tui`\n"
+        "  2. Run `npm install --silent --no-fund --no-audit --progress=false`\n"
+        "  3. Retry `hermes --tui`\n"
+        "If the checkout is still inconsistent, run `hermes update --force`.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild)."""
     _ensure_tui_node()
@@ -1682,6 +1698,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if not ext_dir and not tui_dir.is_dir():
+        _exit_missing_tui_workspace(tui_dir)
 
     # 1. Prebuilt bundle (nix / packaged release): just run it.
     if not tui_dev:

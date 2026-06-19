@@ -19063,6 +19063,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_session_key = session_key
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -19081,6 +19082,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    try:
+                        next_session_key = self._session_key_for_source(next_source)
+                    except Exception:
+                        logger.debug(
+                            "Queued follow-up session-key resolution failed; reusing %s",
+                            session_key or "?",
+                            exc_info=True,
+                        )
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -19117,7 +19126,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     history=updated_history,
                     source=next_source,
                     session_id=session_id,
-                    session_key=session_key,
+                    session_key=next_session_key,
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,

@@ -6959,24 +6959,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._close_model_picker()
 
     def _handle_model_switch(self, cmd_original: str):
-        """Handle /model command — switch model for this session.
+        """Handle /model command — switch model.
 
         Supports:
           /model                              — show current model + usage hints
-          /model <name>                       — switch for this session only
-          /model <name> --global              — switch and persist to config.yaml
+          /model <name>                       — switch model (persists by default)
+          /model <name> --session             — switch for this session only
+          /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
+
+        Persistence defaults to on (``model.persist_switch_by_default`` in
+        config.yaml, default True). Use ``--session`` for a one-off switch.
         """
-        from hermes_cli.model_switch import switch_model, parse_model_flags
+        from hermes_cli.model_switch import (
+            switch_model,
+            parse_model_flags,
+            resolve_persist_behavior,
+        )
         from hermes_cli.providers import get_label
 
         # Parse args from the original command
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
-        # Parse --provider, --global, and --refresh flags
-        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+        # Parse --provider, --global, --session, and --refresh flags
+        (
+            model_input,
+            explicit_provider,
+            is_global_flag,
+            force_refresh,
+            is_session,
+        ) = parse_model_flags(raw_args)
+        # Resolve the effective persistence once: --session overrides the
+        # config-gated default, --global forces persist, otherwise defer to
+        # model.persist_switch_by_default (defaults to True so /model survives
+        # across sessions).
+        persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: wipe the on-disk picker cache before building the
         # provider list. Forces a live re-fetch of every authed provider's
@@ -7024,7 +7043,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not providers:
                 _cprint("  No authenticated providers found.")
                 _cprint("")
-                _cprint("  /model <name>                        switch model")
+                _cprint("  /model <name>                        switch model (persists)")
+                _cprint("  /model <name> --session              switch for this session only")
                 _cprint("  /model --provider <slug>             switch provider")
                 _cprint("  /model --refresh                     re-fetch live model lists")
                 return
@@ -7144,7 +7164,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
-            _cprint("    Saved to config.yaml (--global)")
+            _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")
 
@@ -11917,7 +11937,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # --- /model picker modal ---
             if self._model_picker_state:
                 try:
-                    self._handle_model_picker_selection()
+                    # Picker selections persist by default (same default as
+                    # /model <name>); honour model.persist_switch_by_default.
+                    from hermes_cli.model_switch import resolve_persist_behavior
+
+                    self._handle_model_picker_selection(
+                        persist_global=resolve_persist_behavior(False, False)
+                    )
                 except Exception as _exc:
                     _cprint(f"  ✗ Model selection failed: {_exc}")
                     self._close_model_picker()

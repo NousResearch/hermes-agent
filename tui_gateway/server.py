@@ -2139,14 +2139,25 @@ def _apply_model_switch(
     *,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
-    parsed_flags: tuple[str, str, bool, bool] | None = None,
+    parsed_flags: tuple[str, str, bool, bool, bool] | None = None,
 ) -> dict:
-    from hermes_cli.model_switch import parse_model_flags, switch_model
+    from hermes_cli.model_switch import (
+        parse_model_flags,
+        resolve_persist_behavior,
+        switch_model,
+    )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     if parsed_flags is None:
         parsed_flags = parse_model_flags(raw_input)
-    model_input, explicit_provider, persist_global, _force_refresh = parsed_flags
+    (
+        model_input,
+        explicit_provider,
+        is_global_flag,
+        _force_refresh,
+        is_session,
+    ) = parsed_flags
+    persist_global = resolve_persist_behavior(is_global_flag, is_session)
     if not model_input:
         raise ValueError("model value required")
 
@@ -7596,7 +7607,7 @@ def _(rid, params: dict) -> dict:
                 from hermes_cli.model_switch import parse_model_flags
 
                 parsed_flags = parse_model_flags(value)
-                _model_input, explicit_provider, _persist_global, _force_refresh = parsed_flags
+                _model_input, explicit_provider, _persist_global, _force_refresh, _is_session = parsed_flags
                 if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)

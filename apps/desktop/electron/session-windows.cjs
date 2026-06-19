@@ -3,7 +3,8 @@
 // here so they can be unit-tested with node --test (mirroring how the rest of
 // electron/*.cjs splits testable logic out of the main.cjs monolith).
 
-const { pathToFileURL } = require('node:url')
+const path = require('node:path')
+const { fileURLToPath, pathToFileURL } = require('node:url')
 
 // Secondary windows open at the minimum usable size — a compact side panel for
 // subagent watch / cmd-click session pop-out, not a second full desktop.
@@ -53,6 +54,36 @@ function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, watch,
   }
 
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+}
+
+function isAllowedChatNavigation(rawUrl, { devServer, rendererIndexPath } = {}) {
+  let parsed
+  try {
+    parsed = new URL(String(rawUrl || ''))
+  } catch {
+    return false
+  }
+
+  if (devServer) {
+    let dev
+    try {
+      dev = new URL(devServer)
+    } catch {
+      return false
+    }
+
+    return parsed.protocol === dev.protocol && parsed.host === dev.host
+  }
+
+  if (parsed.protocol !== 'file:' || !rendererIndexPath) {
+    return false
+  }
+
+  try {
+    return path.resolve(fileURLToPath(parsed)) === path.resolve(rendererIndexPath)
+  } catch {
+    return false
+  }
 }
 
 // A small registry keyed by sessionId that guarantees one window per chat:
@@ -119,6 +150,7 @@ module.exports = {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  isAllowedChatNavigation,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 }

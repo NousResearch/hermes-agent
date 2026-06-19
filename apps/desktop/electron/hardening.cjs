@@ -9,6 +9,37 @@ const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
+const EXTERNAL_FILE_REVEAL_EXTENSIONS = new Set([
+  '.app',
+  '.appimage',
+  '.bat',
+  '.bash',
+  '.cmd',
+  '.com',
+  '.command',
+  '.desktop',
+  '.dmg',
+  '.exe',
+  '.fish',
+  '.jar',
+  '.js',
+  '.jse',
+  '.lnk',
+  '.msc',
+  '.msi',
+  '.msp',
+  '.pkg',
+  '.ps1',
+  '.psm1',
+  '.run',
+  '.scr',
+  '.sh',
+  '.vbe',
+  '.vbs',
+  '.wsf',
+  '.wsh',
+  '.zsh'
+])
 
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   const fallback =
@@ -105,6 +136,16 @@ function sensitiveFileBlockReason(filePath) {
   }
 
   return null
+}
+
+function shouldRevealExternalFilePath(filePath) {
+  const basename = path.basename(String(filePath || '')).toLowerCase()
+
+  if (!basename) {
+    return false
+  }
+
+  return EXTERNAL_FILE_REVEAL_EXTENSIONS.has(path.extname(basename))
 }
 
 function ipcPathError(code, message) {
@@ -269,11 +310,13 @@ module.exports = {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  EXTERNAL_FILE_REVEAL_EXTENSIONS,
   encryptDesktopSecret,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  shouldRevealExternalFilePath,
   sensitiveFileBlockReason
 }

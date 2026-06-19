@@ -1,10 +1,14 @@
 const assert = require('node:assert/strict')
+const os = require('node:os')
+const path = require('node:path')
 const test = require('node:test')
+const { pathToFileURL } = require('node:url')
 
 const {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
-  createSessionWindowRegistry
+  createSessionWindowRegistry,
+  isAllowedChatNavigation
 } = require('./session-windows.cjs')
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
@@ -90,6 +94,37 @@ test('buildSessionWindowUrl routes new-session windows to the draft (#/)', () =>
   const url = buildSessionWindowUrl(null, { devServer: 'http://localhost:5173', newSession: true })
 
   assert.equal(url, 'http://localhost:5173/?win=secondary&new=1#/')
+})
+
+test('isAllowedChatNavigation allows only the dev server origin in dev mode', () => {
+  assert.equal(
+    isAllowedChatNavigation('http://localhost:5173/?win=secondary#/abc', {
+      devServer: 'http://localhost:5173'
+    }),
+    true
+  )
+  assert.equal(
+    isAllowedChatNavigation('http://localhost:5173.evil.test/', {
+      devServer: 'http://localhost:5173'
+    }),
+    false
+  )
+})
+
+test('isAllowedChatNavigation pins packaged file navigation to the renderer entry', () => {
+  const rendererIndexPath = path.join(os.tmpdir(), 'hermes-dist', 'index.html')
+  const evilPath = path.join(os.tmpdir(), 'hermes-dist', 'evil.html')
+
+  assert.equal(
+    isAllowedChatNavigation(`${pathToFileURL(rendererIndexPath).toString()}?win=secondary#/abc`, { rendererIndexPath }),
+    true
+  )
+  assert.equal(
+    isAllowedChatNavigation(pathToFileURL(evilPath).toString(), {
+      rendererIndexPath
+    }),
+    false
+  )
 })
 
 test('registry opens one window per session and focuses on re-open', () => {

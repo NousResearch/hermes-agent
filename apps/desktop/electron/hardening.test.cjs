@@ -12,6 +12,7 @@ const {
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
+  shouldRevealExternalFilePath,
   sensitiveFileBlockReason
 } = require('./hardening.cjs')
 
@@ -58,6 +59,15 @@ test('sensitiveFileBlockReason blocks obvious secret file patterns', () => {
   assert.equal(sensitiveFileBlockReason('/tmp/.env.example'), null)
   assert.match(String(sensitiveFileBlockReason('/Users/me/.ssh/id_ed25519')), /SSH/)
   assert.match(String(sensitiveFileBlockReason('/tmp/server-cert.pem')), /\.pem/)
+})
+
+test('shouldRevealExternalFilePath flags executable file links', () => {
+  assert.equal(shouldRevealExternalFilePath('/tmp/report.html'), false)
+  assert.equal(shouldRevealExternalFilePath('/tmp/report.pdf'), false)
+  assert.equal(shouldRevealExternalFilePath('/tmp/setup.EXE'), true)
+  assert.equal(shouldRevealExternalFilePath('C:\\Users\\me\\Downloads\\install.msi'), true)
+  assert.equal(shouldRevealExternalFilePath('/Applications/Hermes.app'), true)
+  assert.equal(shouldRevealExternalFilePath('/tmp/script.sh'), true)
 })
 
 test('path helpers reject blank non-string NUL and Windows device syntax', async () => {

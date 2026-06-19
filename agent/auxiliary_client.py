@@ -212,6 +212,7 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
 # We raise the trigger to 85% (~231K) on this exact route so Codex gpt-5.5
 # sessions use the window they actually have.
 _CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
+_CODEX_GPT53_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
 def _is_codex_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
@@ -229,6 +230,20 @@ def _is_codex_gpt55(model: Optional[str], provider: Optional[str] = None) -> boo
         return False
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     return bare == "gpt-5.5" or bare.startswith("gpt-5.5-") or bare.startswith("gpt-5.5.")
+
+
+def _is_codex_gpt53_spark(model: Optional[str], provider: Optional[str] = None) -> bool:
+    """True for gpt-5.3-codex-spark on the Codex OAuth backend.
+
+    gpt-5.3-codex-spark has a 128k context window (vs gpt-5.3-codex's 272k).
+    The default 0.50 threshold fires at ~64k which is too early; 0.70 fires at
+    ~90k, preserving more reasoning context.
+    """
+    prov = (provider or "").strip().lower()
+    if prov != "openai-codex":
+        return False
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare == "gpt-5.3-codex-spark" or bare.startswith("gpt-5.3-codex-spark-")
 
 
 def _fixed_temperature_for_model(
@@ -271,6 +286,8 @@ def _compression_threshold_for_model(
         at 272K and the default 50% trigger would compact at ~136K. Gated by
         ``allow_codex_gpt55_autoraise`` so the user can opt back down to the
         global default (the caller passes the config flag through here).
+      - gpt-5.3-codex-spark on Codex OAuth route → 0.70, because it has a 128K
+        context window and the default 50% trigger would compact at ~64K.
 
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
@@ -279,6 +296,8 @@ def _compression_threshold_for_model(
         return 0.75
     if allow_codex_gpt55_autoraise and _is_codex_gpt55(model, provider):
         return _CODEX_GPT55_COMPACTION_THRESHOLD
+    if _is_codex_gpt53_spark(model, provider):
+        return _CODEX_GPT53_SPARK_COMPACTION_THRESHOLD
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)

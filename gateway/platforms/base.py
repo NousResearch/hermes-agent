@@ -2859,7 +2859,7 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
-    async def stop_typing(self, chat_id: str) -> None:
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Stop a persistent typing indicator (if the platform uses one).
 
         Override in subclasses that start background typing loops.

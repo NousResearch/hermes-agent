@@ -9598,7 +9598,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 _typing_adapter = self.adapters.get(source.platform)
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
-                    await _typing_adapter.stop_typing(source.chat_id)
+                    _typing_meta = self._thread_metadata_for_source(source) if source.platform == Platform.DISCORD else None
+                    await _typing_adapter.stop_typing(source.chat_id, metadata=_typing_meta)
             except Exception:
                 pass
 
@@ -10063,7 +10064,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 _err_adapter = self.adapters.get(source.platform)
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
-                    await _err_adapter.stop_typing(source.chat_id)
+                    _err_meta = self._thread_metadata_for_source(source) if source.platform == Platform.DISCORD else None
+                    await _err_adapter.stop_typing(source.chat_id, metadata=_err_meta)
             except Exception:
                 pass
             logger.exception("Agent error in session %s", session_key)

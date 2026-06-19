@@ -531,16 +531,18 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     const dataDisposable = term.onData(data => {
       const id = sessionIdRef.current
-
-      if (id) {
-        // Once the user submits a line, real output may follow — stop the
-        // pristine-prompt gap cleanup so we never clear command scrollback.
-        if (promptPristine && data.includes('\r')) {
-          promptPristine = false
-        }
-
-        void terminalApi.write(id, data)
+      if (!id) {
+        return
       }
+
+      // Any user input means the prompt is no longer pristine.
+      // Waiting for Enter kept the prompt cleanup logic active during
+      // the first keystroke, which could duplicate the shell prompt.
+      if (promptPristine) {
+        promptPristine = false
+      }
+
+      void terminalApi.write(id, data)
     })
 
     cleanup.push(() => dataDisposable.dispose())

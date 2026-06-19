@@ -2440,26 +2440,27 @@ def _obs_candidates_from_uninstall_registry(root: str) -> list[Path]:
     except Exception:
         return []
 
+    winreg_mod = cast(Any, winreg)
     hive_name, _, subkey = root.partition(":\\")
     hive = {
-        "HKLM": winreg.HKEY_LOCAL_MACHINE,
-        "HKCU": winreg.HKEY_CURRENT_USER,
+        "HKLM": winreg_mod.HKEY_LOCAL_MACHINE,
+        "HKCU": winreg_mod.HKEY_CURRENT_USER,
     }.get(hive_name)
     if hive is None or not subkey:
         return []
 
     candidates: list[Path] = []
     try:
-        with winreg.OpenKey(hive, subkey) as key:
-            count = winreg.QueryInfoKey(key)[0]
+        with winreg_mod.OpenKey(hive, subkey) as key:
+            count = winreg_mod.QueryInfoKey(key)[0]
             for index in range(count):
                 try:
-                    child_name = winreg.EnumKey(key, index)
-                    with winreg.OpenKey(key, child_name) as child:
-                        display_name, _ = winreg.QueryValueEx(child, "DisplayName")
+                    child_name = winreg_mod.EnumKey(key, index)
+                    with winreg_mod.OpenKey(key, child_name) as child:
+                        display_name, _ = winreg_mod.QueryValueEx(child, "DisplayName")
                         if "OBS" not in str(display_name).upper():
                             continue
-                        install_location, _ = winreg.QueryValueEx(
+                        install_location, _ = winreg_mod.QueryValueEx(
                             child, "InstallLocation"
                         )
                         if install_location:
@@ -3287,9 +3288,10 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
             entry.pop("provider_rotation", None)
     if values.get("audio_ws_host"):
         entry["audio_ws_host"] = str(values.get("audio_ws_host")).strip()
-    if values.get("audio_ws_port") is not None:
+    audio_ws_port = values.get("audio_ws_port")
+    if audio_ws_port is not None:
         try:
-            entry["audio_ws_port"] = max(1024, min(65535, int(values.get("audio_ws_port"))))
+            entry["audio_ws_port"] = max(1024, min(65535, int(audio_ws_port)))
         except (TypeError, ValueError):
             entry.pop("audio_ws_port", None)
     if values.get("audio_ws_allow_lan") is not None:

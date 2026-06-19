@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -1376,16 +1377,12 @@ def test_comment_reaction_worker_skips_processed_comments(monkeypatch, tmp_path)
 
     monkeypatch.setattr(local_loops_worker.time, "sleep", fake_sleep)
 
-    args = type(
-        "Args",
-        (),
-        {
-            "queue_file": str(queue_file),
-            "processed_file": str(processed_file),
-            "poll_seconds": 1.0,
-            "play": False,
-        },
-    )()
+    args = argparse.Namespace(
+        queue_file=str(queue_file),
+        processed_file=str(processed_file),
+        poll_seconds=1.0,
+        play=False,
+    )
 
     assert local_loops_worker.run_comments(args) == 0
     assert len(replies) == 1

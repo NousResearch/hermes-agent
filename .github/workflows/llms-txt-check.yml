@@ -1,0 +1,39 @@
+name: llms.txt link check
+
+on:
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify llms.txt links resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f llms.txt ]; then
+            echo "llms.txt missing at repo root" >&2
+            exit 1
+          fi
+          broken=0
+          while IFS= read -r path; do
+            if [ ! -f "$path" ]; then
+              echo "BROKEN: $path" >&2
+              broken=$((broken + 1))
+            fi
+          done < <(grep -oE '\(([^)]+\.(md|mdx|example|yaml|yml))\)' llms.txt | tr -d '()')
+          if [ "$broken" -gt 0 ]; then
+            echo "$broken broken link(s) in llms.txt" >&2
+            exit 1
+          fi
+          echo "llms.txt OK"

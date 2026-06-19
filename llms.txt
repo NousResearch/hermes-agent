@@ -1,0 +1,65 @@
+# Hermes Agent
+
+> The self-improving AI agent built by Nous Research. One core runs across CLI, messaging gateway (Telegram, Discord, Slack, WhatsApp, Signal, and ~20 other platforms), TUI, and Electron desktop. Hermes learns across sessions via memory + skills, delegates to subagents, runs scheduled jobs, drives a real terminal and browser, and lives anywhere — local, Docker, SSH, Modal, Daytona. Extended primarily through plugins and skills, not by growing the core.
+
+Two invariants shape every design decision:
+
+- **Per-conversation prompt caching is sacred.** A long-lived conversation reuses a cached prefix every turn. Mutating past context, swapping toolsets mid-conversation, or rebuilding the system prompt invalidates the cache and multiplies cost. The only exception is context compression.
+- **The core is a narrow waist; capability lives at the edges.** Every model tool we add is sent on every API call, so the bar for a new *core* tool is high. Most new capability arrives as a CLI command + skill, a service-gated tool, or a plugin — not as core surface.
+
+## Getting started
+
+- [Installation](website/docs/getting-started/installation.md): install Hermes on macOS, Linux, Windows, or Termux
+- [Quickstart](website/docs/getting-started/quickstart.md): first run + basic config
+- [Learning path](website/docs/getting-started/learning-path.md): suggested reading order
+- [Updating](website/docs/getting-started/updating.md): how to upgrade between releases
+- [README](README.md): project overview + feature highlights
+- [cli-config.yaml.example](cli-config.yaml.example): annotated config reference
+
+## Architecture
+
+- [AGENTS.md](AGENTS.md): development guide, contribution rubric, footprint ladder
+- [Architecture overview](website/docs/developer-guide/architecture.md): core agent + gateway + plugins
+- [Agent loop](website/docs/developer-guide/agent-loop.md): turn lifecycle, tool dispatch
+- [Prompt assembly](website/docs/developer-guide/prompt-assembly.md): how the system prompt is built (cache-critical)
+- [Context compression and caching](website/docs/developer-guide/context-compression-and-caching.md): the one exception to cache stability
+- [Gateway internals](website/docs/developer-guide/gateway-internals.md): platform adapters + delivery
+- [Session storage](website/docs/developer-guide/session-storage.md): SQLite-backed conversation store
+- [Tools runtime](website/docs/developer-guide/tools-runtime.md): how tools are registered + dispatched
+- [Trajectory format](website/docs/developer-guide/trajectory-format.md): batch trajectory generation for research
+
+## Extending Hermes
+
+Prefer this order when adding capability: skill → CLI command → service-gated tool → plugin → new core tool (last resort).
+
+- [Creating skills](website/docs/developer-guide/creating-skills.md): procedural memory; the cheapest extension surface
+- [Build a plugin](website/docs/guides/build-a-hermes-plugin.md): start-to-finish guide
+- [Extending the CLI](website/docs/developer-guide/extending-the-cli.md): new commands without touching core
+- [Adding platform adapters](website/docs/developer-guide/adding-platform-adapters.md): bring Hermes to a new messaging platform
+- [Adding providers](website/docs/developer-guide/adding-providers.md): wire up a new model provider
+- [Adding tools](website/docs/developer-guide/adding-tools.md): the bar is high — read the footprint ladder in AGENTS.md first
+- [Plugin LLM access](website/docs/developer-guide/plugin-llm-access.md): how plugins call models
+- [Model provider plugin](website/docs/developer-guide/model-provider-plugin.md), [memory provider plugin](website/docs/developer-guide/memory-provider-plugin.md), [image](website/docs/developer-guide/image-gen-provider-plugin.md) / [video](website/docs/developer-guide/video-gen-provider-plugin.md) / [web search](website/docs/developer-guide/web-search-provider-plugin.md) provider plugins
+- [ACP internals](website/docs/developer-guide/acp-internals.md): Agent Communication Protocol
+- [Programmatic integration](website/docs/developer-guide/programmatic-integration.md): drive Hermes from your own code
+
+## Operating
+
+- [Built-in plugins](website/docs/user-guide/features/built-in-plugins.md): what ships with Hermes
+- [Profiles](website/docs/user-guide/profiles.md): multiple isolated Hermes configurations
+- [Desktop](website/docs/user-guide/desktop.md): Electron app
+- [Web dashboard](website/docs/user-guide/features/web-dashboard.md): the agent command center
+- [API server](website/docs/user-guide/features/api-server.md): programmatic access
+- [Code execution](website/docs/user-guide/features/code-execution.md): sandboxed scripting
+- [LSP](website/docs/user-guide/features/lsp.md): language-server features
+- [Automate with cron](website/docs/guides/automate-with-cron.md): scheduled jobs
+- [Cron script-only mode](website/docs/guides/cron-script-only.md): silent watchdogs
+- [Cron troubleshooting](website/docs/guides/cron-troubleshooting.md): when jobs don't fire
+- [Daily briefing bot](website/docs/guides/daily-briefing-bot.md): a reference automation
+- [Windows native](website/docs/user-guide/windows-native.md): Windows-specific setup
+
+## Contributing
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to submit changes
+- [AGENTS.md](AGENTS.md): contribution rubric — what we want, what we reject, and the footprint ladder
+- [SECURITY.md](SECURITY.md): vulnerability reporting

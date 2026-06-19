@@ -879,7 +879,7 @@ def _profile_router_http_base_url(host: str, port: int, public_url: str | None =
         text = configured_public_url.strip().rstrip("/")
         parsed = urlparse(text)
         if (
-            parsed.scheme not in {"http", "https"}
+            parsed.scheme != "https"
             or not parsed.netloc
             or parsed.params
             or parsed.query
@@ -887,7 +887,7 @@ def _profile_router_http_base_url(host: str, port: int, public_url: str | None =
             or parsed.path not in {"", "/"}
         ):
             raise ValueError(
-                "profile-router public URL must be an origin such as "
+                "profile-router public URL must be an HTTPS origin such as "
                 "https://mcp.example.com; do not include /mcp, query, or fragment"
             )
         return text
@@ -896,6 +896,33 @@ def _profile_router_http_base_url(host: str, port: int, public_url: str | None =
     if ":" in public_host and not public_host.startswith("["):
         public_host = f"[{public_host}]"
     return f"http://{public_host}:{int(port)}"
+
+
+@dataclass(frozen=True)
+class _FallbackAuthSettings:
+    """Small AuthSettings stand-in for tests when the optional MCP SDK is absent."""
+
+    issuer_url: str
+    resource_server_url: str
+    required_scopes: list[str]
+
+
+def _profile_router_auth_settings(*, issuer_url: str, resource_server_url: str):
+    try:
+        from mcp.server.auth.settings import AuthSettings
+    except ImportError:
+        return _FallbackAuthSettings(
+            issuer_url=issuer_url,
+            resource_server_url=resource_server_url,
+            required_scopes=[],
+        )
+    return AuthSettings(
+        **{
+            "issuer_url": issuer_url,
+            "resource_server_url": resource_server_url,
+            "required_scopes": [],
+        }
+    )
 
 
 def create_profile_router_mcp_server(
@@ -950,18 +977,13 @@ def create_profile_router_mcp_server(
     auth_kwargs = {}
     audit_logger = ProfileRouterAuditLogger(audit_log_path) if http_auth else None
     if http_auth:
-        from mcp.server.auth.settings import AuthSettings
-
         token_store = ProfileRouterTokenStore(token_store_path)
         base_url = _profile_router_http_base_url(host, port, public_url=public_url)
         auth_kwargs = {
             "token_verifier": ProfileRouterBearerTokenVerifier(token_store),
-            "auth": AuthSettings(
-                **{
-                    "issuer_url": base_url,
-                    "resource_server_url": f"{base_url}{streamable_http_path}",
-                    "required_scopes": [],
-                }
+            "auth": _profile_router_auth_settings(
+                issuer_url=base_url,
+                resource_server_url=f"{base_url}{streamable_http_path}",
             ),
         }
 

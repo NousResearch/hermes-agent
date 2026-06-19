@@ -14,6 +14,8 @@ import json
 import os
 import secrets
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +32,8 @@ TOKEN_HASH_PREFIX = "sha256:"
 TOKEN_ID_PREFIX = "prt"
 TOKEN_ID_BYTES = 9
 TOKEN_SECRET_BYTES = 32
+TOKEN_STORE_LOCK_TIMEOUT_SECONDS = 5.0
+TOKEN_STORE_LOCK_STALE_SECONDS = 60.0
 
 
 class ProfileRouterAuthError(ValueError):
@@ -60,6 +64,32 @@ class ProfileRouterTokenVerification:
             return None
         parsed = _parse_timestamp(self.expires_at, field="expires_at")
         return int(parsed.timestamp())
+
+
+@dataclass(frozen=True)
+class _FallbackAccessToken:
+    """Small AccessToken stand-in for tests when the optional MCP SDK is absent."""
+
+    token: str
+    client_id: str
+    scopes: list[str]
+    expires_at: int | None = None
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "token": self.token,
+            "client_id": self.client_id,
+            "scopes": self.scopes,
+            "expires_at": self.expires_at,
+        }
+
+
+def _access_token_class():
+    try:
+        from mcp.server.auth.provider import AccessToken
+    except ImportError:
+        return _FallbackAccessToken
+    return AccessToken
 
 
 def _now() -> datetime:
@@ -168,6 +198,68 @@ class ProfileRouterTokenStore:
 
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path is not None else _default_token_store_path()
+        self._lock_depth = 0
+
+    @property
+    def _lock_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}.lock")
+
+    @contextmanager
+    def _locked_store(self):
+        """Serialize token-store read/modify/write across server and CLI processes."""
+
+        if self._lock_depth:
+            yield
+            return
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self._lock_path
+        deadline = time.monotonic() + TOKEN_STORE_LOCK_TIMEOUT_SECONDS
+        fd: int | None = None
+        while True:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(fd, f"pid={os.getpid()} created_at={_now_iso()}\n".encode("utf-8"))
+                _chmod_private(lock_path)
+                break
+            except FileExistsError:
+                try:
+                    age_seconds = time.time() - lock_path.stat().st_mtime
+                    if age_seconds > TOKEN_STORE_LOCK_STALE_SECONDS:
+                        lock_path.unlink()
+                        continue
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    pass
+                if time.monotonic() >= deadline:
+                    raise ProfileRouterAuthError(
+                        "token_store_locked",
+                        "profile-router token store is locked by another process",
+                    )
+                time.sleep(0.02)
+            except OSError as exc:
+                raise ProfileRouterAuthError(
+                    "token_store_lock_failed",
+                    "profile-router token store lock could not be acquired",
+                ) from exc
+
+        self._lock_depth += 1
+        try:
+            yield
+        finally:
+            self._lock_depth -= 1
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -219,55 +311,59 @@ class ProfileRouterTokenStore:
             "revoked_at": None,
             "expires_at": normalized_expires_at,
         }
-        data = self._load()
-        data.setdefault("tokens", []).append(record)
-        self._save(data)
+        with self._locked_store():
+            data = self._load()
+            data.setdefault("tokens", []).append(record)
+            self._save(data)
         return {"token": token, "record": _safe_record(record)}
 
     def list_tokens(self, *, include_revoked: bool = True) -> list[dict[str, Any]]:
-        data = self._load()
-        records = []
-        for record in data.get("tokens", []):
-            if not isinstance(record, Mapping):
-                continue
-            if not include_revoked and record.get("revoked_at"):
-                continue
-            records.append(_safe_record(record))
-        return records
+        with self._locked_store():
+            data = self._load()
+            records = []
+            for record in data.get("tokens", []):
+                if not isinstance(record, Mapping):
+                    continue
+                if not include_revoked and record.get("revoked_at"):
+                    continue
+                records.append(_safe_record(record))
+            return records
 
     def revoke_token(self, token_id: str) -> dict[str, Any]:
         token_id = str(token_id or "").strip()
         if not token_id:
             raise ProfileRouterAuthError("invalid_token_id", "token_id is required")
-        data = self._load()
-        for record in data.get("tokens", []):
-            if isinstance(record, dict) and record.get("token_id") == token_id:
-                if not record.get("revoked_at"):
-                    record["revoked_at"] = _now_iso()
-                    self._save(data)
-                return _safe_record(record)
+        with self._locked_store():
+            data = self._load()
+            for record in data.get("tokens", []):
+                if isinstance(record, dict) and record.get("token_id") == token_id:
+                    if not record.get("revoked_at"):
+                        record["revoked_at"] = _now_iso()
+                        self._save(data)
+                    return _safe_record(record)
         raise ProfileRouterAuthError("token_not_found", f"profile-router token not found: {token_id}")
 
     def rotate_token(self, token_id: str) -> dict[str, Any]:
         token_id = str(token_id or "").strip()
         if not token_id:
             raise ProfileRouterAuthError("invalid_token_id", "token_id is required")
-        data = self._load()
-        selected: Mapping[str, Any] | None = None
-        for record in data.get("tokens", []):
-            if isinstance(record, dict) and record.get("token_id") == token_id:
-                selected = dict(record)
-                if not record.get("revoked_at"):
-                    record["revoked_at"] = _now_iso()
-                break
-        if selected is None:
-            raise ProfileRouterAuthError("token_not_found", f"profile-router token not found: {token_id}")
-        self._save(data)
-        return self.create_token(
-            scopes=selected.get("scopes") or DEFAULT_PROFILE_ROUTER_SCOPES,
-            name=selected.get("name") or "",
-            expires_at=selected.get("expires_at"),
-        )
+        with self._locked_store():
+            data = self._load()
+            selected: Mapping[str, Any] | None = None
+            for record in data.get("tokens", []):
+                if isinstance(record, dict) and record.get("token_id") == token_id:
+                    selected = dict(record)
+                    if not record.get("revoked_at"):
+                        record["revoked_at"] = _now_iso()
+                    break
+            if selected is None:
+                raise ProfileRouterAuthError("token_not_found", f"profile-router token not found: {token_id}")
+            self._save(data)
+            return self.create_token(
+                scopes=selected.get("scopes") or DEFAULT_PROFILE_ROUTER_SCOPES,
+                name=selected.get("name") or "",
+                expires_at=selected.get("expires_at"),
+            )
 
     def verify_token(
         self,
@@ -280,34 +376,35 @@ class ProfileRouterTokenStore:
         digest = _token_hash(token.strip())
         now = _now()
         required = set(_normalize_scopes(required_scopes or ())) if required_scopes else set()
-        data = self._load()
-        matched_record: dict[str, Any] | None = None
-        for record in data.get("tokens", []):
-            if not isinstance(record, dict):
-                continue
-            stored_hash = str(record.get("token_hash") or "")
-            if not hmac.compare_digest(stored_hash, digest):
-                continue
-            matched_record = record
-            break
-        if matched_record is None:
-            return None
-        if matched_record.get("revoked_at"):
-            return None
-        expires_at = matched_record.get("expires_at")
-        if expires_at and _parse_timestamp(str(expires_at), field="expires_at") <= now:
-            return None
-        scopes = tuple(str(scope) for scope in matched_record.get("scopes") or [])
-        if required and not required.issubset(set(scopes)):
-            return None
-        matched_record["last_used_at"] = _now_iso()
-        self._save(data)
-        return ProfileRouterTokenVerification(
-            token_id=str(matched_record.get("token_id") or ""),
-            token_hash=digest,
-            scopes=scopes,
-            expires_at=str(expires_at) if expires_at else None,
-        )
+        with self._locked_store():
+            data = self._load()
+            matched_record: dict[str, Any] | None = None
+            for record in data.get("tokens", []):
+                if not isinstance(record, dict):
+                    continue
+                stored_hash = str(record.get("token_hash") or "")
+                if not hmac.compare_digest(stored_hash, digest):
+                    continue
+                matched_record = record
+                break
+            if matched_record is None:
+                return None
+            if matched_record.get("revoked_at"):
+                return None
+            expires_at = matched_record.get("expires_at")
+            if expires_at and _parse_timestamp(str(expires_at), field="expires_at") <= now:
+                return None
+            scopes = tuple(str(scope) for scope in matched_record.get("scopes") or [])
+            if required and not required.issubset(set(scopes)):
+                return None
+            matched_record["last_used_at"] = _now_iso()
+            self._save(data)
+            return ProfileRouterTokenVerification(
+                token_id=str(matched_record.get("token_id") or ""),
+                token_hash=digest,
+                scopes=scopes,
+                expires_at=str(expires_at) if expires_at else None,
+            )
 
 
 class ProfileRouterBearerTokenVerifier:
@@ -320,7 +417,7 @@ class ProfileRouterBearerTokenVerifier:
         verified = self.store.verify_token(token)
         if verified is None:
             return None
-        from mcp.server.auth.provider import AccessToken
+        AccessToken = _access_token_class()
 
         # ``token`` in the AccessToken context deliberately carries only a hash
         # prefix, never the raw bearer token.

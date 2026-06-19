@@ -135,6 +135,7 @@ WORKSPACE_INSTRUCTION_FILES = (
 )
 FUNCIONES_TXT_FILENAME = "funciones.txt"
 PROTECTED_WORKSPACE_DIFF_DIRS = frozenset({".hermes"})
+SAFE_GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 SHELL_CONTROL_TOKENS = frozenset({";", "&&", "||", "|", "|&", "&", "(", ")"})
 MODEL_COMMAND_NAMES = frozenset(
     {
@@ -3133,7 +3134,16 @@ def diff_workspace(
         tracked_candidates = _split_nul_output(
             _git_output(
                 workspace,
-                ["diff", "--name-only", "-z", "--relative", "HEAD", "--", "."],
+                [
+                    "diff",
+                    *SAFE_GIT_DIFF_FLAGS,
+                    "--name-only",
+                    "-z",
+                    "--relative",
+                    "HEAD",
+                    "--",
+                    ".",
+                ],
             )
         )
     untracked_candidates = _split_nul_output(
@@ -3161,7 +3171,7 @@ def diff_workspace(
             workspace,
             [
                 "diff",
-                "--no-ext-diff",
+                *SAFE_GIT_DIFF_FLAGS,
                 "--relative",
                 "HEAD",
                 "--",

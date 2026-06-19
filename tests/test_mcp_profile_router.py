@@ -2,6 +2,8 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -1562,7 +1564,18 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
     _git(workspace_root, "init")
     _git(workspace_root, "config", "user.email", "router-test@example.invalid")
     _git(workspace_root, "config", "user.name", "Router Test")
-    _git(workspace_root, "add", "AGENTS.md", "notes.md", "funciones.txt", ".hermes/plans/state.json")
+    textconv_marker = workspace_root / "textconv-ran.txt"
+    textconv_script = workspace_root / "textconv.py"
+    textconv_script.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"Path({str(textconv_marker)!r}).write_text('ran', encoding='utf-8')\n"
+        "print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')\n",
+        encoding="utf-8",
+    )
+    (workspace_root / ".gitattributes").write_text("*.md diff=routertextconv\n", encoding="utf-8")
+    _git(workspace_root, "config", "diff.routertextconv.textconv", f"{sys.executable} {textconv_script}")
+    _git(workspace_root, "add", "AGENTS.md", "notes.md", "funciones.txt", ".hermes/plans/state.json", ".gitattributes", "textconv.py")
     _git(workspace_root, "commit", "-m", "initial")
 
     _write_router_config(
@@ -1609,6 +1622,7 @@ def test_workspace_diff_is_context_gated_bounded_and_filters_local_metadata(
         "git_read_only": True,
         "public_mcp_exposure": "enabled_read_only_v1",
     }
+    assert not textconv_marker.exists()
     assert "-alpha" in diff["diff"]["unified"]
     assert "+beta" in diff["diff"]["unified"]
     dumped = json.dumps(result)
@@ -1798,9 +1812,11 @@ def test_mcp_serve_profile_router_parser_flag_sets_explicit_surface():
     assert public_args.public_url == "https://mcp.example.com"
 
 
-def test_mcp_command_routes_profile_router_serve(monkeypatch):
+def test_mcp_command_routes_profile_router_serve(monkeypatch, capsys):
     mock_run = MagicMock()
+    mock_legacy_run = MagicMock()
     monkeypatch.setattr("mcp_serve.run_profile_router_mcp_server", mock_run)
+    monkeypatch.setattr("mcp_serve.run_mcp_server", mock_legacy_run)
 
     from hermes_cli.mcp_config import mcp_command
 
@@ -1836,6 +1852,22 @@ def test_mcp_command_routes_profile_router_serve(monkeypatch):
         streamable_http_path="/router",
         public_url="https://mcp.example.com",
     )
+    mock_legacy_run.assert_not_called()
+
+    args = argparse.Namespace(
+        mcp_action="serve",
+        verbose=False,
+        profile_router=False,
+        http=True,
+        transport="stdio",
+        host="127.0.0.1",
+        port=8765,
+        streamable_http_path="/mcp",
+        public_url=None,
+    )
+    mcp_command(args)
+    mock_legacy_run.assert_not_called()
+    assert "require --profile-router" in capsys.readouterr().out
 
 
 def test_profile_router_token_store_hashes_verifies_revokes_and_rotates(tmp_path):
@@ -1868,6 +1900,37 @@ def test_profile_router_token_store_hashes_verifies_revokes_and_rotates(tmp_path
     assert rotated["token"] != raw_token
     assert rotated["record"]["token_id"] != record["token_id"]
     assert store.verify_token(rotated["token"]) is not None
+
+
+def test_profile_router_token_store_lock_serializes_verify_and_revoke(tmp_path):
+    token_path = tmp_path / "tokens.json"
+    store = ProfileRouterTokenStore(token_path)
+    created = store.create_token()
+    raw_token = created["token"]
+    token_id = created["record"]["token_id"]
+    child_code = (
+        "import sys\n"
+        "from mcp_profile_router_auth import ProfileRouterTokenStore\n"
+        "ProfileRouterTokenStore(sys.argv[1]).revoke_token(sys.argv[2])\n"
+    )
+
+    with store._locked_store():
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child_code, str(token_path), token_id],
+            cwd=str(__file__).rsplit("/tests/", 1)[0],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(0.1)
+        assert proc.poll() is None
+        assert store.verify_token(raw_token) is not None
+
+    stdout, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == 0, (stdout, stderr)
+    fresh_store = ProfileRouterTokenStore(token_path)
+    assert fresh_store.list_tokens()[0]["revoked_at"] is not None
+    assert fresh_store.verify_token(raw_token) is None
 
 
 def test_profile_router_bearer_verifier_and_audit_log_are_secret_safe(tmp_path):
@@ -1939,11 +2002,12 @@ def test_profile_router_public_url_validation_for_remote_metadata(monkeypatch):
 
     for invalid_public_url in (
         "mcp.example.com",
+        "http://mcp.example.com",
         "ftp://mcp.example.com",
         "https://mcp.example.com/mcp",
         "https://mcp.example.com?token=bad",
     ):
-        with pytest.raises(ValueError, match="public URL must be an origin"):
+        with pytest.raises(ValueError, match="public URL must be an HTTPS origin"):
             mcp_serve._profile_router_http_base_url(
                 "127.0.0.1",
                 8765,

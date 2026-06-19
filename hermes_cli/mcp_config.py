@@ -865,6 +865,21 @@ def cmd_profile_router_token(args):
         _error(f"{exc.code}: {exc.message}")
 
 
+def _profile_router_only_serve_flag_used(args) -> bool:
+    """Return whether profile-router-only serve flags were used without it."""
+
+    return any(
+        (
+            bool(getattr(args, "http", False)),
+            getattr(args, "transport", "stdio") != "stdio",
+            getattr(args, "host", "127.0.0.1") != "127.0.0.1",
+            getattr(args, "port", 8765) != 8765,
+            getattr(args, "streamable_http_path", "/mcp") != "/mcp",
+            bool(getattr(args, "public_url", None)),
+        )
+    )
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
@@ -885,6 +900,12 @@ def mcp_command(args):
                 public_url=getattr(args, "public_url", None),
             )
         else:
+            if _profile_router_only_serve_flag_used(args):
+                _error(
+                    "HTTP/profile-router serve flags require --profile-router in this branch. "
+                    "See PR #43633 for the generic MCP HTTP transport work."
+                )
+                return
             mcp_serve.run_mcp_server(verbose=getattr(args, "verbose", False))
         return
 

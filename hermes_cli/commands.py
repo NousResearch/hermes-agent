@@ -1071,6 +1071,39 @@ def _sanitize_slack_name(raw: str) -> str:
     return name[:_SLACK_NAME_LIMIT]
 
 
+_DEFAULT_SLACK_CATCH_ALL = "hermes"
+
+
+def resolve_slack_catch_all_slash() -> str:
+    """Return the sanitized Slack catch-all slash command name.
+
+    Reads ``slack.catch_all_slash`` from ``config.yaml`` (defaults to
+    ``hermes``). Sanitizes for Slack compliance, rejects reserved built-in
+    names, and falls back to ``hermes`` when the configured value is empty
+    or invalid.
+
+    All manifest generation and gateway handler paths must call this so a
+    value like ``Team Hermes!`` resolves to ``teamhermes`` everywhere.
+    """
+    raw = _DEFAULT_SLACK_CATCH_ALL
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        slack_cfg = cfg.get("slack") if isinstance(cfg, dict) else None
+        if isinstance(slack_cfg, dict):
+            configured = slack_cfg.get("catch_all_slash")
+            if configured is not None and str(configured).strip():
+                raw = str(configured).strip()
+    except Exception:
+        pass
+
+    name = _sanitize_slack_name(raw)
+    if not name or name in _SLACK_RESERVED_COMMANDS:
+        return _DEFAULT_SLACK_CATCH_ALL
+    return name
+
+
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.
 
@@ -1085,20 +1118,25 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
 
     Commands whose sanitized name collides with a Slack built-in
     (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
-    can still reach them via ``/hermes <command>``.
+    can still reach them via the catch-all command.
 
     Results are clamped to Slack's 50-command limit with duplicate-name
-    avoidance. ``/hermes`` is always reserved as the first entry so the
-    legacy ``/hermes <subcommand>`` form keeps working for anything that
-    gets dropped by the clamp or for free-form questions.
+    avoidance. The catch-all command (``slack.catch_all_slash`` in
+    ``config.yaml``, defaults to ``hermes``) is always reserved as the first
+    entry so the legacy ``/<command> <subcommand>`` form keeps working for
+    anything that gets dropped by the clamp or for free-form questions.
+
+    Multi-profile setups can set a different slash name per profile to avoid
+    conflicts in shared Slack workspaces (e.g., ``catch_all_slash: maestro``).
     """
     overrides = _resolve_config_gates()
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
-    # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
-    seen.add("hermes")
+    # Reserve catch-all top-level command (configurable per profile).
+    default_slash_name = resolve_slack_catch_all_slash()
+    entries.append((default_slash_name, "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    seen.add(default_slash_name)
 
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)
@@ -1164,6 +1202,11 @@ def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/comm
     one). Keeping it narrow avoids coupling us to the rest of the manifest
     schema (display_information, oauth_config, settings, etc.) which users
     set up once in the Slack UI and rarely change.
+    
+    The catch-all command name comes from ``slack.catch_all_slash`` in
+    ``config.yaml`` (defaults to ``hermes``). Multi-profile setups should set
+    a unique value per profile (e.g., ``maestro``, ``denver``, ``sillas``)
+    to avoid Slack workspace conflicts.
     """
     slashes = []
     for name, desc, usage in slack_native_slashes():

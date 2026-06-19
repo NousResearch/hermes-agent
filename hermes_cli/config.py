@@ -2064,6 +2064,9 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        # Catch-all slash command name (default ``hermes`` → ``/hermes``). Set a
+        # unique value per profile when multiple Hermes apps share one workspace.
+        "catch_all_slash": "hermes",
     },
 
     # Discord platform settings (gateway mode)

@@ -22,6 +22,7 @@ from hermes_cli.commands import (
     discord_skill_commands,
     gateway_help_lines,
     resolve_command,
+    resolve_slack_catch_all_slash,
     slack_app_manifest,
     slack_native_slashes,
     slack_subcommand_map,
@@ -280,6 +281,54 @@ class TestSlackSubcommandMap:
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
+
+
+class TestResolveSlackCatchAllSlash:
+    """Shared resolver for Slack catch-all slash command name."""
+
+    def test_defaults_to_hermes(self):
+        from unittest.mock import patch
+
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert resolve_slack_catch_all_slash() == "hermes"
+
+    def test_custom_config_value(self):
+        from unittest.mock import patch
+
+        cfg = {"slack": {"catch_all_slash": "maestro"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert resolve_slack_catch_all_slash() == "maestro"
+
+    def test_sanitizes_invalid_characters(self):
+        from unittest.mock import patch
+
+        cfg = {"slack": {"catch_all_slash": "Team Hermes!"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert resolve_slack_catch_all_slash() == "teamhermes"
+
+    def test_reserved_name_falls_back_to_hermes(self):
+        from unittest.mock import patch
+
+        cfg = {"slack": {"catch_all_slash": "status"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert resolve_slack_catch_all_slash() == "hermes"
+
+    def test_empty_after_sanitization_falls_back_to_hermes(self):
+        from unittest.mock import patch
+
+        cfg = {"slack": {"catch_all_slash": "!!!"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert resolve_slack_catch_all_slash() == "hermes"
+
+    def test_manifest_and_native_slashes_use_same_name(self):
+        from unittest.mock import patch
+
+        cfg = {"slack": {"catch_all_slash": "Team Hermes!"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            resolved = resolve_slack_catch_all_slash()
+            assert slack_native_slashes()[0][0] == resolved
+            manifest = slack_app_manifest()
+            assert manifest["features"]["slash_commands"][0]["command"] == f"/{resolved}"
 
 
 class TestSlackNativeSlashes:

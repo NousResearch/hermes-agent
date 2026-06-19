@@ -3017,6 +3017,23 @@ class TestSlashCommands:
         assert msg.text == "/btw run the tests"
 
     @pytest.mark.asyncio
+    async def test_custom_catch_all_slash_routes_subcommands(self, adapter):
+        """Custom ``slack.catch_all_slash`` must use the same resolver as manifest."""
+        command = {
+            "command": "/maestro",
+            "text": "help",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"slack": {"catch_all_slash": "maestro"}},
+        ):
+            await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/help"
+
+    @pytest.mark.asyncio
     async def test_legacy_hermes_freeform_question(self, adapter):
         """/hermes <free-form text> must stay as the raw text (non-command)."""
         command = {

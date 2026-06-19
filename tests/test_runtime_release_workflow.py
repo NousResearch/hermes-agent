@@ -4,7 +4,7 @@ The desktop runtime is a frozen PyInstaller executable, so it CANNOT
 lazy-install dependencies at first use (no working pip inside the binary).
 Every backend the desktop exposes must therefore be pre-baked via the
 ``cn-desktop`` aggregate extra and collected by PyInstaller. These tests pin
-that contract so a backend can't silently drop out of the build again —?the
+that contract so a backend can't silently drop out of the build again — the
 failure mode behind issue #16 (MCP) and the 飞书/钉钉/企微/微信 desktop reports.
 """
 
@@ -62,7 +62,7 @@ def test_cn_desktop_extra_bundles_every_desktop_backend():
     # Aggregated sub-extras
     for sub in ("web", "anthropic", "mcp", "feishu", "dingtalk", "wecom"):
         assert f"[{sub}]" in blob, f"cn-desktop is missing the {sub} extra"
-    # 微信 (weixin) has no dedicated extra —?its adapter deps are listed directly
+    # 微信 (weixin) has no dedicated extra — its adapter deps are listed directly
     assert any(e.startswith("aiohttp") for e in extra), "cn-desktop missing aiohttp (微信/feishu/wecom)"
     assert any(e.startswith("qrcode") for e in extra), "cn-desktop missing qrcode (scan-login)"
     assert any(e.startswith("cryptography") for e in extra), "cn-desktop missing cryptography (微信/wecom AES)"
@@ -87,7 +87,7 @@ def test_runtime_workflow_freezes_native_mcp_client():
 
 
 def test_runtime_workflow_freezes_im_platform_backends():
-    """飞书/钉钉/企微/微信 adapters must ship —?they can't lazy-install frozen."""
+    """飞书/钉钉/企微/微信 adapters must ship — they can't lazy-install frozen."""
     workflow = _workflow_text()
     # Feishu / DingTalk SDKs collected by PyInstaller
     for mod in ("lark_oapi", "dingtalk_stream", "alibabacloud_dingtalk"):
@@ -112,6 +112,45 @@ def test_runtime_workflow_verifies_backends_in_build_env_and_frozen_output():
     assert "FEISHU_AVAILABLE" in workflow
     assert "Verify frozen runtime backends" in workflow
     assert ".dist-info" in workflow
+
+
+def test_runtime_workflow_bundles_openviking_provider_without_server_sdk():
+    """OpenViking ships as an HTTP provider, not as the heavy server SDK.
+
+    The provider implementation talks to an existing OpenViking service via
+    httpx. The CN desktop runtime already ships httpx as a core dependency, so
+    bundling the provider must not pull in the full openviking package or the
+    local openviking-server dependency tree.
+    """
+    workflow = _workflow_text()
+    extra = _cn_desktop_extra()
+    pyproject = (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
+    provider = (
+        _repo_root() / "plugins" / "memory" / "openviking" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    manifest = (
+        _repo_root() / "plugins" / "memory" / "openviking" / "plugin.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "name: openviking" in manifest
+    assert "pip_dependencies:" in manifest
+    assert "  - httpx" in manifest
+    assert "uses httpx to avoid requiring the openviking SDK" in provider
+    assert "import httpx" in provider
+    assert "import openviking" not in provider
+    assert "from openviking" not in provider
+
+    # The runtime must include bundled provider files, but not the full
+    # OpenViking server/CLI wheel. Pulling that package into cn-desktop would
+    # add hundreds of MB of transitive dependencies to every runtime artifact.
+    assert "--collect-data plugins" in workflow
+    assert 'httpx[socks]==0.28.1' in pyproject
+    assert not any("openviking" in dep.lower() for dep in extra), (
+        "cn-desktop should not install the full openviking server SDK; "
+        "the bundled provider only needs the core httpx dependency."
+    )
+    assert "--collect-submodules openviking" not in workflow
+    assert "--copy-metadata openviking" not in workflow
 
 
 def test_runtime_workflow_freezes_hindsight_client_for_long_term_memory():
@@ -159,6 +198,7 @@ def test_runtime_workflow_freezes_hindsight_client_for_long_term_memory():
     assert "hindsight_client" in verified, (
         "frozen-output verify list does not assert hindsight_client dist-info"
     )
+
 
 def test_runtime_workflow_freezes_hindsight_client_api_and_aiohttp_retry():
     """hindsight-client==0.6.1 ships hindsight_client_api as a bundled top-level

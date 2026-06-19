@@ -47,6 +47,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     # fork maintainers
     "eynzof@gmail.com": "Eynzof",
+    "hermes@local": "dfty99",
     "maxwellgeng@outlook.com": "MaxwellGengYF",
     "834740219@qq.com": "ViewWay",
     "harjoth.khara@gmail.com": "harjothkhara",

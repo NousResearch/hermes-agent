@@ -351,7 +351,7 @@ class TestTerminalToolGatewayLifecycleGuard:
                 return {"output": "Active: running", "returncode": 0}
 
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
-        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
+        monkeypatch.setattr(tt, "_check_all_guards", lambda *args, **kwargs: {"approved": True})
 
         result = json.loads(tt.terminal_tool(command="systemctl status nginx"))
 
@@ -371,7 +371,7 @@ class TestTerminalToolGatewayLifecycleGuard:
                 return {"output": "restarting...", "returncode": 0}
 
         self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
-        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True})
+        monkeypatch.setattr(tt, "_check_all_guards", lambda *args, **kwargs: {"approved": True})
 
         result = json.loads(tt.terminal_tool(command="systemctl restart hermes-gateway"))
 

@@ -1557,6 +1557,7 @@ async def upload_managed_file_stream(
     )
     tmp_path = Path(tmp_name)
     total = 0
+    renamed = False
     try:
         with os.fdopen(tmp_fd, "wb") as out:
             while True:
@@ -1568,16 +1569,21 @@ async def upload_managed_file_stream(
                     raise HTTPException(status_code=413, detail="File is too large")
                 out.write(chunk)
         os.replace(tmp_path, target)
+        renamed = True
     except HTTPException:
-        tmp_path.unlink(missing_ok=True)
         raise
     except PermissionError:
-        tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=403, detail="File is not writable")
     except OSError as exc:
-        tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
     finally:
+        # Clean up the temp file on every non-success exit, including
+        # BaseException paths the `except` clauses above don't catch — most
+        # importantly asyncio.CancelledError when a browser aborts a large
+        # upload mid-stream (the exact NS-501 scenario). os.replace clears
+        # tmp_path on success, so only unlink when the rename didn't happen.
+        if not renamed:
+            tmp_path.unlink(missing_ok=True)
         await file.close()
 
     return {

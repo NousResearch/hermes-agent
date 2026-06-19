@@ -5131,7 +5131,13 @@ def _terminate_reclaimed_worker(
     info["termination_attempted"] = True
     try:
         kill(int(pid), signal.SIGTERM)
-    except (ProcessLookupError, OSError):
+    except ProcessLookupError:
+        # Process is already gone — that's a successful termination, not a
+        # survival. Leaving terminated=False here would make the reclaim guard
+        # misread a dead worker as still-alive and defer forever.
+        info["terminated"] = True
+        return info
+    except OSError:
         return info
 
     for _ in range(10):

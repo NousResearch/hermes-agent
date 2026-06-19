@@ -529,6 +529,73 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     return plain
 
 
+def _md_table_to_feishu_html(headers: list[str], data_rows: list[list[str]]) -> str:
+    """Convert a parsed Markdown table to a Feishu <table> HTML component."""
+    columns = []
+    for idx, header in enumerate(headers):
+        columns.append({
+            "type": "string",
+            "name": f"c{idx}",
+            "displayName": header or f"列{idx + 1}",
+        })
+    table_data = []
+    for row in data_rows:
+        obj = {}
+        for j, cell in enumerate(row):
+            if j < len(headers):
+                obj[f"c{j}"] = cell
+        table_data.append(obj)
+    cols_json = json.dumps(columns, ensure_ascii=False)
+    data_json = json.dumps(table_data, ensure_ascii=False)
+    return f"<table columns={cols_json} data={data_json} pageSize=10 rowHeight='low'/>"
+
+
+def _md_table_to_mono_text(headers: list[str], data_rows: list[list[str]]) -> str:
+    """Convert a parsed Markdown table to aligned plain-text with monospace padding.
+
+    Produces a table where each cell is padded to the maximum column width,
+    wrapped in a `````` code block so the monospace alignment is preserved.
+    """
+    all_rows = [headers] + data_rows
+    col_count = len(headers)
+    # Compute max width per column
+    col_widths = [0] * col_count
+    for row in all_rows:
+        for j in range(min(len(row), col_count)):
+            col_widths[j] = max(col_widths[j], _display_width(row[j]))
+    # Build lines
+    lines: list[str] = []
+    for row_idx, row in enumerate(all_rows):
+        cells = []
+        for j in range(col_count):
+            cell = row[j] if j < len(row) else ""
+            cells.append(_pad_cell(cell, col_widths[j]))
+        lines.append("| " + " | ".join(cells) + " |")
+        if row_idx == 0:
+            sep = "|" + "|".join("-" * (w + 2) for w in col_widths) + "|"
+            lines.append(sep)
+    return "\n".join(lines)
+
+
+def _display_width(text: str) -> int:
+    """Approximate display width, counting CJK chars as 2 width units."""
+    w = 0
+    for ch in text:
+        if "\u4e00" <= ch <= "\u9fff" or "\u3000" <= ch <= "\u303f" or "\uff00" <= ch <= "\uffef":
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def _pad_cell(cell: str, target_width: int) -> str:
+    """Pad cell to target display width with trailing spaces."""
+    current = _display_width(cell)
+    if current >= target_width:
+        return cell
+    return cell + " " * (target_width - current)
+
+
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
     """Coerce value to int with optional default and minimum constraint."""
     try:
@@ -560,21 +627,30 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
-def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
-    """Build Feishu post rows while isolating fenced code blocks.
+def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
+    """Build Feishu post rows, splitting on headings, code blocks and tables.
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    Feishu's ``md`` renderer can swallow trailing content when a fenced code
+    block appears inside one large markdown element.  Split the reply at real
+    fence lines so prose before/after the code block remains visible while code
+    stays in a dedicated row.
+
+    Also converts Markdown headings to bold text rows and Markdown tables to
+    Feishu ``<table>`` HTML components inside a dedicated ``md`` row.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
-    if "```" not in content:
+
+    lines = content.splitlines()
+    if (
+        "```" not in content
+        and not re.match(r"^#{1,6}\s", lines[0])
+        and not re.search(r"^\|.*\|\n\|[-|: ]+\|", content, re.MULTILINE)
+    ):
         return [[{"tag": "md", "text": content}]]
 
-    rows: List[List[Dict[str, str]]] = []
-    current: List[str] = []
+    rows: list[list[dict[str, str]]] = []
+    current: list[str] = []
     in_code_block = False
 
     def _flush_current() -> None:
@@ -586,7 +662,13 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
             rows.append([{"tag": "md", "text": segment}])
         current = []
 
-    for raw_line in content.splitlines():
+    heading_re = re.compile(r"^(#{1,6})\s(.+)$")
+    table_sep_re = re.compile(r"^\|[\s\-|:]+(\|[\s\-|:]+\|)$")
+
+    i = 0
+    n = len(lines)
+    while i < n:
+        raw_line = lines[i]
         stripped_line = raw_line.strip()
         is_fence = bool(
             _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
@@ -595,15 +677,75 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         )
 
         if is_fence:
-            if not in_code_block:
-                _flush_current()
+            _flush_current()
             current.append(raw_line)
             in_code_block = not in_code_block
             if not in_code_block:
                 _flush_current()
+            i += 1
             continue
 
+        if not in_code_block:
+            # Heading detection
+            m = heading_re.match(raw_line)
+            if m:
+                _flush_current()
+                heading_text = m.group(2).strip()
+                level = len(m.group(1))
+                # Use ## + bold for H1/H2, plain bold for ###+
+                prefix = "## " if level <= 2 else ""
+                rows.append(
+                    [{"tag": "md", "text": f"{prefix}**{_escape_markdown_text(heading_text)}**"}]
+                )
+                i += 1
+                continue
+
+            # Table detection: current line is |header| and next is |---|
+            if (
+                raw_line.startswith("|")
+                and i + 1 < n
+                and table_sep_re.match(lines[i + 1].strip())
+            ):
+                _flush_current()
+                # Collect table lines: header + sep + data rows
+                table_lines: list[str] = []
+                while i < n:
+                    cur = lines[i].strip()
+                    if not cur or not cur.startswith("|"):
+                        break
+                    table_lines.append(lines[i])
+                    i += 1
+
+                # Parse into headers and data rows
+                if len(table_lines) >= 2:
+                    data_lines = [
+                        ln for ln in table_lines if not table_sep_re.match(ln.strip())
+                    ]
+                    headers = [
+                        cell.strip()
+                        for cell in data_lines[0].split("|")[1:-1]
+                    ]
+                    header_count = len(headers)
+                    if header_count:
+                        data_rows = []
+                        for dl in data_lines[1:]:
+                            cells = [
+                                cell.strip()
+                                for cell in dl.split("|")[1:-1]
+                            ]
+                            while len(cells) < header_count:
+                                cells.append("")
+                            cells = cells[:header_count]
+                            data_rows.append(cells)
+                        # Feishu post md 不支持 <table> 组件，降级为等宽纯文本表格
+                        table_text = _md_table_to_mono_text(headers, data_rows)
+                        rows.append([{"tag": "md", "text": table_text}])
+                    else:
+                        rows.append([{"tag": "md", "text": "\n".join(table_lines)}])
+                continue
+
         current.append(raw_line)
+        i += 1
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
@@ -4374,13 +4516,10 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Markdown tables are now converted (via _parse_md_table) to Feishu
+        # <table> HTML components inside post rows, so tables no longer force
+        # downgrade to plain text.
+        if _MARKDOWN_TABLE_RE.search(content) or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

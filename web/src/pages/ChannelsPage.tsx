@@ -76,7 +76,7 @@ function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string
     if (parts.some((part) => !part)) {
       return "Slack member IDs must be comma-separated without empty entries.";
     }
-    const invalid = parts.find((part) => !SLACK_MEMBER_ID_RE.test(part));
+    const invalid = parts.find((part) => part !== "*" && !SLACK_MEMBER_ID_RE.test(part));
     if (invalid) {
       return `${invalid} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.`;
     }

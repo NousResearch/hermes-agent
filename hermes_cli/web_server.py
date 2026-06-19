@@ -2342,10 +2342,12 @@ def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> Non
         )
     if key == "SLACK_ALLOWED_USERS":
         user_ids = [part.strip() for part in value.split(",")]
+        # "*" is the gateway's allow-all wildcard (see gateway/platforms/slack.py),
+        # so accept it as a valid entry alongside Slack member IDs (U.../W...).
         invalid = [
             user_id
             for user_id in user_ids
-            if not user_id or not re.fullmatch(r"[UW][A-Z0-9]{2,}", user_id)
+            if user_id != "*" and (not user_id or not re.fullmatch(r"[UW][A-Z0-9]{2,}", user_id))
         ]
         if invalid:
             raise HTTPException(

@@ -16,11 +16,12 @@ other tests keep their existing no-arg behaviour.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
 
 @patch("hermes_cli.plugins.invoke_hook")
-def test_cleanup_forwards_session_messages(mock_invoke_hook):
+def test_cleanup_forwards_session_messages(mock_invoke_hook, caplog):
     """_run_cleanup forwards a populated ``_session_messages`` list."""
     import cli as cli_mod
 
@@ -35,6 +36,7 @@ def test_cleanup_forwards_session_messages(mock_invoke_hook):
 
     cli_mod._active_agent_ref = agent
     cli_mod._cleanup_done = False
+    caplog.set_level(logging.INFO, logger="cli")
     try:
         cli_mod._run_cleanup()
     finally:
@@ -42,6 +44,7 @@ def test_cleanup_forwards_session_messages(mock_invoke_hook):
         cli_mod._cleanup_done = False
 
     agent.shutdown_memory_provider.assert_called_once_with(transcript)
+    assert "CLI cleanup calling memory shutdown for session cli-session-id with 2 message(s)" in caplog.text
 
 
 @patch("hermes_cli.plugins.invoke_hook")

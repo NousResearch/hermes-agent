@@ -198,6 +198,45 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
+@pytest.mark.parametrize("model, expected", [
+    ("google/gemini-2.0-flash", "gemini-2.0-flash"),
+    ("gemini/gemini-3-pro-preview", "gemini-3-pro-preview"),
+    ("Google/Gemini-2.5-Pro", "Gemini-2.5-Pro"),
+    ("models/gemini-x", "models/gemini-x"),
+    ("tunedModels/my-tune", "tunedModels/my-tune"),
+])
+def test_bare_gemini_model_id_strips_only_self_prefix(model, expected):
+    from agent.gemini_native_adapter import bare_gemini_model_id
+
+    assert bare_gemini_model_id(model) == expected
+
+
+def test_native_client_strips_self_prefix_from_model_url(monkeypatch):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            return DummyResponse(payload={
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2},
+            })
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    client.chat.completions.create(
+        model="google/gemini-2.0-flash",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+
+    assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+
 def test_native_http_error_keeps_status_and_retry_after():
     from agent.gemini_native_adapter import gemini_http_error
 
@@ -326,3 +365,46 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_system_instruction_includes_role_field_and_stays_out_of_contents():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    assert request["systemInstruction"] == {
+        "role": "system",
+        "parts": [{"text": "You are a helpful assistant."}],
+    }
+    assert all(content.get("role") != "system" for content in request["contents"])
+
+
+def test_max_tokens_none_defaults_to_gemini_output_ceiling():
+    """max_tokens=None must send the model's full output ceiling, not omit it.
+
+    Gemini's native generateContent applies a low internal default when
+    maxOutputTokens is absent, truncating tool calls mid-stream. Hermes passes
+    None to mean "unlimited", so the adapter must translate that to the
+    published 65,535 ceiling rather than leaving the field unset.
+    """
+    from agent.gemini_native_adapter import (
+        build_gemini_request,
+        GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+
+    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
+    assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
+
+
+def test_explicit_max_tokens_is_respected():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
+    assert req["generationConfig"]["maxOutputTokens"] == 4096

@@ -124,6 +124,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run interactive Hermes provider/model setup for ACP terminal auth",
     )
+    parser.add_argument(
+        "--setup-browser",
+        action="store_true",
+        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
+             "for browser tool support. Idempotent.",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        dest="assume_yes",
+        help="Accept all prompts (currently used by --setup-browser to skip the "
+             "~400 MB Chromium download confirmation).",
+    )
     return parser.parse_args(argv)
 
 
@@ -150,6 +164,50 @@ def _run_setup() -> None:
     finally:
         sys.argv = old_argv
 
+    # Offer browser-tools install as a follow-up. The terminal auth method
+    # is the one supported first-run UX for registry installs, so this is
+    # the natural moment to ask. Skip silently if stdin isn't a TTY (the
+    # answer can't be collected anyway).
+    if not sys.stdin.isatty():
+        return
+    try:
+        reply = input(
+            "\nInstall browser tools? Downloads agent-browser (npm) and "
+            "optionally Playwright Chromium (~400 MB). [y/N] "
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if reply in {"y", "yes"}:
+        _run_setup_browser(assume_yes=False)
+
+
+def _run_setup_browser(assume_yes: bool = False) -> int:
+    """Bootstrap agent-browser + Chromium.
+
+    Routes through dep_ensure -> install.{sh,ps1} --ensure, sharing code
+    with ``hermes postinstall`` and the runtime lazy installer.
+
+    Returns 0 on success, 1 on failure.
+    """
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    try:
+        node_ok = ensure_dependency("node", interactive=not assume_yes)
+        if not node_ok:
+            print("Node.js installation failed — cannot proceed with browser tools.",
+                  file=sys.stderr)
+            return 1
+
+        browser_ok = ensure_dependency("browser", interactive=not assume_yes)
+        if not browser_ok:
+            print("Browser tools installation failed.", file=sys.stderr)
+            return 1
+
+        return 0
+    except OSError as exc:
+        print(f"Browser bootstrap failed: {exc}", file=sys.stderr)
+        return 1
+
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
@@ -162,6 +220,11 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.setup:
         _run_setup()
+        return
+    if args.setup_browser:
+        rc = _run_setup_browser(assume_yes=args.assume_yes)
+        if rc != 0:
+            sys.exit(rc)
         return
 
     _setup_logging()

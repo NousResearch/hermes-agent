@@ -63,6 +63,8 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
+    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+               gateway_only=True),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
@@ -76,15 +78,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
+               args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", "Manually compress conversation context", "Session",
-               args_hint="[focus topic]"),
+    CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns)", "Session",
+               args_hint="[here [N] | focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
@@ -106,7 +109,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | pause | resume | clear | status]"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
-    CommandDef("status", "Show session info", "Session"),
+    CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -120,10 +123,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration",
-               aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+    CommandDef("model", "Switch model (persists by default)", "Configuration",
+               args_hint="[model] [--provider name] [--global|--session] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
-               "Configuration", args_hint="[auto|codex_app_server]"),
+               "Configuration", aliases=("codex_runtime",),
+               args_hint="[auto|codex_app_server]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 
@@ -163,25 +167,41 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
-               subcommands=("search", "browse", "inspect", "install")),
+               gateway_config_gate="skills.write_approval",
+               subcommands=("search", "browse", "inspect", "install", "audit",
+                            "pending", "approve", "reject", "diff", "approval")),
+    CommandDef("memory", "Review pending memory writes / toggle the approval gate",
+               "Tools & Skills",
+               args_hint="[pending|approve|reject|approval] [id|on|off]",
+               subcommands=("pending", "approve", "reject", "approval")),
+    CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
+               "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
+    CommandDef("suggestions", "Review suggested automations (accept/dismiss)",
+               "Tools & Skills", aliases=("suggest",), args_hint="[accept|dismiss N | catalog]",
+               subcommands=("accept", "dismiss", "catalog", "clear")),
+    CommandDef("blueprint", "Set up an automation from a blueprint template",
+               "Tools & Skills", aliases=("bp",), args_hint="[name] [slot=value ...]"),
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("list", "ls", "show", "create", "assign", "link", "unlink",
-                            "claim", "comment", "complete", "block", "unblock", "archive",
-                            "tail", "dispatch", "context", "init", "gc")),
+               subcommands=("init", "boards", "create", "list", "ls", "show", "assign",
+                            "reclaim", "reassign", "diagnostics", "diag", "link", "unlink",
+                            "claim", "comment", "complete", "edit", "block", "unblock",
+                            "archive", "tail", "dispatch", "stats", "notify-subscribe",
+                            "notify-list", "notify-unsubscribe", "log", "runs",
+                            "heartbeat", "assignees", "context", "specify", "gc")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
+    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
@@ -194,23 +214,27 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
+    CommandDef("credits", "Show Nous credit balance and top up", "Info"),
+    CommandDef("billing", "Manage Nous terminal billing — buy credits, auto-reload, limits", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
+    CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
+               gateway_only=True, args_hint="<pause|resume|list> [name]"),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
                cli_only=True),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),
-    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
-               gateway_only=True),
+    CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
+    CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",)),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
-    CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit",)),
+    CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
+               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
 
 
@@ -339,6 +363,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "stop",
         "update",
+        "version",
     }
 )
 
@@ -442,7 +467,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     :func:`hermes_cli.plugins.PluginContext.register_command`. They behave
     like ``CommandDef`` entries for gateway surfacing: they appear in the
     Telegram command menu, in Slack's ``/hermes`` subcommand mapping, and
-    (via :func:`gateway.platforms.discord._register_slash_commands`) in
+    (via :func:`plugins.platforms.discord.adapter._register_slash_commands`) in
     Discord's native slash command picker.
 
     Lookup is lazy so importing this module never forces plugin discovery
@@ -499,6 +524,68 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         if tg_name:
             result.append((tg_name, description))
     return result
+
+
+_TELEGRAM_MENU_PRIORITY = (
+    # Most-typed everyday commands first.
+    "help",
+    "new",
+    "stop",
+    "status",
+    "resume",
+    "sessions",
+    "model",
+    # Maintenance / diagnostics — the ones that prompted this priority list.
+    "debug",
+    "restart",
+    "update",
+    "verbose",
+    "commands",
+    # Mid-turn session control.
+    "approve",
+    "deny",
+    "queue",
+    "steer",
+    "background",
+    # Lower-priority but still useful operational built-ins.
+    "reasoning",
+    "usage",
+    "platforms",
+    "platform",
+    "profile",
+    "whoami",
+)
+"""Built-in commands that should stay visible in Telegram's capped menu.
+
+Telegram only displays a small BotCommand menu in practice.  The full Hermes
+registry is still dispatchable when typed manually, but operational commands
+need to survive the visible menu cap ahead of lower-priority built-ins.
+"""
+
+
+def _prioritize_telegram_menu_commands(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    priority = {
+        _sanitize_telegram_name(name): index
+        for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
+    }
+    return [
+        command
+        for _index, command in sorted(
+            enumerate(commands),
+            key=lambda item: (
+                0,
+                priority[item[1][0]],
+                item[0],
+            )
+            if item[1][0] in priority
+            else (
+                1,
+                item[0],
+            ),
+        )
+    ]
 
 
 _CMD_NAME_LIMIT = 32
@@ -714,11 +801,12 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
 
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
-        skill commands omitted due to the cap.
+        commands omitted due to the cap.
     """
-    core_commands = list(telegram_bot_commands())
+    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
+    hidden_core_count = max(0, len(all_commands) - max_commands)
 
     remaining_slots = max(0, max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
@@ -730,7 +818,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count
+    return all_commands[:max_commands], hidden_count + hidden_core_count
 
 
 def discord_skill_commands(
@@ -944,6 +1032,32 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "topic", "mute", "pro", "shortcuts",
 })
 
+# High-value aliases that must survive Slack's 50-slash cap even when the
+# registry fills up. Without this, adding a new canonical command silently
+# clamps off low-priority aliases (they're added in the second pass), so a
+# long-standing native slash like /btw could disappear just because an
+# unrelated command landed. These claim their slots right after /hermes,
+# ahead of both canonical names and the rest of the aliases. Anything not
+# listed here still degrades gracefully (reachable via /hermes <command>).
+# Keep this list TIGHT: every pinned alias takes a slot a canonical command
+# would otherwise get, and the Telegram-parity test fails when a canonical
+# gets clamped ("reset" was unpinned for exactly that — /new keeps its
+# native slot, the alias spelling stays reachable via /hermes reset).
+_SLACK_PRIORITY_ALIASES = ("btw", "bg")
+
+# Canonical commands intentionally NOT given a native Slack slash slot. Slack
+# caps apps at 50 slash commands and the registry is at that ceiling; rather
+# than let the clamp silently drop whichever command sorts last (and break
+# Telegram parity), we explicitly route a few low-frequency commands through
+# ``/hermes <command>`` on Slack only. They remain native on every other
+# surface (CLI, TUI, Telegram, Discord). Keep this list TIGHT and intentional —
+# the telegram-parity test reads it so an entry here is a deliberate
+# "Slack-via-/hermes" decision, not a silent clamp.
+#   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
+#   - billing: the terminal-billing surface (buy/auto-reload/limit); /hermes billing.
+#   - debug: the log/report upload surface; reached via /hermes debug on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "debug"})
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Convert a command name to a valid Slack slash command name.
@@ -992,11 +1106,29 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             return
         if slack_name in _SLACK_RESERVED_COMMANDS:
             return
+        if slack_name in _SLACK_VIA_HERMES_ONLY:
+            # Intentionally Slack-via-/hermes only (see _SLACK_VIA_HERMES_ONLY).
+            return
         if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
             return
         # Slack description cap is 2000 chars; keep it short.
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
+
+    # Priority pass: pin high-value aliases (e.g. /btw, /bg, /reset) ahead of
+    # everything except /hermes, so a new canonical command can never silently
+    # clamp them off the 50-slash cap. Each alias borrows its parent command's
+    # description and hint.
+    _alias_to_cmd = {
+        alias: cmd
+        for cmd in COMMAND_REGISTRY
+        if _is_gateway_available(cmd, overrides)
+        for alias in cmd.aliases
+    }
+    for alias in _SLACK_PRIORITY_ALIASES:
+        cmd = _alias_to_cmd.get(alias)
+        if cmd is not None:
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
@@ -1075,41 +1207,6 @@ def slack_subcommand_map() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-# Per-process cache for /model<space> LM Studio autocomplete. Probing on
-# every keystroke would block the UI; a short TTL keeps it live without
-# hammering the server.
-_LMSTUDIO_COMPLETION_CACHE: tuple[float, list[str]] | None = None
-
-
-def _lmstudio_completion_models() -> list[str]:
-    """Locally-loaded LM Studio models for /model autocomplete (cached, gated)."""
-    global _LMSTUDIO_COMPLETION_CACHE
-    # Gate: don't probe 127.0.0.1 on every keystroke for users who don't use LM Studio.
-    if not (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL")):
-        try:
-            from hermes_cli.auth import _load_auth_store
-            store = _load_auth_store() or {}
-            if "lmstudio" not in (store.get("providers") or {}) \
-               and "lmstudio" not in (store.get("credential_pool") or {}):
-                return []
-        except Exception:
-            return []
-    now = time.time()
-    if _LMSTUDIO_COMPLETION_CACHE and (now - _LMSTUDIO_COMPLETION_CACHE[0]) < 30.0:
-        return _LMSTUDIO_COMPLETION_CACHE[1]
-    try:
-        from hermes_cli.models import fetch_lmstudio_models
-        models = fetch_lmstudio_models(
-            api_key=os.environ.get("LM_API_KEY", ""),
-            base_url=os.environ.get("LM_BASE_URL") or "http://127.0.0.1:1234/v1",
-            timeout=0.8,
-        )
-    except Exception:
-        models = []
-    _LMSTUDIO_COMPLETION_CACHE = (now, models)
-    return models
-
-
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, and skill commands."""
 
@@ -1117,9 +1214,11 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        self._skill_bundles_provider = skill_bundles_provider
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -1138,6 +1237,14 @@ class SlashCommandCompleter(Completer):
             return {}
         try:
             return self._skill_commands_provider() or {}
+        except Exception:
+            return {}
+
+    def _iter_skill_bundles(self) -> Mapping[str, dict[str, Any]]:
+        if self._skill_bundles_provider is None:
+            return {}
+        try:
+            return self._skill_bundles_provider() or {}
         except Exception:
             return {}
 
@@ -1175,6 +1282,10 @@ class SlashCommandCompleter(Completer):
         current word doesn't look like a path.  A word is path-like when
         it starts with ``./``, ``../``, ``~/``, ``/``, or contains a
         ``/`` separator (e.g. ``src/main.py``).
+
+        Tokens containing a ``://`` scheme separator (e.g. URLs like
+        ``https://example.com/x``) are excluded even though they contain a
+        ``/`` — they are never useful local-path completions.
         """
         if not text:
             return None
@@ -1185,6 +1296,12 @@ class SlashCommandCompleter(Completer):
             i -= 1
         word = text[i + 1:]
         if not word:
+            return None
+        # URLs contain "/" but are not local paths. Treating them as paths fires
+        # os.listdir on every keystroke while typing/pasting a link (e.g. an
+        # https:// URL becomes a listdir of "https:") — pure latency, never a
+        # useful completion. Skip any token with a scheme separator.
+        if "://" in word:
             return None
         # Only trigger path completion for path-like tokens
         if word.startswith(("./", "../", "~/", "/")) or "/" in word:
@@ -1489,11 +1606,139 @@ class SlashCommandCompleter(Completer):
             pass
 
     @staticmethod
+    def _tools_completions(sub_text: str, sub_lower: str):
+        """Yield completions for /tools — subcommand + toolset/MCP-server name.
+
+        Handles both ``/tools <tab>`` (suggesting ``list|disable|enable``) and
+        ``/tools enable <tab>`` / ``/tools disable <tab>`` (suggesting toolset
+        keys and MCP server prefixes, filtered by current enable state so the
+        user only sees actionable options).
+        """
+        SUBS = ("list", "disable", "enable")
+        parts = sub_text.split()
+        trailing_space = sub_text.endswith(" ")
+
+        # Subcommand stage: zero words typed, or completing the first word.
+        if len(parts) == 0 or (len(parts) == 1 and not trailing_space):
+            partial = sub_text if not trailing_space else ""
+            for sub in SUBS:
+                if sub.startswith(partial.lower()) and sub != partial.lower():
+                    yield Completion(sub, start_position=-len(partial), display=sub)
+            return
+
+        subcommand = parts[0].lower()
+        if subcommand not in ("enable", "disable"):
+            return
+
+        partial = "" if trailing_space else parts[-1]
+        partial_lower = partial.lower()
+        already = set(parts[1:] if trailing_space else parts[1:-1])
+
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import (
+                CONFIGURABLE_TOOLSETS,
+                _get_platform_tools,
+                _get_plugin_toolset_keys,
+            )
+
+            config = load_config()
+            enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+            for ts_key, label, _desc in CONFIGURABLE_TOOLSETS:
+                if ts_key in already or not ts_key.startswith(partial_lower):
+                    continue
+                is_on = ts_key in enabled
+                if subcommand == "enable" and is_on:
+                    continue
+                if subcommand == "disable" and not is_on:
+                    continue
+                yield Completion(
+                    ts_key,
+                    start_position=-len(partial),
+                    display=ts_key,
+                    display_meta=label,
+                )
+
+            for ts_key in sorted(_get_plugin_toolset_keys()):
+                if ts_key in already or not ts_key.startswith(partial_lower):
+                    continue
+                is_on = ts_key in enabled
+                if subcommand == "enable" and is_on:
+                    continue
+                if subcommand == "disable" and not is_on:
+                    continue
+                yield Completion(
+                    ts_key,
+                    start_position=-len(partial),
+                    display=ts_key,
+                    display_meta="plugin toolset",
+                )
+
+            mcp_servers = config.get("mcp_servers") or {}
+            if isinstance(mcp_servers, dict):
+                for server in sorted(mcp_servers):
+                    prefix = f"{server}:"
+                    if prefix in already or not prefix.startswith(partial_lower):
+                        continue
+                    yield Completion(
+                        prefix,
+                        start_position=-len(partial),
+                        display=prefix,
+                        display_meta=f"MCP server '{server}'",
+                    )
+        except Exception:
+            return
+
+    @staticmethod
+    def _handoff_completions(sub_text: str, sub_lower: str):
+        """Yield platform completions for /handoff.
+
+        Offers connected (enabled + configured) gateway platforms. A recorded
+        home channel is NOT required to list a platform — it's often learned at
+        runtime — so the meta hints whether one is set yet. Completes only the
+        first arg (the platform); once one is chosen, stop.
+        """
+        parts = sub_text.split()
+        trailing_space = sub_text.endswith(" ")
+        if len(parts) > 1 or (len(parts) == 1 and trailing_space):
+            return
+        partial = "" if (not parts or trailing_space) else parts[-1]
+        partial_lower = partial.lower()
+        try:
+            from gateway.config import load_gateway_config
+
+            gw = load_gateway_config()
+            platforms = gw.get_connected_platforms()
+        except Exception:
+            return
+        for platform in platforms:
+            name = platform.value
+            if not name.startswith(partial_lower):
+                continue
+            try:
+                home = gw.get_home_channel(platform)
+            except Exception:
+                home = None
+            meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
+            yield Completion(
+                name,
+                start_position=-len(partial),
+                display=name,
+                display_meta=meta,
+            )
+
+    @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):
         """Yield completions for /personality from configured personalities."""
         try:
-            from hermes_cli.config import load_config
-            personalities = load_config().get("agent", {}).get("personalities", {})
+            # Resolve from the same source the runtime applies personalities —
+            # agent.personalities via the CLI config (which ships the built-ins).
+            # load_config()'s schema has no agent.personalities, so the completer
+            # used to come back empty even with personalities available.
+            from cli import load_cli_config
+
+            personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
@@ -1515,52 +1760,6 @@ class SlashCommandCompleter(Completer):
                     )
         except Exception:
             pass
-
-    def _model_completions(self, sub_text: str, sub_lower: str):
-        """Yield completions for /model from config aliases + built-in aliases."""
-        seen = set()
-        # Config-based direct aliases (preferred — include provider info)
-        try:
-            from hermes_cli.model_switch import (
-                _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
-            )
-            _ensure_direct_aliases()
-            for name, da in DIRECT_ALIASES.items():
-                if name.startswith(sub_lower) and name != sub_lower:
-                    seen.add(name)
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{da.model} ({da.provider})",
-                    )
-            # Built-in catalog aliases not already covered
-            for name in sorted(MODEL_ALIASES.keys()):
-                if name in seen:
-                    continue
-                if name.startswith(sub_lower) and name != sub_lower:
-                    identity = MODEL_ALIASES[name]
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{identity.vendor}/{identity.family}",
-                    )
-        except Exception:
-            pass
-        # LM Studio: surface locally-loaded models. Gated on the user actually
-        # having LM Studio configured (env var or auth-store entry) so we
-        # don't probe 127.0.0.1 on every keystroke for users who don't use it.
-        for name in _lmstudio_completion_models():
-            if name in seen:
-                continue
-            if name.startswith(sub_lower) and name != sub_lower:
-                yield Completion(
-                    name,
-                    start_position=-len(sub_text),
-                    display=name,
-                    display_meta="LM Studio",
-                )
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -1585,15 +1784,23 @@ class SlashCommandCompleter(Completer):
 
             # Dynamic completions for commands with runtime lists
             if " " not in sub_text:
-                if base_cmd == "/model":
-                    yield from self._model_completions(sub_text, sub_lower)
-                    return
                 if base_cmd == "/skin":
                     yield from self._skin_completions(sub_text, sub_lower)
                     return
                 if base_cmd == "/personality":
                     yield from self._personality_completions(sub_text, sub_lower)
                     return
+
+            # /tools needs multi-word completion (subcommand + toolset name)
+            # so it handles both stages itself, bypassing the single-word
+            # SUBCOMMANDS branch below.
+            if base_cmd == "/tools":
+                yield from self._tools_completions(sub_text, sub_lower)
+                return
+
+            if base_cmd == "/handoff":
+                yield from self._handoff_completions(sub_text, sub_lower)
+                return
 
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
@@ -1618,6 +1825,19 @@ class SlashCommandCompleter(Completer):
                     start_position=-len(word),
                     display=cmd,
                     display_meta=desc,
+                )
+
+        for cmd, info in self._iter_skill_bundles().items():
+            cmd_name = cmd[1:]
+            if cmd_name.startswith(word):
+                description = str(info.get("description", "Skill bundle"))
+                short_desc = description[:50] + ("..." if len(description) > 50 else "")
+                skill_count = len(info.get("skills", []))
+                yield Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=cmd,
+                    display_meta=f"▣ {short_desc} ({skill_count} skills)",
                 )
 
         for cmd, info in self._iter_skill_commands().items():
@@ -1692,7 +1912,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
                     return Suggestion(cmd_name[len(word):])
             return None
 
-        # Command is complete — suggest subcommands or model names
+        # Command is complete — suggest subcommands
         sub_text = parts[1] if len(parts) > 1 else ""
         sub_lower = sub_text.lower()
 

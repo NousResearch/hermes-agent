@@ -34,6 +34,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 DEFAULT_JUDGE_TIMEOUT = 30.0
+# Judge output budget. The freeform judge returns a one-line JSON verdict, but
+# reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
+# before emitting the visible JSON — and the first /goal turn's prompt is
+# larger than later turns, which pushes total reply length past tight caps.
+# 200 tokens (the original default) reliably truncated the JSON on reasoning
+# models, leaving '{"done": true, "reason": "The agent successfully' and
+# triggering the auto-pause. 4096 covers reasoning + verdict on every model
+# we've live-tested; override via auxiliary.goal_judge.max_tokens for
+# specifically constrained setups.
+DEFAULT_JUDGE_MAX_TOKENS = 4096
 # Cap how much of the last response + recent messages we send to the judge.
 _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # After this many consecutive judge *parse* failures (empty output / non-JSON),
@@ -100,6 +111,7 @@ JUDGE_SYSTEM_PROMPT = (
 JUDGE_USER_PROMPT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Agent's most recent response:\n{response}\n\n"
+    "Current time: {current_time}\n\n"
     "Is the goal satisfied?"
 )
 
@@ -110,6 +122,7 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Additional criteria the user added mid-loop (all must also be "
     "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
+    "Current time: {current_time}\n\n"
     "Decision: For each numbered criterion above, find concrete "
     "evidence in the agent's response that the criterion is "
     "satisfied. Do not accept generic phrases like 'all requirements "
@@ -282,6 +295,30 @@ def _truncate(text: str, limit: int) -> str:
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
+def _goal_judge_max_tokens() -> int:
+    """Resolve auxiliary.goal_judge.max_tokens, falling back to the default.
+
+    ``load_config()`` is cached on the config file's (mtime, size), so calling
+    this once per judge turn is cheap. A non-positive or non-int value falls
+    back to the default rather than crashing the goal loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("max_tokens", DEFAULT_JUDGE_MAX_TOKENS)
+        )
+        value = int(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_MAX_TOKENS
+
+
 def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
 
@@ -381,6 +418,7 @@ def judge_goal(
 
     # Build the prompt — pick the with-subgoals variant when applicable.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     if clean_subgoals:
         subgoals_block = "\n".join(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
@@ -389,11 +427,13 @@ def judge_goal(
             goal=_truncate(goal, 2000),
             subgoals_block=_truncate(subgoals_block, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            current_time=current_time,
         )
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
             goal=_truncate(goal, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            current_time=current_time,
         )
 
     try:
@@ -404,7 +444,7 @@ def judge_goal(
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
-            max_tokens=200,
+            max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
             extra_body=get_auxiliary_extra_body() or None,
         )
@@ -707,6 +747,153 @@ class GoalManager:
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Kanban worker goal loop
+# ──────────────────────────────────────────────────────────────────────
+
+# Continuation prompt fed back to a kanban goal-mode worker that has not
+# yet completed/blocked its task. The card's own acceptance criteria are
+# the goal — the worker already has the full task body in its first turn,
+# so we keep this short and point it back at the lifecycle contract.
+KANBAN_GOAL_CONTINUATION_TEMPLATE = (
+    "[Continuing toward this kanban task — judge says it is not done yet]\n"
+    "Reason: {reason}\n\n"
+    "Take the next concrete step toward completing the task. When the work "
+    "is genuinely finished, call kanban_complete with a summary. If you are "
+    "blocked and need human input, call kanban_block with a reason. Do not "
+    "stop without calling one of them."
+)
+
+# Fed when the judge believes the work is done but the worker never called
+# kanban_complete / kanban_block. One explicit nudge to terminate the task
+# the right way before the loop gives up.
+KANBAN_GOAL_FINALIZE_TEMPLATE = (
+    "[The work looks complete, but the task is still open]\n"
+    "Reason: {reason}\n\n"
+    "If the task is genuinely done, call kanban_complete now with a short "
+    "summary of what you did. If something still blocks completion, call "
+    "kanban_block with the reason instead."
+)
+
+
+def run_kanban_goal_loop(
+    *,
+    task_id: str,
+    goal_text: str,
+    run_turn,
+    task_status_fn,
+    block_fn,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    first_response: str = "",
+    log=None,
+) -> Dict[str, Any]:
+    """Drive a kanban worker through a Ralph-style goal loop.
+
+    The dispatcher spawns a goal-mode worker exactly like a normal worker
+    (``hermes -p <profile> chat -q "work kanban task <id>"``). The worker's
+    first turn has already run by the time this is called; ``first_response``
+    is that turn's reply. From here we:
+
+    1. Check whether the worker already terminated the task (called
+       ``kanban_complete`` / ``kanban_block``). If so, stop — nothing to do.
+    2. Otherwise judge the latest response against ``goal_text`` (the card's
+       title + body). ``continue`` → feed a continuation prompt and run
+       another turn IN THE SAME SESSION via ``run_turn``. ``done`` but the
+       task is still open → one explicit "call kanban_complete" nudge.
+    3. When the turn budget is exhausted and the worker still hasn't
+       terminated the task, ``block_fn`` is invoked so the card lands in a
+       sticky ``blocked`` state for human review (NOT a silent exit).
+
+    This function performs NO SessionDB persistence — a worker process is
+    ephemeral, so the turn budget lives in a local counter. It is fully
+    decoupled from the CLI for testability: callers inject ``run_turn``
+    (str -> str), ``task_status_fn`` (() -> str|None), and ``block_fn``
+    (reason: str -> None).
+
+    Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
+    outcome is one of ``"completed_by_worker"``, ``"blocked_budget"``,
+    ``"blocked_by_worker"``, or ``"stopped"``.
+    """
+
+    def _log(msg: str) -> None:
+        if log is not None:
+            try:
+                log(msg)
+            except Exception:
+                pass
+
+    max_turns = int(max_turns or DEFAULT_MAX_TURNS)
+    if max_turns < 1:
+        max_turns = DEFAULT_MAX_TURNS
+
+    last_response = first_response or ""
+    # The first turn already consumed one unit of budget.
+    turns_used = 1
+    nudged_to_finalize = False
+
+    while True:
+        # Did the worker terminate the task itself this turn?
+        try:
+            status = task_status_fn()
+        except Exception as exc:
+            _log(f"kanban goal loop: status check failed ({exc}); stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": "status check failed"}
+
+        if status == "done":
+            _log(f"kanban goal loop: task {task_id} completed by worker after {turns_used} turn(s)")
+            return {"outcome": "completed_by_worker", "turns_used": turns_used, "reason": "worker completed the task"}
+        if status == "blocked":
+            _log(f"kanban goal loop: task {task_id} blocked by worker after {turns_used} turn(s)")
+            return {"outcome": "blocked_by_worker", "turns_used": turns_used, "reason": "worker blocked the task"}
+        if status not in ("running", "ready"):
+            # Reclaimed / archived / unexpected — let the dispatcher own it.
+            _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
+
+        # Still open — judge whether the latest response satisfies the card.
+        verdict, reason, _parse_failed = judge_goal(goal_text, last_response)
+        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        if verdict == "done":
+            if nudged_to_finalize:
+                # Already asked once to call kanban_complete and it still
+                # didn't — block for review rather than spin.
+                _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
+                try:
+                    block_fn(
+                        f"Goal-mode worker's output looked complete but it never "
+                        f"called kanban_complete after a finalize nudge ({reason})."
+                    )
+                except Exception as exc:
+                    _log(f"kanban goal loop: block_fn failed ({exc})")
+                return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "judged done, never finalized"}
+            prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
+            nudged_to_finalize = True
+        else:
+            prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
+
+        # Budget check BEFORE spending another turn.
+        if turns_used >= max_turns:
+            _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
+            try:
+                block_fn(
+                    f"Goal-mode worker exhausted its turn budget "
+                    f"({turns_used}/{max_turns}) without completing the task. "
+                    f"Last judge verdict: {_truncate(reason, 300)}"
+                )
+            except Exception as exc:
+                _log(f"kanban goal loop: block_fn failed ({exc})")
+            return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
+
+        # Run another turn in the same session.
+        try:
+            last_response = run_turn(prompt) or ""
+        except Exception as exc:
+            _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"run_turn error: {type(exc).__name__}"}
+        turns_used += 1
+
+
 __all__ = [
     "GoalState",
     "GoalManager",
@@ -714,9 +901,12 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "KANBAN_GOAL_CONTINUATION_TEMPLATE",
+    "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",
     "load_goal",
     "save_goal",
     "clear_goal",
     "judge_goal",
+    "run_kanban_goal_loop",
 ]

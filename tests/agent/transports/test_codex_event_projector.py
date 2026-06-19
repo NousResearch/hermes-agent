@@ -11,7 +11,6 @@ import pytest
 
 from agent.transports.codex_event_projector import (
     CodexEventProjector,
-    ProjectionResult,
     _deterministic_call_id,
     _format_tool_args,
 )

@@ -21,7 +21,7 @@ let
 
   # Single npm deps fetch from the workspace root lockfile.
   # All workspace packages share this derivation.
-  npmDepsHash = "sha256-cY+gM1FnTBjmld/uqt7RsqRtW9uQGs8LGokCcxu7bjQ=";
+  npmDepsHash = "sha256-kbjJksq7limRIYqP3DwI+GNgCXkG96tXcsQqmuEedxo=";
 
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
@@ -53,7 +53,7 @@ in
     {
       folder, # repo-relative folder with package.json, e.g. "ui-tui"
       attr, # flake package attr, e.g. "tui"
-      pname, # e.g. "hermes-tui"
+      ...
     }:
     let
       # No sourceRoot — the workspace root (with the single package-lock.json)
@@ -65,33 +65,28 @@ in
       npmRoot = ".";
       npmDepsFetcherVersion = 2;
 
-      # --ignore-scripts: the workspace includes electron (apps/desktop)
-      # which has a postinstall that tries to download from github.com.
-      # nix builds are offline, so all scripts must be skipped.  Each
-      # package sets up its own build commands in buildPhase instead.
-      npmFlags = [ "--ignore-scripts" ];
+      ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
 
       patchPhase = ''
         runHook prePatch
+        # Normalize trailing newlines on the root lockfile so source and
+        # npm-deps always match, regardless of what fetchNpmDeps preserves.
+        sed -i -z 's/\\n*$/\\n/' package-lock.json
 
-        # prefetch-npm-deps stores a *normalized* package-lock.json in the deps
-        # cache: newer npm writes advisory fields (engines/os/cpu/funding/bin/…)
-        # into lockfile entries, and prefetch strips the ones that don't affect
-        # which tarballs are fetched. npmConfigHook then does a byte-for-byte
-        # diff of the source lockfile against the cache's copy and fails on
-        # those purely-cosmetic differences — this is what breaks cold builds
-        # on a nixpkgs whose prefetch-npm-deps strips fields the committed
-        # lockfile carries.
-        #
-        # Adopt the cache's own normalized lockfile as the source so the
-        # consistency check is trivially satisfied. The resolved dependency set
-        # (version/resolved/integrity/dependencies) is byte-identical either
-        # way — fetchNpmDeps derived the cache *from* this lockfile — so `npm
-        # ci` installs exactly the same tree; only advisory metadata is dropped.
-        # Genuine drift is still caught upstream: a changed lockfile that didn't
-        # get its npmDepsHash refreshed fails the fixed-output hash check before
-        # this phase ever runs.
-        cp --no-preserve=mode,ownership ${npmDeps}/package-lock.json package-lock.json
+        # Make npmConfigHook's byte-for-byte diff newline-agnostic by
+        # replacing its hardcoded /nix/store/.../diff with a wrapper that
+        # normalizes trailing newlines on both sides before comparing.
+        mkdir -p "$TMPDIR/bin"
+        cat > "$TMPDIR/bin/diff" << DIFFWRAP
+        #!/bin/sh
+        f1=\\$(mktemp) && sed -z 's/\\n*$/\\n/' "\\$1" > "\\$f1"
+        f2=\\$(mktemp) && sed -z 's/\\n*$/\\n/' "\\$2" > "\\$f2"
+        ${pkgs.diffutils}/bin/diff "\\$f1" "\\$f2" && rc=0 || rc=\\$?
+        rm -f "\\$f1" "\\$f2"
+        exit \\$rc
+        DIFFWRAP
+        chmod +x "$TMPDIR/bin/diff"
+        export PATH="$TMPDIR/bin:$PATH"
 
         runHook postPatch
       '';
@@ -153,14 +148,12 @@ in
       fi
 
       # Check if lockfile changed (either from the npm i above or from an
-      # external edit).  Runs npm ci + fix-lockfiles if so.
+      # external edit).  Runs npm ci if so.
       LOCK_STAMP="$STAMP_DIR/root-lockfile"
       LOCK_STAMP_VALUE=$(sha256sum "$REPO_ROOT/package-lock.json" 2>/dev/null | awk '{print $1}')
       if [ ! -f "$LOCK_STAMP" ] || [ "$(cat "$LOCK_STAMP")" != "$LOCK_STAMP_VALUE" ]; then
         echo "npm: package-lock.json changed, running npm ci..."
         ( cd "$REPO_ROOT" && CI=true ${pkgs.lib.getExe' nodejs "npm"} ci --silent --no-fund --no-audit 2>/dev/null )
-        echo "npm: updating nix hash..."
-        ${fixLockfilesExe} || echo "npm: warning: fix-lockfiles failed, run it manually" >&2
         mkdir -p "$STAMP_DIR"
         echo "$LOCK_STAMP_VALUE" > "$LOCK_STAMP"
       fi

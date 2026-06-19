@@ -36,7 +36,8 @@ import logging
 import re
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -67,6 +68,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+_RATE_WINDOW_SECONDS = 60.0
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -122,6 +124,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # back to the "log" deliver type.
         self._delivery_info: Dict[str, dict] = {}
         self._delivery_info_created: Dict[str, float] = {}
+        self._delivery_info_order: Deque[tuple[float, str]] = deque()
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
@@ -130,9 +133,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # Prevents duplicate agent runs when webhook providers retry.
         self._seen_deliveries: Dict[str, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
+        self._seen_deliveries_next_prune_at: float = 0.0
 
         # Rate limiting: per-route timestamps in a fixed window.
-        self._rate_counts: Dict[str, List[float]] = {}
+        self._rate_counts: Dict[str, Deque[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
 
         # Body size limit (auth-before-body pattern)
@@ -271,15 +275,57 @@ class WebhookAdapter(BasePlatformAdapter):
         on each POST so the dict size is bounded by ``rate_limit * TTL``
         even if many webhooks fire and never receive a final response.
         """
+        if len(self._delivery_info_order) < len(self._delivery_info_created):
+            self._delivery_info_order = deque(
+                (created_at, key)
+                for key, created_at in sorted(
+                    self._delivery_info_created.items(), key=lambda item: item[1]
+                )
+            )
         cutoff = now - self._idempotency_ttl
-        stale = [
-            k
-            for k, t in self._delivery_info_created.items()
-            if t < cutoff
-        ]
+        while self._delivery_info_order and self._delivery_info_order[0][0] < cutoff:
+            created_at, key = self._delivery_info_order.popleft()
+            if self._delivery_info_created.get(key) != created_at:
+                continue
+            self._delivery_info.pop(key, None)
+            self._delivery_info_created.pop(key, None)
+
+    def _prune_seen_deliveries(self, now: float) -> None:
+        """Occasionally prune expired delivery IDs without scanning every POST."""
+        if now < self._seen_deliveries_next_prune_at:
+            return
+        cutoff = now - self._idempotency_ttl
+        stale = [k for k, t in self._seen_deliveries.items() if t < cutoff]
         for k in stale:
-            self._delivery_info.pop(k, None)
-            self._delivery_info_created.pop(k, None)
+            self._seen_deliveries.pop(k, None)
+        self._seen_deliveries_next_prune_at = now + min(60.0, max(1.0, self._idempotency_ttl / 10))
+
+    def _record_rate_limit_hit(self, route_name: str, now: float) -> bool:
+        """Return True if route is still within limit after recording this hit."""
+        window = self._rate_counts.get(route_name)
+        if not isinstance(window, deque):
+            new_window: Deque[float] = deque(window or ())
+            self._rate_counts[route_name] = new_window
+            window = new_window
+        cutoff = now - _RATE_WINDOW_SECONDS
+        while window and window[0] < cutoff:
+            window.popleft()
+        if len(window) >= self._rate_limit:
+            return False
+        window.append(now)
+        return True
+
+    def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
+        """Return True when this delivery should be processed."""
+        seen_at = self._seen_deliveries.get(delivery_id)
+        if seen_at is not None and now - seen_at < self._idempotency_ttl:
+            return False
+        if seen_at is not None:
+            self._seen_deliveries.pop(delivery_id, None)
+        self._seen_deliveries[delivery_id] = now
+        if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
+            self._prune_seen_deliveries(now)
+        return True
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -413,13 +459,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # ── Rate limiting (after auth) ───────────────────────────
         now = time.time()
-        window = self._rate_counts.setdefault(route_name, [])
-        window[:] = [t for t in window if now - t < 60]
-        if len(window) >= self._rate_limit:
+        if not self._record_rate_limit_hit(route_name, now):
             return web.json_response(
                 {"error": "Rate limit exceeded"}, status=429
             )
-        window.append(now)
 
         # Parse payload
         try:
@@ -504,13 +547,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
         now = time.time()
-        # Prune expired entries
-        self._seen_deliveries = {
-            k: v
-            for k, v in self._seen_deliveries.items()
-            if now - v < self._idempotency_ttl
-        }
-        if delivery_id in self._seen_deliveries:
+        if not self._record_delivery_id(delivery_id, now):
             logger.info(
                 "[webhook] Skipping duplicate delivery %s", delivery_id
             )
@@ -518,7 +555,6 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
-        self._seen_deliveries[delivery_id] = now
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -594,6 +630,7 @@ class WebhookAdapter(BasePlatformAdapter):
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
+        self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
 
         # Build source and event

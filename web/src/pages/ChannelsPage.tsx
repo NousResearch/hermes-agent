@@ -43,6 +43,7 @@ const STATE_BADGE: Record<
   connected: { tone: "success", label: "Connected" },
   pending_restart: { tone: "warning", label: "Restart to apply" },
   gateway_stopped: { tone: "warning", label: "Gateway stopped" },
+  startup_failed: { tone: "destructive", label: "Start failed" },
   disconnected: { tone: "warning", label: "Disconnected" },
   not_configured: { tone: "outline", label: "Not configured" },
   disabled: { tone: "secondary", label: "Disabled" },
@@ -71,6 +72,10 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
+  const [envPath, setEnvPath] = useState("~/.hermes/.env");
+  const [gatewayStartCommand, setGatewayStartCommand] = useState(
+    "hermes gateway start",
+  );
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
@@ -93,7 +98,11 @@ export default function ChannelsPage() {
   const load = useCallback(() => {
     return api
       .getMessagingPlatforms()
-      .then((res) => setPlatforms(res.platforms))
+      .then((res) => {
+        setPlatforms(res.platforms);
+        setEnvPath(res.env_path || "~/.hermes/.env");
+        setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+      })
       .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
 
@@ -253,7 +262,7 @@ export default function ChannelsPage() {
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
               The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">hermes gateway start</code>{" "}
+              gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
               (or the Restart button above).
             </span>
           </CardContent>
@@ -262,7 +271,7 @@ export default function ChannelsPage() {
 
       <p className="text-xs text-muted-foreground">
         {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">~/.hermes/.env</code>; the
+        written to <code className="font-courier">{envPath}</code>; the
         gateway connects each enabled channel on its next restart.
       </p>
 
@@ -369,7 +378,7 @@ export default function ChannelsPage() {
           const StateIcon =
             platform.state === "connected"
               ? CheckCircle2
-              : platform.state === "fatal"
+              : platform.state === "fatal" || platform.state === "startup_failed"
                 ? AlertTriangle
                 : Radio;
           return (
@@ -382,7 +391,8 @@ export default function ChannelsPage() {
                         "h-5 w-5 shrink-0 mt-0.5",
                         platform.state === "connected"
                           ? "text-success"
-                          : platform.state === "fatal"
+                          : platform.state === "fatal" ||
+                              platform.state === "startup_failed"
                             ? "text-destructive"
                             : "text-muted-foreground",
                       )}
@@ -599,6 +609,32 @@ function TelegramOnboardingPanel({
     setNewAllowedId("");
   };
 
+  // restart_started only means the `hermes gateway restart` child spawned —
+  // not that the restart will succeed (e.g. systemd linger missing, service
+  // manager failure). Poll the action status briefly and surface a non-zero
+  // exit via the manual-restart banner. Note: in no-service installs the
+  // child becomes the foreground gateway and never exits, so "still running
+  // when the window closes" counts as success.
+  const watchRestartOutcome = async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const st = await api.getActionStatus("gateway-restart", 5);
+        if (st.running) continue;
+        if (st.exit_code !== 0 && st.exit_code !== null) {
+          onRestartNeeded();
+          showToast(
+            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            "error",
+          );
+        }
+        return;
+      } catch {
+        // transient fetch error; keep polling
+      }
+    }
+  };
+
   const apply = async () => {
     if (!setup) return;
     if (allowedIds.length === 0) {
@@ -608,19 +644,29 @@ function TelegramOnboardingPanel({
     setPhase("applying");
     setError("");
     try {
-      await api.applyTelegramOnboarding(setup.pairing_id, {
+      const result = await api.applyTelegramOnboarding(setup.pairing_id, {
         allowed_user_ids: allowedIds,
       });
       resetSetup();
-      showToast("Telegram saved", "success");
-      try {
-        await api.restartGateway();
-        showToast("Gateway restarting…", "success");
+      if (result.restart_started) {
+        showToast("Telegram saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-      } catch (restartError) {
+        void watchRestartOutcome();
+      } else if (result.restart_started === undefined && result.needs_restart) {
+        try {
+          await api.restartGateway();
+          showToast("Telegram saved; gateway restarting…", "success");
+          setRestartNeeded(false);
+          setTimeout(() => void onChanged(), 4000);
+        } catch (restartError) {
+          onRestartNeeded();
+          showToast(`Telegram saved; gateway restart failed: ${restartError}`, "error");
+        }
+      } else {
         onRestartNeeded();
-        showToast(`Telegram saved; restart failed: ${restartError}`, "error");
+        const detail = result.restart_error ? `: ${result.restart_error}` : "";
+        showToast(`Telegram saved; gateway restart failed${detail}`, "error");
       }
       await onChanged();
     } catch (applyError) {

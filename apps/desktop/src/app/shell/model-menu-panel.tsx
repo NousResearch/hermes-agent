@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { createContext, useContext, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -18,12 +18,14 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
   $visibleModels,
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
+  effectiveVisibleKeys,
   type ModelFamily,
   modelVisibilityKey,
   setModelVisibilityOpen
@@ -39,9 +41,14 @@ import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
+// Lets the host dropdown (model-pill) hand the panel a way to dismiss itself so
+// clicking a model row commits + closes, while the hover-revealed edit submenu
+// (reasoning/fast) stays open to play with (its items preventDefault on select).
+export const ModelMenuCloseContext = createContext<() => void>(() => {})
+
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
-  onSelectModel: (selection: { model: string; persistGlobal: boolean; provider: string }) => Promise<boolean> | void
+  onSelectModel: (selection: { model: string; provider: string }) => Promise<boolean> | void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -53,7 +60,10 @@ interface ProviderGroup {
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
+  const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+  const queryClient = useQueryClient()
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
   // the parent to rebuild the menu content (which would close the dropdown).
@@ -62,6 +72,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
   const currentReasoningEffort = useStore($currentReasoningEffort)
+  const modelPresets = useStore($modelPresets)
   const visibleModels = useStore($visibleModels)
 
   const modelOptions = useQuery({
@@ -75,8 +86,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     }
   })
 
-  const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
-  const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    !!activeSessionId,
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
+  )
+
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error
@@ -87,12 +102,76 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
   const providers = modelOptions.data?.providers
 
-  const switchTo = (model: string, provider: string) =>
-    onSelectModel({ model, persistGlobal: !activeSessionId, provider })
+  const effectiveVisibleModels = useMemo(
+    () => effectiveVisibleKeys(visibleModels, providers ?? []),
+    [visibleModels, providers]
+  )
+
+  // The composer picker never persists the profile default. With a session it
+  // scopes the switch to that session; with none it's UI state shipped on the
+  // next session.create (see selectModel). The default lives in Settings → Model.
+  const switchTo = (model: string, provider: string) => onSelectModel({ model, provider })
+
+  // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
+  // backend busts its 1h provider-model disk cache and re-pulls each provider's
+  // live list. Fixes live-only models (e.g. OpenCode Zen free tier) vanishing
+  // when the cache expires and falls back to the curated static list.
+  const refreshModels = async () => {
+    if (refreshing) {
+      return
+    }
+
+    setRefreshing(true)
+
+    try {
+      const queryKey = ['model-options', activeSessionId || 'global']
+
+      const next =
+        gateway && activeSessionId
+          ? await gateway.request<ModelOptionsResponse>('model.options', {
+              session_id: activeSessionId,
+              refresh: true
+            })
+          : await getGlobalModelOptions({ refresh: true })
+
+      queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
+    } catch {
+      // Network/backend hiccup — fall back to a plain invalidate so the next
+      // open re-fetches (still cached, but no worse than before).
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  // Selecting a model row restores that model's remembered preset onto the
+  // session (effort/fast), gated by capability. Unset → Hermes defaults.
+  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
+    const caps = provider.capabilities?.[family.id]
+    const preset = modelPresets[modelPresetKey(provider.slug, family.id)] ?? {}
+
+    // Variant-fast models (no speed param) express "fast" as a separate `-fast`
+    // id, so honor the saved preset by selecting that sibling. Param-fast is
+    // applied via applyModelPreset below instead.
+    const variantFast = !(caps?.fast ?? false) && !!family.fastId
+    const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
+
+    if ((await switchTo(targetId, provider.slug)) === false) {
+      return
+    }
+
+    await applyModelPreset(
+      {
+        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
+        fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
+      },
+      { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
+    )
+  }
 
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, visibleModels),
-    [providers, search, optionsModel, optionsProvider, visibleModels]
+    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   return (
@@ -147,38 +226,42 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // -fast variant carries the same param support as its base.
                 const caps = group.provider.capabilities?.[family.id]
 
-                // Single source of truth for the active row's fast state — keeps
-                // the row label in lock-step with the submenu's Fast toggle and
-                // handles the standalone `-fast` id case.
+                // Effective settings for this row: live session state when it's
+                // the active model, otherwise its remembered preset (Hermes
+                // defaults when unset). Row label AND submenu read from these so
+                // they never disagree.
+                const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
+                const effEffort = isCurrent ? currentReasoningEffort : preset.effort ?? ''
+                const effFast = isCurrent ? currentFastMode : preset.fast ?? false
+
                 const fastControl = resolveFastControl(
                   activeId ?? family.id,
                   group.provider.models ?? [],
                   caps?.fast ?? false,
-                  currentFastMode
+                  effFast
                 )
 
-                // Grayed text: active row shows live state (Fast + effort);
-                // others show a fast-capability hint.
-                const meta = isCurrent
-                  ? [
-                      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      reasoningEffortLabel(currentReasoningEffort) || copy.medium
-                    ]
-                      .filter(Boolean)
-                      .join(' ')
-                  : caps?.fast || family.fastId
-                    ? copy.fast
-                    : ''
+                const meta = [
+                  fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
+                  (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
+                ]
+                  .filter(Boolean)
+                  .join(' ')
 
                 // Every row is a hover-Edit submenu trigger. Activating it
-                // (pointer or keyboard) switches to the family's base model;
-                // the Fast toggle inside swaps to the -fast sibling (or flips
-                // the speed param). The sub-trigger has no `onSelect`, so wire
-                // both click and Enter/Space for keyboard parity.
+                // (pointer or keyboard) switches to the family's base model and
+                // restores its preset; the Fast toggle inside swaps to the -fast
+                // sibling (or flips the speed param). The sub-trigger has no
+                // `onSelect`, so wire both click and Enter/Space for keyboard parity.
+                // Clicking the row commits the model and closes the picker; the
+                // edit submenu (reasoning/fast) is reached by HOVER, so you can
+                // still tweak those without the click dismissing everything.
                 const activate = () => {
                   if (!isCurrent) {
-                    void switchTo(family.id, group.provider.slug)
+                    void selectFamily(family, group.provider)
                   }
+
+                  closeMenu()
                 }
 
                 return (
@@ -200,10 +283,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                       {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>
                     <ModelEditSubmenu
+                      effort={effEffort}
                       fastControl={fastControl}
                       isActive={isCurrent}
-                      onActivate={() => switchTo(family.id, group.provider.slug)}
+                      model={family.id}
                       onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}
+                      provider={group.provider.slug}
                       reasoning={caps?.reasoning ?? true}
                       requestGateway={requestGateway}
                     />
@@ -216,6 +301,18 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       )}
 
       <DropdownMenuSeparator className="mx-0" />
+
+      <DropdownMenuItem
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+        disabled={refreshing}
+        onSelect={event => {
+          event.preventDefault()
+          void refreshModels()
+        }}
+      >
+        <Codicon className={cn('mr-1.5', refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+        {copy.refreshModels}
+      </DropdownMenuItem>
 
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}

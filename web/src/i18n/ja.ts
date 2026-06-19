@@ -285,8 +285,8 @@ export const ja: Translations = {
     nameRequired: "名前は必須です",
     nameRule:
       "小文字、数字、_ および - のみ使用可能。最初は文字または数字で始める必要があります。最大 64 文字。",
-    invalidName: "無効なプロファイル名",
-    cloneFromDefault: "デフォルトプロファイルから設定を複製",
+    invalidName: "無効なプロファイル名",    cloneFrom: "プロファイルから複製",
+    cloneFromNone: "なし（空）",
     allProfiles: "プロファイル",
     noProfiles: "プロファイルが見つかりません。",
     defaultBadge: "デフォルト",

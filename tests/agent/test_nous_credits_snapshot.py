@@ -124,3 +124,42 @@ def test_never_raises_empty():
     )
     # No usable numbers and not depleted -> None, without raising.
     assert build_nous_credits_snapshot(info) is None
+
+
+def test_topup_line_is_org_pinned_when_slug_present():
+    info = _account(
+        portal_base_url="https://portal.example.test",
+        org_slug="acme",
+        org_name="Acme Inc",
+        paid_service_access=True,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            purchased_credits_remaining=30.0,
+            total_usable_credits=30.0,
+        ),
+        subscription=None,
+    )
+    snap = build_nous_credits_snapshot(info)
+    assert snap is not None
+    blob = "\n".join(_all_lines(snap))
+    # The /usage top-up link auto-opens the modal and is org-pinned.
+    assert "https://portal.example.test/orgs/acme/billing?topup=open" in blob
+    assert "/credits" in blob
+
+
+def test_topup_line_falls_back_to_legacy_when_slug_null():
+    info = _account(
+        portal_base_url="https://portal.example.test",
+        org_slug=None,
+        paid_service_access=True,
+        paid_service_access_info=NousPaidServiceAccessInfo(
+            purchased_credits_remaining=30.0,
+            total_usable_credits=30.0,
+        ),
+        subscription=None,
+    )
+    snap = build_nous_credits_snapshot(info)
+    assert snap is not None
+    blob = "\n".join(_all_lines(snap))
+    # Null slug → legacy page (which forwards the param); never /orgs/None/...
+    assert "https://portal.example.test/billing?topup=open" in blob
+    assert "/orgs/" not in blob

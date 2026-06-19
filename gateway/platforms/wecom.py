@@ -92,6 +92,7 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+ERRCODE_NOT_SUBSCRIBED = 846609  # "aibot websocket not subscribed"
 
 DEDUP_MAX_SIZE = 1000
 
@@ -192,6 +193,10 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+        # Serializes concurrent _reconnect_send() calls so that multiple send
+        # tasks (e.g. replying in two different chats) don't race on
+        # _listen_task / _ws / _session during reconnection.
+        self._reconnect_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -270,13 +275,23 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _cleanup_ws(self) -> None:
         """Close the live websocket/session, if any."""
+        ws_close_err: Optional[Exception] = None
         if self._ws and not self._ws.closed:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception as exc:
+                ws_close_err = exc
         self._ws = None
 
         if self._session and not self._session.closed:
-            await self._session.close()
+            try:
+                await self._session.close()
+            except Exception as exc:
+                ws_close_err = ws_close_err or exc
         self._session = None
+
+        if ws_close_err:
+            raise ws_close_err  # type: ignore[misc]
 
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""
@@ -343,7 +358,20 @@ class WeComAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if not self._running:
                     return
-                logger.warning("[%s] WebSocket error: %s", self.name, exc)
+
+                # "Concurrent call to receive()" — aiohttp guard triggered because
+                # two send tasks raced through _reconnect_send() before the
+                # asyncio.Lock was added.  Treated as a transient disconnect;
+                # the reconnect below will create a fresh connection.
+                msg = str(exc)
+                if "Concurrent call to receive()" in msg:
+                    logger.info(
+                        "[%s] Concurrent receive detected (transient), reconnecting...",
+                        self.name,
+                    )
+                else:
+                    logger.warning("[%s] WebSocket error: %s", self.name, exc)
+
                 self._fail_pending_responses(RuntimeError("WeCom connection interrupted"))
 
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
@@ -1223,8 +1251,105 @@ class WeComAdapter(BasePlatformAdapter):
             "created_at": finish_body.get("created_at"),
         }
 
+    async def _reconnect_send(self) -> None:
+        """Reconnect WebSocket, pausing background tasks to avoid races.
+
+        The ``_listen_loop`` background task also tries to reconnect after a
+        WebSocket drop.  If it races with our manual reconnect, it can close
+        the connection we just established.  We cancel the background tasks
+        before reconnecting and restart them afterward so we have exclusive
+        control over the connection lifecycle during the retry.
+
+        Protected by ``_reconnect_lock`` so that concurrent send tasks (e.g.
+        replying in two different chats when both trigger reconnection) do
+        not race on ``_listen_task`` / ``_ws`` / ``_session``.  The first
+        caller reconnects; subsequent callers that waited for the lock and
+        find a healthy connection skip the reconnection work.
+        """
+        async with self._reconnect_lock:
+            # Another task may have already reconnected while we waited
+            # for the lock — if so, nothing more to do.
+            if self._ws is not None and not self._ws.closed:
+                return
+
+            # Pause background tasks to prevent race with _listen_loop
+            if self._listen_task and not self._listen_task.done():
+                self._listen_task.cancel()
+                try:
+                    await self._listen_task
+                except asyncio.CancelledError:
+                    pass
+                self._listen_task = None
+            if self._heartbeat_task and not self._heartbeat_task.done():
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+                self._heartbeat_task = None
+
+            self._fail_pending_responses(RuntimeError("WeCom reconnecting"))
+            await self._open_connection()
+
+            # Restart background tasks
+            self._listen_task = asyncio.create_task(self._listen_loop())
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _send_with_reconnect_retry(
+        self,
+        cmd: str,
+        body: Dict[str, Any],
+        reply_req_id: Optional[str] = None,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        """Send a request with one reconnection retry on ercode 846609.
+
+        When the WeCom WebSocket disconnects mid-session (ercode 846609,
+        "aibot websocket not subscribed"), this automatically reconnects
+        and retries the send once to avoid silent delivery failures.
+        """
+        # === Pre-send liveness check ===
+        if self._ws is None or self._ws.closed:
+            logger.warning("[%s] WebSocket not connected, reconnecting before send...", self.name)
+            await self._reconnect_send()
+            self._mark_connected()
+
+        try:
+            if reply_req_id:
+                response = await self._send_reply_request(reply_req_id, body, cmd=cmd, timeout=timeout)
+            else:
+                response = await self._send_request(cmd, body, timeout)
+        except RuntimeError as exc:
+            # _listen_loop fails pending responses with "WeCom connection interrupted"
+            # and _send_request/_send_json use "WeCom websocket is not connected".
+            # Catch any RuntimeError from the send path — they all indicate a
+            # broken connection that should be retried after reconnecting.
+            logger.warning(
+                "[%s] RuntimeError during send (%s), reconnecting and retrying once...",
+                self.name, exc,
+            )
+            await self._reconnect_send()
+            self._mark_connected()
+            if reply_req_id:
+                return await self._send_reply_request(reply_req_id, body, cmd=cmd, timeout=timeout)
+            return await self._send_request(cmd, body, timeout)
+
+        errcode = response.get("errcode", 0)
+        if errcode == ERRCODE_NOT_SUBSCRIBED:
+            logger.warning(
+                "[%s] ercode 846609 (not subscribed), reconnecting and retrying...",
+                self.name,
+            )
+            await self._reconnect_send()
+            self._mark_connected()
+            if reply_req_id:
+                return await self._send_reply_request(reply_req_id, body, cmd=cmd, timeout=timeout)
+            return await self._send_request(cmd, body, timeout)
+        return response
+
     async def _send_media_message(self, chat_id: str, media_type: str, media_id: str) -> Dict[str, Any]:
-        response = await self._send_request(
+        """Send a media message with reconnection retry on ercode 846609."""
+        response = await self._send_with_reconnect_retry(
             APP_CMD_SEND,
             {
                 "chatid": chat_id,
@@ -1236,12 +1361,14 @@ class WeComAdapter(BasePlatformAdapter):
         return response
 
     async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
+        """Send a reply markdown with reconnection retry on ercode 846609."""
+        response = await self._send_with_reconnect_retry(
+            APP_CMD_RESPONSE,
             {
                 "msgtype": "markdown",
                 "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
             },
+            reply_req_id=reply_req_id,
         )
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
@@ -1252,12 +1379,14 @@ class WeComAdapter(BasePlatformAdapter):
         media_type: str,
         media_id: str,
     ) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
+        """Send a reply media message with reconnection retry on ercode 846609."""
+        response = await self._send_with_reconnect_retry(
+            APP_CMD_RESPONSE,
             {
                 "msgtype": media_type,
                 media_type: {"media_id": media_id},
             },
+            reply_req_id=reply_req_id,
         )
         self._raise_for_wecom_error(response, "send reply media message")
         return response
@@ -1380,7 +1509,7 @@ class WeComAdapter(BasePlatformAdapter):
             if reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
             else:
-                response = await self._send_request(
+                response = await self._send_with_reconnect_retry(
                     APP_CMD_SEND,
                     {
                         "chatid": chat_id,

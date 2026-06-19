@@ -26,12 +26,34 @@ HTML artifact when the user says "make an HTML file/artifact", or asks you to
 *explain how X works*, *write up a plan/PR/report*, *diagram* something, *compare*
 options, or *prototype* an interaction — even when they don't say "HTML".
 
-This skill **supersedes** the former `sketch`, `architecture-diagram`, and
-`concept-diagrams` skills — design-variant comparison, dark-tech infra diagrams,
-and educational SVG diagrams are all modes here. For matching a known brand's look
-use `popular-web-designs`; for a formal design-token spec file use `design-md`; for
-hand-drawn/whiteboard `.excalidraw` files use `excalidraw`; for generative/animated
-canvas art use `p5js`. This skill is for everything else that ships as an HTML page.
+## Why this skill exists (and what it replaced)
+
+This skill **supersedes** three former skills — `sketch` (throwaway multi-variant
+HTML mockups), `architecture-diagram` (dark-tech infra SVG), and `concept-diagrams`
+(educational SVG). They were consolidated for a concrete reason: all three emitted
+the *same artifact* — a single self-contained HTML file with inline CSS/SVG — and
+overlapped heavily (three "diagram" skills, two "compare variants" paths, no shared
+token system). Folding them into one mode-switched skill removes the
+which-one-do-I-load ambiguity and gives every output the same house style, while
+keeping each skill's unique value: the fidelity dial + verify loop (from `sketch`),
+the dark infra aesthetic (from `architecture-diagram`), and the 9-ramp educational
+system + archetype library (from `concept-diagrams`).
+
+The consolidation is footprint-safe: this skill has **zero dependencies** (no Node,
+FFmpeg, Chromium, or pip packages — it authors plain HTML/CSS/SVG), so even though it
+ships **bundled** (active by default) where `concept-diagrams` was optional, the only
+always-in-context cost is this skill's one-line description. All references,
+templates, and the example gallery load on demand. `concept-diagrams` was optional
+because it was niche, not because it had an install cost — promoting that capability
+into a general-purpose, zero-dep bundled skill is the right home for it. Diagram-style
+work with a *real* install cost (e.g. `hyperframes`: Node + FFmpeg + Chromium)
+deliberately stays optional and is **not** folded in here.
+
+Use a different skill when: matching a known brand's look → `popular-web-designs`; a
+formal design-token spec file → `design-md`; a *bespoke visually-designed* artifact
+where the look itself is the point → `claude-design`; hand-drawn/whiteboard
+`.excalidraw` files → `excalidraw`; generative/animated canvas art → `p5js`. This
+skill is for everything else that ships as a readable, shareable HTML page.
 
 ## Reference files (load on demand)
 

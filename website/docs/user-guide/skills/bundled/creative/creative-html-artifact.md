@@ -44,17 +44,42 @@ HTML artifact when the user says "make an HTML file/artifact", or asks you to
 *explain how X works*, *write up a plan/PR/report*, *diagram* something, *compare*
 options, or *prototype* an interaction — even when they don't say "HTML".
 
-This skill **supersedes** the former `sketch`, `architecture-diagram`, and
-`concept-diagrams` skills — design-variant comparison, dark-tech infra diagrams,
-and educational SVG diagrams are all modes here. For matching a known brand's look
-use `popular-web-designs`; for a formal design-token spec file use `design-md`; for
-hand-drawn/whiteboard `.excalidraw` files use `excalidraw`; for generative/animated
-canvas art use `p5js`. This skill is for everything else that ships as an HTML page.
+## Why this skill exists (and what it replaced)
+
+This skill **supersedes** three former skills — `sketch` (throwaway multi-variant
+HTML mockups), `architecture-diagram` (dark-tech infra SVG), and `concept-diagrams`
+(educational SVG). They were consolidated for a concrete reason: all three emitted
+the *same artifact* — a single self-contained HTML file with inline CSS/SVG — and
+overlapped heavily (three "diagram" skills, two "compare variants" paths, no shared
+token system). Folding them into one mode-switched skill removes the
+which-one-do-I-load ambiguity and gives every output the same house style, while
+keeping each skill's unique value: the fidelity dial + verify loop (from `sketch`),
+the dark infra aesthetic (from `architecture-diagram`), and the 9-ramp educational
+system + archetype library (from `concept-diagrams`).
+
+The consolidation is footprint-safe: this skill has **zero dependencies** (no Node,
+FFmpeg, Chromium, or pip packages — it authors plain HTML/CSS/SVG), so even though it
+ships **bundled** (active by default) where `concept-diagrams` was optional, the only
+always-in-context cost is this skill's one-line description. All references,
+templates, and the example gallery load on demand. `concept-diagrams` was optional
+because it was niche, not because it had an install cost — promoting that capability
+into a general-purpose, zero-dep bundled skill is the right home for it. Diagram-style
+work with a *real* install cost (e.g. `hyperframes`: Node + FFmpeg + Chromium)
+deliberately stays optional and is **not** folded in here.
+
+Use a different skill when: matching a known brand's look → `popular-web-designs`; a
+formal design-token spec file → `design-md`; a *bespoke visually-designed* artifact
+where the look itself is the point → `claude-design`; hand-drawn/whiteboard
+`.excalidraw` files → `excalidraw`; generative/animated canvas art → `p5js`. This
+skill is for everything else that ships as a readable, shareable HTML page.
 
 ## Reference files (load on demand)
 
 - `references/house-style.md` — the canonical `:root` token block, type system,
   card/table/callout/code-block patterns. **Read this before authoring any artifact.**
+- `references/examples.md` — 20 complete reference HTML files (Anthropic's
+  html-effectiveness gallery, MIT) keyed to each mode, plus the script to fetch them.
+  Read/fetch one that matches your task to calibrate the house style from a full example.
 - `references/svg-diagrams.md` — hand-authored inline SVG: arrow markers, node
   groups, decision diamonds, edge semantics, coordinate-grid discipline. Read for
   any flowchart / architecture / concept diagram.
@@ -81,25 +106,40 @@ Load one with `skill_view(name="html-artifact", file_path="templates/base.html")
 ## Workflow
 
 1. **Pick the mode.** Match the request to one artifact type — explainer, plan,
-   report, code review, diagram, variants, or editor. Each has a section in the
-   references; the mode decides which template and which references to load.
-2. **Decide fidelity.** Throwaway exploration or presentation-grade deliverable?
+   report, code review, diagram, variants, or editor. The mode decides which
+   template, which references, and which worked example to use.
+2. **Read the matching example first — every time.** The 20 files in the
+   html-effectiveness gallery are the ground truth this skill is built on; the
+   prose references describe them but a full example carries density, spacing, and
+   structure no summary can. Before writing anything:
+   ```
+   terminal: bash scripts/fetch-examples.sh      # idempotent: clones if missing, else pulls
+   read_file references/examples/<file-for-your-mode>.html
+   ```
+   `references/examples.md` has the mode→file map (e.g. code review →
+   `03-code-review-pr.html`, diagram → `13-flowchart-diagram.html`, editor →
+   `18-editor-triage-board.html`). Read at least the one example closest to your
+   task — two if you're combining modes. Only if the fetch genuinely fails (no
+   network) do you fall back to the distilled pattern references alone; note that
+   you're working without the examples when you do.
+3. **Decide fidelity.** Throwaway exploration or presentation-grade deliverable?
    See `references/fidelity-and-verify.md`. Don't over-polish a quick comparison;
    don't ship a sloppy report.
-3. **Start from a template + the house style.** Load `templates/base.html` (or
+4. **Start from a template + the house style.** Load `templates/base.html` (or
    `diagram.html` / `editor.html`) and `references/house-style.md`. Reuse the
-   `:root` tokens — never invent a new palette per file.
-4. **Author the artifact** with `write_file`. Keep everything inline: one `<style>`
+   `:root` tokens — never invent a new palette per file. Mirror the structure of
+   the example you read in step 2; adapt it to the content, don't copy it verbatim.
+5. **Author the artifact** with `write_file`. Keep everything inline: one `<style>`
    in `<head>`, at most one `<script>` before `</body>`. No `<link>`, no external
    fonts (use OS-native stacks), no CDN, no `<img src>` to remote URLs. All graphics
    are inline SVG or CSS.
-5. **Keep JS optional and graceful.** Prefer zero JS. When you need it, keep it to
+6. **Keep JS optional and graceful.** Prefer zero JS. When you need it, keep it to
    a small vanilla IIFE and make the page render meaningfully with JS off (native
    `<details>`, anchor nav, a default-active tab/node).
-6. **Verify visually.** Open the file and screenshot it — see the verify loop in
+7. **Verify visually.** Open the file and screenshot it — see the verify loop in
    `references/fidelity-and-verify.md`. This is mandatory for SVG diagrams, where
    hand-placed coordinates drift on edits (overlapping nodes, misaimed arrows).
-7. **Report the path.** Tell the user the absolute file path so they can open it.
+8. **Report the path.** Tell the user the absolute file path so they can open it.
    Mention any interactive controls / export buttons.
 
 ## Core principles
@@ -129,19 +169,24 @@ button that serializes state to the clipboard for pasting into the next prompt.
 
 ## Quick reference — mode → what to build
 
-| Request | Mode | Template | Key reference |
-|---|---|---|---|
-| "explain how X works" | explainer | base | house-style, svg-diagrams |
-| "write up the plan / spec" | plan | base | house-style |
-| "status / incident report" | report | base | house-style |
-| "review this PR / diff" | code review | base | house-style (diff section) |
-| "diagram the architecture / pipeline" | infra diagram | diagram | dark-tech, svg-diagrams |
-| "diagram this concept / process" (science, physical, educational) | concept diagram | diagram | concept-archetypes, svg-diagrams |
-| "show me N takes / compare options" | variants | base | fidelity-and-verify |
-| "let me tune / triage / edit X and copy it out" | editor | editor | throwaway-editors |
+| Request | Mode | Template | Read this example | Key reference |
+|---|---|---|---|---|
+| "explain how X works" | explainer | base | `14-research-feature-explainer.html` | house-style, svg-diagrams |
+| "write up the plan / spec" | plan | base | `16-implementation-plan.html` | house-style |
+| "status / incident report" | report | base | `11-status-report.html`, `12-incident-report.html` | house-style |
+| "review this PR / diff" | code review | base | `03-code-review-pr.html`, `17-pr-writeup.html` | house-style (diff section) |
+| "diagram the architecture / pipeline" | infra diagram | diagram | `13-flowchart-diagram.html`, `04-code-understanding.html` | dark-tech, svg-diagrams |
+| "diagram this concept / process" (science, physical, educational) | concept diagram | diagram | `13-flowchart-diagram.html`, `10-svg-illustrations.html` | concept-archetypes, svg-diagrams |
+| "show me N takes / compare options" | variants | base | `01-exploration-code-approaches.html`, `02-exploration-visual-designs.html` | fidelity-and-verify |
+| "let me tune / triage / edit X and copy it out" | editor | editor | `18-editor-triage-board.html`, `19-editor-feature-flags.html`, `20-editor-prompt-tuner.html` | throwaway-editors |
 
 ## Pitfalls
 
+- **Don't skip the example.** The single biggest quality lever is reading the
+  matching gallery file before you write (`bash scripts/fetch-examples.sh` then
+  `read_file references/examples/<file>.html`). The prose references are a map; the
+  examples are the territory. Authoring from memory of "what good HTML looks like"
+  is exactly how the output drifts generic.
 - **Don't invent a palette.** Reuse the `:root` tokens from `house-style.md`. A
   per-file color scheme breaks the consistency that makes these artifacts feel pro.
 - **Don't reach for a library.** No Mermaid, D3, Tailwind CDN, Prism, or web fonts.

@@ -85,4 +85,20 @@ describe('ProcessOutputModal', () => {
     expect(container.querySelector('[data-slot]')).toBeNull()
     expect(screen.queryByText('npm run build')).toBeNull()
   })
+
+  it('portals the overlay to document.body so fixed-positioning escapes the composer containing block', () => {
+    seed([bg({ output: 'building…\n' })])
+    const { container } = renderModal('bg-1')
+
+    // The overlay content must NOT live inside the in-place render container
+    // (which sits in the composer subtree, trapped by backdrop-filter +
+    // contain:paint). It is portaled to body, so the title resolves via the
+    // document but is absent from `container`.
+    expect(container.textContent).not.toContain('npm run build')
+    expect(screen.getByText('npm run build')).toBeTruthy()
+    // The fixed full-screen scrim is a direct child of body, not of container.
+    const scrim = document.body.querySelector('.fixed.inset-0')
+    expect(scrim).toBeTruthy()
+    expect(container.contains(scrim)).toBe(false)
+  })
 })

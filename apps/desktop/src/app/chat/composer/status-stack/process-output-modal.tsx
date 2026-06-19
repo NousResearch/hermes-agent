@@ -41,6 +41,7 @@ export function ProcessOutputModal({ itemId, onClose }: { itemId: string; onClos
       closeLabel={t.common?.close ?? 'Close'}
       contentClassName="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-3 sm:px-5"
       onClose={onClose}
+      portal
       rootClassName="mx-auto flex h-[80vh] max-h-[80vh] w-full max-w-3xl flex-col"
     >
       <header className="mb-2 flex shrink-0 items-center gap-2">

@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -12,6 +13,19 @@ interface OverlayViewProps {
   closeLabel?: string
   contentClassName?: string
   headerContent?: ReactNode
+  /**
+   * Render into `document.body` instead of in-place. REQUIRED for any overlay
+   * mounted inside a subtree that establishes a containing block for fixed
+   * positioning — `transform`, `filter`, `backdrop-filter`, `contain`,
+   * `will-change`, etc. (CSS spec). Without it, this overlay's `position:
+   * fixed; inset: 0` resolves against that ancestor's box, not the viewport,
+   * so the "full-screen" overlay collapses into the ancestor's rect (e.g. the
+   * composer's glassy `backdrop-filter` surface at the bottom of the window).
+   * Root-mounted overlays (settings, command center) don't need it; overlays
+   * docked under the composer/thread (which use backdrop-blur + contain:paint)
+   * do.
+   */
+  portal?: boolean
   rootClassName?: string
 }
 
@@ -21,6 +35,7 @@ export function OverlayView({
   closeLabel = translateNow('common.close'),
   contentClassName,
   headerContent,
+  portal = false,
   rootClassName
 }: OverlayViewProps) {
   const closeOverlay = () => {
@@ -47,7 +62,7 @@ export function OverlayView({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
 
-  return (
+  const overlay = (
     <div
       className="fixed inset-0 z-50 bg-black/22 p-3 backdrop-blur-[0.125rem] sm:p-6"
       onClick={event => {
@@ -88,4 +103,12 @@ export function OverlayView({
       </div>
     </div>
   )
+
+  // Portal to body so `position: fixed` resolves against the viewport rather
+  // than a transformed/filtered/contained ancestor (see the `portal` prop).
+  if (portal && typeof document !== 'undefined') {
+    return createPortal(overlay, document.body)
+  }
+
+  return overlay
 }

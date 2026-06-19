@@ -36,12 +36,6 @@ def _isolated_cwd(tmp_path, monkeypatch):
     # Process cwd = decoy, analogous to "main repo" while the terminal is in
     # the worktree.
     monkeypatch.chdir(decoy)
-    # These tests run in pytest temp dirs, which are under /private/var on
-    # macOS. Disable the unrelated system-path write guard for this cwd suite.
-    monkeypatch.setattr(ft, "_SENSITIVE_PATH_PREFIXES", ())
-    # Keep shell-backed patch tests focused on cwd resolution; on some macOS
-    # shells an inherited C.UTF-8 locale warning is emitted into redirected IO.
-    monkeypatch.setenv("LC_ALL", "C")
     # No live-terminal-cwd tracking recorded yet (fresh-session condition).
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
     return workspace, decoy
@@ -305,6 +299,7 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     """patch_tool (replace mode) must put the absolute on-disk path in files_modified."""
     workspace, decoy = _isolated_cwd
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
+    monkeypatch.setenv("LC_ALL", "C")
 
     import json
     out = json.loads(ft.patch_tool(

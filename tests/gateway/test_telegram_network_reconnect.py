@@ -533,7 +533,7 @@ async def test_heartbeat_loop_triggers_reconnect_on_timeout():
         raise asyncio.TimeoutError()
 
     with patch("asyncio.sleep", side_effect=fast_sleep):
-        with patch("gateway.platforms.telegram.asyncio.wait_for", side_effect=fast_wait_for):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=fast_wait_for):
             await adapter._polling_heartbeat_loop()
 
     # A reconnect task must have been created
@@ -562,7 +562,7 @@ async def test_heartbeat_loop_triggers_reconnect_on_os_error():
         raise OSError("Connection reset by peer")
 
     with patch("asyncio.sleep", side_effect=fast_sleep):
-        with patch("gateway.platforms.telegram.asyncio.wait_for", side_effect=os_error_wait_for):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=os_error_wait_for):
             await adapter._polling_heartbeat_loop()
 
     assert adapter._polling_error_task is not None
@@ -594,7 +594,7 @@ async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
         raise asyncio.TimeoutError()
 
     with patch("asyncio.sleep", side_effect=fast_sleep):
-        with patch("gateway.platforms.telegram.asyncio.wait_for", side_effect=timeout_wait_for):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=timeout_wait_for):
             await adapter._polling_heartbeat_loop()
 
     # _handle_polling_network_error must NOT have been called — existing task still running
@@ -629,7 +629,7 @@ async def test_heartbeat_loop_ignores_non_connectivity_errors():
         raise RuntimeError("TelegramError: Unauthorized")  # non-OSError, non-TimeoutError
 
     with patch("asyncio.sleep", side_effect=fast_sleep):
-        with patch("gateway.platforms.telegram.asyncio.wait_for", side_effect=telegram_error_wait_for):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=telegram_error_wait_for):
             await adapter._polling_heartbeat_loop()
 
     # No reconnect should have been triggered for a non-connectivity error

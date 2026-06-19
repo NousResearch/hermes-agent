@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 logger = logging.getLogger(__name__)
 
@@ -5132,15 +5132,23 @@ class SessionDB:
         session_key: str,
         goal: Optional[str] = None,
         kanban_ticket_id: Optional[str] = None,
-        routing_meta: Optional[str] = None,
+        routing_meta: Optional[Union[str, dict]] = None,
         dispatched_at: Optional[float] = None,
     ) -> None:
         """Persist a new shadow-clone task (status='running').
 
         Uses INSERT OR IGNORE so re-delivery or duplicate dispatch calls
         are harmless (idempotent).
+
+        ``routing_meta`` may be a dict or a pre-serialised JSON string;
+        dicts are serialised automatically.
         """
+        import json as _json
         import time as _time
+        if isinstance(routing_meta, dict):
+            routing_meta = _json.dumps(routing_meta)
+        if goal is not None:
+            goal = goal[:500]
         def _do(conn):
             conn.execute(
                 """
